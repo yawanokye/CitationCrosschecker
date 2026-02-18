@@ -3,424 +3,314 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>{{ app_title }}</title>
+  <title>Citation Crosschecker</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="page">
     <header class="header">
-      <div>
-        <h1>{{ app_title }}</h1>
-        <div class="sub">Version {{ app_version }} • FastAPI</div>
+      <div class="brand">
+        <div class="logo">CC</div>
+        <div>
+          <h1>Citation Crosschecker</h1>
+          <p class="sub">Upload a DOCX or PDF. Get a clean dashboard, tables, and exports.</p>
+        </div>
       </div>
-      <div class="header-actions">
-        <a class="link" href="/docs" target="_blank">API Docs</a>
-        <a class="link" href="/health" target="_blank">Health</a>
-      </div>
+      <div class="badge">FastAPI</div>
     </header>
 
     <section class="card">
-      <h2>Upload</h2>
+      <div class="form-row">
+        <label class="file">
+          <input id="file" type="file" accept=".pdf,.docx" />
+          <span class="file-btn">Choose file</span>
+          <span id="fileName" class="file-name">No file selected</span>
+        </label>
 
-      <div class="row">
-        <div class="field">
-          <label>Document (DOCX or PDF)</label>
-          <input id="fileInput" type="file" accept=".docx,.pdf" />
-        </div>
-
-        <div class="field small">
-          <label>Style</label>
-          <select id="styleSelect">
+        <label class="select">
+          <span class="label">Style</span>
+          <select id="style">
             <option value="apa">APA</option>
             <option value="ieee">IEEE</option>
             <option value="vancouver">Vancouver</option>
           </select>
+        </label>
+
+        <button id="runBtn" class="btn primary">Run check</button>
+      </div>
+
+      <div class="action-row">
+        <button id="excelBtn" class="btn" disabled>Export Excel</button>
+        <button id="wordBtn" class="btn" disabled>Export Word</button>
+        <button id="pdfBtn" class="btn" disabled>Export PDF</button>
+      </div>
+
+      <div id="status" class="status"></div>
+    </section>
+
+    <section id="dashboard" class="grid hidden">
+      <div class="kpi">
+        <div class="kpi-title">In-text citations</div>
+        <div id="kpiCites" class="kpi-value">0</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-title">Reference entries</div>
+        <div id="kpiRefs" class="kpi-value">0</div>
+      </div>
+      <div class="kpi warn">
+        <div class="kpi-title">Missing in references</div>
+        <div id="kpiMissing" class="kpi-value">0</div>
+      </div>
+      <div class="kpi warn">
+        <div class="kpi-title">Uncited references</div>
+        <div id="kpiUncited" class="kpi-value">0</div>
+      </div>
+      <div class="kpi good">
+        <div class="kpi-title">Match rate</div>
+        <div id="kpiRate" class="kpi-value">0%</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-title">Runtime</div>
+        <div id="kpiTime" class="kpi-value">0.0s</div>
+      </div>
+    </section>
+
+    <section class="card hidden" id="tables">
+      <div class="tabs">
+        <button class="tab active" data-tab="missing">Missing in References</button>
+        <button class="tab" data-tab="uncited">Uncited References</button>
+        <button class="tab" data-tab="recon">Reconciliation</button>
+      </div>
+
+      <div class="tab-panel" id="tab-missing">
+        <h2>Missing in References</h2>
+        <div class="hint">Citations that appear in the text but have no matching reference entry.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Citation in text</th>
+                <th>Count</th>
+              </tr>
+            </thead>
+            <tbody id="missingBody"></tbody>
+          </table>
         </div>
+      </div>
 
-        <div class="field small">
-          <label>&nbsp;</label>
-          <button id="runBtn" class="btn primary">Run Check</button>
+      <div class="tab-panel hidden" id="tab-uncited">
+        <h2>Uncited References</h2>
+        <div class="hint">Reference entries that do not appear as in-text citations.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Reference</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody id="uncitedBody"></tbody>
+          </table>
         </div>
       </div>
 
-      <div id="status" class="status">Ready.</div>
-    </section>
-
-    <section class="grid">
-      <div class="card">
-        <h2>Summary</h2>
-        <div class="kpis">
-          <div class="kpi">
-            <div class="kpi-label">In-text citations</div>
-            <div class="kpi-value" id="kpiInText">-</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Reference entries</div>
-            <div class="kpi-value" id="kpiRefs">-</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Missing in references</div>
-            <div class="kpi-value bad" id="kpiMissing">-</div>
-          </div>
-          <div class="kpi">
-            <div class="kpi-label">Uncited references</div>
-            <div class="kpi-value warn" id="kpiUncited">-</div>
-          </div>
+      <div class="tab-panel hidden" id="tab-recon">
+        <h2>Reconciliation</h2>
+        <div class="hint">How each in-text citation matched to a reference entry.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>In-text</th>
+                <th>Matched reference</th>
+              </tr>
+            </thead>
+            <tbody id="reconBody"></tbody>
+          </table>
         </div>
-
-        <div class="meta" id="metaLine">No result yet.</div>
-        
-        <div class="export-row">
-  <button id="excelBtn" class="btn" disabled>Export Excel</button>
-  <button id="wordBtn" class="btn" disabled>Export Word</button>
-  <button id="pdfBtn" class="btn" disabled>Export PDF</button>
-  <button id="verifyBtn" class="btn" disabled>Verify online</button>
-</div>
-
-
-       
-
-      </div>
-
-      <div class="card">
-        <h2>Dashboard analytics</h2>
-        <div class="meta" id="statsBox">Loading stats…</div>
-        <button id="refreshStatsBtn" class="btn small">Refresh</button>
       </div>
     </section>
-
-    <section class="card">
-      <h2>Missing in References</h2>
-      <div class="table-wrap">
-        <table class="table" id="missingTable">
-          <thead>
-            <tr>
-              <th>Citation in text</th>
-              <th class="num">Count</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div class="hint" id="missingHint">No data yet.</div>
-    </section>
-
-    <section class="card">
-      <h2>Uncited References</h2>
-      <div class="table-wrap">
-        <table class="table" id="uncitedTable">
-          <thead>
-            <tr>
-              <th>Reference entry</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div class="hint" id="uncitedHint">No data yet.</div>
-    </section>
-
-    <section class="card">
-      <h2>Reconciliation (In-text ↔ Reference)</h2>
-      <div class="table-wrap">
-        <table class="table" id="reconTable">
-          <thead>
-            <tr>
-              <th>In-text</th>
-              <th>Status</th>
-              <th>Matched reference</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div class="hint" id="reconHint">No data yet.</div>
-    </section>
-<section class="card">
-  <h2>Online verification results (Crossref + OpenAlex)</h2>
-
-  <div class="row verify-row">
-    <div class="field small">
-      <label>Max references to verify</label>
-      <input id="maxVerify" type="number" value="200" min="10" max="5000" />
-    </div>
-
-    <div class="field small">
-      <label>Throttle seconds</label>
-      <input id="throttleVerify" type="number" value="0.25" min="0" step="0.05" />
-    </div>
-
-    <div class="field small">
-      <label>&nbsp;</label>
-      <label class="check"><input id="useCrossref" type="checkbox" checked /> Use Crossref</label>
-      <label class="check"><input id="useOpenalex" type="checkbox" checked /> Use OpenAlex</label>
-    </div>
-  </div>
-
-  <div class="meta" id="verifySummary">No verification run yet.</div>
-
-  <div class="table-wrap">
-    <table class="table" id="verifyTable">
-      <thead>
-        <tr>
-          <th>Reference</th>
-          <th>Status</th>
-          <th>Source</th>
-          <th class="num">Score</th>
-          <th>DOI</th>
-          <th>Matched title</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</section>
 
     <footer class="footer">
-      <div>Tip: Use the export buttons after the results appear.</div>
+      <a href="/docs" target="_blank">API Docs</a>
+      <span>•</span>
+      <a href="/health" target="_blank">Health</a>
     </footer>
   </div>
 
 <script>
-  let lastResult = null;
-
-  const statusEl = document.getElementById("status");
+  const fileEl = document.getElementById("file");
+  const fileNameEl = document.getElementById("fileName");
+  const styleEl = document.getElementById("style");
   const runBtn = document.getElementById("runBtn");
-  const fileInput = document.getElementById("fileInput");
-  const styleSelect = document.getElementById("styleSelect");
+  const statusEl = document.getElementById("status");
 
   const excelBtn = document.getElementById("excelBtn");
   const wordBtn = document.getElementById("wordBtn");
   const pdfBtn = document.getElementById("pdfBtn");
 
-  const kpiInText = document.getElementById("kpiInText");
+  const dashboardEl = document.getElementById("dashboard");
+  const tablesEl = document.getElementById("tables");
+
+  const kpiCites = document.getElementById("kpiCites");
   const kpiRefs = document.getElementById("kpiRefs");
   const kpiMissing = document.getElementById("kpiMissing");
   const kpiUncited = document.getElementById("kpiUncited");
-  const metaLine = document.getElementById("metaLine");
+  const kpiRate = document.getElementById("kpiRate");
+  const kpiTime = document.getElementById("kpiTime");
 
-  const missingBody = document.querySelector("#missingTable tbody");
-  const uncitedBody = document.querySelector("#uncitedTable tbody");
-  const reconBody = document.querySelector("#reconTable tbody");
+  const missingBody = document.getElementById("missingBody");
+  const uncitedBody = document.getElementById("uncitedBody");
+  const reconBody = document.getElementById("reconBody");
 
-  const missingHint = document.getElementById("missingHint");
-  const uncitedHint = document.getElementById("uncitedHint");
-  const reconHint = document.getElementById("reconHint");
-
-  const statsBox = document.getElementById("statsBox");
-  const refreshStatsBtn = document.getElementById("refreshStatsBtn");
-
-  function setStatus(msg, kind="info") {
-    statusEl.textContent = msg;
+  function setStatus(msg, kind="") {
     statusEl.className = "status " + kind;
+    statusEl.textContent = msg || "";
   }
 
-  function clearTables() {
-    missingBody.innerHTML = "";
-    uncitedBody.innerHTML = "";
-    reconBody.innerHTML = "";
+  function requireFile() {
+    if (!fileEl.files || !fileEl.files[0]) {
+      setStatus("Please choose a DOCX or PDF first.", "error");
+      return null;
+    }
+    return fileEl.files[0];
   }
 
-  function enableExports(on) {
-    excelBtn.disabled = !on;
-    wordBtn.disabled = !on;
-    pdfBtn.disabled = !on;
-  }
+  fileEl.addEventListener("change", () => {
+    const f = fileEl.files && fileEl.files[0];
+    fileNameEl.textContent = f ? f.name : "No file selected";
+    excelBtn.disabled = !f;
+    wordBtn.disabled = !f;
+    pdfBtn.disabled = !f;
+  });
 
-  function fmt(x) {
-    if (x === null || x === undefined) return "-";
-    return String(x);
-  }
+  async function runCheck() {
+    const f = requireFile();
+    if (!f) return;
 
-  function fillTableMissing(rows) {
-    missingBody.innerHTML = "";
-    if (!rows || rows.length === 0) {
-      missingHint.textContent = "None.";
+    setStatus("Running check…", "busy");
+
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("style", styleEl.value);
+
+    const res = await fetch("/check", { method: "POST", body: fd });
+    if (!res.ok) {
+      setStatus("Server error. Open /docs and try again.", "error");
       return;
     }
-    missingHint.textContent = "";
-    rows.forEach(r => {
+
+    const data = await res.json();
+
+    // UI payload prepared in main.py: data._ui.dashboard + tables
+    const ui = data._ui || {};
+    const dash = ui.dashboard || {};
+
+    dashboardEl.classList.remove("hidden");
+    tablesEl.classList.remove("hidden");
+
+    kpiCites.textContent = dash.in_text_citations_found ?? 0;
+    kpiRefs.textContent = dash.reference_entries_found ?? 0;
+    kpiMissing.textContent = dash.missing_in_references ?? 0;
+    kpiUncited.textContent = dash.uncited_references ?? 0;
+    kpiRate.textContent = (dash.match_rate_pct ?? 0) + "%";
+    kpiTime.textContent = (data.elapsed_seconds ?? 0) + "s";
+
+    // Tables
+    missingBody.innerHTML = "";
+    (ui.missing_rows || []).forEach(r => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${escapeHtml(r.citation_in_text || "")}</td>
-        <td class="num">${escapeHtml(fmt(r.count_in_text))}</td>
-      `;
+      tr.innerHTML = `<td>${escapeHtml(r.citation_in_text || "")}</td><td>${escapeHtml(String(r.count_in_text ?? ""))}</td>`;
       missingBody.appendChild(tr);
     });
-  }
-
-  function fillTableUncited(rows) {
-    uncitedBody.innerHTML = "";
-    if (!rows || rows.length === 0) {
-      uncitedHint.textContent = "None.";
-      return;
+    if ((ui.missing_rows || []).length === 0) {
+      missingBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
     }
-    uncitedHint.textContent = "";
-    rows.forEach(r => {
+
+    uncitedBody.innerHTML = "";
+    (ui.uncited_rows || []).forEach(r => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${escapeHtml(r.reference_entry || "")}</td>`;
+      tr.innerHTML = `<td>${escapeHtml(r.reference || "")}</td><td>${escapeHtml(r.note || "")}</td>`;
       uncitedBody.appendChild(tr);
     });
-  }
-
-  function fillTableRecon(rows) {
-    reconBody.innerHTML = "";
-    if (!rows || rows.length === 0) {
-      reconHint.textContent = "No reconciliation rows returned.";
-      return;
+    if ((ui.uncited_rows || []).length === 0) {
+      uncitedBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
     }
-    reconHint.textContent = "";
-    rows.forEach(r => {
-      const st = (r.status || "").toLowerCase();
-      const badge = st === "matched" ? "badge ok" : (st ? "badge warn" : "badge");
+
+    reconBody.innerHTML = "";
+    (ui.recon_rows || []).forEach(r => {
+      const status = (r.status || "").toLowerCase();
+      const pill = status === "matched" ? "pill ok" : (status ? "pill warn" : "pill");
       const tr = document.createElement("tr");
       tr.innerHTML = `
+        <td><span class="${pill}">${escapeHtml(r.status || "")}</span></td>
         <td>${escapeHtml(r.in_text || "")}</td>
-        <td><span class="${badge}">${escapeHtml(r.status || "")}</span></td>
-        <td>${escapeHtml(r.matched_reference || "")}</td>
+        <td class="wrap">${escapeHtml(r.matched_reference || "")}</td>
       `;
       reconBody.appendChild(tr);
     });
+    if ((ui.recon_rows || []).length === 0) {
+      reconBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
+    }
+
+    setStatus("Done.", "ok");
   }
 
-  function updateSummary(result) {
-    const s = result.summary || {};
-    kpiInText.textContent = fmt(s.in_text_citations_found ?? s.intext_citations_found ?? s.in_text ?? "-");
-    kpiRefs.textContent = fmt(s.reference_entries_found ?? s.references_found ?? "-");
-    kpiMissing.textContent = fmt(s.missing_in_references ?? "-");
-    kpiUncited.textContent = fmt(s.uncited_references ?? "-");
-
-    const meta = result._meta || {};
-    const ms = meta.processed_ms ? `${meta.processed_ms} ms` : "-";
-    metaLine.textContent =
-      `File: ${result.filename || "-"} • Style: ${result.style || "-"} • Time: ${ms}`;
+  function escapeHtml(s) {
+    return (s || "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
   }
 
-  async function runCheck() {
-    const f = fileInput.files[0];
-    if (!f) {
-      setStatus("Please choose a DOCX or PDF file.", "bad");
+  async function exportFile(kind) {
+    const f = requireFile();
+    if (!f) return;
+
+    setStatus("Preparing export…", "busy");
+
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("style", styleEl.value);
+
+    const url = kind === "excel" ? "/export/excel" : kind === "word" ? "/export/word" : "/export/pdf";
+
+    const res = await fetch(url, { method: "POST", body: fd });
+    if (!res.ok) {
+      setStatus("Export failed. Check server logs.", "error");
       return;
     }
 
-    clearTables();
-    enableExports(false);
-    lastResult = null;
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    const disp = res.headers.get("content-disposition") || "";
+    const match = disp.match(/filename="(.+?)"/);
+    const filename = match ? match[1] : ("report." + (kind==="excel"?"xlsx":kind==="word"?"docx":"pdf"));
 
-    setStatus("Running check…", "info");
-    runBtn.disabled = true;
+    a.href = window.URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 
-    try {
-      const fd = new FormData();
-      fd.append("file", f);
-      fd.append("style", styleSelect.value);
-
-      const resp = await fetch("/check", { method: "POST", body: fd });
-      const data = await resp.json();
-
-      if (!resp.ok || data.error) {
-        setStatus(data.error || "Check failed.", "bad");
-        runBtn.disabled = false;
-        return;
-      }
-
-      lastResult = data;
-      updateSummary(data);
-
-      fillTableMissing(data.missing_in_references || []);
-      fillTableUncited(data.uncited_references || []);
-      fillTableRecon(data.reconciliation_intext_to_reference || []);
-
-      enableExports(true);
-      setStatus("Done.", "ok");
-    } catch (e) {
-      setStatus("Error: " + (e?.message || e), "bad");
-    } finally {
-      runBtn.disabled = false;
-    }
+    setStatus("Export downloaded.", "ok");
   }
 
-  async function downloadExport(endpoint, filename) {
-    if (!lastResult) return;
+  runBtn.addEventListener("click", (e) => { e.preventDefault(); runCheck(); });
+  excelBtn.addEventListener("click", () => exportFile("excel"));
+  wordBtn.addEventListener("click", () => exportFile("word"));
+  pdfBtn.addEventListener("click", () => exportFile("pdf"));
 
-    setStatus("Preparing export…", "info");
-    try {
-      const resp = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(lastResult)
-      });
+  // Tabs
+  document.querySelectorAll(".tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
 
-      if (!resp.ok) {
-        const t = await resp.text();
-        setStatus("Export failed: " + t, "bad");
-        return;
-      }
-
-      const blob = await resp.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-
-      setStatus("Export downloaded.", "ok");
-    } catch (e) {
-      setStatus("Export error: " + (e?.message || e), "bad");
-    }
-  }
-
-  async function loadStats() {
-    try {
-      const resp = await fetch("/stats");
-      const s = await resp.json();
-      statsBox.innerHTML = `
-        <div><b>Total checks:</b> ${escapeHtml(String(s.total_checks || 0))}</div>
-        <div><b>Total files:</b> ${escapeHtml(String(s.total_files || 0))}</div>
-        <div><b>Total chars processed:</b> ${escapeHtml(String(s.total_chars || 0))}</div>
-        <div><b>Last check (UTC):</b> ${escapeHtml(String(s.last_check_utc || "-"))}</div>
-        <div class="spacer"></div>
-        <div><b>By style:</b></div>
-        <div class="mono">APA: ${escapeHtml(String((s.by_style||{}).apa || 0))}</div>
-        <div class="mono">IEEE: ${escapeHtml(String((s.by_style||{}).ieee || 0))}</div>
-        <div class="mono">Vancouver: ${escapeHtml(String((s.by_style||{}).vancouver || 0))}</div>
-      `;
-    } catch (e) {
-      statsBox.textContent = "Could not load stats.";
-    }
-  }
-
-  function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#039;"
-    }[m]));
-  }
-
-  runBtn.addEventListener("click", runCheck);
-
-  excelBtn.addEventListener("click", () => {
-    const base = (lastResult?.filename || "crosscheck").replace(/\.(docx|pdf)$/i, "");
-    downloadExport("/export/excel", base + "_crosscheck.xlsx");
+      const tab = btn.dataset.tab;
+      document.getElementById("tab-missing").classList.toggle("hidden", tab !== "missing");
+      document.getElementById("tab-uncited").classList.toggle("hidden", tab !== "uncited");
+      document.getElementById("tab-recon").classList.toggle("hidden", tab !== "recon");
+    });
   });
-  wordBtn.addEventListener("click", () => {
-    const base = (lastResult?.filename || "crosscheck").replace(/\.(docx|pdf)$/i, "");
-    downloadExport("/export/word", base + "_crosscheck.docx");
-  });
-  pdfBtn.addEventListener("click", () => {
-    const base = (lastResult?.filename || "crosscheck").replace(/\.(docx|pdf)$/i, "");
-    downloadExport("/export/pdf", base + "_crosscheck.pdf");
-  });
-
-  refreshStatsBtn.addEventListener("click", loadStats);
-
-  loadStats();
 </script>
 </body>
 </html>
