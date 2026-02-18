@@ -2,18 +2,18 @@
 # Citation Crosschecker Engine (FastAPI version)
 # Supports: APA/Harvard (author-year), IEEE (numeric [1]), Vancouver (numeric (1)/superscript)
 # Outputs: missing in references, uncited references, reconciliation tables (intext->ref, ref->cited_by)
-# Online verification (Crossref) is OPTIONAL and runs AFTER crosschecking.
+# Optional: Online verification (Crossref + OpenAlex), strict title+authors+year match, returns DOI.
 
 import re
 import io
+import time
+import json
 import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-import requests
-
-# Optional libs
+# Optional libs for parsing and verification
 try:
     from docx import Document
     DOCX_OK = True
@@ -25,6 +25,24 @@ try:
     PDF_OK = True
 except Exception:
     PDF_OK = False
+
+try:
+    import requests
+    REQ_OK = True
+except Exception:
+    REQ_OK = False
+
+try:
+    from rapidfuzz import fuzz
+    RF_OK = True
+except Exception:
+    RF_OK = False
+
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential
+    TEN_OK = True
+except Exception:
+    TEN_OK = False
 
 
 # ============================
@@ -45,15 +63,20 @@ NONCITE_LEADS = {
     "chapter", "section", "table", "figure", "eq", "equation", "appendix",
 }
 
-# Words that should never be treated as author surnames (common discourse markers)
+# Words that often precede citations but are NOT authors
+DISCOURSE_PREFIX_WORDS = {
+    "similarly", "however", "nonetheless", "therefore", "thus", "moreover",
+    "furthermore", "consequently", "instead", "alternatively", "notably",
+    "specifically", "generally", "overall",
+}
+
 BAD_NARRATIVE_PREFIX_WORDS = {
+    # narrative noise
     "traditional", "classical", "analytical", "for", "from", "in", "on", "at", "by",
     "methods", "method", "approach", "approaches", "sample", "size", "power",
     "results", "discussion", "model", "framework",
-    # discourse markers / transitions
-    "similarly", "however", "nonetheless", "therefore", "thus", "moreover", "further",
-    "consequently", "additionally", "meanwhile", "instead", "otherwise", "nevertheless",
-    "also", "yet", "still",
+    # discourse words
+    *DISCOURSE_PREFIX_WORDS,
 }
 
 ORG_ALIASES = {
@@ -67,17 +90,15 @@ ORG_ALIASES = {
 }
 ORG_ACRONYMS = {k.upper() for k in ["WHO", "UN", "OECD", "IMF", "UNESCO", "UNICEF", "WORLD BANK", "IBRD"]}
 
-CROSSREF_API = "https://api.crossref.org/works"
-
 
 # ============================
 # Data classes
 # ============================
 @dataclass
 class InTextCitation:
-    style: str
-    raw: str
-    key: str
+    style: str                  # "author-year" or "numeric"
+    raw: str                    # full raw in-text cite
+    key: str                    # matching key
     year: Optional[str] = None
     surnames: Optional[Tuple[str, ...]] = None
     number: Optional[int] = None
@@ -90,9 +111,10 @@ class ReferenceEntry:
     year: Optional[str] = None
     surnames: Optional[Tuple[str, ...]] = None
     number: Optional[int] = None
-    # for online verification (APA best)
-    title: Optional[str] = None
-    authors: Optional[Tuple[str, ...]] = None  # surnames only
+
+    # For online verification
+    title_guess: Optional[str] = None
+    author_surnames_guess: Optional[List[str]] = None
 
 
 # ============================
@@ -163,12 +185,6 @@ def split_semicolons(block: str) -> List[str]:
     parts = [p.strip() for p in (block or "").split(";") if p.strip()]
     return parts if parts else [block.strip()]
 
-def normalize_title_for_match(title: str) -> str:
-    t = norm_token(title)
-    t = re.sub(r"\b(a|an|the)\b", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
 
 # ============================
 # File readers
@@ -213,12 +229,15 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     for ln in raw_lines:
         s = ln.strip()
 
+        # DOI lines often start with "10." or "doi: 10." or "https://doi.org/..."
         is_doi_line = bool(re.match(r"^\s*(doi\s*:\s*)?10\.\d{4,9}/", s, flags=re.I)) or \
                       bool(re.match(r"^\s*https?://doi\.org/10\.\d{4,9}/", s, flags=re.I)) or \
                       bool(re.match(r"^\s*10\.\d{4,9}/", s))
 
+        # APA start: Surname, A.
         apa_start = bool(re.match(r"^[A-Z][A-Za-z\-\']+,\s+[A-Z]\.", s))
 
+        # IEEE/Vancouver numbering start: [26] OR 26. OR 26) OR 26 <space>
         numeric_start = bool(re.match(r"^\s*\[\d+\]\s+", s)) or \
                         bool(re.match(r"^\s*\d{1,4}[\.\)]\s+", s)) or \
                         bool(re.match(r"^\s*\d{1,4}\s+", s))
@@ -242,55 +261,71 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
 
 
 # ============================
-# APA reference parsing helpers
-# ============================
-def _extract_authors_surnames_from_prefix(prefix: str) -> List[str]:
-    """
-    From "Adam, A., Kofi, B., & Mensah, C." -> ["Adam","Kofi","Mensah"]
-    Conservative extraction.
-    """
-    p = prefix.replace("&", " and ")
-    chunks = [c.strip() for c in re.split(r"\s+and\s+|,", p) if c.strip()]
-    out: List[str] = []
-    for c in chunks:
-        tok1 = c.split()[0].strip() if c.split() else ""
-        tok2 = c.split()[-1].strip() if c.split() else ""
-        cand = tok1 if looks_like_surname(tok1) else (tok2 if looks_like_surname(tok2) else "")
-        if cand and norm_token(cand) not in BAD_NARRATIVE_PREFIX_WORDS:
-            out.append(cand)
-    seen = set()
-    uniq = []
-    for a in out:
-        k = norm_token(a)
-        if k not in seen:
-            uniq.append(a)
-            seen.add(k)
-    return uniq
-
-def _extract_title_from_reference_apa(ref_raw: str, year: str) -> Optional[str]:
-    """
-    Heuristic: title appears after (year) and before the next period.
-    """
-    r = norm_space(ref_raw)
-    m = re.search(rf"\(\s*{re.escape(year)}\s*\)\.?\s*(.+)", r)
-    if not m:
-        return None
-    tail = m.group(1).strip()
-    parts = [p.strip() for p in tail.split(".") if p.strip()]
-    if not parts:
-        return None
-    title = parts[0]
-    if len(title) < 6:
-        return None
-    # avoid obvious non-title starts
-    if norm_token(title) in ("retrieved from", "available at"):
-        return None
-    return title
-
-
-# ============================
 # Reference parsing
 # ============================
+def _guess_title_from_reference(raw: str) -> str:
+    """
+    Best-effort title guess from an APA-like reference:
+    Often appears after year and before journal/book.
+    We'll keep it conservative to avoid garbage.
+    """
+    r = norm_space(raw)
+    # remove leading numbering
+    r = re.sub(r"^\s*(\[\d+\]|\d{1,4}[\.\)]|\d{1,4}\s+)\s*", "", r).strip()
+
+    # Try: ... (YEAR). Title. Journal...
+    m = re.search(rf"\(\s*{YEAR}\s*\)\.\s*(.+?)\.\s", r)
+    if m:
+        title = m.group(1).strip()
+        title = re.sub(r"\s+", " ", title)
+        return title
+
+    # Try: YEAR. Title. Journal...
+    m2 = re.search(rf"\b{YEAR}\b\.\s*(.+?)\.\s", r)
+    if m2:
+        title = m2.group(1).strip()
+        title = re.sub(r"\s+", " ", title)
+        return title
+
+    return ""
+
+def _guess_author_surnames_from_reference(raw: str) -> List[str]:
+    """
+    Rough extraction of surnames from reference head:
+    "Surname, A., Surname2, B., & Surname3, C."
+    """
+    head = raw.strip()
+    head = re.sub(r"^\s*(\[\d+\]|\d{1,4}[\.\)]|\d{1,4}\s+)\s*", "", head).strip()
+    # take part before year
+    m = re.search(rf"\(\s*{YEAR}\s*\)", head)
+    if m:
+        head = head[:m.start()].strip()
+    else:
+        m2 = re.search(rf"\b{YEAR}\b", head)
+        if m2:
+            head = head[:m2.start()].strip()
+
+    # capture tokens before commas as surname candidates
+    cand = []
+    for part in head.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        # surname is usually first token in the segment
+        tok = p.split()[0].strip()
+        if re.fullmatch(r"[A-Z][A-Za-z\-']{1,40}", tok):
+            if norm_token(tok) not in BAD_NARRATIVE_PREFIX_WORDS:
+                cand.append(tok)
+    # de-dup preserve order
+    out = []
+    seen = set()
+    for s in cand:
+        k = norm_token(s)
+        if k and k not in seen:
+            out.append(s)
+            seen.add(k)
+    return out
+
 def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
     r = (ref_raw or "").strip()
     if not r:
@@ -309,28 +344,23 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
 
     if is_known_org(pre) or pre.upper() in ORG_ACRONYMS:
         k = f"org_{canon_org(pre)}_{year.lower()}"
-        title = _extract_title_from_reference_apa(r, year)
-        return ReferenceEntry(raw=r, key=k, year=year, surnames=(pre,), number=None, title=title, authors=(pre,))
+        entry = ReferenceEntry(raw=r, key=k, year=year, surnames=(pre,), number=None)
+        entry.title_guess = _guess_title_from_reference(r)
+        entry.author_surnames_guess = _guess_author_surnames_from_reference(r)
+        return entry
 
-    authors = _extract_authors_surnames_from_prefix(pre)
-    if not authors:
-        first = pre.split(",")[0].strip() if "," in pre else (pre.split()[0].strip() if pre.split() else "")
-        if not first:
-            return None
-        authors = [first]
+    if "," in pre:
+        first = pre.split(",")[0].strip()
+    else:
+        first = pre.split()[0].strip() if pre.split() else ""
 
-    first = authors[0]
-    title = _extract_title_from_reference_apa(r, year)
+    if not first:
+        return None
 
-    return ReferenceEntry(
-        raw=r,
-        key=key_author_year(first, year),
-        year=year,
-        surnames=(first,),
-        number=None,
-        title=title,
-        authors=tuple(authors),
-    )
+    entry = ReferenceEntry(raw=r, key=key_author_year(first, year), year=year, surnames=(first,), number=None)
+    entry.title_guess = _guess_title_from_reference(r)
+    entry.author_surnames_guess = _guess_author_surnames_from_reference(r)
+    return entry
 
 def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
     r = (ref_raw or "").strip()
@@ -340,17 +370,26 @@ def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
     m = re.match(r"^\s*\[\s*(\d+)\s*\]\s*(.+)$", r)
     if m:
         n = int(m.group(1))
-        return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        entry = ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        entry.title_guess = _guess_title_from_reference(r)
+        entry.author_surnames_guess = _guess_author_surnames_from_reference(r)
+        return entry
 
     m = re.match(r"^\s*(\d+)\s*[\.\)]\s*(.+)$", r)
     if m:
         n = int(m.group(1))
-        return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        entry = ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        entry.title_guess = _guess_title_from_reference(r)
+        entry.author_surnames_guess = _guess_author_surnames_from_reference(r)
+        return entry
 
     m = re.match(r"^\s*(\d+)\s+(.+)$", r)
     if m:
         n = int(m.group(1))
-        return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        entry = ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        entry.title_guess = _guess_title_from_reference(r)
+        entry.author_surnames_guess = _guess_author_surnames_from_reference(r)
+        return entry
 
     return None
 
@@ -358,6 +397,20 @@ def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
 # ============================
 # In-text extraction (APA/Harvard)
 # ============================
+def _drop_discourse_prefix(authors_blob: str) -> str:
+    """
+    Handles cases like: "Similarly, Adam and Kofi (2020)"
+    where the regex may capture "Similarly, Adam and Kofi" as authors.
+    If the first comma-separated token is a discourse word, drop it.
+    """
+    blob = (authors_blob or "").strip()
+    if "," not in blob:
+        return blob
+    first, rest = blob.split(",", 1)
+    if norm_token(first.strip()) in DISCOURSE_PREFIX_WORDS:
+        return rest.strip()
+    return blob
+
 def extract_author_year_citations(text: str) -> List[InTextCitation]:
     out: List[InTextCitation] = []
     txt = text or ""
@@ -406,9 +459,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             if not cand:
                 continue
 
-            if norm_token(cand[0]) in BAD_NARRATIVE_PREFIX_WORDS:
-                continue
-
             first = cand[0]
             out.append(InTextCitation("author-year", f"({norm_space(c)})", key_author_year(first, y), year=y, surnames=tuple(cand)))
 
@@ -433,7 +483,7 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
         if _overlaps(span, taken_spans):
             continue
 
-        authors_blob = m.group("authors").strip()
+        authors_blob = _drop_discourse_prefix(m.group("authors").strip())
         y = m.group("year")
 
         first_word = norm_token(authors_blob.split()[0]) if authors_blob.split() else ""
@@ -457,11 +507,11 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             continue
         first = m.group("a").strip()
         y = m.group("y")
-        if looks_like_surname(first) and norm_token(first) not in BAD_NARRATIVE_PREFIX_WORDS:
+        if looks_like_surname(first):
             out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=(first,)))
             taken_spans.append(span)
 
-    # Single-author narrative
+    # Single-author narrative (skip inside multi-author spans)
     for m in re.finditer(rf"\b(?P<author>[A-Z][A-Za-z\-']{{1,40}})\s*\(\s*(?P<year>{YEAR})\s*\)", txt):
         span = (m.start(), m.end())
         if _overlaps(span, taken_spans):
@@ -555,7 +605,7 @@ def extract_vancouver_numeric_citations(text: str) -> List[InTextCitation]:
 # ============================
 # Reconciliation + Missing/Uncited
 # ============================
-def reconcile_author_year(cites: List[InTextCitation], refs: List[ReferenceEntry]) -> Tuple[List[Dict], List[Dict]]:
+def reconcile_author_year(cites: List[InTextCitation], refs: List[ReferenceEntry]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     ref_by_key = defaultdict(list)
     for r in refs:
         ref_by_key[r.key].append(r)
@@ -582,7 +632,7 @@ def reconcile_author_year(cites: List[InTextCitation], refs: List[ReferenceEntry
     r2c.sort(key=lambda x: x.get("times_cited", 0), reverse=True)
     return c2r, r2c
 
-def reconcile_numeric(cites: List[InTextCitation], refs: List[ReferenceEntry]) -> Tuple[List[Dict], List[Dict]]:
+def reconcile_numeric(cites: List[InTextCitation], refs: List[ReferenceEntry]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     ref_by_key = {r.key: r for r in refs}
 
     c2r = []
@@ -605,7 +655,11 @@ def reconcile_numeric(cites: List[InTextCitation], refs: List[ReferenceEntry]) -
     r2c.sort(key=lambda x: x.get("times_cited", 0), reverse=True)
     return c2r, r2c
 
-def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry]) -> Tuple[List[Dict], List[Dict], Dict]:
+def build_missing_uncited(
+    cites: List[InTextCitation],
+    refs: List[ReferenceEntry],
+    r2c: Optional[List[Dict[str, Any]]] = None
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
     cite_keys = [c.key for c in cites]
     ref_keys = [r.key for r in refs]
 
@@ -620,15 +674,19 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
         k = cite_key_by_raw.get(raw, "")
         if k and (k not in ref_key_set):
             missing.append({"citation_in_text": raw, "count_in_text": int(cnt)})
-
     missing.sort(key=lambda x: (-x["count_in_text"], x["citation_in_text"]))
 
-    cite_key_set = set(cite_keys)
-    uncited = []
-    for r in refs:
-        if r.key not in cite_key_set:
-            # clean key: "reference", not "reference_full"
-            uncited.append({"reference": r.raw, "note": ""})
+    # Uncited references: best from r2c if provided, else compute using keys
+    uncited: List[Dict[str, Any]] = []
+    if isinstance(r2c, list) and r2c:
+        for row in r2c:
+            if int(row.get("times_cited", 0) or 0) == 0:
+                uncited.append({"reference": row.get("reference", "")})
+    else:
+        cite_key_set = set(cite_keys)
+        for r in refs:
+            if r.key not in cite_key_set:
+                uncited.append({"reference": r.raw})
 
     summary = {
         "in_text_citations_found": int(len(cites)),
@@ -639,180 +697,348 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     return missing, uncited, summary
 
 
-# ============================
-# Online verification (STRICT Crossref)
-# ============================
-def _crossref_get(params: Dict[str, Any], timeout_s: int = 15) -> Optional[Dict[str, Any]]:
-    try:
-        r = requests.get(
-            CROSSREF_API,
-            params=params,
-            timeout=timeout_s,
-            headers={"User-Agent": "CitationCrosschecker/1.0"},
-        )
-        if r.status_code != 200:
-            return None
-        return r.json()
-    except Exception:
-        return None
+# =============================
+# Online verification (Crossref + OpenAlex)
+# =============================
+UA = "CitationCrosschecker/1.0 (mailto:admin@example.com)"
 
-def _year_from_crossref_item(item: Dict[str, Any]) -> Optional[int]:
-    for k in ("issued", "published-print", "published-online", "created"):
-        y = item.get(k, {}).get("date-parts")
-        if y and isinstance(y, list) and y[0] and isinstance(y[0], list) and y[0][0]:
-            try:
-                return int(y[0][0])
-            except Exception:
-                pass
+def _title_norm(s: str) -> str:
+    s = norm_token(s)
+    s = re.sub(r"\b(a|an|the)\b", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _sim(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    if RF_OK:
+        return float(fuzz.token_set_ratio(a, b)) / 100.0
+    # fallback
+    a_set = set(a.split())
+    b_set = set(b.split())
+    if not a_set or not b_set:
+        return 0.0
+    return len(a_set & b_set) / max(len(a_set), len(b_set))
+
+def _year_from_crossref(item: Dict[str, Any]) -> Optional[int]:
+    for k in ("published-print", "published-online", "issued", "created"):
+        v = item.get(k)
+        try:
+            parts = v.get("date-parts", [])
+            if parts and parts[0] and isinstance(parts[0][0], int):
+                return int(parts[0][0])
+        except Exception:
+            pass
     return None
 
-def _authors_from_crossref_item(item: Dict[str, Any]) -> List[str]:
+def _authors_from_crossref(item: Dict[str, Any]) -> List[str]:
     out = []
-    for a in item.get("author", []) or []:
+    for a in (item.get("author") or []):
         fam = (a.get("family") or "").strip()
         if fam:
             out.append(fam)
     return out
 
-def strict_verify_crossref(ref: ReferenceEntry) -> Dict[str, Any]:
-    """
-    Stricter criteria:
-      - exact normalized title match (required)
-      - year match (required)
-      - multiple-author overlap (not just first author)
-          if we have >=3 authors: require overlap >=2
-          else: require overlap >=1
-    """
-    title = (ref.title or "").strip()
-    year = (ref.year or "").strip()
-    authors = list(ref.authors or [])
+def _title_from_crossref(item: Dict[str, Any]) -> str:
+    t = item.get("title") or []
+    if isinstance(t, list) and t:
+        return str(t[0] or "").strip()
+    if isinstance(t, str):
+        return t.strip()
+    return ""
 
+def _year_from_openalex(item: Dict[str, Any]) -> Optional[int]:
+    y = item.get("publication_year")
+    try:
+        return int(y) if y else None
+    except Exception:
+        return None
+
+def _authors_from_openalex(item: Dict[str, Any]) -> List[str]:
+    out = []
+    for a in (item.get("authorships") or []):
+        name = (((a.get("author") or {}).get("display_name")) or "").strip()
+        if name:
+            # last token as surname
+            out.append(name.split()[-1])
+    return out
+
+def _title_from_openalex(item: Dict[str, Any]) -> str:
+    return (item.get("title") or "").strip()
+
+def _doi_from_openalex(item: Dict[str, Any]) -> str:
+    doi = (item.get("doi") or "").strip()
+    if doi and doi.lower().startswith("https://doi.org/"):
+        return doi[len("https://doi.org/"):]
+    return doi
+
+def _author_overlap_ratio(expected: List[str], got: List[str]) -> float:
+    """
+    Strict-ish: require overlap across multiple author surnames.
+    ratio = |intersection| / max(1, min(len(expected), len(got)))
+    """
+    e = [norm_token(x) for x in (expected or []) if x]
+    g = [norm_token(x) for x in (got or []) if x]
+    e_set = set(e)
+    g_set = set(g)
+    if not e_set or not g_set:
+        return 0.0
+    inter = len(e_set & g_set)
+    denom = max(1, min(len(e_set), len(g_set)))
+    return inter / denom
+
+def _strict_decision(title_sim: float, author_overlap: float, year_match: bool) -> Tuple[bool, str]:
+    """
+    Very strict rule:
+      - exact year match
+      - title similarity very high
+      - meaningful author overlap (multiple authors)
+    """
+    if not year_match:
+        return False, "Year mismatch"
+    if title_sim >= 0.95 and author_overlap >= 0.60:
+        return True, "Strict match"
+    if title_sim >= 0.90 and author_overlap >= 0.75:
+        return True, "Strict match (authors very strong)"
+    return False, "Not strict enough"
+
+if TEN_OK:
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.6, min=0.6, max=4))
+    def _get_json(url: str, params: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
+        if not REQ_OK:
+            raise RuntimeError("requests not installed")
+        r = requests.get(url, params=params, headers={"User-Agent": UA}, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+else:
+    def _get_json(url: str, params: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
+        if not REQ_OK:
+            raise RuntimeError("requests not installed")
+        r = requests.get(url, params=params, headers={"User-Agent": UA}, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+def verify_reference_online(
+    ref: ReferenceEntry,
+    throttle_s: float = 0.25,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+) -> Dict[str, Any]:
+    """
+    Returns:
+      status: verified | not_verified | needs_review | error
+      doi: DOI if verified
+      source: crossref|openalex
+      score: dict with title_sim, author_overlap, year_match
+      matched_title, matched_year, matched_authors
+      reason
+    """
+    title = (ref.title_guess or "").strip()
+    authors = ref.author_surnames_guess or []
+    year = ref.year
+
+    # if we cannot form a strict query, return quickly
     if not title or not year:
         return {
-            "reference": ref.raw,
-            "verified": False,
+            "status": "needs_review",
+            "source": "",
             "doi": "",
-            "reason": "missing_title_or_year",
+            "reason": "Missing title/year in parsed reference",
+            "score": {"title_sim": 0, "author_overlap": 0, "year_match": False},
             "matched_title": "",
             "matched_year": "",
             "matched_authors": "",
         }
 
+    exp_title = _title_norm(title)
+    exp_auth = [a for a in authors if a and norm_token(a) not in BAD_NARRATIVE_PREFIX_WORDS]
+    exp_year = None
     try:
-        y_int = int(re.sub(r"[^0-9]", "", year)[:4])
+        exp_year = int(re.sub(r"[^\d]", "", str(year))[:4])
     except Exception:
-        y_int = None
+        exp_year = None
 
-    if y_int is None:
+    best = None  # (verified_bool, info)
+    best_score = -1.0
+
+    # --- Crossref ---
+    err_crossref = ""
+    if use_crossref:
+        try:
+            params = {
+                "rows": 5,
+                "query.title": title,
+                "query.author": " ".join(exp_auth[:4]) if exp_auth else "",
+                "select": "DOI,title,author,issued,published-print,published-online,created",
+            }
+            data = _get_json("https://api.crossref.org/works", params=params)
+            items = (((data or {}).get("message") or {}).get("items") or [])
+            for it in items:
+                it_title = _title_from_crossref(it)
+                it_year = _year_from_crossref(it)
+                it_auth = _authors_from_crossref(it)
+                title_sim = _sim(exp_title, _title_norm(it_title))
+                author_overlap = _author_overlap_ratio(exp_auth, it_auth)
+                year_match = (exp_year is not None) and (it_year == exp_year)
+
+                verified, reason = _strict_decision(title_sim, author_overlap, year_match)
+
+                # ranking score emphasises title then authors
+                score = (title_sim * 0.7) + (author_overlap * 0.3)
+                if score > best_score:
+                    best_score = score
+                    best = {
+                        "status": "verified" if verified else "not_verified",
+                        "source": "crossref",
+                        "doi": (it.get("DOI") or "") if verified else "",
+                        "reason": reason,
+                        "score": {
+                            "title_sim": round(title_sim, 3),
+                            "author_overlap": round(author_overlap, 3),
+                            "year_match": bool(year_match),
+                        },
+                        "matched_title": it_title,
+                        "matched_year": str(it_year or ""),
+                        "matched_authors": ", ".join(it_auth[:8]),
+                        "query_used": json.dumps(params),
+                        "error_crossref": "",
+                        "error_openalex": "",
+                    }
+
+                    # stop early if strictly verified
+                    if verified:
+                        break
+
+            time.sleep(max(0.0, float(throttle_s or 0.0)))
+
+        except Exception as e:
+            err_crossref = str(e)[:240]
+
+    # --- OpenAlex ---
+    err_openalex = ""
+    if use_openalex:
+        try:
+            # OpenAlex: search works with a free-text query, then filter by year
+            q = f'"{title}" {(" ".join(exp_auth[:4]))} {exp_year or ""}'.strip()
+            params = {"search": q, "per_page": 5}
+            data = _get_json("https://api.openalex.org/works", params=params)
+            items = (data or {}).get("results") or []
+
+            for it in items:
+                it_title = _title_from_openalex(it)
+                it_year = _year_from_openalex(it)
+                it_auth = _authors_from_openalex(it)
+
+                title_sim = _sim(exp_title, _title_norm(it_title))
+                author_overlap = _author_overlap_ratio(exp_auth, it_auth)
+                year_match = (exp_year is not None) and (it_year == exp_year)
+
+                verified, reason = _strict_decision(title_sim, author_overlap, year_match)
+                score = (title_sim * 0.7) + (author_overlap * 0.3)
+
+                # choose if better than existing best
+                if score > best_score:
+                    best_score = score
+                    best = {
+                        "status": "verified" if verified else "not_verified",
+                        "source": "openalex",
+                        "doi": _doi_from_openalex(it) if verified else "",
+                        "reason": reason,
+                        "score": {
+                            "title_sim": round(title_sim, 3),
+                            "author_overlap": round(author_overlap, 3),
+                            "year_match": bool(year_match),
+                        },
+                        "matched_title": it_title,
+                        "matched_year": str(it_year or ""),
+                        "matched_authors": ", ".join(it_auth[:8]),
+                        "query_used": q,
+                        "error_crossref": "",
+                        "error_openalex": "",
+                    }
+
+                    if verified:
+                        break
+
+            time.sleep(max(0.0, float(throttle_s or 0.0)))
+
+        except Exception as e:
+            err_openalex = str(e)[:240]
+
+    if best is None:
         return {
-            "reference": ref.raw,
-            "verified": False,
+            "status": "error",
+            "source": "",
             "doi": "",
-            "reason": "invalid_year",
+            "reason": "No result candidates (or requests blocked)",
+            "score": {"title_sim": 0, "author_overlap": 0, "year_match": False},
             "matched_title": "",
             "matched_year": "",
             "matched_authors": "",
+            "query_used": "",
+            "error_crossref": err_crossref,
+            "error_openalex": err_openalex,
         }
 
-    norm_title = normalize_title_for_match(title)
-    need_overlap = 2 if len(authors) >= 3 else 1
+    # attach any errors
+    best["error_crossref"] = best.get("error_crossref", "") or err_crossref
+    best["error_openalex"] = best.get("error_openalex", "") or err_openalex
+    return best
 
-    params = {
-        "query.title": title,
-        "rows": 8,
-        "filter": f"from-pub-date:{y_int}-01-01,until-pub-date:{y_int}-12-31",
-    }
-
-    if authors:
-        # combine multiple surnames in query
-        params["query.author"] = " ".join(authors[:8])
-
-    js = _crossref_get(params)
-    if not js:
-        return {
-            "reference": ref.raw,
-            "verified": False,
-            "doi": "",
-            "reason": "crossref_no_response",
-            "matched_title": "",
-            "matched_year": "",
-            "matched_authors": "",
-        }
-
-    items = (js.get("message", {}) or {}).get("items", []) or []
-    if not items:
-        return {
-            "reference": ref.raw,
-            "verified": False,
-            "doi": "",
-            "reason": "crossref_no_candidates",
-            "matched_title": "",
-            "matched_year": "",
-            "matched_authors": "",
-        }
-
-    for it in items:
-        cr_titles = it.get("title") or []
-        cr_title = cr_titles[0] if cr_titles else ""
-        if not cr_title:
-            continue
-
-        if normalize_title_for_match(cr_title) != norm_title:
-            continue
-
-        cr_year = _year_from_crossref_item(it)
-        if cr_year is None or cr_year != y_int:
-            continue
-
-        cr_auth = _authors_from_crossref_item(it)
-
-        if authors and cr_auth:
-            overlap = len(set(map(norm_token, authors)) & set(map(norm_token, cr_auth)))
-            if overlap < need_overlap:
-                continue
-
-        doi = (it.get("DOI") or "").strip()
-        return {
-            "reference": ref.raw,
-            "verified": True,
-            "doi": doi,
-            "reason": "strict_match_title_year_authors",
-            "matched_title": cr_title,
-            "matched_year": str(cr_year),
-            "matched_authors": ", ".join(cr_auth[:10]),
-        }
-
-    return {
-        "reference": ref.raw,
-        "verified": False,
-        "doi": "",
-        "reason": "failed_strict_rules",
-        "matched_title": "",
-        "matched_year": "",
-        "matched_authors": "",
-    }
-
-def verify_references_online(refs: List[ReferenceEntry], max_verify: Optional[int] = None) -> Dict[str, Any]:
+def run_online_verification(
+    refs: List[ReferenceEntry],
+    max_verify: int = 0,           # 0 = verify ALL
+    throttle_s: float = 0.25,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+) -> Dict[str, Any]:
     """
-    max_verify:
-      - None or 0 => verify ALL references
-      - positive int => verify that many (from the top)
+    Returns a compact payload for dashboard + exports.
     """
-    if isinstance(max_verify, int) and max_verify > 0:
+    if not refs:
+        return {"attempted": 0, "verified": 0, "results": []}
+
+    if max_verify and max_verify > 0:
         target = refs[:max_verify]
     else:
-        target = refs
+        target = refs[:]  # ALL
 
     results = []
-    verified_count = 0
+    verified = 0
+    attempted = 0
 
     for r in target:
-        v = strict_verify_crossref(r)
-        results.append(v)
-        if v.get("verified"):
-            verified_count += 1
+        attempted += 1
+        res = verify_reference_online(
+            r,
+            throttle_s=throttle_s,
+            use_crossref=use_crossref,
+            use_openalex=use_openalex,
+        )
 
-    return {"attempted": len(target), "verified": int(verified_count), "results": results}
+        is_verified = (res.get("status") == "verified") and bool(res.get("doi"))
+        if is_verified:
+            verified += 1
+
+        results.append(
+            {
+                "reference": r.raw,
+                "verified": bool(is_verified),
+                "status": res.get("status", ""),
+                "source": res.get("source", ""),
+                "doi": res.get("doi", ""),
+                "reason": res.get("reason", ""),
+                "score": res.get("score", {}),
+                "matched_year": res.get("matched_year", ""),
+                "matched_title": res.get("matched_title", ""),
+                "matched_authors": res.get("matched_authors", ""),
+                "query_used": res.get("query_used", ""),
+                "error_crossref": res.get("error_crossref", ""),
+                "error_openalex": res.get("error_openalex", ""),
+            }
+        )
+
+    return {"attempted": attempted, "verified": verified, "results": results}
 
 
 # ============================
@@ -821,9 +1047,12 @@ def verify_references_online(refs: List[ReferenceEntry], max_verify: Optional[in
 def run_crosscheck(
     file_bytes: bytes,
     filename: str,
-    style: str = "apa",
-    verify_online: bool = False,
-    max_verify: Optional[int] = None,
+    style: str = "apa",             # "apa" | "ieee" | "vancouver"
+    verify_online: bool = False,    # optional online verification
+    max_verify: int = 0,            # 0 = verify ALL
+    throttle_s: float = 0.25,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
 ) -> dict:
 
     name = (filename or "").lower()
@@ -870,14 +1099,21 @@ def run_crosscheck(
         refs = [r for r in refs if r is not None]
         c2r, r2c = reconcile_numeric(cites, refs)
 
-    missing, uncited, summary = build_missing_uncited(cites, refs)
+    missing, uncited, summary = build_missing_uncited(cites, refs, r2c=r2c)
 
-    # 4) Optional online verification (after crosscheck)
-    online = None
-    if verify_online and style == "apa":
-        online = verify_references_online(refs, max_verify=max_verify)
+    # 4) Optional online verification (runs AFTER crosscheck)
+    online_payload = None
+    if verify_online:
+        online_payload = run_online_verification(
+            refs=refs,
+            max_verify=max_verify,     # 0 = ALL
+            throttle_s=throttle_s,
+            use_crossref=use_crossref,
+            use_openalex=use_openalex,
+        )
 
-    return {
+    # 5) Return JSON
+    out = {
         "filename": filename,
         "style": style,
         "reference_detection_message": ref_msg,
@@ -886,10 +1122,14 @@ def run_crosscheck(
         "references_detected": len(references),
         "summary": summary,
         "missing_in_references": missing,
-        "uncited_references": uncited,
+        "uncited_references": uncited,  # clean dicts with "reference"
         "reconciliation_intext_to_reference": c2r[:5000],
         "reconciliation_reference_to_intext": r2c[:5000],
-        "online_verification": online,
         "sample_intext_citations": [c.__dict__ for c in cites[:120]],
         "sample_references_parsed": [r.__dict__ for r in refs[:120]],
     }
+
+    if online_payload is not None:
+        out["online_verification"] = online_payload
+
+    return out
