@@ -552,7 +552,8 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     missing.sort(key=lambda x: (-x["count_in_text"], x["citation_in_text"]))
 
     cite_key_set = set(cite_keys)
-    uncited = [{"reference_full": r.raw} for r in refs if r.key not in cite_key_set]
+    uncited_references = [ref for ref in uncited_refs_list]
+
 
     summary = {
         "in_text_citations_found": int(len(cites)),
@@ -634,3 +635,4 @@ def run_crosscheck(
         "sample_intext_citations": [c.__dict__ for c in cites[:120]],
         "sample_references_parsed": [r.__dict__ for r in refs[:120]],
     }
+
