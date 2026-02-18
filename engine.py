@@ -2,13 +2,13 @@
 # Citation Crosschecker Engine (FastAPI version)
 # Supports: APA/Harvard (author-year), IEEE (numeric [1]), Vancouver (numeric (1)/superscript)
 # Outputs: missing in references, uncited references, reconciliation tables (intext->ref, ref->cited_by)
-# Note: Online verification (Crossref/OpenAlex) will be added after this step (kept separate to avoid timeouts).
+# Includes: Online verification (Crossref + OpenAlex) with safe timeouts and caps.
 
 import re
 import io
 import unicodedata
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
 # Optional libs
@@ -23,6 +23,13 @@ try:
     PDF_OK = True
 except Exception:
     PDF_OK = False
+
+# Online verification
+try:
+    import requests
+    REQUESTS_OK = True
+except Exception:
+    REQUESTS_OK = False
 
 
 # ============================
@@ -60,15 +67,17 @@ ORG_ALIASES = {
 }
 ORG_ACRONYMS = {k.upper() for k in ["WHO", "UN", "OECD", "IMF", "UNESCO", "UNICEF", "WORLD BANK", "IBRD"]}
 
+DOI_RE = re.compile(r"(10\.\d{4,9}/[^\s\"<>]+)", flags=re.I)
+
 
 # ============================
 # Data classes
 # ============================
 @dataclass
 class InTextCitation:
-    style: str                  # "author-year" or "numeric"
-    raw: str                    # full raw in-text cite
-    key: str                    # matching key
+    style: str
+    raw: str
+    key: str
     year: Optional[str] = None
     surnames: Optional[Tuple[str, ...]] = None
     number: Optional[int] = None
@@ -153,6 +162,36 @@ def split_semicolons(block: str) -> List[str]:
 
 
 # ============================
+# Robust "clean-to-string" helpers
+# Fixes `reference_full` showing up
+# ============================
+def _as_text(x: Any) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x.strip()
+    if isinstance(x, dict):
+        for k in ("reference_full", "reference", "full", "text", "raw"):
+            if k in x and isinstance(x[k], str):
+                return x[k].strip()
+        vals = [v.strip() for v in x.values() if isinstance(v, str) and v.strip()]
+        return " ".join(vals).strip()
+    if isinstance(x, (list, tuple)):
+        return " ".join(_as_text(i) for i in x if _as_text(i)).strip()
+    return str(x).strip()
+
+def _clean_list(items: Any) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for it in (items or []):
+        s = _as_text(it)
+        if s and s not in seen:
+            out.append(s)
+            seen.add(s)
+    return out
+
+
+# ============================
 # File readers
 # ============================
 def read_docx_paragraphs(file_bytes: bytes) -> List[str]:
@@ -195,27 +234,20 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     for ln in raw_lines:
         s = ln.strip()
 
-        # DOI lines often start with "10." or "doi: 10." or "https://doi.org/..."
         is_doi_line = bool(re.match(r"^\s*(doi\s*:\s*)?10\.\d{4,9}/", s, flags=re.I)) or \
                       bool(re.match(r"^\s*https?://doi\.org/10\.\d{4,9}/", s, flags=re.I)) or \
                       bool(re.match(r"^\s*10\.\d{4,9}/", s))
 
-        # APA start: Surname, A.
         apa_start = bool(re.match(r"^[A-Z][A-Za-z\-\']+,\s+[A-Z]\.", s))
 
-        # IEEE/Vancouver numbering start:
-        # [26]  OR  26.  OR  26)  OR  26 <space>
-        # IMPORTANT: limit digits to 1–4 so DOI like 10.1109 doesn't trigger
         numeric_start = bool(re.match(r"^\s*\[\d+\]\s+", s)) or \
                         bool(re.match(r"^\s*\d{1,4}[\.\)]\s+", s)) or \
                         bool(re.match(r"^\s*\d{1,4}\s+", s))
 
-        # If this is a DOI line, ALWAYS attach it to previous reference
         if is_doi_line:
             buf = (buf + " " + s).strip() if buf else s
             continue
 
-        # Start a new reference when we see a true reference starter
         if apa_start or numeric_start:
             if buf:
                 merged.append(buf.strip())
@@ -302,7 +334,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
                 return True
         return False
 
-    # Parenthetical blocks containing a year
     for m in re.finditer(rf"\(([^()]*\b{YEAR}\b[^()]*)\)", txt):
         inside = m.group(1).strip()
         if is_bare_year_parenthetical(inside):
@@ -340,7 +371,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             first = cand[0]
             out.append(InTextCitation("author-year", f"({norm_space(c)})", key_author_year(first, y), year=y, surnames=tuple(cand)))
 
-    # Multi-author narrative (blocks single-author extraction inside)
     narr_multi = re.finditer(
         rf"""
         \b
@@ -378,7 +408,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
         out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=tuple(cand)))
         taken_spans.append(span)
 
-    # "et al." narrative
     for m in re.finditer(rf"\b(?P<a>[A-Z][A-Za-z\-']{{1,40}})\s+et\s+al\.\s*\(\s*(?P<y>{YEAR})\s*\)", txt, flags=re.IGNORECASE):
         span = (m.start(), m.end())
         if _overlaps(span, taken_spans):
@@ -389,7 +418,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=(first,)))
             taken_spans.append(span)
 
-    # Single-author narrative (skip inside multi-author spans)
     for m in re.finditer(rf"\b(?P<author>[A-Z][A-Za-z\-']{{1,40}})\s*\(\s*(?P<year>{YEAR})\s*\)", txt):
         span = (m.start(), m.end())
         if _overlaps(span, taken_spans):
@@ -408,7 +436,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             if looks_like_surname(au):
                 out.append(InTextCitation("author-year", m.group(0), key_author_year(au, y), year=y, surnames=(au,)))
 
-    # de-dup by raw
     uniq: List[InTextCitation] = []
     seen = set()
     for c in out:
@@ -460,7 +487,6 @@ def extract_ieee_numeric_citations(text: str) -> List[InTextCitation]:
 
 def extract_vancouver_numeric_citations(text: str) -> List[InTextCitation]:
     out: List[InTextCitation] = []
-
     paren = re.compile(r"\(\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*\)")
     for m in paren.finditer(text or ""):
         inside = m.group(1)
@@ -496,7 +522,11 @@ def reconcile_author_year(cites: List[InTextCitation], refs: List[ReferenceEntry
         elif len(hits) == 1:
             c2r.append({"in_text": c.raw, "status": "matched", "matched_reference": hits[0].raw})
         else:
-            c2r.append({"in_text": c.raw, "status": f"ambiguous ({len(hits)})", "matched_reference": " || ".join(h.raw[:220] for h in hits)})
+            c2r.append({
+                "in_text": c.raw,
+                "status": f"ambiguous ({len(hits)})",
+                "matched_reference": " || ".join(h.raw[:220] for h in hits)
+            })
 
     cite_group = defaultdict(list)
     for c in cites:
@@ -533,7 +563,8 @@ def reconcile_numeric(cites: List[InTextCitation], refs: List[ReferenceEntry]) -
     r2c.sort(key=lambda x: x.get("times_cited", 0), reverse=True)
     return c2r, r2c
 
-def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry]) -> Tuple[List[Dict], List[Dict], Dict]:
+
+def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry]) -> Tuple[List[Dict], List[str], Dict]:
     cite_keys = [c.key for c in cites]
     ref_keys = [r.key for r in refs]
 
@@ -543,7 +574,7 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
         cite_key_by_raw.setdefault(c.raw, c.key)
 
     ref_key_set = set(ref_keys)
-    missing = []
+    missing: List[Dict] = []
     for raw, cnt in cite_count_by_raw.items():
         k = cite_key_by_raw.get(raw, "")
         if k and (k not in ref_key_set):
@@ -552,8 +583,8 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     missing.sort(key=lambda x: (-x["count_in_text"], x["citation_in_text"]))
 
     cite_key_set = set(cite_keys)
-    uncited_references = [ref for ref in uncited_refs_list]
-
+    uncited = [r.raw for r in refs if r.key not in cite_key_set]
+    uncited = _clean_list(uncited)
 
     summary = {
         "in_text_citations_found": int(len(cites)),
@@ -562,6 +593,198 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
         "uncited_references": int(len(uncited)),
     }
     return missing, uncited, summary
+
+
+# ============================
+# Online verification (Crossref + OpenAlex)
+# ============================
+_VERIFY_CACHE: Dict[str, Dict[str, Any]] = {}
+
+def _extract_doi(ref_text: str) -> Optional[str]:
+    if not ref_text:
+        return None
+    m = DOI_RE.search(ref_text)
+    if not m:
+        return None
+    doi = m.group(1).strip().rstrip(").,;]")
+    doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
+    return doi
+
+def _guess_title_from_reference(ref_text: str) -> str:
+    """
+    Best-effort title extraction to support Crossref/OpenAlex searches.
+    Works decently for many APA-like references.
+    """
+    if not ref_text:
+        return ""
+    s = ref_text.strip()
+
+    # Remove DOI to improve match
+    s = DOI_RE.sub("", s)
+
+    # Remove year segments
+    s = re.sub(rf"\(\s*{YEAR}\s*\)", " ", s)
+    s = re.sub(rf"\b{YEAR}\b", " ", s)
+
+    # Try: after first period following author block
+    # Typical: "Surname, A. A. (2020). Title of paper. Journal..."
+    parts = [p.strip() for p in s.split(".") if p.strip()]
+    if len(parts) >= 2:
+        # Usually title is parts[1], sometimes parts[2] depending on author initials formatting.
+        candidate = parts[1]
+        # Guard against author spillover that still has commas and initials
+        if len(candidate) < 6 and len(parts) >= 3:
+            candidate = parts[2]
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        return candidate[:220]
+    return s[:220]
+
+
+def _crossref_lookup(title: str = "", doi: str = "", timeout: int = 12) -> Optional[Dict[str, Any]]:
+    if not REQUESTS_OK:
+        return None
+    ua = "CitationCrosschecker/1.0 (mailto:admin@example.com)"
+    try:
+        if doi:
+            url = f"https://api.crossref.org/works/{doi}"
+            r = requests.get(url, timeout=timeout, headers={"User-Agent": ua})
+            if r.status_code >= 400:
+                return None
+            msg = r.json().get("message", {})
+            return {
+                "found": True,
+                "match_type": "doi",
+                "doi": msg.get("DOI"),
+                "score": msg.get("score"),
+                "title": (msg.get("title") or [""])[0],
+                "type": msg.get("type"),
+                "publisher": msg.get("publisher"),
+                "issued_year": (msg.get("issued", {}).get("date-parts", [[None]])[0][0]),
+            }
+
+        if not title:
+            return None
+
+        url = "https://api.crossref.org/works"
+        params = {"query.bibliographic": title, "rows": 1}
+        r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": ua})
+        if r.status_code >= 400:
+            return None
+        items = r.json().get("message", {}).get("items", []) or []
+        if not items:
+            return None
+        it = items[0]
+        return {
+            "found": True,
+            "match_type": "title",
+            "doi": it.get("DOI"),
+            "score": it.get("score"),
+            "title": (it.get("title") or [""])[0],
+            "type": it.get("type"),
+            "publisher": it.get("publisher"),
+            "issued_year": (it.get("issued", {}).get("date-parts", [[None]])[0][0]),
+        }
+    except Exception:
+        return None
+
+
+def _openalex_lookup(title: str = "", doi: str = "", timeout: int = 12) -> Optional[Dict[str, Any]]:
+    if not REQUESTS_OK:
+        return None
+    try:
+        if doi:
+            # OpenAlex DOI format uses https://doi.org/<doi>
+            doi_url = f"https://doi.org/{doi}"
+            url = "https://api.openalex.org/works"
+            params = {"filter": f"doi:{doi_url}", "per-page": 1}
+            r = requests.get(url, params=params, timeout=timeout)
+            if r.status_code >= 400:
+                return None
+            results = r.json().get("results", []) or []
+            if not results:
+                return None
+            w = results[0]
+            return {
+                "found": True,
+                "match_type": "doi",
+                "id": w.get("id"),
+                "doi": w.get("doi"),
+                "title": w.get("title"),
+                "publication_year": w.get("publication_year"),
+                "cited_by_count": w.get("cited_by_count"),
+                "type": w.get("type"),
+            }
+
+        if not title:
+            return None
+
+        url = "https://api.openalex.org/works"
+        params = {"search": title, "per-page": 1}
+        r = requests.get(url, params=params, timeout=timeout)
+        if r.status_code >= 400:
+            return None
+        results = r.json().get("results", []) or []
+        if not results:
+            return None
+        w = results[0]
+        return {
+            "found": True,
+            "match_type": "title",
+            "id": w.get("id"),
+            "doi": w.get("doi"),
+            "title": w.get("title"),
+            "publication_year": w.get("publication_year"),
+            "cited_by_count": w.get("cited_by_count"),
+            "type": w.get("type"),
+        }
+    except Exception:
+        return None
+
+
+def verify_references_online(ref_texts: List[str], max_verify: int = 25) -> List[Dict[str, Any]]:
+    """
+    Verify references online with Crossref + OpenAlex.
+    Caps to max_verify to avoid timeouts on large manuscripts.
+    Uses in-memory cache to speed repeated runs during the same server process.
+    """
+    ref_texts = _clean_list(ref_texts)
+    out: List[Dict[str, Any]] = []
+
+    n = 0
+    for ref in ref_texts:
+        if n >= max_verify:
+            break
+        cache_key = ref[:500]
+        if cache_key in _VERIFY_CACHE:
+            out.append(_VERIFY_CACHE[cache_key])
+            n += 1
+            continue
+
+        doi = _extract_doi(ref) or ""
+        title = _guess_title_from_reference(ref)
+
+        cr = _crossref_lookup(title=title, doi=doi)
+        oa = _openalex_lookup(title=title, doi=doi)
+
+        row = {
+            "reference": ref,
+            "doi_extracted": doi,
+            "title_guess": title,
+            "crossref_found": bool(cr and cr.get("found")),
+            "crossref_doi": (cr or {}).get("doi", ""),
+            "crossref_score": (cr or {}).get("score", ""),
+            "openalex_found": bool(oa and oa.get("found")),
+            "openalex_id": (oa or {}).get("id", ""),
+            "openalex_doi": (oa or {}).get("doi", ""),
+            "openalex_year": (oa or {}).get("publication_year", ""),
+            "openalex_cited_by": (oa or {}).get("cited_by_count", ""),
+        }
+
+        _VERIFY_CACHE[cache_key] = row
+        out.append(row)
+        n += 1
+
+    return out
 
 
 # ============================
@@ -619,7 +842,43 @@ def run_crosscheck(
 
     missing, uncited, summary = build_missing_uncited(cites, refs)
 
-    # 4) Return JSON (limit large arrays a bit to keep responses light)
+    # Ensure uncited is always clean strings
+    uncited = _clean_list(uncited)
+
+    # 4) Build export-friendly, numbered tables
+    missing_table = [{"row_id": i + 1, **m} for i, m in enumerate(missing)]
+    uncited_table = [{"row_id": i + 1, "reference": r} for i, r in enumerate(uncited)]
+
+    intext_to_ref_table = []
+    for i, row in enumerate(c2r):
+        intext_to_ref_table.append({
+            "row_id": i + 1,
+            "in_text": _as_text(row.get("in_text")),
+            "status": _as_text(row.get("status")),
+            "matched_reference": _as_text(row.get("matched_reference")),
+        })
+
+    ref_to_intext_table = []
+    for i, row in enumerate(r2c):
+        cited_by = row.get("cited_by") or []
+        cited_by = _clean_list(cited_by)
+        ref_to_intext_table.append({
+            "row_id": i + 1,
+            "reference": _as_text(row.get("reference")),
+            "times_cited": int(row.get("times_cited") or 0),
+            "cited_by": cited_by,
+            "cited_by_joined": " | ".join(cited_by),
+        })
+
+    # 5) Online verification (Crossref/OpenAlex)
+    # Only verify when requests is available and references exist
+    online_verification = []
+    if REQUESTS_OK and references:
+        online_verification = verify_references_online(references, max_verify=25)
+
+    online_verification_table = [{"row_id": i + 1, **r} for i, r in enumerate(online_verification)]
+
+    # 6) Return JSON
     return {
         "filename": filename,
         "style": style,
@@ -628,11 +887,25 @@ def run_crosscheck(
         "main_text_length": len(main_text),
         "references_detected": len(references),
         "summary": summary,
-        "missing_in_references": missing,
-        "uncited_references": uncited,
-        "reconciliation_intext_to_reference": c2r[:5000],
-        "reconciliation_reference_to_intext": r2c[:5000],
+
+        # Core outputs (safe structures)
+        "missing_in_references": missing_table,
+        "uncited_references": [r["reference"] for r in uncited_table],  # plain list of strings for UI
+        "uncited_references_table": uncited_table,  # numbered table for exports
+
+        "reconciliation_intext_to_reference": intext_to_ref_table[:5000],
+        "reconciliation_reference_to_intext": ref_to_intext_table[:5000],
+
+        # Online verification outputs
+        "online_verification": online_verification_table,
+
+        # Samples for debugging
         "sample_intext_citations": [c.__dict__ for c in cites[:120]],
         "sample_references_parsed": [r.__dict__ for r in refs[:120]],
-    }
 
+        # Export-friendly aliases (use these in export endpoints)
+        "missing_in_references_table": missing_table,
+        "intext_to_reference_table": intext_to_ref_table[:5000],
+        "reference_to_intext_table": ref_to_intext_table[:5000],
+        "online_verification_table": online_verification_table,
+    }
