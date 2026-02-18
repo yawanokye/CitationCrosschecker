@@ -147,6 +147,42 @@ async def check(
 
     return JSONResponse(result)
 
+@app.post("/verify")
+async def verify_online(request: Request):
+    """
+    Expects JSON like:
+    {
+      "references": ["ref1", "ref2", ...],
+      "max_to_check": 200,
+      "throttle_s": 0.25,
+      "use_crossref": true,
+      "use_openalex": true
+    }
+    """
+    payload = await request.json()
+    refs = payload.get("references") or []
+    max_to_check = int(payload.get("max_to_check") or 200)
+    throttle_s = float(payload.get("throttle_s") or 0.25)
+    use_crossref = bool(payload.get("use_crossref", True))
+    use_openalex = bool(payload.get("use_openalex", True))
+
+    if not isinstance(refs, list) or not refs:
+        return JSONResponse({"error": "No references provided."}, status_code=400)
+
+    rows = verify_references_batch(
+        references=[str(x) for x in refs],
+        max_to_check=max_to_check,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=use_openalex,
+    )
+
+    # quick counts for dashboard
+    counts = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+
+    return {"verified_rows": rows, "counts": counts}
 
 # ----------------------------
 # Export helpers
@@ -398,4 +434,5 @@ async def export_pdf(request: Request):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
     )
+
 
