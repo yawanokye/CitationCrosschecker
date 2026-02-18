@@ -1,3 +1,4 @@
+# main.py
 import io
 import time
 from datetime import datetime
@@ -8,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-# Your engine
+# Engine
 from engine import run_crosscheck
 
 # Optional export libs
@@ -30,7 +31,7 @@ except Exception:
     canvas = None
 
 
-app = FastAPI(title="Citation Crosschecker", version="1.0.1")
+app = FastAPI(title="Citation Crosschecker", version="1.1.0")
 
 # Static + templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -42,7 +43,7 @@ templates = Jinja2Templates(directory="templates")
 # -----------------------------
 def normalize_style(s: str) -> str:
     s = (s or "").strip().lower()
-    if s in ("apa", "apa7", "apa-7", "harvard"):
+    if s in ("apa", "apa7", "apa-7", "harvard", "author-year"):
         return "apa"
     if s in ("ieee",):
         return "ieee"
@@ -51,137 +52,146 @@ def normalize_style(s: str) -> str:
     return "apa"
 
 
+def normalize_verify_mode(s: str) -> str:
+    s = (s or "").strip().lower()
+    if s in ("doi", "doi_only", "doi-only"):
+        return "doi_only"
+    return "metadata"
+
+
 def safe_get(d: Dict[str, Any], key: str, default=None):
     return d.get(key, default) if isinstance(d, dict) else default
 
 
-def _as_text(x: Any) -> str:
-    if x is None:
-        return ""
-    if isinstance(x, str):
-        return x.strip()
+def _clean_uncited_value(x: Any) -> str:
+    """
+    Fix the user-reported issue: uncited references showing as {'reference_full': '...'}.
+    Accepts strings or dicts and returns clean string.
+    """
     if isinstance(x, dict):
-        for k in ("reference", "reference_full", "text", "raw", "full"):
-            if k in x and isinstance(x[k], str):
-                return x[k].strip()
-        vals = [v.strip() for v in x.values() if isinstance(v, str) and v.strip()]
-        return " ".join(vals).strip()
-    if isinstance(x, (list, tuple)):
-        return " ".join(_as_text(i) for i in x if _as_text(i)).strip()
-    return str(x).strip()
+        for k in ("reference", "reference_full", "raw", "text", "value"):
+            v = x.get(k)
+            if v:
+                return str(v)
+        return str(x)
+    return str(x) if x is not None else ""
 
 
-def _ensure_row_ids(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _add_row_numbers(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
     for i, r in enumerate(rows or []):
-        if not isinstance(r, dict):
-            out.append({"row_id": i + 1, "value": _as_text(r)})
-        else:
-            rr = dict(r)
-            rr.setdefault("row_id", i + 1)
-            out.append(rr)
+        rr = dict(r) if isinstance(r, dict) else {"value": str(r)}
+        rr["no"] = i + 1
+        out.append(rr)
     return out
 
 
 def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normalise the engine output into consistent numbered tables for UI + exports.
-
-    Preferred keys (from updated engine.py):
-      - missing_in_references_table
-      - uncited_references_table
-      - intext_to_reference_table
-      - reference_to_intext_table
-      - online_verification_table
-      - summary
-    Fallbacks supported for older engine outputs.
+    Normalise engine output into consistent numbered tables for UI + exports.
+    Supports both legacy keys and the newer *_table keys from updated engine.py.
     """
+
     summary = safe_get(result, "summary", {}) or {}
 
-    # Prefer engine export-friendly tables
-    missing_rows = safe_get(result, "missing_in_references_table", None)
-    uncited_rows = safe_get(result, "uncited_references_table", None)
-    recon_rows = safe_get(result, "intext_to_reference_table", None)
-    ref_to_intext_rows = safe_get(result, "reference_to_intext_table", None)
-    verify_rows = safe_get(result, "online_verification_table", None)
-
-    # Fallbacks if those keys aren’t present
-    if missing_rows is None:
+    # Prefer new tables if present
+    missing = safe_get(result, "missing_in_references_table", None)
+    if missing is None:
         missing = safe_get(result, "missing_in_references", []) or []
-        missing_rows = []
-        for x in missing:
-            if isinstance(x, dict):
-                missing_rows.append(
-                    {
-                        "citation_in_text": x.get("citation_in_text", x.get("citation", "")),
-                        "count_in_text": x.get("count_in_text", x.get("count", "")),
-                    }
-                )
-            else:
-                missing_rows.append({"citation_in_text": _as_text(x), "count_in_text": ""})
 
-    if uncited_rows is None:
+    uncited = safe_get(result, "uncited_references_table", None)
+    if uncited is None:
         uncited = safe_get(result, "uncited_references", []) or []
-        uncited_rows = []
-        for x in uncited:
-            uncited_rows.append({"reference": _as_text(x), "note": ""})
 
-    if recon_rows is None:
+    recon = safe_get(result, "intext_to_reference_table", None)
+    if recon is None:
         recon = safe_get(result, "reconciliation_intext_to_reference", []) or []
-        recon_rows = []
-        for x in recon:
-            if isinstance(x, dict):
-                recon_rows.append(
-                    {
-                        "in_text": _as_text(x.get("in_text", "")),
-                        "status": _as_text(x.get("status", "")),
-                        "matched_reference": _as_text(x.get("matched_reference", "")),
-                    }
-                )
-            else:
-                recon_rows.append({"in_text": _as_text(x), "status": "", "matched_reference": ""})
 
-    if ref_to_intext_rows is None:
-        ref_to_intext_rows = safe_get(result, "reconciliation_reference_to_intext", []) or []
-        # ensure a joined column for easier exports
-        tmp = []
-        for x in ref_to_intext_rows:
-            if isinstance(x, dict):
-                cited_by = x.get("cited_by", []) or []
-                cited_by_joined = " | ".join(_as_text(c) for c in cited_by if _as_text(c))
-                tmp.append(
-                    {
-                        "reference": _as_text(x.get("reference", "")),
-                        "times_cited": int(x.get("times_cited", 0) or 0),
-                        "cited_by_joined": cited_by_joined,
-                    }
-                )
-            else:
-                tmp.append({"reference": _as_text(x), "times_cited": 0, "cited_by_joined": ""})
-        ref_to_intext_rows = tmp
+    # Online verification (optional)
+    online = safe_get(result, "online_verification_table", []) or []
+    online_meta = safe_get(result, "online_verification_meta", {}) or {}
 
-    if verify_rows is None:
-        verify_rows = safe_get(result, "online_verification", []) or []
-        tmp = []
-        for x in verify_rows:
-            if isinstance(x, dict):
-                tmp.append(x)
-            else:
-                tmp.append({"reference": _as_text(x)})
-        verify_rows = tmp
+    # Missing rows
+    missing_rows = []
+    for x in missing:
+        if isinstance(x, dict):
+            missing_rows.append(
+                {
+                    "citation_in_text": x.get("citation_in_text", x.get("citation", "")),
+                    "count_in_text": x.get("count_in_text", x.get("count", "")),
+                }
+            )
+        else:
+            missing_rows.append({"citation_in_text": str(x), "count_in_text": ""})
 
-    # Enforce numbering
-    missing_rows = _ensure_row_ids(missing_rows)
-    uncited_rows = _ensure_row_ids(uncited_rows)
-    recon_rows = _ensure_row_ids(recon_rows)
-    ref_to_intext_rows = _ensure_row_ids(ref_to_intext_rows)
-    verify_rows = _ensure_row_ids(verify_rows)
+    # Uncited rows (clean reference_full etc.)
+    uncited_rows = []
+    for x in uncited:
+        if isinstance(x, dict):
+            uncited_rows.append(
+                {
+                    "reference": _clean_uncited_value(x),
+                    "note": x.get("note", ""),
+                }
+            )
+        else:
+            uncited_rows.append({"reference": _clean_uncited_value(x), "note": ""})
 
-    # Dashboard stats
+    # Reconciliation rows
+    recon_rows = []
+    for x in recon:
+        if isinstance(x, dict):
+            recon_rows.append(
+                {
+                    "status": x.get("status", ""),
+                    "in_text": x.get("in_text", ""),
+                    "matched_reference": x.get("matched_reference", x.get("reference", "")),
+                }
+            )
+        else:
+            recon_rows.append({"status": "", "in_text": str(x), "matched_reference": ""})
+
+    # Online verification rows
+    online_rows = []
+    for x in online:
+        if isinstance(x, dict):
+            online_rows.append(
+                {
+                    "reference": x.get("reference", ""),
+                    "title_guess": x.get("title_guess", ""),
+                    "author_guess": x.get("author_guess", ""),
+                    "year_guess": x.get("year_guess", ""),
+                    "doi_extracted": x.get("doi_extracted", ""),
+                    "doi_verified": x.get("doi_verified", ""),
+                    "source": x.get("source", ""),
+                    "note": x.get("note", ""),
+                }
+            )
+        else:
+            online_rows.append(
+                {
+                    "reference": str(x),
+                    "title_guess": "",
+                    "author_guess": "",
+                    "year_guess": "",
+                    "doi_extracted": "",
+                    "doi_verified": "",
+                    "source": "",
+                    "note": "",
+                }
+            )
+
+    # Number everything
+    missing_rows = _add_row_numbers(missing_rows)
+    uncited_rows = _add_row_numbers(uncited_rows)
+    recon_rows = _add_row_numbers(recon_rows)
+    online_rows = _add_row_numbers(online_rows)
+
+    # Dashboard KPIs
     itc = int(summary.get("in_text_citations_found", 0) or 0)
     refn = int(summary.get("reference_entries_found", 0) or 0)
-    miss = int(summary.get("missing_in_references", len(missing_rows)) or 0)
-    unct = int(summary.get("uncited_references", len(uncited_rows)) or 0)
+    miss = int(summary.get("missing_in_references", 0) or 0)
+    unct = int(summary.get("uncited_references", 0) or 0)
 
     match_rate = 0.0
     if itc > 0:
@@ -193,7 +203,9 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         "missing_in_references": miss,
         "uncited_references": unct,
         "match_rate_pct": round(match_rate, 1),
-        "verified_rows": len(verify_rows or []),
+        "online_verification_enabled": bool(summary.get("online_verification_enabled", False)),
+        "online_verified_rows": int(summary.get("online_verified_rows", 0) or 0),
+        "online_mode": str(summary.get("online_verification_mode", "")),
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -202,12 +214,15 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         "missing_rows": missing_rows,
         "uncited_rows": uncited_rows,
         "recon_rows": recon_rows,
-        "ref_to_intext_rows": ref_to_intext_rows,
-        "verify_rows": verify_rows,
+        "online_rows": online_rows,
+        "online_meta": online_meta,
         "dashboard": dashboard,
     }
 
 
+# -----------------------------
+# Export builders
+# -----------------------------
 def make_excel_bytes(result: Dict[str, Any]) -> bytes:
     if pd is None:
         raise RuntimeError("pandas not installed. Add pandas + openpyxl to requirements.txt")
@@ -219,9 +234,8 @@ def make_excel_bytes(result: Dict[str, Any]) -> bytes:
         pd.DataFrame([tables["dashboard"]]).to_excel(writer, index=False, sheet_name="Dashboard")
         pd.DataFrame(tables["missing_rows"]).to_excel(writer, index=False, sheet_name="Missing in References")
         pd.DataFrame(tables["uncited_rows"]).to_excel(writer, index=False, sheet_name="Uncited References")
-        pd.DataFrame(tables["recon_rows"]).to_excel(writer, index=False, sheet_name="Intext to Reference")
-        pd.DataFrame(tables["ref_to_intext_rows"]).to_excel(writer, index=False, sheet_name="Reference to Intext")
-        pd.DataFrame(tables["verify_rows"]).to_excel(writer, index=False, sheet_name="Crossref OpenAlex")
+        pd.DataFrame(tables["recon_rows"]).to_excel(writer, index=False, sheet_name="Reconciliation")
+        pd.DataFrame(tables["online_rows"]).to_excel(writer, index=False, sheet_name="Online Verification")
 
     return output.getvalue()
 
@@ -251,7 +265,9 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
         "missing_in_references",
         "uncited_references",
         "match_rate_pct",
-        "verified_rows",
+        "online_verification_enabled",
+        "online_verified_rows",
+        "online_mode",
     ]:
         row = t.add_row().cells
         row[0].text = k
@@ -275,40 +291,29 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     add_table(
         "Missing in References",
         tables["missing_rows"],
-        [("row_id", "#"), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")],
+        [("no", "No."), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")],
     )
-
     add_table(
         "Uncited References",
         tables["uncited_rows"],
-        [("row_id", "#"), ("reference", "Reference"), ("note", "Note")],
+        [("no", "No."), ("reference", "Reference"), ("note", "Note")],
     )
-
     add_table(
-        "In-text to Reference",
+        "Reconciliation",
         tables["recon_rows"],
-        [("row_id", "#"), ("in_text", "In-text"), ("status", "Status"), ("matched_reference", "Matched Reference")],
+        [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference")],
     )
-
     add_table(
-        "Reference to In-text",
-        tables["ref_to_intext_rows"],
-        [("row_id", "#"), ("reference", "Reference"), ("times_cited", "Times Cited"), ("cited_by_joined", "Cited By")],
-    )
-
-    add_table(
-        "Crossref and OpenAlex Verification",
-        tables["verify_rows"],
+        "Online Verification",
+        tables["online_rows"],
         [
-            ("row_id", "#"),
-            ("reference", "Reference"),
-            ("doi_extracted", "DOI"),
-            ("crossref_found", "Crossref"),
-            ("crossref_doi", "Crossref DOI"),
-            ("openalex_found", "OpenAlex"),
-            ("openalex_id", "OpenAlex ID"),
-            ("openalex_year", "Year"),
-            ("openalex_cited_by", "Cited By"),
+            ("no", "No."),
+            ("doi_verified", "DOI Found"),
+            ("source", "Source"),
+            ("title_guess", "Title Guess"),
+            ("author_guess", "Author Guess"),
+            ("year_guess", "Year"),
+            ("note", "Note"),
         ],
     )
 
@@ -331,7 +336,7 @@ def make_pdf_bytes(result: Dict[str, Any]) -> bytes:
 
     def line(text: str, dy=14):
         nonlocal y
-        c.drawString(x, y, (text or "")[:110])
+        c.drawString(x, y, (text or "")[:140])
         y -= dy
         if y < 2 * cm:
             c.showPage()
@@ -348,35 +353,36 @@ def make_pdf_bytes(result: Dict[str, Any]) -> bytes:
     line(f"Missing in references: {dash['missing_in_references']}")
     line(f"Uncited references: {dash['uncited_references']}")
     line(f"Match rate (%): {dash['match_rate_pct']}")
-    line(f"Verified rows (Crossref/OpenAlex): {dash['verified_rows']}", dy=18)
+    line(f"Online verification enabled: {dash['online_verification_enabled']}")
+    line(f"Online verified rows: {dash['online_verified_rows']}", dy=18)
 
-    c.setFont("Helvetica-Bold", 12)
-    line("Missing in References", dy=16)
-    c.setFont("Helvetica", 10)
+    def section(title: str):
+        c.setFont("Helvetica-Bold", 12)
+        line(title, dy=16)
+        c.setFont("Helvetica", 9)
+
+    section("Missing in References")
     if not tables["missing_rows"]:
         line("None.", dy=14)
     else:
-        for r in tables["missing_rows"][:150]:
-            line(f"{r.get('row_id')}. {r.get('citation_in_text','')} (count: {r.get('count_in_text','')})", dy=12)
+        for r in tables["missing_rows"][:120]:
+            line(f"{r.get('no')}. {r.get('citation_in_text','')} (count: {r.get('count_in_text','')})")
 
-    c.setFont("Helvetica-Bold", 12)
-    line("Uncited References", dy=16)
-    c.setFont("Helvetica", 10)
+    section("Uncited References")
     if not tables["uncited_rows"]:
         line("None.", dy=14)
     else:
-        for r in tables["uncited_rows"][:150]:
-            line(f"{r.get('row_id')}. {r.get('reference','')}", dy=12)
+        for r in tables["uncited_rows"][:120]:
+            line(f"{r.get('no')}. {r.get('reference','')}"[:140])
 
-    c.setFont("Helvetica-Bold", 12)
-    line("Crossref and OpenAlex Verification (first 50)", dy=16)
-    c.setFont("Helvetica", 9)
-    if not tables["verify_rows"]:
-        line("No online verification results.", dy=12)
+    section("Online Verification (first 50)")
+    if not tables["online_rows"]:
+        line("None.", dy=14)
     else:
-        for r in tables["verify_rows"][:50]:
-            line(f"{r.get('row_id')}. DOI: {r.get('doi_extracted','')}", dy=11)
-            line(f"   Crossref: {r.get('crossref_found','')}  OpenAlex: {r.get('openalex_found','')}", dy=11)
+        for r in tables["online_rows"][:50]:
+            doi = r.get("doi_verified", "") or "-"
+            src = r.get("source", "") or ""
+            line(f"{r.get('no')}. DOI: {doi}  {src}"[:140])
 
     c.save()
     return out.getvalue()
@@ -405,21 +411,36 @@ async def health():
 async def check(
     file: UploadFile = File(...),
     style: str = Form("apa"),
+
+    # NEW: optional online verification controls
+    verify_online: bool = Form(False),
+    verify_mode: str = Form("metadata"),   # "metadata" or "doi_only"
+    max_verify: int = Form(20),
 ):
     t0 = time.time()
     file_bytes = await file.read()
     filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
 
-    # Engine returns the full report dict
-    result = run_crosscheck(file_bytes, filename, style=style_norm)
+    style_norm = normalize_style(style)
+    verify_mode_norm = normalize_verify_mode(verify_mode)
+
+    # Run engine (crosscheck first, then optional verification)
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=bool(verify_online),
+        verify_mode=verify_mode_norm,
+        max_verify=int(max_verify) if max_verify else 20,
+    )
 
     elapsed = round(time.time() - t0, 3)
     result["style"] = style_norm
     result["elapsed_seconds"] = elapsed
 
-    # Include normalized tables for UI
-    result["_ui"] = extract_tables(result)
+    # include normalized tables for UI
+    tables = extract_tables(result)
+    result["_ui"] = tables
 
     return JSONResponse(result)
 
@@ -428,12 +449,24 @@ async def check(
 async def export_excel(
     file: UploadFile = File(...),
     style: str = Form("apa"),
+    verify_online: bool = Form(False),
+    verify_mode: str = Form("metadata"),
+    max_verify: int = Form(20),
 ):
     file_bytes = await file.read()
     filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes, filename, style=style_norm)
+    style_norm = normalize_style(style)
+    verify_mode_norm = normalize_verify_mode(verify_mode)
+
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=bool(verify_online),
+        verify_mode=verify_mode_norm,
+        max_verify=int(max_verify) if max_verify else 20,
+    )
 
     xlsx = make_excel_bytes(result)
     base = filename_base(filename)
@@ -450,12 +483,24 @@ async def export_excel(
 async def export_word(
     file: UploadFile = File(...),
     style: str = Form("apa"),
+    verify_online: bool = Form(False),
+    verify_mode: str = Form("metadata"),
+    max_verify: int = Form(20),
 ):
     file_bytes = await file.read()
     filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes, filename, style=style_norm)
+    style_norm = normalize_style(style)
+    verify_mode_norm = normalize_verify_mode(verify_mode)
+
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=bool(verify_online),
+        verify_mode=verify_mode_norm,
+        max_verify=int(max_verify) if max_verify else 20,
+    )
 
     docx_bytes = make_word_bytes(result)
     base = filename_base(filename)
@@ -472,12 +517,24 @@ async def export_word(
 async def export_pdf(
     file: UploadFile = File(...),
     style: str = Form("apa"),
+    verify_online: bool = Form(False),
+    verify_mode: str = Form("metadata"),
+    max_verify: int = Form(20),
 ):
     file_bytes = await file.read()
     filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes, filename, style=style_norm)
+    style_norm = normalize_style(style)
+    verify_mode_norm = normalize_verify_mode(verify_mode)
+
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=bool(verify_online),
+        verify_mode=verify_mode_norm,
+        max_verify=int(max_verify) if max_verify else 20,
+    )
 
     pdf_bytes = make_pdf_bytes(result)
     base = filename_base(filename)
