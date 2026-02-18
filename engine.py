@@ -1047,13 +1047,14 @@ def run_online_verification(
 def run_crosscheck(
     file_bytes: bytes,
     filename: str,
-    style: str = "apa",             # "apa" | "ieee" | "vancouver"
-    verify_online: bool = False,    # optional online verification
-    max_verify: int = 0,            # 0 = verify ALL
-    throttle_s: float = 0.25,
+    style: str = "apa",
+    verify_online: bool = False,
     use_crossref: bool = True,
     use_openalex: bool = True,
+    throttle: float = 0.25,   # accept "throttle" from main.py
+    max_verify: int = 0,      # 0 means all
 ) -> dict:
+
 
     name = (filename or "").lower()
 
@@ -1133,3 +1134,4 @@ def run_crosscheck(
         out["online_verification"] = online_payload
 
     return out
+
