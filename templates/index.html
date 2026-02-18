@@ -13,7 +13,7 @@
         <div class="logo">CC</div>
         <div>
           <h1>Citation Crosschecker</h1>
-          <p class="sub">Upload a DOCX or PDF. Get a clean dashboard, tables, and exports.</p>
+          <p class="sub">Upload a DOCX or PDF. Get a clean dashboard, numbered tables, online verification, and exports.</p>
         </div>
       </div>
       <div class="badge">FastAPI</div>
@@ -80,6 +80,7 @@
         <button class="tab active" data-tab="missing">Missing in References</button>
         <button class="tab" data-tab="uncited">Uncited References</button>
         <button class="tab" data-tab="recon">Reconciliation</button>
+        <button class="tab" data-tab="verify">Crossref + OpenAlex</button>
       </div>
 
       <div class="tab-panel" id="tab-missing">
@@ -89,8 +90,9 @@
           <table>
             <thead>
               <tr>
+                <th style="width: 56px;">#</th>
                 <th>Citation in text</th>
-                <th>Count</th>
+                <th style="width: 90px;">Count</th>
               </tr>
             </thead>
             <tbody id="missingBody"></tbody>
@@ -105,8 +107,9 @@
           <table>
             <thead>
               <tr>
+                <th style="width: 56px;">#</th>
                 <th>Reference</th>
-                <th>Note</th>
+                <th style="width: 140px;">Note</th>
               </tr>
             </thead>
             <tbody id="uncitedBody"></tbody>
@@ -121,7 +124,8 @@
           <table>
             <thead>
               <tr>
-                <th>Status</th>
+                <th style="width: 56px;">#</th>
+                <th style="width: 120px;">Status</th>
                 <th>In-text</th>
                 <th>Matched reference</th>
               </tr>
@@ -129,6 +133,26 @@
             <tbody id="reconBody"></tbody>
           </table>
         </div>
+      </div>
+
+      <div class="tab-panel hidden" id="tab-verify">
+        <h2>Crossref + OpenAlex Verification</h2>
+        <div class="hint">Online checks for references (limited to a safe number to avoid timeouts).</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 56px;">#</th>
+                <th style="width: 160px;">DOI (extracted)</th>
+                <th style="width: 110px;">Crossref</th>
+                <th style="width: 110px;">OpenAlex</th>
+                <th>Reference</th>
+              </tr>
+            </thead>
+            <tbody id="verifyBody"></tbody>
+          </table>
+        </div>
+        <div class="hint" id="verifyHint" style="margin-top: 10px;"></div>
       </div>
     </section>
 
@@ -163,6 +187,8 @@
   const missingBody = document.getElementById("missingBody");
   const uncitedBody = document.getElementById("uncitedBody");
   const reconBody = document.getElementById("reconBody");
+  const verifyBody = document.getElementById("verifyBody");
+  const verifyHint = document.getElementById("verifyHint");
 
   function setStatus(msg, kind="") {
     statusEl.className = "status " + kind;
@@ -203,7 +229,6 @@
 
     const data = await res.json();
 
-    // UI payload prepared in main.py: data._ui.dashboard + tables
     const ui = data._ui || {};
     const dash = ui.dashboard || {};
 
@@ -217,33 +242,44 @@
     kpiRate.textContent = (dash.match_rate_pct ?? 0) + "%";
     kpiTime.textContent = (data.elapsed_seconds ?? 0) + "s";
 
-    // Tables
+    // Missing table (numbered)
     missingBody.innerHTML = "";
     (ui.missing_rows || []).forEach(r => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${escapeHtml(r.citation_in_text || "")}</td><td>${escapeHtml(String(r.count_in_text ?? ""))}</td>`;
+      tr.innerHTML = `
+        <td>${escapeHtml(String(r.row_id ?? ""))}</td>
+        <td>${escapeHtml(r.citation_in_text || "")}</td>
+        <td>${escapeHtml(String(r.count_in_text ?? ""))}</td>
+      `;
       missingBody.appendChild(tr);
     });
     if ((ui.missing_rows || []).length === 0) {
-      missingBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
+      missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
     }
 
+    // Uncited table (numbered)
     uncitedBody.innerHTML = "";
     (ui.uncited_rows || []).forEach(r => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${escapeHtml(r.reference || "")}</td><td>${escapeHtml(r.note || "")}</td>`;
+      tr.innerHTML = `
+        <td>${escapeHtml(String(r.row_id ?? ""))}</td>
+        <td>${escapeHtml(r.reference || "")}</td>
+        <td>${escapeHtml(r.note || "")}</td>
+      `;
       uncitedBody.appendChild(tr);
     });
     if ((ui.uncited_rows || []).length === 0) {
-      uncitedBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
+      uncitedBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
     }
 
+    // Reconciliation table (numbered)
     reconBody.innerHTML = "";
     (ui.recon_rows || []).forEach(r => {
       const status = (r.status || "").toLowerCase();
       const pill = status === "matched" ? "pill ok" : (status ? "pill warn" : "pill");
       const tr = document.createElement("tr");
       tr.innerHTML = `
+        <td>${escapeHtml(String(r.row_id ?? ""))}</td>
         <td><span class="${pill}">${escapeHtml(r.status || "")}</span></td>
         <td>${escapeHtml(r.in_text || "")}</td>
         <td class="wrap">${escapeHtml(r.matched_reference || "")}</td>
@@ -251,7 +287,30 @@
       reconBody.appendChild(tr);
     });
     if ((ui.recon_rows || []).length === 0) {
-      reconBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
+      reconBody.innerHTML = `<tr><td colspan="4" class="muted">None</td></tr>`;
+    }
+
+    // Verification table (numbered)
+    verifyBody.innerHTML = "";
+    const vrows = (ui.verify_rows || []);
+    vrows.forEach(r => {
+      const cr = (String(r.crossref_found ?? "") === "true" || r.crossref_found === true) ? "Yes" : "No";
+      const oa = (String(r.openalex_found ?? "") === "true" || r.openalex_found === true) ? "Yes" : "No";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(String(r.row_id ?? ""))}</td>
+        <td>${escapeHtml(r.doi_extracted || "")}</td>
+        <td>${escapeHtml(cr)}</td>
+        <td>${escapeHtml(oa)}</td>
+        <td class="wrap">${escapeHtml(r.reference || "")}</td>
+      `;
+      verifyBody.appendChild(tr);
+    });
+    if (vrows.length === 0) {
+      verifyBody.innerHTML = `<tr><td colspan="5" class="muted">No online verification results</td></tr>`;
+      verifyHint.textContent = "If this stays empty, confirm requests is installed and the server can access the internet.";
+    } else {
+      verifyHint.textContent = `Showing ${vrows.length} verified references (capped for performance).`;
     }
 
     setStatus("Done.", "ok");
@@ -309,6 +368,7 @@
       document.getElementById("tab-missing").classList.toggle("hidden", tab !== "missing");
       document.getElementById("tab-uncited").classList.toggle("hidden", tab !== "uncited");
       document.getElementById("tab-recon").classList.toggle("hidden", tab !== "recon");
+      document.getElementById("tab-verify").classList.toggle("hidden", tab !== "verify");
     });
   });
 </script>
