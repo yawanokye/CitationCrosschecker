@@ -1,11 +1,10 @@
-<!-- templates/index.html -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Citation Crosschecker</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v={{ build_id }}" />
 </head>
 <body>
   <div class="page">
@@ -14,7 +13,7 @@
         <div class="logo">CC</div>
         <div>
           <h1>Citation Crosschecker</h1>
-          <p class="sub">Upload a DOCX or PDF. Get a clean dashboard, tables, exports, and optional DOI verification.</p>
+          <p class="sub">Upload a DOCX or PDF. Get a clean dashboard, tables, and exports.</p>
         </div>
       </div>
       <div class="badge">FastAPI</div>
@@ -40,29 +39,15 @@
         <button id="runBtn" class="btn primary">Run check</button>
       </div>
 
-      <!-- Online verification controls -->
-      <div class="form-row" style="margin-top:12px;">
-        <label class="toggle">
-          <input type="checkbox" id="verifyOnline" />
-          <span>Verify online (Crossref + OpenAlex)</span>
+      <div class="form-row" style="margin-top:10px;">
+        <label class="check">
+          <input id="verifyOnline" type="checkbox" />
+          <span>Verify online (Crossref, strict title+year+authors)</span>
         </label>
 
-        <label class="select">
-          <span class="label">Verify mode</span>
-          <select id="verifyMode">
-            <option value="metadata" selected>Metadata (title, author, year)</option>
-            <option value="doi_only">DOI only</option>
-          </select>
-        </label>
-
-        <label class="select">
-          <span class="label">Max to verify</span>
-          <select id="maxVerify">
-            <option value="10">10</option>
-            <option value="20" selected>20</option>
-            <option value="50">50</option>
-            <option value="100">100</option>
-          </select>
+        <label class="select" style="min-width:220px;">
+          <span class="label">Max to verify (0 = All)</span>
+          <input id="maxVerify" class="input" type="number" min="0" step="1" value="0" />
         </label>
       </div>
 
@@ -97,12 +82,20 @@
         <div id="kpiRate" class="kpi-value">0%</div>
       </div>
       <div class="kpi">
-        <div class="kpi-title">Online verified (DOI)</div>
-        <div id="kpiOnline" class="kpi-value">0</div>
-      </div>
-      <div class="kpi">
         <div class="kpi-title">Runtime</div>
         <div id="kpiTime" class="kpi-value">0.0s</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-title">Online attempted</div>
+        <div id="kpiOnlineAttempted" class="kpi-value">0</div>
+      </div>
+      <div class="kpi good">
+        <div class="kpi-title">Online verified</div>
+        <div id="kpiOnlineVerified" class="kpi-value">0</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-title">Build</div>
+        <div class="kpi-value" style="font-size:16px;font-weight:700;">{{ build_id }}</div>
       </div>
     </section>
 
@@ -121,9 +114,9 @@
           <table>
             <thead>
               <tr>
-                <th>No.</th>
+                <th style="width:70px;">No.</th>
                 <th>Citation in text</th>
-                <th>Count</th>
+                <th style="width:120px;">Count</th>
               </tr>
             </thead>
             <tbody id="missingBody"></tbody>
@@ -138,9 +131,9 @@
           <table>
             <thead>
               <tr>
-                <th>No.</th>
+                <th style="width:70px;">No.</th>
                 <th>Reference</th>
-                <th>Note</th>
+                <th style="width:140px;">Note</th>
               </tr>
             </thead>
             <tbody id="uncitedBody"></tbody>
@@ -155,8 +148,8 @@
           <table>
             <thead>
               <tr>
-                <th>No.</th>
-                <th>Status</th>
+                <th style="width:70px;">No.</th>
+                <th style="width:120px;">Status</th>
                 <th>In-text</th>
                 <th>Matched reference</th>
               </tr>
@@ -167,19 +160,17 @@
       </div>
 
       <div class="tab-panel hidden" id="tab-online">
-        <h2>Online Verification</h2>
-        <div class="hint">Enable online verification and run again to populate this table. DOI is verified via Crossref/OpenAlex.</div>
+        <h2>Online Verification (Crossref)</h2>
+        <div class="hint">Strict checks using exact title + year + multiple-author overlap. DOI shown only when verified.</div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>No.</th>
-                <th>DOI verified</th>
-                <th>Source</th>
-                <th>Title guess</th>
-                <th>Author guess</th>
-                <th>Year</th>
-                <th>Note</th>
+                <th style="width:70px;">No.</th>
+                <th style="width:140px;">Status</th>
+                <th style="width:220px;">DOI</th>
+                <th style="width:220px;">Reason</th>
+                <th>Reference</th>
               </tr>
             </thead>
             <tbody id="onlineBody"></tbody>
@@ -202,13 +193,12 @@
   const runBtn = document.getElementById("runBtn");
   const statusEl = document.getElementById("status");
 
-  const verifyOnlineEl = document.getElementById("verifyOnline");
-  const verifyModeEl = document.getElementById("verifyMode");
-  const maxVerifyEl = document.getElementById("maxVerify");
-
   const excelBtn = document.getElementById("excelBtn");
   const wordBtn = document.getElementById("wordBtn");
   const pdfBtn = document.getElementById("pdfBtn");
+
+  const verifyOnlineEl = document.getElementById("verifyOnline");
+  const maxVerifyEl = document.getElementById("maxVerify");
 
   const dashboardEl = document.getElementById("dashboard");
   const tablesEl = document.getElementById("tables");
@@ -218,8 +208,9 @@
   const kpiMissing = document.getElementById("kpiMissing");
   const kpiUncited = document.getElementById("kpiUncited");
   const kpiRate = document.getElementById("kpiRate");
-  const kpiOnline = document.getElementById("kpiOnline");
   const kpiTime = document.getElementById("kpiTime");
+  const kpiOnlineAttempted = document.getElementById("kpiOnlineAttempted");
+  const kpiOnlineVerified = document.getElementById("kpiOnlineVerified");
 
   const missingBody = document.getElementById("missingBody");
   const uncitedBody = document.getElementById("uncitedBody");
@@ -239,14 +230,6 @@
     return fileEl.files[0];
   }
 
-  function escapeHtml(s) {
-    return (s || "")
-      .replaceAll("&","&amp;")
-      .replaceAll("<","&lt;")
-      .replaceAll(">","&gt;")
-      .replaceAll('"',"&quot;");
-  }
-
   fileEl.addEventListener("change", () => {
     const f = fileEl.files && fileEl.files[0];
     fileNameEl.textContent = f ? f.name : "No file selected";
@@ -255,16 +238,12 @@
     pdfBtn.disabled = !f;
   });
 
-  function buildFormData(file) {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("style", styleEl.value);
-
-    fd.append("verify_online", verifyOnlineEl.checked ? "true" : "false");
-    fd.append("verify_mode", verifyModeEl.value);
-    fd.append("max_verify", maxVerifyEl.value);
-
-    return fd;
+  function escapeHtml(s) {
+    return (s || "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;");
   }
 
   async function runCheck() {
@@ -272,11 +251,16 @@
     if (!f) return;
 
     setStatus("Running check…", "busy");
-    const res = await fetch("/check", { method: "POST", body: buildFormData(f) });
 
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("style", styleEl.value);
+    fd.append("verify_online", verifyOnlineEl.checked ? "1" : "0");
+    fd.append("max_verify", (maxVerifyEl.value || "0"));
+
+    const res = await fetch("/check", { method: "POST", body: fd });
     if (!res.ok) {
-      const t = await res.text();
-      setStatus("Server error. Check logs. " + t.slice(0, 160), "error");
+      setStatus("Server error. Open /docs and try again.", "error");
       return;
     }
 
@@ -292,36 +276,33 @@
     kpiMissing.textContent = dash.missing_in_references ?? 0;
     kpiUncited.textContent = dash.uncited_references ?? 0;
     kpiRate.textContent = (dash.match_rate_pct ?? 0) + "%";
-    kpiOnline.textContent = (dash.online_verified_rows ?? 0);
     kpiTime.textContent = (data.elapsed_seconds ?? 0) + "s";
+    kpiOnlineAttempted.textContent = dash.online_attempted ?? 0;
+    kpiOnlineVerified.textContent = dash.online_verified ?? 0;
 
-    // Missing table
+    // Missing
     missingBody.innerHTML = "";
     (ui.missing_rows || []).forEach(r => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${escapeHtml(String(r.no ?? ""))}</td>
-                      <td>${escapeHtml(r.citation_in_text || "")}</td>
-                      <td>${escapeHtml(String(r.count_in_text ?? ""))}</td>`;
+      tr.innerHTML = `<td>${escapeHtml(String(r.no ?? ""))}</td><td>${escapeHtml(r.citation_in_text || "")}</td><td>${escapeHtml(String(r.count_in_text ?? ""))}</td>`;
       missingBody.appendChild(tr);
     });
     if ((ui.missing_rows || []).length === 0) {
       missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
     }
 
-    // Uncited table
+    // Uncited
     uncitedBody.innerHTML = "";
     (ui.uncited_rows || []).forEach(r => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${escapeHtml(String(r.no ?? ""))}</td>
-                      <td class="wrap">${escapeHtml(r.reference || "")}</td>
-                      <td>${escapeHtml(r.note || "")}</td>`;
+      tr.innerHTML = `<td>${escapeHtml(String(r.no ?? ""))}</td><td>${escapeHtml(r.reference || "")}</td><td>${escapeHtml(r.note || "")}</td>`;
       uncitedBody.appendChild(tr);
     });
     if ((ui.uncited_rows || []).length === 0) {
       uncitedBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
     }
 
-    // Recon table
+    // Recon
     reconBody.innerHTML = "";
     (ui.recon_rows || []).forEach(r => {
       const status = (r.status || "").toLowerCase();
@@ -339,23 +320,23 @@
       reconBody.innerHTML = `<tr><td colspan="4" class="muted">None</td></tr>`;
     }
 
-    // Online verification table
+    // Online
     onlineBody.innerHTML = "";
     (ui.online_rows || []).forEach(r => {
+      const ok = (r.verified || "").toLowerCase().includes("verified");
+      const pill = ok && r.verified === "Verified" ? "pill ok" : "pill warn";
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${escapeHtml(String(r.no ?? ""))}</td>
-        <td class="wrap">${escapeHtml(r.doi_verified || "")}</td>
-        <td>${escapeHtml(r.source || "")}</td>
-        <td class="wrap">${escapeHtml(r.title_guess || "")}</td>
-        <td>${escapeHtml(r.author_guess || "")}</td>
-        <td>${escapeHtml(String(r.year_guess || ""))}</td>
-        <td>${escapeHtml(r.note || "")}</td>
+        <td><span class="${pill}">${escapeHtml(r.verified || "")}</span></td>
+        <td class="wrap">${escapeHtml(r.doi || "")}</td>
+        <td class="wrap">${escapeHtml(r.reason || "")}</td>
+        <td class="wrap">${escapeHtml(r.reference || "")}</td>
       `;
       onlineBody.appendChild(tr);
     });
     if ((ui.online_rows || []).length === 0) {
-      onlineBody.innerHTML = `<tr><td colspan="7" class="muted">None (enable online verification and run again)</td></tr>`;
+      onlineBody.innerHTML = `<tr><td colspan="5" class="muted">No online verification results. Tick the checkbox and run again.</td></tr>`;
     }
 
     setStatus("Done.", "ok");
@@ -367,14 +348,17 @@
 
     setStatus("Preparing export…", "busy");
 
-    const url = kind === "excel" ? "/export/excel"
-              : kind === "word" ? "/export/word"
-              : "/export/pdf";
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("style", styleEl.value);
+    fd.append("verify_online", verifyOnlineEl.checked ? "1" : "0");
+    fd.append("max_verify", (maxVerifyEl.value || "0"));
 
-    const res = await fetch(url, { method: "POST", body: buildFormData(f) });
+    const url = kind === "excel" ? "/export/excel" : kind === "word" ? "/export/word" : "/export/pdf";
+
+    const res = await fetch(url, { method: "POST", body: fd });
     if (!res.ok) {
-      const t = await res.text();
-      setStatus("Export failed. " + t.slice(0, 180), "error");
+      setStatus("Export failed. Check server logs.", "error");
       return;
     }
 
