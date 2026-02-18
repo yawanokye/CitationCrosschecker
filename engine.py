@@ -2,7 +2,7 @@
 # Citation Crosschecker Engine (FastAPI version)
 # Supports: APA/Harvard (author-year), IEEE (numeric [1]), Vancouver (numeric (1)/superscript)
 # Outputs: missing in references, uncited references, reconciliation tables (intext->ref, ref->cited_by)
-# Online verification (Crossref) is OPTIONAL and runs AFTER crosschecking to avoid slowing the core flow.
+# Online verification (Crossref) is OPTIONAL and runs AFTER crosschecking.
 
 import re
 import io
@@ -45,14 +45,15 @@ NONCITE_LEADS = {
     "chapter", "section", "table", "figure", "eq", "equation", "appendix",
 }
 
-# Words that should NEVER be treated as author surnames (common discourse markers)
+# Words that should never be treated as author surnames (common discourse markers)
 BAD_NARRATIVE_PREFIX_WORDS = {
     "traditional", "classical", "analytical", "for", "from", "in", "on", "at", "by",
     "methods", "method", "approach", "approaches", "sample", "size", "power",
     "results", "discussion", "model", "framework",
-    # discourse markers
-    "similarly", "however", "nonetheless", "therefore", "thus", "moreover", "further", "consequently",
-    "additionally", "meanwhile", "instead", "otherwise", "nevertheless",
+    # discourse markers / transitions
+    "similarly", "however", "nonetheless", "therefore", "thus", "moreover", "further",
+    "consequently", "additionally", "meanwhile", "instead", "otherwise", "nevertheless",
+    "also", "yet", "still",
 }
 
 ORG_ALIASES = {
@@ -74,9 +75,9 @@ CROSSREF_API = "https://api.crossref.org/works"
 # ============================
 @dataclass
 class InTextCitation:
-    style: str                  # "author-year" or "numeric"
-    raw: str                    # full raw in-text cite
-    key: str                    # matching key
+    style: str
+    raw: str
+    key: str
     year: Optional[str] = None
     surnames: Optional[Tuple[str, ...]] = None
     number: Optional[int] = None
@@ -89,7 +90,7 @@ class ReferenceEntry:
     year: Optional[str] = None
     surnames: Optional[Tuple[str, ...]] = None
     number: Optional[int] = None
-    # for strict verification
+    # for online verification (APA best)
     title: Optional[str] = None
     authors: Optional[Tuple[str, ...]] = None  # surnames only
 
@@ -168,12 +169,6 @@ def normalize_title_for_match(title: str) -> str:
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
-def jaccard(a: List[str], b: List[str]) -> float:
-    sa, sb = set(a), set(b)
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / max(1, len(sa | sb))
-
 
 # ============================
 # File readers
@@ -247,25 +242,22 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
 
 
 # ============================
-# Reference parsing helpers (APA/Harvard)
+# APA reference parsing helpers
 # ============================
 def _extract_authors_surnames_from_prefix(prefix: str) -> List[str]:
     """
-    From "Adam, A., Kofi, B., & Mensah, C." return ["Adam","Kofi","Mensah"]
-    Keeps it conservative: surname must start with capital and not be a discourse word.
+    From "Adam, A., Kofi, B., & Mensah, C." -> ["Adam","Kofi","Mensah"]
+    Conservative extraction.
     """
     p = prefix.replace("&", " and ")
-    # break on " and " and commas, then pick leading tokens
     chunks = [c.strip() for c in re.split(r"\s+and\s+|,", p) if c.strip()]
     out: List[str] = []
     for c in chunks:
-        # surname may be first token (or last token)
-        tok = c.split()[0].strip() if c.split() else ""
+        tok1 = c.split()[0].strip() if c.split() else ""
         tok2 = c.split()[-1].strip() if c.split() else ""
-        cand = tok if looks_like_surname(tok) else (tok2 if looks_like_surname(tok2) else "")
+        cand = tok1 if looks_like_surname(tok1) else (tok2 if looks_like_surname(tok2) else "")
         if cand and norm_token(cand) not in BAD_NARRATIVE_PREFIX_WORDS:
             out.append(cand)
-    # de-dup preserve order
     seen = set()
     uniq = []
     for a in out:
@@ -277,24 +269,21 @@ def _extract_authors_surnames_from_prefix(prefix: str) -> List[str]:
 
 def _extract_title_from_reference_apa(ref_raw: str, year: str) -> Optional[str]:
     """
-    Heuristic: title tends to appear after (year). and before the next period that ends the title.
-    Works best for journal-style references.
+    Heuristic: title appears after (year) and before the next period.
     """
     r = norm_space(ref_raw)
     m = re.search(rf"\(\s*{re.escape(year)}\s*\)\.?\s*(.+)", r)
     if not m:
         return None
     tail = m.group(1).strip()
-    # title is usually first sentence
     parts = [p.strip() for p in tail.split(".") if p.strip()]
     if not parts:
         return None
     title = parts[0]
-    # avoid grabbing "Retrieved from" etc
-    if norm_token(title) in NONCITE_LEADS:
-        return None
-    # too short or purely numeric
     if len(title) < 6:
+        return None
+    # avoid obvious non-title starts
+    if norm_token(title) in ("retrieved from", "available at"):
         return None
     return title
 
@@ -321,14 +310,10 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
     if is_known_org(pre) or pre.upper() in ORG_ACRONYMS:
         k = f"org_{canon_org(pre)}_{year.lower()}"
         title = _extract_title_from_reference_apa(r, year)
-        return ReferenceEntry(
-            raw=r, key=k, year=year, surnames=(pre,), number=None,
-            title=title, authors=(pre,)
-        )
+        return ReferenceEntry(raw=r, key=k, year=year, surnames=(pre,), number=None, title=title, authors=(pre,))
 
     authors = _extract_authors_surnames_from_prefix(pre)
     if not authors:
-        # fallback: first token
         first = pre.split(",")[0].strip() if "," in pre else (pre.split()[0].strip() if pre.split() else "")
         if not first:
             return None
@@ -421,7 +406,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             if not cand:
                 continue
 
-            # guard: if first token is discourse marker, skip
             if norm_token(cand[0]) in BAD_NARRATIVE_PREFIX_WORDS:
                 continue
 
@@ -643,7 +627,7 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     uncited = []
     for r in refs:
         if r.key not in cite_key_set:
-            # IMPORTANT: return clean text, no reference_full wrapper
+            # clean key: "reference", not "reference_full"
             uncited.append({"reference": r.raw, "note": ""})
 
     summary = {
@@ -658,9 +642,14 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
 # ============================
 # Online verification (STRICT Crossref)
 # ============================
-def _crossref_get(params: Dict[str, Any], timeout_s: int = 12) -> Optional[Dict[str, Any]]:
+def _crossref_get(params: Dict[str, Any], timeout_s: int = 15) -> Optional[Dict[str, Any]]:
     try:
-        r = requests.get(CROSSREF_API, params=params, timeout=timeout_s, headers={"User-Agent": "CitationCrosschecker/1.0 (mailto:none)"})
+        r = requests.get(
+            CROSSREF_API,
+            params=params,
+            timeout=timeout_s,
+            headers={"User-Agent": "CitationCrosschecker/1.0"},
+        )
         if r.status_code != 200:
             return None
         return r.json()
@@ -680,24 +669,22 @@ def _year_from_crossref_item(item: Dict[str, Any]) -> Optional[int]:
 def _authors_from_crossref_item(item: Dict[str, Any]) -> List[str]:
     out = []
     for a in item.get("author", []) or []:
-        fam = a.get("family") or ""
-        fam = fam.strip()
+        fam = (a.get("family") or "").strip()
         if fam:
             out.append(fam)
     return out
 
 def strict_verify_crossref(ref: ReferenceEntry) -> Dict[str, Any]:
     """
-    Strict criteria:
+    Stricter criteria:
       - exact normalized title match (required)
-      - year must match (required, if year available)
-      - authors must match using MULTIPLE surnames:
-          * if we have 3+ surnames: require at least 2 overlaps
-          * if we have 1-2 surnames: require at least 1 overlap
-    Returns verified True/False and DOI if verified.
+      - year match (required)
+      - multiple-author overlap (not just first author)
+          if we have >=3 authors: require overlap >=2
+          else: require overlap >=1
     """
     title = (ref.title or "").strip()
-    year = ref.year
+    year = (ref.year or "").strip()
     authors = list(ref.authors or [])
 
     if not title or not year:
@@ -705,33 +692,42 @@ def strict_verify_crossref(ref: ReferenceEntry) -> Dict[str, Any]:
             "reference": ref.raw,
             "verified": False,
             "doi": "",
-            "reason": "missing_title_or_year_for_strict_check",
+            "reason": "missing_title_or_year",
+            "matched_title": "",
+            "matched_year": "",
+            "matched_authors": "",
+        }
+
+    try:
+        y_int = int(re.sub(r"[^0-9]", "", year)[:4])
+    except Exception:
+        y_int = None
+
+    if y_int is None:
+        return {
+            "reference": ref.raw,
+            "verified": False,
+            "doi": "",
+            "reason": "invalid_year",
             "matched_title": "",
             "matched_year": "",
             "matched_authors": "",
         }
 
     norm_title = normalize_title_for_match(title)
+    need_overlap = 2 if len(authors) >= 3 else 1
 
-    # Query Crossref in a tight way
-    # Use title + authors + year filters to reduce false positives
-    q = {
+    params = {
         "query.title": title,
-        "rows": 5,
+        "rows": 8,
+        "filter": f"from-pub-date:{y_int}-01-01,until-pub-date:{y_int}-12-31",
     }
 
-    # add multiple authors as a single string, Crossref treats it as a query
     if authors:
-        q["query.author"] = " ".join(authors[:6])
+        # combine multiple surnames in query
+        params["query.author"] = " ".join(authors[:8])
 
-    # year filter
-    try:
-        y = int(re.sub(r"[^0-9]", "", year)[:4])
-        q["filter"] = f"from-pub-date:{y}-01-01,until-pub-date:{y}-12-31"
-    except Exception:
-        pass
-
-    js = _crossref_get(q)
+    js = _crossref_get(params)
     if not js:
         return {
             "reference": ref.raw,
@@ -755,9 +751,6 @@ def strict_verify_crossref(ref: ReferenceEntry) -> Dict[str, Any]:
             "matched_authors": "",
         }
 
-    # evaluate candidates
-    need_overlap = 2 if len(authors) >= 3 else 1
-
     for it in items:
         cr_titles = it.get("title") or []
         cr_title = cr_titles[0] if cr_titles else ""
@@ -768,24 +761,16 @@ def strict_verify_crossref(ref: ReferenceEntry) -> Dict[str, Any]:
             continue
 
         cr_year = _year_from_crossref_item(it)
-        if cr_year is None:
-            continue
-
-        try:
-            y_int = int(re.sub(r"[^0-9]", "", year)[:4])
-        except Exception:
-            y_int = None
-
-        if y_int is not None and cr_year != y_int:
+        if cr_year is None or cr_year != y_int:
             continue
 
         cr_auth = _authors_from_crossref_item(it)
+
         if authors and cr_auth:
             overlap = len(set(map(norm_token, authors)) & set(map(norm_token, cr_auth)))
             if overlap < need_overlap:
                 continue
 
-        # strict pass
         doi = (it.get("DOI") or "").strip()
         return {
             "reference": ref.raw,
@@ -794,48 +779,40 @@ def strict_verify_crossref(ref: ReferenceEntry) -> Dict[str, Any]:
             "reason": "strict_match_title_year_authors",
             "matched_title": cr_title,
             "matched_year": str(cr_year),
-            "matched_authors": ", ".join(cr_auth[:8]),
+            "matched_authors": ", ".join(cr_auth[:10]),
         }
 
-    # none passed strict rules
     return {
         "reference": ref.raw,
         "verified": False,
         "doi": "",
-        "reason": "candidates_found_but_failed_strict_rules",
+        "reason": "failed_strict_rules",
         "matched_title": "",
         "matched_year": "",
         "matched_authors": "",
     }
 
-def verify_references_online(
-    refs: List[ReferenceEntry],
-    max_verify: Optional[int] = None
-) -> Dict[str, Any]:
+def verify_references_online(refs: List[ReferenceEntry], max_verify: Optional[int] = None) -> Dict[str, Any]:
     """
     max_verify:
       - None or 0 => verify ALL references
       - positive int => verify that many (from the top)
     """
-    limit = None
     if isinstance(max_verify, int) and max_verify > 0:
-        limit = max_verify
-
-    target = refs[:limit] if limit is not None else refs
+        target = refs[:max_verify]
+    else:
+        target = refs
 
     results = []
     verified_count = 0
+
     for r in target:
         v = strict_verify_crossref(r)
         results.append(v)
         if v.get("verified"):
             verified_count += 1
 
-    return {
-        "attempted": len(target),
-        "verified": int(verified_count),
-        "results": results,
-    }
+    return {"attempted": len(target), "verified": int(verified_count), "results": results}
 
 
 # ============================
@@ -844,7 +821,7 @@ def verify_references_online(
 def run_crosscheck(
     file_bytes: bytes,
     filename: str,
-    style: str = "apa",  # "apa" | "ieee" | "vancouver"
+    style: str = "apa",
     verify_online: bool = False,
     max_verify: Optional[int] = None,
 ) -> dict:
@@ -895,10 +872,9 @@ def run_crosscheck(
 
     missing, uncited, summary = build_missing_uncited(cites, refs)
 
-    # 4) Optional online verification (runs AFTER crosscheck)
+    # 4) Optional online verification (after crosscheck)
     online = None
     if verify_online and style == "apa":
-        # Strict Crossref requires: title + year + multiple authors => best with APA/Harvard refs
         online = verify_references_online(refs, max_verify=max_verify)
 
     return {
@@ -913,7 +889,7 @@ def run_crosscheck(
         "uncited_references": uncited,
         "reconciliation_intext_to_reference": c2r[:5000],
         "reconciliation_reference_to_intext": r2c[:5000],
-        "online_verification": online,  # <-- dashboard uses this
+        "online_verification": online,
         "sample_intext_citations": [c.__dict__ for c in cites[:120]],
         "sample_references_parsed": [r.__dict__ for r in refs[:120]],
     }
