@@ -12,6 +12,51 @@
   --bad:#fb7185;
 }
 
+/* Force dark form controls where supported */
+:root { color-scheme: dark; }
+body { color-scheme: dark; }
+
+/* Inputs/selects should not render white-on-white */
+select, option, input, textarea{
+  background-color: rgba(15,23,42,0.95) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border);
+}
+
+/* Dropdown list items */
+option{
+  background-color: rgba(15,23,42,0.98) !important;
+  color: var(--text) !important;
+}
+
+/* Unified input style (used for maxVerify) */
+.input{
+  background: rgba(255,255,255,0.03);
+  border:1px solid var(--border);
+  color:var(--text);
+  padding:10px 12px;
+  border-radius:12px;
+  outline:none;
+}
+.input:focus, select:focus{
+  border-color: rgba(110,168,254,0.55);
+}
+
+/* Checkbox label styling */
+.check{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background: rgba(255,255,255,0.03);
+}
+.check input{
+  width:16px;
+  height:16px;
+}
+
 *{ box-sizing:border-box; }
 body{
   margin:0;
