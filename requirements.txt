@@ -1,17 +1,44 @@
-# requirements.txt
+# =============================
+# Core web framework
+# =============================
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 jinja2==3.1.4
 python-multipart==0.0.9
 
+# =============================
+# Data processing
+# =============================
 pandas==2.2.3
+numpy==1.26.4
 openpyxl==3.1.5
 
+# =============================
+# Document parsing
+# =============================
 python-docx==1.1.2
-reportlab==4.2.5
 pdfplumber==0.11.4
 pdfminer.six==20231228
 
+# =============================
+# Export generation
+# =============================
+reportlab==4.2.5
+
+# =============================
+# Online verification + matching
+# =============================
 requests==2.32.3
 rapidfuzz==3.9.7
 tenacity==9.0.0
+
+# =============================
+# Optional but recommended for performance
+# =============================
+orjson==3.10.7
+httpx==0.27.2
+
+# =============================
+# Deployment stability
+# =============================
+typing-extensions==4.12.2
