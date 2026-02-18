@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from engine import run_crosscheck  # expects: run_crosscheck(file_bytes, filename, style?) or returns dict
+from verify import verify_references_batch
 
 
 APP_TITLE = "Citation Crosschecker"
@@ -397,3 +398,4 @@ async def export_pdf(request: Request):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
     )
+
