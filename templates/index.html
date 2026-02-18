@@ -1,88 +1,147 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-
-<title>Citation Crosschecker</title>
-
-<link rel="stylesheet" href="/static/style.css">
-
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Citation Crosschecker</title>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
-
 <body>
+  <div class="page">
+    <h1>Citation Crosschecker</h1>
 
-<h1>Citation Crosschecker</h1>
+    <div class="card">
 
-<input id="file" type="file">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <input id="file" type="file" accept=".pdf,.docx" />
+        <select id="style">
+          <option value="apa">APA</option>
+          <option value="ieee">IEEE</option>
+          <option value="vancouver">Vancouver</option>
+        </select>
 
-<select id="style">
-<option value="apa">APA</option>
-<option value="ieee">IEEE</option>
-<option value="vancouver">Vancouver</option>
-</select>
+        <button id="runBtn" class="btn primary" type="button">Run Check</button>
+      </div>
 
-<label>
-<input type="checkbox" id="verifyOnline">
-Verify Online
-</label>
+      <div style="margin-top:12px;">
+        <label style="display:block;margin:6px 0;">
+          <input type="checkbox" id="verify_online" />
+          Enable online verification
+        </label>
 
-<button onclick="runCheck()">Run</button>
+        <label style="display:block;margin:6px 0;">
+          <input type="checkbox" id="use_crossref" checked />
+          Use Crossref
+        </label>
 
-<button onclick="exportFile('excel')">Excel</button>
-<button onclick="exportFile('word')">Word</button>
-<button onclick="exportFile('pdf')">PDF</button>
+        <label style="display:block;margin:6px 0;">
+          <input type="checkbox" id="use_openalex" checked />
+          Use OpenAlex
+        </label>
 
-<pre id="output"></pre>
+        <label style="display:block;margin:6px 0;">
+          Throttle (seconds)
+          <input id="throttle" type="number" value="0.25" step="0.05" min="0" style="width:100px;" />
+        </label>
 
+        <label style="display:block;margin:6px 0;">
+          Max verify (0 = all)
+          <input id="max_verify" type="number" value="0" step="1" min="0" style="width:100px;" />
+        </label>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:12px;">
+        <button id="excelBtn" class="btn" type="button">Export Excel</button>
+        <button id="wordBtn" class="btn" type="button">Export Word</button>
+        <button id="pdfBtn" class="btn" type="button">Export PDF</button>
+      </div>
+
+      <div id="status" class="status" style="margin-top:10px;"></div>
+
+      <pre id="out" style="white-space:pre-wrap;margin-top:10px;background:#111;color:#0f0;padding:10px;border-radius:10px;max-height:360px;overflow:auto;"></pre>
+
+    </div>
+  </div>
 
 <script>
+  const fileEl = document.getElementById("file");
+  const styleEl = document.getElementById("style");
+  const outEl = document.getElementById("out");
+  const statusEl = document.getElementById("status");
 
-async function runCheck(){
+  const runBtn = document.getElementById("runBtn");
+  const excelBtn = document.getElementById("excelBtn");
+  const wordBtn = document.getElementById("wordBtn");
+  const pdfBtn = document.getElementById("pdfBtn");
 
-let file=document.getElementById("file").files[0];
+  function setStatus(msg){
+    statusEl.textContent = msg || "";
+  }
 
-let fd=new FormData();
+  function getFile(){
+    return (fileEl.files && fileEl.files[0]) ? fileEl.files[0] : null;
+  }
 
-fd.append("file",file);
-fd.append("style",document.getElementById("style").value);
+  async function postTo(url){
+    const f = getFile();
+    if(!f){
+      setStatus("Choose a DOCX or PDF first.");
+      return;
+    }
 
-fd.append("verify_online",document.getElementById("verifyOnline").checked);
+    const fd = new FormData();
+    fd.append("file", f, f.name);
+    fd.append("style", styleEl.value);
 
-let res=await fetch("/check",{method:"POST",body:fd});
+    fd.append("verify_online", String(document.getElementById("verify_online").checked));
+    fd.append("use_crossref", String(document.getElementById("use_crossref").checked));
+    fd.append("use_openalex", String(document.getElementById("use_openalex").checked));
+    fd.append("throttle", String(document.getElementById("throttle").value));
+    fd.append("max_verify", String(document.getElementById("max_verify").value));
 
-let data=await res.json();
+    setStatus("Uploading...");
+    let res;
+    try{
+      res = await fetch(url, { method:"POST", body: fd });
+    }catch(e){
+      setStatus("Network error, server not reachable.");
+      return;
+    }
 
-document.getElementById("output").textContent=
-JSON.stringify(data,null,2);
+    if(url === "/check"){
+      const data = await res.json();
+      if(!res.ok){
+        setStatus("Server error. See details below.");
+        outEl.textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+      setStatus("Done.");
+      outEl.textContent = JSON.stringify(data, null, 2);
+      return;
+    }
 
-}
+    // export
+    if(!res.ok){
+      const txt = await res.text();
+      setStatus("Export failed.");
+      outEl.textContent = txt;
+      return;
+    }
 
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (url.includes("excel") ? "report.xlsx" : url.includes("word") ? "report.docx" : "report.pdf");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setStatus("Export downloaded.");
+  }
 
-async function exportFile(type){
-
-let file=document.getElementById("file").files[0];
-
-let fd=new FormData();
-
-fd.append("file",file);
-
-let res=await fetch("/export/"+type,{
-method:"POST",
-body:fd
-});
-
-let blob=await res.blob();
-
-let a=document.createElement("a");
-
-a.href=URL.createObjectURL(blob);
-
-a.download="report."+type;
-
-a.click();
-
-}
-
+  runBtn.addEventListener("click", () => postTo("/check"));
+  excelBtn.addEventListener("click", () => postTo("/export/excel"));
+  wordBtn.addEventListener("click", () => postTo("/export/word"));
+  pdfBtn.addEventListener("click", () => postTo("/export/pdf"));
 </script>
-
 </body>
 </html>
