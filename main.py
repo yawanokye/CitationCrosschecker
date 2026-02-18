@@ -54,11 +54,10 @@ async def home(request: Request):
 async def health():
     return {"status": "ok"}
 
-
-@app.post("/check")
+@app.post("/check", summary="Run citation crosscheck", tags=["crosscheck"])
 async def check(
-    file: UploadFile = File(...),
-    style: str = Form("apa"),
+    file: UploadFile = File(..., description="Upload a DOCX or PDF"),
+    style: str = Form("apa", description="apa | ieee | vancouver"),
 
     verify_online: bool = Form(False),
     use_crossref: bool = Form(True),
@@ -67,10 +66,12 @@ async def check(
     max_verify: int = Form(0),
 ):
     try:
-        if not file:
+
+        if file is None:
             return JSONResponse({"error": "No file received"}, status_code=400)
 
         file_bytes = await file.read()
+
         if not file_bytes:
             return JSONResponse({"error": "Uploaded file is empty"}, status_code=400)
 
@@ -78,7 +79,6 @@ async def check(
             file_bytes=file_bytes,
             filename=file.filename or "uploaded",
             style=normalize_style(style),
-
             verify_online=verify_online,
             use_crossref=use_crossref,
             use_openalex=use_openalex,
@@ -89,14 +89,15 @@ async def check(
         return JSONResponse(result)
 
     except Exception as e:
-        tb = traceback.format_exc()
+        import traceback
         return JSONResponse(
             {
                 "error": str(e),
-                "traceback": tb
+                "traceback": traceback.format_exc()
             },
             status_code=500
         )
+  
 
 
 @app.post("/export/excel")
@@ -193,3 +194,4 @@ async def export_pdf(
 
     except Exception as e:
         return JSONResponse({"error": str(e), "traceback": traceback.format_exc()}, status_code=500)
+
