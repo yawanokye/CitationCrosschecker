@@ -1,8 +1,9 @@
+# main.py
 import io
 import time
 import traceback
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple
 
 from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -11,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from engine import run_crosscheck
 
+# Optional export libs
 try:
     import pandas as pd
 except Exception:
@@ -29,12 +31,12 @@ except Exception:
     canvas = None
 
 
-app = FastAPI(title="Citation Crosschecker", version="1.0.0")
+app = FastAPI(title="Citation Crosschecker", version="1.1.0")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-BUILD_ID = "BUILD_2026_02_18_003"
+BUILD_ID = "BUILD_2026_02_18_004"
 
 
 # -----------------------------
@@ -59,6 +61,13 @@ def parse_bool(v: str) -> bool:
     return (v or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def parse_float(v: str, default: float = 0.25) -> float:
+    try:
+        return float((v or "").strip())
+    except Exception:
+        return default
+
+
 def parse_int(v: str, default: int = 0) -> int:
     try:
         return int((v or "").strip())
@@ -67,12 +76,19 @@ def parse_int(v: str, default: int = 0) -> int:
 
 
 def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalise engine output into consistent tables for UI + exports.
+    Adds numbering and online verification table.
+    """
     summary = safe_get(result, "summary", {}) or {}
+
     missing = safe_get(result, "missing_in_references", []) or []
     uncited = safe_get(result, "uncited_references", []) or []
     recon = safe_get(result, "reconciliation_intext_to_reference", []) or []
+
     online = safe_get(result, "online_verification", None)
 
+    # list-of-dicts with numbering
     missing_rows = []
     for i, x in enumerate(missing, start=1):
         if isinstance(x, dict):
@@ -122,6 +138,7 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     if itc > 0:
         match_rate = max(0.0, (itc - miss) / itc) * 100.0
 
+    # Online
     online_attempted = 0
     online_verified = 0
     online_rows = []
@@ -132,10 +149,11 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
             online_rows.append(
                 {
                     "no": i,
-                    "verified": "Verified" if r.get("verified") else "Not verified",
+                    "verified": "Verified" if (r.get("verified") is True) else "Not verified",
                     "doi": r.get("doi", "") or "",
-                    "reference": r.get("reference", "") or "",
+                    "source": r.get("source", "") or "",
                     "reason": r.get("reason", "") or "",
+                    "reference": r.get("reference", "") or "",
                 }
             )
 
@@ -189,6 +207,25 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     doc.add_paragraph(f"Generated: {tables['dashboard']['timestamp']}")
     doc.add_paragraph(f"Build: {tables['dashboard']['build_id']}")
 
+    dash = tables["dashboard"]
+    doc.add_heading("Dashboard", level=2)
+    t = doc.add_table(rows=1, cols=2)
+    t.style = "Table Grid"
+    t.rows[0].cells[0].text = "Metric"
+    t.rows[0].cells[1].text = "Value"
+    for k in [
+        "in_text_citations_found",
+        "reference_entries_found",
+        "missing_in_references",
+        "uncited_references",
+        "match_rate_pct",
+        "online_attempted",
+        "online_verified",
+    ]:
+        row = t.add_row().cells
+        row[0].text = k
+        row[1].text = str(dash.get(k, ""))
+
     def add_table(title: str, rows: List[Dict[str, Any]], cols: List[Tuple[str, str]]):
         doc.add_heading(title, level=2)
         if not rows:
@@ -196,9 +233,9 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
             return
         table = doc.add_table(rows=1, cols=len(cols))
         table.style = "Table Grid"
-        hdr = table.rows[0].cells
+        header_cells = table.rows[0].cells
         for i, (_, label) in enumerate(cols):
-            hdr[i].text = label
+            header_cells[i].text = label
         for r in rows:
             cells = table.add_row().cells
             for i, (key, _) in enumerate(cols):
@@ -217,12 +254,12 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     add_table(
         "Reconciliation",
         tables["recon_rows"],
-        [("no", "No."), ("in_text", "In-text"), ("status", "Status"), ("matched_reference", "Matched Reference")],
+        [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference")],
     )
     add_table(
-        "Online Verification (Crossref)",
+        "Online Verification (Crossref/OpenAlex)",
         tables["online_rows"],
-        [("no", "No."), ("verified", "Status"), ("doi", "DOI"), ("reason", "Reason"), ("reference", "Reference")],
+        [("no", "No."), ("verified", "Status"), ("doi", "DOI"), ("source", "Source"), ("reason", "Reason"), ("reference", "Reference")],
     )
 
     out = io.BytesIO()
@@ -253,10 +290,10 @@ def make_pdf_bytes(result: Dict[str, Any]) -> bytes:
     dash = tables["dashboard"]
     c.setFont("Helvetica-Bold", 16)
     line("Citation Crosschecker Report", dy=20)
-
     c.setFont("Helvetica", 10)
     line(f"Generated: {dash['timestamp']}", dy=16)
     line(f"Build: {dash['build_id']}", dy=16)
+
     line(f"In-text citations: {dash['in_text_citations_found']}")
     line(f"Reference entries: {dash['reference_entries_found']}")
     line(f"Missing: {dash['missing_in_references']}")
@@ -270,7 +307,9 @@ def make_pdf_bytes(result: Dict[str, Any]) -> bytes:
     c.setFont("Helvetica", 9)
     for r in tables["online_rows"][:40]:
         line(f"{r.get('no')}. {r.get('verified')} | DOI: {r.get('doi','')}")
-        line((r.get("reference", "") or "")[:140], dy=12)
+        ref = (r.get("reference", "") or "")
+        if ref:
+            line(ref[:140], dy=12)
 
     c.save()
     return out.getvalue()
@@ -284,7 +323,6 @@ def filename_base(upload_name: str) -> str:
 
 def error_payload(where: str, err: Exception) -> Dict[str, Any]:
     tb = traceback.format_exc()
-    # print to Render logs
     print(f"[ERROR] {where}: {repr(err)}")
     print(tb)
     return {
@@ -315,15 +353,21 @@ async def check(
     file: UploadFile = File(...),
     style: str = Form("apa"),
     verify_online: str = Form("0"),
+    use_crossref: str = Form("1"),
+    use_openalex: str = Form("1"),
+    throttle_s: str = Form("0.25"),
     max_verify: str = Form("0"),  # 0 = ALL
 ):
     t0 = time.time()
     try:
         file_bytes = await file.read()
         filename = file.filename or "uploaded"
-
         style_norm = normalize_style(style)
+
         vo = parse_bool(verify_online)
+        uc = parse_bool(use_crossref)
+        uo = parse_bool(use_openalex)
+        th = parse_float(throttle_s, default=0.25)
         mv = parse_int(max_verify, default=0)
 
         result = run_crosscheck(
@@ -332,6 +376,9 @@ async def check(
             style=style_norm,
             verify_online=vo,
             max_verify=mv,
+            throttle_s=th,
+            use_crossref=uc,
+            use_openalex=uo,
         )
 
         result["style"] = style_norm
@@ -349,18 +396,34 @@ async def export_excel(
     file: UploadFile = File(...),
     style: str = Form("apa"),
     verify_online: str = Form("0"),
+    use_crossref: str = Form("1"),
+    use_openalex: str = Form("1"),
+    throttle_s: str = Form("0.25"),
     max_verify: str = Form("0"),
 ):
     try:
         file_bytes = await file.read()
         filename = file.filename or "uploaded"
         style_norm = normalize_style(style)
+
         vo = parse_bool(verify_online)
+        uc = parse_bool(use_crossref)
+        uo = parse_bool(use_openalex)
+        th = parse_float(throttle_s, default=0.25)
         mv = parse_int(max_verify, default=0)
 
-        result = run_crosscheck(file_bytes, filename, style=style_norm, verify_online=vo, max_verify=mv)
-        xlsx = make_excel_bytes(result)
+        result = run_crosscheck(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style_norm,
+            verify_online=vo,
+            max_verify=mv,
+            throttle_s=th,
+            use_crossref=uc,
+            use_openalex=uo,
+        )
 
+        xlsx = make_excel_bytes(result)
         base = filename_base(filename)
         out_name = f"{base}_citation_report.xlsx"
 
@@ -378,18 +441,34 @@ async def export_word(
     file: UploadFile = File(...),
     style: str = Form("apa"),
     verify_online: str = Form("0"),
+    use_crossref: str = Form("1"),
+    use_openalex: str = Form("1"),
+    throttle_s: str = Form("0.25"),
     max_verify: str = Form("0"),
 ):
     try:
         file_bytes = await file.read()
         filename = file.filename or "uploaded"
         style_norm = normalize_style(style)
+
         vo = parse_bool(verify_online)
+        uc = parse_bool(use_crossref)
+        uo = parse_bool(use_openalex)
+        th = parse_float(throttle_s, default=0.25)
         mv = parse_int(max_verify, default=0)
 
-        result = run_crosscheck(file_bytes, filename, style=style_norm, verify_online=vo, max_verify=mv)
-        docx_bytes = make_word_bytes(result)
+        result = run_crosscheck(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style_norm,
+            verify_online=vo,
+            max_verify=mv,
+            throttle_s=th,
+            use_crossref=uc,
+            use_openalex=uo,
+        )
 
+        docx_bytes = make_word_bytes(result)
         base = filename_base(filename)
         out_name = f"{base}_citation_report.docx"
 
@@ -407,18 +486,34 @@ async def export_pdf(
     file: UploadFile = File(...),
     style: str = Form("apa"),
     verify_online: str = Form("0"),
+    use_crossref: str = Form("1"),
+    use_openalex: str = Form("1"),
+    throttle_s: str = Form("0.25"),
     max_verify: str = Form("0"),
 ):
     try:
         file_bytes = await file.read()
         filename = file.filename or "uploaded"
         style_norm = normalize_style(style)
+
         vo = parse_bool(verify_online)
+        uc = parse_bool(use_crossref)
+        uo = parse_bool(use_openalex)
+        th = parse_float(throttle_s, default=0.25)
         mv = parse_int(max_verify, default=0)
 
-        result = run_crosscheck(file_bytes, filename, style=style_norm, verify_online=vo, max_verify=mv)
-        pdf_bytes = make_pdf_bytes(result)
+        result = run_crosscheck(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style_norm,
+            verify_online=vo,
+            max_verify=mv,
+            throttle_s=th,
+            use_crossref=uc,
+            use_openalex=uo,
+        )
 
+        pdf_bytes = make_pdf_bytes(result)
         base = filename_base(filename)
         out_name = f"{base}_citation_report.pdf"
 
