@@ -1,3 +1,4 @@
+/* static/style.css */
 :root{
   --bg:#0b1220;
   --card:#101a2e;
@@ -20,7 +21,7 @@ body{
 }
 
 .page{
-  max-width: 1000px;
+  max-width: 1100px;
   margin: 28px auto;
   padding: 0 16px 40px;
 }
@@ -108,7 +109,7 @@ h1{ margin:0; font-size:30px; letter-spacing:0.3px; }
   display:flex;
   flex-direction:column;
   gap:6px;
-  min-width: 150px;
+  min-width: 170px;
 }
 .select .label{
   font-size:12px;
@@ -121,6 +122,16 @@ select{
   padding:10px 12px;
   border-radius:12px;
   outline:none;
+}
+
+.toggle{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background: rgba(255,255,255,0.03);
 }
 
 .btn{
@@ -179,9 +190,9 @@ select{
 
 .tabs{
   display:flex;
-  flex-wrap:wrap;
   gap:10px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 .tab{
   border:1px solid var(--border);
@@ -205,11 +216,10 @@ h2{ margin: 4px 0 8px; font-size:18px; }
   border-radius: 14px;
 }
 
-/* Make tables readable for long reference lines */
 table{
   width:100%;
   border-collapse: collapse;
-  min-width: 720px;
+  min-width: 980px; /* online verification needs more columns */
   background: rgba(15,23,42,0.6);
 }
 thead th{
@@ -221,7 +231,6 @@ thead th{
   position: sticky;
   top: 0;
   background: rgba(15,23,42,0.95);
-  z-index: 1;
 }
 tbody td{
   padding: 10px 12px;
@@ -231,27 +240,10 @@ tbody td{
 tbody tr:hover{
   background: rgba(110,168,254,0.06);
 }
-
 td.wrap{
   white-space: normal;
   word-break: break-word;
-  overflow-wrap: anywhere;
 }
-
-/* Better alignment for the numbering column */
-tbody td:first-child,
-thead th:first-child{
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
-
-/* Compact "Yes/No" columns in verify table */
-td.small{
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
 .muted{ color: var(--muted); }
 
 .pill{
@@ -261,7 +253,6 @@ td.small{
   border:1px solid var(--border);
   color: var(--muted);
   font-size:12px;
-  white-space: nowrap;
 }
 .pill.ok{
   border-color: rgba(45,212,191,0.5);
@@ -291,5 +282,5 @@ td.small{
 
 @media (max-width: 820px){
   .grid{ grid-template-columns: 1fr; }
-  table{ min-width: 620px; }
+  table{ min-width: 820px; }
 }
