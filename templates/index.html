@@ -136,6 +136,45 @@
       </div>
       <div class="hint" id="reconHint">No data yet.</div>
     </section>
+<section class="card">
+  <h2>Online verification results (Crossref + OpenAlex)</h2>
+
+  <div class="row verify-row">
+    <div class="field small">
+      <label>Max references to verify</label>
+      <input id="maxVerify" type="number" value="200" min="10" max="5000" />
+    </div>
+
+    <div class="field small">
+      <label>Throttle seconds</label>
+      <input id="throttleVerify" type="number" value="0.25" min="0" step="0.05" />
+    </div>
+
+    <div class="field small">
+      <label>&nbsp;</label>
+      <label class="check"><input id="useCrossref" type="checkbox" checked /> Use Crossref</label>
+      <label class="check"><input id="useOpenalex" type="checkbox" checked /> Use OpenAlex</label>
+    </div>
+  </div>
+
+  <div class="meta" id="verifySummary">No verification run yet.</div>
+
+  <div class="table-wrap">
+    <table class="table" id="verifyTable">
+      <thead>
+        <tr>
+          <th>Reference</th>
+          <th>Status</th>
+          <th>Source</th>
+          <th class="num">Score</th>
+          <th>DOI</th>
+          <th>Matched title</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
 
     <footer class="footer">
       <div>Tip: Use the export buttons after the results appear.</div>
