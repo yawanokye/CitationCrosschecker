@@ -69,7 +69,7 @@ NONCITE_LEADS = {
 BAD_NARRATIVE_PREFIX_WORDS = {
     "traditional", "classical", "analytical", "for", "from", "in", "on", "at", "by",
     "methods", "method", "approach", "approaches", "sample", "size", "power",
-    "results", "discussion", "model", "framework",
+    "results", "discussion", "model", "framework", "similarly",
 
     # discourse markers that often precede citations and get misread as surnames
     "similarly", "however", "nonetheless", "nevertheless", "therefore",
@@ -1100,3 +1100,4 @@ def run_crosscheck(
         "sample_intext_citations": [c.__dict__ for c in cites[:120]],
         "sample_references_parsed": [r.__dict__ for r in refs[:120]],
     }
+
