@@ -1,59 +1,382 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Citation Crosschecker</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>{{ app_title }}</title>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <div class="page">
+    <header class="header">
+      <div>
+        <h1>{{ app_title }}</h1>
+        <div class="sub">Version {{ app_version }} • FastAPI</div>
+      </div>
+      <div class="header-actions">
+        <a class="link" href="/docs" target="_blank">API Docs</a>
+        <a class="link" href="/health" target="_blank">Health</a>
+      </div>
+    </header>
 
-<div class="container">
+    <section class="card">
+      <h2>Upload</h2>
 
-<h1>Citation Crosschecker</h1>
+      <div class="row">
+        <div class="field">
+          <label>Document (DOCX or PDF)</label>
+          <input id="fileInput" type="file" accept=".docx,.pdf" />
+        </div>
 
-<input type="file" id="file">
+        <div class="field small">
+          <label>Style</label>
+          <select id="styleSelect">
+            <option value="apa">APA</option>
+            <option value="ieee">IEEE</option>
+            <option value="vancouver">Vancouver</option>
+          </select>
+        </div>
 
-<select id="style">
-<option value="apa">APA</option>
-<option value="ieee">IEEE</option>
-<option value="vancouver">Vancouver</option>
-</select>
+        <div class="field small">
+          <label>&nbsp;</label>
+          <button id="runBtn" class="btn primary">Run Check</button>
+        </div>
+      </div>
 
-<button onclick="upload()">Run Check</button>
+      <div id="status" class="status">Ready.</div>
+    </section>
 
-<pre id="result"></pre>
+    <section class="grid">
+      <div class="card">
+        <h2>Summary</h2>
+        <div class="kpis">
+          <div class="kpi">
+            <div class="kpi-label">In-text citations</div>
+            <div class="kpi-value" id="kpiInText">-</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Reference entries</div>
+            <div class="kpi-value" id="kpiRefs">-</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Missing in references</div>
+            <div class="kpi-value bad" id="kpiMissing">-</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Uncited references</div>
+            <div class="kpi-value warn" id="kpiUncited">-</div>
+          </div>
+        </div>
 
-</div>
+        <div class="meta" id="metaLine">No result yet.</div>
+
+        <div class="export-row">
+          <button id="excelBtn" class="btn" disabled>Export Excel</button>
+          <button id="wordBtn" class="btn" disabled>Export Word</button>
+          <button id="pdfBtn" class="btn" disabled>Export PDF</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Dashboard analytics</h2>
+        <div class="meta" id="statsBox">Loading stats…</div>
+        <button id="refreshStatsBtn" class="btn small">Refresh</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Missing in References</h2>
+      <div class="table-wrap">
+        <table class="table" id="missingTable">
+          <thead>
+            <tr>
+              <th>Citation in text</th>
+              <th class="num">Count</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="hint" id="missingHint">No data yet.</div>
+    </section>
+
+    <section class="card">
+      <h2>Uncited References</h2>
+      <div class="table-wrap">
+        <table class="table" id="uncitedTable">
+          <thead>
+            <tr>
+              <th>Reference entry</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="hint" id="uncitedHint">No data yet.</div>
+    </section>
+
+    <section class="card">
+      <h2>Reconciliation (In-text ↔ Reference)</h2>
+      <div class="table-wrap">
+        <table class="table" id="reconTable">
+          <thead>
+            <tr>
+              <th>In-text</th>
+              <th>Status</th>
+              <th>Matched reference</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="hint" id="reconHint">No data yet.</div>
+    </section>
+
+    <footer class="footer">
+      <div>Tip: Use the export buttons after the results appear.</div>
+    </footer>
+  </div>
 
 <script>
+  let lastResult = null;
 
-async function upload() {
+  const statusEl = document.getElementById("status");
+  const runBtn = document.getElementById("runBtn");
+  const fileInput = document.getElementById("fileInput");
+  const styleSelect = document.getElementById("styleSelect");
 
-const fileInput = document.getElementById("file");
-const style = document.getElementById("style").value;
+  const excelBtn = document.getElementById("excelBtn");
+  const wordBtn = document.getElementById("wordBtn");
+  const pdfBtn = document.getElementById("pdfBtn");
 
-if (!fileInput.files.length) {
-alert("Select file first");
-return;
-}
+  const kpiInText = document.getElementById("kpiInText");
+  const kpiRefs = document.getElementById("kpiRefs");
+  const kpiMissing = document.getElementById("kpiMissing");
+  const kpiUncited = document.getElementById("kpiUncited");
+  const metaLine = document.getElementById("metaLine");
 
-const formData = new FormData();
-formData.append("file", fileInput.files[0]);
-formData.append("style", style);
+  const missingBody = document.querySelector("#missingTable tbody");
+  const uncitedBody = document.querySelector("#uncitedTable tbody");
+  const reconBody = document.querySelector("#reconTable tbody");
 
-const response = await fetch("/check", {
-method: "POST",
-body: formData
-});
+  const missingHint = document.getElementById("missingHint");
+  const uncitedHint = document.getElementById("uncitedHint");
+  const reconHint = document.getElementById("reconHint");
 
-const data = await response.json();
+  const statsBox = document.getElementById("statsBox");
+  const refreshStatsBtn = document.getElementById("refreshStatsBtn");
 
-document.getElementById("result").textContent =
-JSON.stringify(data, null, 2);
+  function setStatus(msg, kind="info") {
+    statusEl.textContent = msg;
+    statusEl.className = "status " + kind;
+  }
 
-}
+  function clearTables() {
+    missingBody.innerHTML = "";
+    uncitedBody.innerHTML = "";
+    reconBody.innerHTML = "";
+  }
 
+  function enableExports(on) {
+    excelBtn.disabled = !on;
+    wordBtn.disabled = !on;
+    pdfBtn.disabled = !on;
+  }
+
+  function fmt(x) {
+    if (x === null || x === undefined) return "-";
+    return String(x);
+  }
+
+  function fillTableMissing(rows) {
+    missingBody.innerHTML = "";
+    if (!rows || rows.length === 0) {
+      missingHint.textContent = "None.";
+      return;
+    }
+    missingHint.textContent = "";
+    rows.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(r.citation_in_text || "")}</td>
+        <td class="num">${escapeHtml(fmt(r.count_in_text))}</td>
+      `;
+      missingBody.appendChild(tr);
+    });
+  }
+
+  function fillTableUncited(rows) {
+    uncitedBody.innerHTML = "";
+    if (!rows || rows.length === 0) {
+      uncitedHint.textContent = "None.";
+      return;
+    }
+    uncitedHint.textContent = "";
+    rows.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${escapeHtml(r.reference_entry || "")}</td>`;
+      uncitedBody.appendChild(tr);
+    });
+  }
+
+  function fillTableRecon(rows) {
+    reconBody.innerHTML = "";
+    if (!rows || rows.length === 0) {
+      reconHint.textContent = "No reconciliation rows returned.";
+      return;
+    }
+    reconHint.textContent = "";
+    rows.forEach(r => {
+      const st = (r.status || "").toLowerCase();
+      const badge = st === "matched" ? "badge ok" : (st ? "badge warn" : "badge");
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(r.in_text || "")}</td>
+        <td><span class="${badge}">${escapeHtml(r.status || "")}</span></td>
+        <td>${escapeHtml(r.matched_reference || "")}</td>
+      `;
+      reconBody.appendChild(tr);
+    });
+  }
+
+  function updateSummary(result) {
+    const s = result.summary || {};
+    kpiInText.textContent = fmt(s.in_text_citations_found ?? s.intext_citations_found ?? s.in_text ?? "-");
+    kpiRefs.textContent = fmt(s.reference_entries_found ?? s.references_found ?? "-");
+    kpiMissing.textContent = fmt(s.missing_in_references ?? "-");
+    kpiUncited.textContent = fmt(s.uncited_references ?? "-");
+
+    const meta = result._meta || {};
+    const ms = meta.processed_ms ? `${meta.processed_ms} ms` : "-";
+    metaLine.textContent =
+      `File: ${result.filename || "-"} • Style: ${result.style || "-"} • Time: ${ms}`;
+  }
+
+  async function runCheck() {
+    const f = fileInput.files[0];
+    if (!f) {
+      setStatus("Please choose a DOCX or PDF file.", "bad");
+      return;
+    }
+
+    clearTables();
+    enableExports(false);
+    lastResult = null;
+
+    setStatus("Running check…", "info");
+    runBtn.disabled = true;
+
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("style", styleSelect.value);
+
+      const resp = await fetch("/check", { method: "POST", body: fd });
+      const data = await resp.json();
+
+      if (!resp.ok || data.error) {
+        setStatus(data.error || "Check failed.", "bad");
+        runBtn.disabled = false;
+        return;
+      }
+
+      lastResult = data;
+      updateSummary(data);
+
+      fillTableMissing(data.missing_in_references || []);
+      fillTableUncited(data.uncited_references || []);
+      fillTableRecon(data.reconciliation_intext_to_reference || []);
+
+      enableExports(true);
+      setStatus("Done.", "ok");
+    } catch (e) {
+      setStatus("Error: " + (e?.message || e), "bad");
+    } finally {
+      runBtn.disabled = false;
+    }
+  }
+
+  async function downloadExport(endpoint, filename) {
+    if (!lastResult) return;
+
+    setStatus("Preparing export…", "info");
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(lastResult)
+      });
+
+      if (!resp.ok) {
+        const t = await resp.text();
+        setStatus("Export failed: " + t, "bad");
+        return;
+      }
+
+      const blob = await resp.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      setStatus("Export downloaded.", "ok");
+    } catch (e) {
+      setStatus("Export error: " + (e?.message || e), "bad");
+    }
+  }
+
+  async function loadStats() {
+    try {
+      const resp = await fetch("/stats");
+      const s = await resp.json();
+      statsBox.innerHTML = `
+        <div><b>Total checks:</b> ${escapeHtml(String(s.total_checks || 0))}</div>
+        <div><b>Total files:</b> ${escapeHtml(String(s.total_files || 0))}</div>
+        <div><b>Total chars processed:</b> ${escapeHtml(String(s.total_chars || 0))}</div>
+        <div><b>Last check (UTC):</b> ${escapeHtml(String(s.last_check_utc || "-"))}</div>
+        <div class="spacer"></div>
+        <div><b>By style:</b></div>
+        <div class="mono">APA: ${escapeHtml(String((s.by_style||{}).apa || 0))}</div>
+        <div class="mono">IEEE: ${escapeHtml(String((s.by_style||{}).ieee || 0))}</div>
+        <div class="mono">Vancouver: ${escapeHtml(String((s.by_style||{}).vancouver || 0))}</div>
+      `;
+    } catch (e) {
+      statsBox.textContent = "Could not load stats.";
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, (m) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;"
+    }[m]));
+  }
+
+  runBtn.addEventListener("click", runCheck);
+
+  excelBtn.addEventListener("click", () => {
+    const base = (lastResult?.filename || "crosscheck").replace(/\.(docx|pdf)$/i, "");
+    downloadExport("/export/excel", base + "_crosscheck.xlsx");
+  });
+  wordBtn.addEventListener("click", () => {
+    const base = (lastResult?.filename || "crosscheck").replace(/\.(docx|pdf)$/i, "");
+    downloadExport("/export/word", base + "_crosscheck.docx");
+  });
+  pdfBtn.addEventListener("click", () => {
+    const base = (lastResult?.filename || "crosscheck").replace(/\.(docx|pdf)$/i, "");
+    downloadExport("/export/pdf", base + "_crosscheck.pdf");
+  });
+
+  refreshStatsBtn.addEventListener("click", loadStats);
+
+  loadStats();
 </script>
-
 </body>
 </html>
