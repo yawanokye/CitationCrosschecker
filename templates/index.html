@@ -1,446 +1,88 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
+
 <title>Citation Crosschecker</title>
-<link rel="stylesheet" href="/static/style.css?v=20260218"/>
+
+<link rel="stylesheet" href="/static/style.css">
+
 </head>
 
 <body>
 
-<div class="page">
-
-<header class="header">
-
-<div class="brand">
-<div class="logo">CC</div>
-
-<div>
 <h1>Citation Crosschecker</h1>
-<p class="sub">
-Strict citation verification with Crossref and OpenAlex DOI validation
-</p>
-</div>
-</div>
 
-<div class="badge">Production</div>
-
-</header>
-
-
-<section class="card">
-
-<div class="form-row">
-
-<label class="file">
-
-<input id="file" type="file" accept=".pdf,.docx"/>
-
-<span class="file-btn">Choose file</span>
-
-<span id="fileName" class="file-name">No file selected</span>
-
-</label>
-
-
-<label class="select">
-
-<span class="label">Citation Style</span>
+<input id="file" type="file">
 
 <select id="style">
-
 <option value="apa">APA</option>
-
 <option value="ieee">IEEE</option>
-
 <option value="vancouver">Vancouver</option>
-
 </select>
 
+<label>
+<input type="checkbox" id="verifyOnline">
+Verify Online
 </label>
 
+<button onclick="runCheck()">Run</button>
 
-<button id="runBtn" class="btn primary">
-Run Crosscheck
-</button>
+<button onclick="exportFile('excel')">Excel</button>
+<button onclick="exportFile('word')">Word</button>
+<button onclick="exportFile('pdf')">PDF</button>
 
-</div>
-
-
-
-<!-- ONLINE VERIFICATION PANEL -->
-
-<div class="verify-panel">
-
-<div class="verify-header">
-
-<div>
-
-<div class="verify-title">
-Online DOI Verification
-</div>
-
-<div class="verify-sub">
-Uses strict Title + Multiple Authors + Year matching
-</div>
-
-</div>
-
-
-<label class="switch">
-
-<input id="verifyOnline" type="checkbox"/>
-
-<span class="slider"></span>
-
-<span class="switch-text">Enable</span>
-
-</label>
-
-</div>
-
-
-<div id="verifyOptions" class="verify-options disabled">
-
-<label class="check">
-
-<input id="useCrossref" type="checkbox" checked/>
-
-<span>Crossref</span>
-
-</label>
-
-<label class="check">
-
-<input id="useOpenalex" type="checkbox" checked/>
-
-<span>OpenAlex</span>
-
-</label>
-
-
-<label class="input">
-
-<span class="label">Throttle (seconds)</span>
-
-<input id="throttle" type="number" value="0.25" step="0.05" min="0"/>
-
-</label>
-
-
-<label class="input">
-
-<span class="label">Max verify</span>
-
-<input id="maxVerify" type="number" value="0"/>
-
-<span class="mini">
-0 = verify all references
-</span>
-
-</label>
-
-</div>
-
-</div>
-
-
-
-<div class="action-row">
-
-<button id="excelBtn" class="btn" disabled>
-Export Excel
-</button>
-
-<button id="wordBtn" class="btn" disabled>
-Export Word
-</button>
-
-<button id="pdfBtn" class="btn" disabled>
-Export PDF
-</button>
-
-</div>
-
-
-<div id="status" class="status"></div>
-
-</section>
-
-
-
-<section id="dashboard" class="grid hidden">
-
-<div class="kpi">
-<div class="kpi-title">In-text citations</div>
-<div id="kpiCites" class="kpi-value">0</div>
-</div>
-
-
-<div class="kpi">
-<div class="kpi-title">Reference entries</div>
-<div id="kpiRefs" class="kpi-value">0</div>
-</div>
-
-
-<div class="kpi warn">
-<div class="kpi-title">Missing references</div>
-<div id="kpiMissing" class="kpi-value">0</div>
-</div>
-
-
-<div class="kpi warn">
-<div class="kpi-title">Uncited references</div>
-<div id="kpiUncited" class="kpi-value">0</div>
-</div>
-
-
-<div class="kpi good">
-<div class="kpi-title">Match rate</div>
-<div id="kpiRate" class="kpi-value">0%</div>
-</div>
-
-
-<div class="kpi">
-<div class="kpi-title">Online verified</div>
-<div id="kpiVerified" class="kpi-value">0</div>
-</div>
-
-</section>
-
-
-
-<section class="card hidden" id="tables">
-
-
-<div class="tabs">
-
-<button class="tab active" data-tab="missing">
-Missing
-</button>
-
-<button class="tab" data-tab="uncited">
-Uncited
-</button>
-
-<button class="tab" data-tab="recon">
-Reconciliation
-</button>
-
-<button class="tab" data-tab="verify">
-Online Verification
-</button>
-
-</div>
-
-
-
-<div id="tab-missing" class="tab-panel">
-
-<table>
-
-<thead>
-<tr>
-<th>No.</th>
-<th>Citation</th>
-<th>Count</th>
-</tr>
-</thead>
-
-<tbody id="missingBody"></tbody>
-
-</table>
-
-</div>
-
-
-
-<div id="tab-uncited" class="tab-panel hidden">
-
-<table>
-
-<thead>
-<tr>
-<th>No.</th>
-<th>Reference</th>
-</tr>
-</thead>
-
-<tbody id="uncitedBody"></tbody>
-
-</table>
-
-</div>
-
-
-
-<div id="tab-recon" class="tab-panel hidden">
-
-<table>
-
-<thead>
-<tr>
-<th>No.</th>
-<th>Status</th>
-<th>In-text</th>
-<th>Reference</th>
-</tr>
-</thead>
-
-<tbody id="reconBody"></tbody>
-
-</table>
-
-</div>
-
-
-
-<div id="tab-verify" class="tab-panel hidden">
-
-<table>
-
-<thead>
-<tr>
-<th>No.</th>
-<th>Status</th>
-<th>DOI</th>
-<th>Source</th>
-<th>Reason</th>
-</tr>
-</thead>
-
-<tbody id="verifyBody"></tbody>
-
-</table>
-
-</div>
-
-</section>
-
-
-</div>
-
+<pre id="output"></pre>
 
 
 <script>
 
-function escapeHtml(text)
-{
-return text?.replace(/[&<>"']/g, function(m)
-{
-return ({
-"&":"&amp;",
-"<":"&lt;",
-">":"&gt;",
-'"':"&quot;",
-"'":"&#039;"
-})[m];
-});
-}
+async function runCheck(){
 
+let file=document.getElementById("file").files[0];
 
-
-document.getElementById("verifyOnline").onchange=function()
-{
-document.getElementById("verifyOptions").classList.toggle("disabled",!this.checked);
-};
-
-
-
-async function runCheck()
-{
-
-const file=document.getElementById("file").files[0];
-
-if(!file)
-{
-alert("Choose file");
-return;
-}
-
-const fd=new FormData();
+let fd=new FormData();
 
 fd.append("file",file);
-
 fd.append("style",document.getElementById("style").value);
 
 fd.append("verify_online",document.getElementById("verifyOnline").checked);
 
-fd.append("use_crossref",document.getElementById("useCrossref").checked);
+let res=await fetch("/check",{method:"POST",body:fd});
 
-fd.append("use_openalex",document.getElementById("useOpenalex").checked);
+let data=await res.json();
 
-fd.append("throttle",document.getElementById("throttle").value);
-
-fd.append("max_verify",document.getElementById("maxVerify").value);
-
-
-const res=await fetch("/check",{method:"POST",body:fd});
-
-const data=await res.json();
-
-renderTables(data);
+document.getElementById("output").textContent=
+JSON.stringify(data,null,2);
 
 }
 
 
+async function exportFile(type){
 
-function renderTables(data)
-{
+let file=document.getElementById("file").files[0];
 
-const ui=data._ui;
+let fd=new FormData();
 
-document.getElementById("dashboard").classList.remove("hidden");
+fd.append("file",file);
 
-document.getElementById("tables").classList.remove("hidden");
-
-
-fillTable("missingBody",ui.missing_rows,
-["citation_in_text","count_in_text"]);
-
-fillTable("uncitedBody",ui.uncited_rows,
-["reference"]);
-
-fillTable("reconBody",ui.recon_rows,
-["status","in_text","matched_reference"]);
-
-fillTable("verifyBody",ui.verify_rows,
-["status","doi","source","reason"]);
-
-}
-
-
-
-function fillTable(id,rows,cols)
-{
-
-const body=document.getElementById(id);
-
-body.innerHTML="";
-
-rows.forEach((r,i)=>
-{
-let tr="<tr><td>"+(i+1)+"</td>";
-
-cols.forEach(c=>
-{
-tr+="<td>"+escapeHtml(r[c]||"")+"</td>";
+let res=await fetch("/export/"+type,{
+method:"POST",
+body:fd
 });
 
-tr+="</tr>";
+let blob=await res.blob();
 
-body.innerHTML+=tr;
-});
+let a=document.createElement("a");
+
+a.href=URL.createObjectURL(blob);
+
+a.download="report."+type;
+
+a.click();
 
 }
-
-
-
-document.getElementById("runBtn").onclick=runCheck;
 
 </script>
-
 
 </body>
 </html>
