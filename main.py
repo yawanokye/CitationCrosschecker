@@ -1,526 +1,262 @@
 # main.py
 import io
 import time
-import traceback
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+import pandas as pd
+from docx import Document
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.pdfgen import canvas
+
 from engine import run_crosscheck
 
-# Optional export libs
-try:
-    import pandas as pd
-except Exception:
-    pd = None
-
-try:
-    from docx import Document
-except Exception:
-    Document = None
-
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
-    from reportlab.pdfgen import canvas
-except Exception:
-    canvas = None
-
-
-app = FastAPI(title="Citation Crosschecker", version="1.1.0")
+app = FastAPI(title="Citation Crosschecker", version="2.0")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-BUILD_ID = "BUILD_2026_02_18_004"
 
-
-# -----------------------------
+# ---------------------------------------------------
 # Helpers
-# -----------------------------
+# ---------------------------------------------------
+
 def normalize_style(s: str) -> str:
-    s = (s or "").strip().lower()
-    if s in ("apa", "apa7", "apa-7"):
+    s = (s or "").lower()
+    if s in ("apa", "apa7"):
         return "apa"
     if s in ("ieee",):
         return "ieee"
-    if s in ("vancouver", "van", "numeric"):
+    if s in ("vancouver", "numeric"):
         return "vancouver"
     return "apa"
 
 
-def safe_get(d: Dict[str, Any], key: str, default=None):
-    return d.get(key, default) if isinstance(d, dict) else default
-
-
-def parse_bool(v: str) -> bool:
-    return (v or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def parse_float(v: str, default: float = 0.25) -> float:
-    try:
-        return float((v or "").strip())
-    except Exception:
-        return default
-
-
-def parse_int(v: str, default: int = 0) -> int:
-    try:
-        return int((v or "").strip())
-    except Exception:
-        return default
-
-
-def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalise engine output into consistent tables for UI + exports.
-    Adds numbering and online verification table.
-    """
-    summary = safe_get(result, "summary", {}) or {}
-
-    missing = safe_get(result, "missing_in_references", []) or []
-    uncited = safe_get(result, "uncited_references", []) or []
-    recon = safe_get(result, "reconciliation_intext_to_reference", []) or []
-
-    online = safe_get(result, "online_verification", None)
-
-    # list-of-dicts with numbering
-    missing_rows = []
-    for i, x in enumerate(missing, start=1):
-        if isinstance(x, dict):
-            missing_rows.append(
-                {
-                    "no": i,
-                    "citation_in_text": x.get("citation_in_text", ""),
-                    "count_in_text": x.get("count_in_text", ""),
-                }
-            )
-        else:
-            missing_rows.append({"no": i, "citation_in_text": str(x), "count_in_text": ""})
-
-    uncited_rows = []
-    for i, x in enumerate(uncited, start=1):
-        if isinstance(x, dict):
-            uncited_rows.append(
-                {
-                    "no": i,
-                    "reference": x.get("reference", x.get("text", str(x))),
-                    "note": x.get("note", ""),
-                }
-            )
-        else:
-            uncited_rows.append({"no": i, "reference": str(x), "note": ""})
-
-    recon_rows = []
-    for i, x in enumerate(recon, start=1):
-        if isinstance(x, dict):
-            recon_rows.append(
-                {
-                    "no": i,
-                    "in_text": x.get("in_text", ""),
-                    "status": x.get("status", ""),
-                    "matched_reference": x.get("matched_reference", ""),
-                }
-            )
-        else:
-            recon_rows.append({"no": i, "in_text": str(x), "status": "", "matched_reference": ""})
-
-    itc = int(summary.get("in_text_citations_found", 0) or 0)
-    refn = int(summary.get("reference_entries_found", 0) or 0)
-    miss = int(summary.get("missing_in_references", 0) or 0)
-    unct = int(summary.get("uncited_references", 0) or 0)
-
-    match_rate = 0.0
-    if itc > 0:
-        match_rate = max(0.0, (itc - miss) / itc) * 100.0
-
-    # Online
-    online_attempted = 0
-    online_verified = 0
-    online_rows = []
-    if isinstance(online, dict):
-        online_attempted = int(online.get("attempted", 0) or 0)
-        online_verified = int(online.get("verified", 0) or 0)
-        for i, r in enumerate(online.get("results", []) or [], start=1):
-            online_rows.append(
-                {
-                    "no": i,
-                    "verified": "Verified" if (r.get("verified") is True) else "Not verified",
-                    "doi": r.get("doi", "") or "",
-                    "source": r.get("source", "") or "",
-                    "reason": r.get("reason", "") or "",
-                    "reference": r.get("reference", "") or "",
-                }
-            )
-
-    dashboard = {
-        "build_id": BUILD_ID,
-        "in_text_citations_found": itc,
-        "reference_entries_found": refn,
-        "missing_in_references": miss,
-        "uncited_references": unct,
-        "match_rate_pct": round(match_rate, 1),
-        "online_attempted": online_attempted,
-        "online_verified": online_verified,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
+def extract_ui_tables(result: Dict[str, Any]) -> Dict[str, Any]:
+    summary = result.get("summary", {})
 
     return {
-        "summary": summary,
-        "missing_rows": missing_rows,
-        "uncited_rows": uncited_rows,
-        "recon_rows": recon_rows,
-        "online_rows": online_rows,
-        "dashboard": dashboard,
+        "dashboard": summary,
+        "missing_rows": result.get("missing_in_references", []),
+        "uncited_rows": result.get("uncited_references", []),
+        "recon_rows": result.get("reconciliation_intext_to_reference", []),
+        "verification_rows": result.get("verification", []),
     }
 
 
-def make_excel_bytes(result: Dict[str, Any]) -> bytes:
-    if pd is None:
-        raise RuntimeError("pandas not installed. Add pandas + openpyxl to requirements.txt")
+# ---------------------------------------------------
+# Export generators
+# ---------------------------------------------------
 
-    tables = extract_tables(result)
+def make_excel_bytes(result: Dict[str, Any]) -> bytes:
+
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pd.DataFrame([tables["dashboard"]]).to_excel(writer, index=False, sheet_name="Dashboard")
-        pd.DataFrame(tables["missing_rows"]).to_excel(writer, index=False, sheet_name="Missing in References")
-        pd.DataFrame(tables["uncited_rows"]).to_excel(writer, index=False, sheet_name="Uncited References")
-        pd.DataFrame(tables["recon_rows"]).to_excel(writer, index=False, sheet_name="Reconciliation")
-        if tables["online_rows"]:
-            pd.DataFrame(tables["online_rows"]).to_excel(writer, index=False, sheet_name="Online Verification")
+
+        pd.DataFrame([result.get("summary", {})]).to_excel(
+            writer, sheet_name="Dashboard", index=False
+        )
+
+        pd.DataFrame(result.get("missing_in_references", [])).to_excel(
+            writer, sheet_name="Missing", index=False
+        )
+
+        pd.DataFrame(result.get("uncited_references", [])).to_excel(
+            writer, sheet_name="Uncited", index=False
+        )
+
+        pd.DataFrame(result.get("verification", [])).to_excel(
+            writer, sheet_name="Verification", index=False
+        )
 
     return output.getvalue()
 
 
 def make_word_bytes(result: Dict[str, Any]) -> bytes:
-    if Document is None:
-        raise RuntimeError("python-docx not installed. Add python-docx to requirements.txt")
 
-    tables = extract_tables(result)
     doc = Document()
     doc.add_heading("Citation Crosschecker Report", level=1)
-    doc.add_paragraph(f"Generated: {tables['dashboard']['timestamp']}")
-    doc.add_paragraph(f"Build: {tables['dashboard']['build_id']}")
 
-    dash = tables["dashboard"]
-    doc.add_heading("Dashboard", level=2)
-    t = doc.add_table(rows=1, cols=2)
-    t.style = "Table Grid"
-    t.rows[0].cells[0].text = "Metric"
-    t.rows[0].cells[1].text = "Value"
-    for k in [
-        "in_text_citations_found",
-        "reference_entries_found",
-        "missing_in_references",
-        "uncited_references",
-        "match_rate_pct",
-        "online_attempted",
-        "online_verified",
-    ]:
-        row = t.add_row().cells
-        row[0].text = k
-        row[1].text = str(dash.get(k, ""))
+    doc.add_heading("Summary", level=2)
+    for k, v in result.get("summary", {}).items():
+        doc.add_paragraph(f"{k}: {v}")
 
-    def add_table(title: str, rows: List[Dict[str, Any]], cols: List[Tuple[str, str]]):
+    def add_table(title, rows):
+
         doc.add_heading(title, level=2)
+
         if not rows:
-            doc.add_paragraph("None.")
+            doc.add_paragraph("None")
             return
-        table = doc.add_table(rows=1, cols=len(cols))
-        table.style = "Table Grid"
-        header_cells = table.rows[0].cells
-        for i, (_, label) in enumerate(cols):
-            header_cells[i].text = label
-        for r in rows:
+
+        table = doc.add_table(rows=1, cols=len(rows[0]))
+
+        for i, key in enumerate(rows[0].keys()):
+            table.rows[0].cells[i].text = key
+
+        for row in rows:
             cells = table.add_row().cells
-            for i, (key, _) in enumerate(cols):
-                cells[i].text = str(r.get(key, ""))
+            for i, val in enumerate(row.values()):
+                cells[i].text = str(val)
 
-    add_table(
-        "Missing in References",
-        tables["missing_rows"],
-        [("no", "No."), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")],
-    )
-    add_table(
-        "Uncited References",
-        tables["uncited_rows"],
-        [("no", "No."), ("reference", "Reference"), ("note", "Note")],
-    )
-    add_table(
-        "Reconciliation",
-        tables["recon_rows"],
-        [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference")],
-    )
-    add_table(
-        "Online Verification (Crossref/OpenAlex)",
-        tables["online_rows"],
-        [("no", "No."), ("verified", "Status"), ("doi", "DOI"), ("source", "Source"), ("reason", "Reason"), ("reference", "Reference")],
-    )
+    add_table("Missing", result.get("missing_in_references", []))
+    add_table("Uncited", result.get("uncited_references", []))
+    add_table("Verification", result.get("verification", []))
 
-    out = io.BytesIO()
-    doc.save(out)
-    return out.getvalue()
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
 
 
-def make_pdf_bytes(result: Dict[str, Any]) -> bytes:
-    if canvas is None:
-        raise RuntimeError("reportlab not installed. Add reportlab to requirements.txt")
+def make_pdf_bytes(result):
 
-    tables = extract_tables(result)
-    out = io.BytesIO()
-    c = canvas.Canvas(out, pagesize=A4)
-    width, height = A4
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
 
-    x = 2 * cm
-    y = height - 2 * cm
+    y = 800
 
-    def line(text: str, dy=14):
-        nonlocal y
-        c.drawString(x, y, (text or "")[:140])
-        y -= dy
-        if y < 2 * cm:
-            c.showPage()
-            y = height - 2 * cm
+    c.drawString(50, y, "Citation Crosschecker Report")
+    y -= 40
 
-    dash = tables["dashboard"]
-    c.setFont("Helvetica-Bold", 16)
-    line("Citation Crosschecker Report", dy=20)
-    c.setFont("Helvetica", 10)
-    line(f"Generated: {dash['timestamp']}", dy=16)
-    line(f"Build: {dash['build_id']}", dy=16)
-
-    line(f"In-text citations: {dash['in_text_citations_found']}")
-    line(f"Reference entries: {dash['reference_entries_found']}")
-    line(f"Missing: {dash['missing_in_references']}")
-    line(f"Uncited: {dash['uncited_references']}")
-    line(f"Match rate: {dash['match_rate_pct']}%", dy=18)
-    line(f"Online attempted: {dash['online_attempted']}")
-    line(f"Online verified: {dash['online_verified']}", dy=18)
-
-    c.setFont("Helvetica-Bold", 12)
-    line("Online Verification (first 40)", dy=16)
-    c.setFont("Helvetica", 9)
-    for r in tables["online_rows"][:40]:
-        line(f"{r.get('no')}. {r.get('verified')} | DOI: {r.get('doi','')}")
-        ref = (r.get("reference", "") or "")
-        if ref:
-            line(ref[:140], dy=12)
+    for k, v in result.get("summary", {}).items():
+        c.drawString(50, y, f"{k}: {v}")
+        y -= 20
 
     c.save()
-    return out.getvalue()
+    return buf.getvalue()
 
 
-def filename_base(upload_name: str) -> str:
-    name = (upload_name or "document").rsplit(".", 1)[0]
-    safe = "".join(ch for ch in name if ch.isalnum() or ch in (" ", "_", "-")).strip()
-    return safe or "document"
-
-
-def error_payload(where: str, err: Exception) -> Dict[str, Any]:
-    tb = traceback.format_exc()
-    print(f"[ERROR] {where}: {repr(err)}")
-    print(tb)
-    return {
-        "error": True,
-        "where": where,
-        "message": str(err),
-        "traceback": tb,
-        "build_id": BUILD_ID,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
-
-
-# -----------------------------
+# ---------------------------------------------------
 # Routes
-# -----------------------------
+# ---------------------------------------------------
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "build_id": BUILD_ID})
+
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request}
+    )
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "build_id": BUILD_ID, "time": datetime.utcnow().isoformat() + "Z"}
+    return {"status": "ok"}
 
+
+# ---------------------------------------------------
+# CROSSCHECK
+# ---------------------------------------------------
 
 @app.post("/check")
 async def check(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: str = Form("0"),
-    use_crossref: str = Form("1"),
-    use_openalex: str = Form("1"),
-    throttle_s: str = Form("0.25"),
-    max_verify: str = Form("0"),  # 0 = ALL
-):
-    t0 = time.time()
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
 
-        vo = parse_bool(verify_online)
-        uc = parse_bool(use_crossref)
-        uo = parse_bool(use_openalex)
-        th = parse_float(throttle_s, default=0.25)
-        mv = parse_int(max_verify, default=0)
+    verify_online: bool = Form(False),
+    use_crossref: bool = Form(True),
+    use_openalex: bool = Form(True),
+    throttle: float = Form(0.25),
+    max_verify: int = Form(0),
+):
+
+    try:
+
+        file_bytes = await file.read()
 
         result = run_crosscheck(
             file_bytes=file_bytes,
-            filename=filename,
-            style=style_norm,
-            verify_online=vo,
-            max_verify=mv,
-            throttle_s=th,
-            use_crossref=uc,
-            use_openalex=uo,
+            filename=file.filename,
+            style=normalize_style(style),
+
+            verify_online=verify_online,
+            use_crossref=use_crossref,
+            use_openalex=use_openalex,
+            throttle=throttle,
+            max_verify=max_verify,
         )
 
-        result["style"] = style_norm
-        result["elapsed_seconds"] = round(time.time() - t0, 3)
-        result["_ui"] = extract_tables(result)
+        result["_ui"] = extract_ui_tables(result)
 
         return JSONResponse(result)
 
     except Exception as e:
-        return JSONResponse(error_payload("/check", e), status_code=500)
 
+        return JSONResponse(
+            {"error": str(e)},
+            status_code=500
+        )
+
+
+# ---------------------------------------------------
+# EXPORTS
+# ---------------------------------------------------
 
 @app.post("/export/excel")
 async def export_excel(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: str = Form("0"),
-    use_crossref: str = Form("1"),
-    use_openalex: str = Form("1"),
-    throttle_s: str = Form("0.25"),
-    max_verify: str = Form("0"),
 ):
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
 
-        vo = parse_bool(verify_online)
-        uc = parse_bool(use_crossref)
-        uo = parse_bool(use_openalex)
-        th = parse_float(throttle_s, default=0.25)
-        mv = parse_int(max_verify, default=0)
+    result = run_crosscheck(
+        await file.read(),
+        file.filename,
+        normalize_style(style),
+    )
 
-        result = run_crosscheck(
-            file_bytes=file_bytes,
-            filename=filename,
-            style=style_norm,
-            verify_online=vo,
-            max_verify=mv,
-            throttle_s=th,
-            use_crossref=uc,
-            use_openalex=uo,
-        )
+    data = make_excel_bytes(result)
 
-        xlsx = make_excel_bytes(result)
-        base = filename_base(filename)
-        out_name = f"{base}_citation_report.xlsx"
-
-        return StreamingResponse(
-            io.BytesIO(xlsx),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
-        )
-    except Exception as e:
-        return JSONResponse(error_payload("/export/excel", e), status_code=500)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=report.xlsx"},
+    )
 
 
 @app.post("/export/word")
 async def export_word(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: str = Form("0"),
-    use_crossref: str = Form("1"),
-    use_openalex: str = Form("1"),
-    throttle_s: str = Form("0.25"),
-    max_verify: str = Form("0"),
 ):
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
 
-        vo = parse_bool(verify_online)
-        uc = parse_bool(use_crossref)
-        uo = parse_bool(use_openalex)
-        th = parse_float(throttle_s, default=0.25)
-        mv = parse_int(max_verify, default=0)
+    result = run_crosscheck(
+        await file.read(),
+        file.filename,
+        normalize_style(style),
+    )
 
-        result = run_crosscheck(
-            file_bytes=file_bytes,
-            filename=filename,
-            style=style_norm,
-            verify_online=vo,
-            max_verify=mv,
-            throttle_s=th,
-            use_crossref=uc,
-            use_openalex=uo,
-        )
+    data = make_word_bytes(result)
 
-        docx_bytes = make_word_bytes(result)
-        base = filename_base(filename)
-        out_name = f"{base}_citation_report.docx"
-
-        return StreamingResponse(
-            io.BytesIO(docx_bytes),
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
-        )
-    except Exception as e:
-        return JSONResponse(error_payload("/export/word", e), status_code=500)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=report.docx"},
+    )
 
 
 @app.post("/export/pdf")
 async def export_pdf(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: str = Form("0"),
-    use_crossref: str = Form("1"),
-    use_openalex: str = Form("1"),
-    throttle_s: str = Form("0.25"),
-    max_verify: str = Form("0"),
 ):
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
 
-        vo = parse_bool(verify_online)
-        uc = parse_bool(use_crossref)
-        uo = parse_bool(use_openalex)
-        th = parse_float(throttle_s, default=0.25)
-        mv = parse_int(max_verify, default=0)
+    result = run_crosscheck(
+        await file.read(),
+        file.filename,
+        normalize_style(style),
+    )
 
-        result = run_crosscheck(
-            file_bytes=file_bytes,
-            filename=filename,
-            style=style_norm,
-            verify_online=vo,
-            max_verify=mv,
-            throttle_s=th,
-            use_crossref=uc,
-            use_openalex=uo,
-        )
+    data = make_pdf_bytes(result)
 
-        pdf_bytes = make_pdf_bytes(result)
-        base = filename_base(filename)
-        out_name = f"{base}_citation_report.pdf"
-
-        return StreamingResponse(
-            io.BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
-        )
-    except Exception as e:
-        return JSONResponse(error_payload("/export/pdf", e), status_code=500)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=report.pdf"},
+    )
