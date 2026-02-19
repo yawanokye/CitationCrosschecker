@@ -1,6 +1,7 @@
 # main.py
+import time
 from io import BytesIO
-from typing import Optional
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
+
+import pandas as pd
 
 try:
     from docx import Document
@@ -20,7 +23,7 @@ app = FastAPI(title="Citation Crosschecker", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten later if you want
+    allow_origins=["*"],  # tighten later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,51 +35,55 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/check")
-async def check(
-    file: UploadFile = File(...),
-    style: str = Form("apa"),
-):
-    contents = await file.read()
-    result = run_crosscheck(
-        file_bytes=contents,
-        filename=file.filename,
-        style=style,
-        verify_online=False,
-    )
-    return JSONResponse(result)
+def _build_ui_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Converts engine.run_crosscheck output into the exact shape index.html expects:
+      data._ui.dashboard
+      data._ui.missing_rows
+      data._ui.uncited_rows
+      data._ui.recon_rows
+      data.elapsed_seconds
+    """
+    summary = result.get("summary") or {}
+    missing_rows = result.get("missing_in_references") or []
+    uncited_raw = result.get("uncited_references") or []
+    recon_rows = result.get("reconciliation_intext_to_reference") or []
 
+    cites = int(summary.get("in_text_citations_found", 0) or 0)
+    refs = int(summary.get("reference_entries_found", 0) or 0)
 
-@app.post("/verify")
-async def verify(
-    file: UploadFile = File(...),
-    style: str = Form("apa"),
-    verify_mode: str = Form("missing"),
-    max_verify: int = Form(0),
-    throttle_s: float = Form(0.25),
-    use_crossref: bool = Form(True),
-    use_openalex: bool = Form(True),
-):
-    contents = await file.read()
-    result = run_crosscheck(
-        file_bytes=contents,
-        filename=file.filename,
-        style=style,
-        verify_online=True,
-        verify_mode=verify_mode,
-        max_verify=max_verify,
-        throttle_s=throttle_s,
-        use_crossref=use_crossref,
-        use_openalex=use_openalex,
-    )
+    matched = 0
+    for r in recon_rows:
+        if str(r.get("status", "")).strip().lower() == "matched":
+            matched += 1
+    match_rate = (matched / cites * 100.0) if cites > 0 else 0.0
 
-    block = result.get("online_verification_block") or {
-        "summary": (result.get("online_verification_summary") or {}),
-        "rows": (result.get("online_verification") or []),
+    ui = {
+        "dashboard": {
+            "in_text_citations_found": cites,
+            "reference_entries_found": refs,
+            "missing_in_references": int(summary.get("missing_in_references", 0) or 0),
+            "uncited_references": int(summary.get("uncited_references", 0) or 0),
+            "match_rate_pct": int(round(match_rate)),
+        },
+        "missing_rows": missing_rows,
+        "uncited_rows": [{"reference": r, "note": "Not cited in text"} for r in uncited_raw],
+        "recon_rows": recon_rows,
     }
+    return ui
 
-    # IMPORTANT: stable response contract
-    return JSONResponse({"online_verification": block})
+
+def _to_excel_bytes(sheets: Dict[str, List[Dict[str, Any]]]) -> BytesIO:
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        for sheet_name, rows in sheets.items():
+            df = pd.DataFrame(rows or [])
+            if df.empty:
+                df = pd.DataFrame([{"note": "No rows"}])
+            safe_name = sheet_name[:31]
+            df.to_excel(writer, index=False, sheet_name=safe_name)
+    bio.seek(0)
+    return bio
 
 
 def _build_word_report(filename: str, block: dict) -> BytesIO:
@@ -159,10 +166,8 @@ def _build_pdf_report(filename: str, block: dict) -> BytesIO:
         bio.seek(0)
         return bio
 
-    # Print rows in a simple readable format
     for i, r in enumerate(rows, start=1):
         line = f"{i}. {r.get('status','')} | score={r.get('score','')} | doi={r.get('doi','')} | {r.get('reference','')}"
-        # wrap by slicing
         while line:
             c.drawString(40, y, line[:120])
             line = line[120:]
@@ -180,6 +185,92 @@ def _build_pdf_report(filename: str, block: dict) -> BytesIO:
     c.save()
     bio.seek(0)
     return bio
+
+
+@app.post("/check")
+async def check(
+    file: UploadFile = File(...),
+    style: str = Form("apa"),
+):
+    t0 = time.time()
+    contents = await file.read()
+    result = run_crosscheck(
+        file_bytes=contents,
+        filename=file.filename,
+        style=style,
+        verify_online=False,
+    )
+    ui = _build_ui_payload(result)
+    elapsed = round(time.time() - t0, 3)
+
+    # IMPORTANT: match index.html expectations
+    return JSONResponse({
+        **result,
+        "_ui": ui,
+        "elapsed_seconds": elapsed,
+    })
+
+
+@app.post("/verify")
+async def verify(
+    file: UploadFile = File(...),
+    style: str = Form("apa"),
+    verify_mode: str = Form("missing"),
+    max_verify: int = Form(0),
+    throttle_s: float = Form(0.25),
+    use_crossref: bool = Form(True),
+    use_openalex: bool = Form(True),
+):
+    contents = await file.read()
+    result = run_crosscheck(
+        file_bytes=contents,
+        filename=file.filename,
+        style=style,
+        verify_online=True,
+        verify_mode=verify_mode,
+        max_verify=max_verify,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=use_openalex,
+    )
+
+    block = result.get("online_verification_block") or {
+        "summary": (result.get("online_verification_summary") or {}),
+        "rows": (result.get("online_verification") or []),
+    }
+
+    # Stable response contract your fillVerifyUI uses
+    return JSONResponse({"online_verification": block})
+
+
+@app.post("/export/excel")
+async def export_excel(
+    file: UploadFile = File(...),
+    style: str = Form("apa"),
+):
+    contents = await file.read()
+    result = run_crosscheck(
+        file_bytes=contents,
+        filename=file.filename,
+        style=style,
+        verify_online=False,
+    )
+
+    ui = _build_ui_payload(result)
+
+    sheets = {
+        "Dashboard": [ui.get("dashboard", {})],
+        "Missing_in_References": ui.get("missing_rows", []),
+        "Uncited_References": ui.get("uncited_rows", []),
+        "Reconciliation": ui.get("recon_rows", []),
+    }
+    bio = _to_excel_bytes(sheets)
+
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="citation_crosschecker_report.xlsx"'},
+    )
 
 
 @app.post("/export/word")
@@ -210,7 +301,7 @@ async def export_word(
     return StreamingResponse(
         bio,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f"attachment; filename=verification_report.docx"},
+        headers={"Content-Disposition": 'attachment; filename="verification_report.docx"'},
     )
 
 
@@ -242,5 +333,5 @@ async def export_pdf(
     return StreamingResponse(
         bio,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=verification_report.pdf"},
+        headers={"Content-Disposition": 'attachment; filename="verification_report.pdf"'},
     )
