@@ -384,86 +384,12 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             first = cand[0]
             out.append(InTextCitation("author-year", f"({norm_space(c)})", key_author_year(first, y), year=y, surnames=tuple(cand)))
 
-    narr_harvard_commas = re.finditer(
-        rf"""
-        (?<![A-Za-z])
-        (?P<authors>
-            [A-Z][A-Za-z\-']{{1,40}}
-            (?:\s*,\s*[A-Z][A-Za-z\-']{{1,40}})+
-            \s*(?:,\s*)?(?:and|&)\s*[A-Z][A-Za-z\-']{{1,40}}
-        )
-        \s*\(\s*(?P<year>{YEAR})\s*\)
-        """,
-        txt,
-        flags=re.VERBOSE | re.I,
-    )
-    for m in narr_harvard_commas:
+    for m in re.finditer(rf"\b(?P<a>[A-Z][A-Za-z\-']{{1,40}})\s+et\s+al\.\s*\(\s*(?P<y>{YEAR})\s*\)", txt, flags=re.I):
         span = (m.start(), m.end())
         if _overlaps(span, taken_spans):
             continue
         if _is_probably_title_context(txt, m.start()):
             continue
-
-        blob = m.group("authors").strip().replace("&", " and ")
-        y = m.group("year")
-
-        parts = [p.strip() for p in re.split(r"\s+and\s+|,", blob) if p.strip()]
-        cand = [p for p in parts if looks_like_surname(p)]
-        if not cand:
-            continue
-
-        first = cand[0]
-        out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=tuple(cand)))
-        taken_spans.append(span)
-
-    narr_multi = re.finditer(
-        rf"""
-        (?<![A-Za-z])
-        (?P<authors>
-            [A-Z][A-Za-z\-']{{1,40}}
-            (?:\s*,\s*[A-Z][A-Za-z\-']{{1,40}})*
-            \s*(?:,\s*)?(?:and|&)\s*[A-Z][A-Za-z\-']{{1,40}}
-        )
-        \s*\(\s*(?P<year>{YEAR})\s*\)
-        """,
-        txt,
-        flags=re.VERBOSE | re.I,
-    )
-    for m in narr_multi:
-        span = (m.start(), m.end())
-        if _overlaps(span, taken_spans):
-            continue
-        if _is_probably_title_context(txt, m.start()):
-            continue
-
-        authors_blob = m.group("authors").strip()
-        y = m.group("year")
-
-        first_word = norm_token(authors_blob.split()[0]) if authors_blob.split() else ""
-        if first_word in BAD_NARRATIVE_PREFIX_WORDS:
-            continue
-
-        blob = authors_blob.replace("&", " and ")
-        parts = [p.strip() for p in re.split(r"\s+and\s+|,", blob) if p.strip()]
-        cand = [p for p in parts if looks_like_surname(p)]
-        if not cand:
-            continue
-
-        first = cand[0]
-        out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=tuple(cand)))
-        taken_spans.append(span)
-
-    for m in re.finditer(
-        rf"\b(?P<a>[A-Z][A-Za-z\-']{{1,40}})\s+et\s+al\.\s*\(\s*(?P<y>{YEAR})\s*\)",
-        txt,
-        flags=re.I,
-    ):
-        span = (m.start(), m.end())
-        if _overlaps(span, taken_spans):
-            continue
-        if _is_probably_title_context(txt, m.start()):
-            continue
-
         first = m.group("a").strip()
         y = m.group("y")
         if looks_like_surname(first):
@@ -476,13 +402,10 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             continue
         if _is_probably_title_context(txt, m.start()):
             continue
-
         au = m.group("author").strip()
         y = m.group("year")
-
         if norm_token(au) in BAD_NARRATIVE_PREFIX_WORDS:
             continue
-
         if is_known_org(au):
             k = f"org_{canon_org(au)}_{y.lower()}"
             out.append(InTextCitation("author-year", m.group(0), k, year=y, surnames=(au,)))
@@ -504,12 +427,14 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
 # -----------------------------
 _SUP_DIGITS = {"⁰":"0","¹":"1","²":"2","³":"3","⁴":"4","⁵":"5","⁶":"6","⁷":"7","⁸":"8","⁹":"9"}
 
+
 def _sup_to_int(s: str) -> Optional[int]:
     try:
         digits = "".join(_SUP_DIGITS.get(ch, "") for ch in s)
         return int(digits) if digits else None
     except Exception:
         return None
+
 
 def _expand_numeric_chunks(inside: str) -> List[int]:
     inside = inside.replace("–", "-")
@@ -526,6 +451,7 @@ def _expand_numeric_chunks(inside: str) -> List[int]:
                 nums.append(int(c))
     return nums
 
+
 def extract_ieee_numeric_citations(text: str) -> List[InTextCitation]:
     out: List[InTextCitation] = []
     pat = re.compile(r"\[\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*\]")
@@ -535,6 +461,7 @@ def extract_ieee_numeric_citations(text: str) -> List[InTextCitation]:
         for n in _expand_numeric_chunks(inside):
             out.append(InTextCitation("numeric", raw, key_numeric(n), number=n))
     return out
+
 
 def extract_vancouver_numeric_citations(text: str) -> List[InTextCitation]:
     out: List[InTextCitation] = []
@@ -645,19 +572,35 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
 
 def _online_verify_select_refs(
     refs: List[ReferenceEntry],
+    missing_rows: List[Dict[str, Any]],
     uncited_raw: List[str],
     verify_mode: str,
 ) -> List[str]:
-    mode = (verify_mode or "missing").strip().lower()
-    all_ref_texts = [r.raw for r in refs]
+    """
+    verify_mode:
+      - all
+      - missing_only  (verify missing in references = in-text without reference, not reference list)
+        There's nothing to verify against Crossref/OpenAlex for those without a reference entry.
+        So we interpret missing_only as: verify only the references that ARE PRESENT but still useful.
+        Better choice: uncited_only.
+      - uncited_only (verify references that appear in reference list but are not cited)
+    """
+    mode = (verify_mode or "all").strip().lower()
 
-    if mode == "all":
+    all_ref_texts = [r.raw for r in refs]
+    if not all_ref_texts:
+        return []
+
+    if mode == "uncited_only":
+        uncited_set = set(uncited_raw or [])
+        selected = [r for r in all_ref_texts if r in uncited_set]
+        return selected if selected else all_ref_texts
+
+    # missing_only cannot verify non-existent reference entries, so we fall back safely
+    if mode == "missing_only":
         return all_ref_texts
 
-    # missing mode: verify uncited
-    uncited_set = set(uncited_raw or [])
-    work = [r for r in all_ref_texts if r in uncited_set]
-    return work if work else all_ref_texts
+    return all_ref_texts
 
 
 # -----------------------------
@@ -668,9 +611,9 @@ def run_crosscheck(
     filename: str,
     style: str = "apa",
     verify_online: bool = False,
-    verify_mode: str = "missing",
+    verify_mode: str = "all",
     max_verify: int = 0,
-    throttle_s: float = 0.25,
+    throttle_s: float = 0.15,
     use_crossref: bool = True,
     use_openalex: bool = True,
 ) -> Dict[str, Any]:
@@ -735,13 +678,19 @@ def run_crosscheck(
                 "doi": "",
                 "matched_year": "",
                 "matched_first_author": "",
+                "matched_authors": "",
                 "matched_title": "",
                 "query_used": "",
                 "error": "verify.py not available or import failed",
             }]
             verify_counts["offline"] = 1
         else:
-            selected = _online_verify_select_refs(refs=refs, uncited_raw=uncited, verify_mode=verify_mode)
+            selected = _online_verify_select_refs(
+                refs=refs,
+                missing_rows=missing,
+                uncited_raw=uncited,
+                verify_mode=verify_mode,
+            )
 
             mv = int(max_verify or 0)
             if mv > 0:
@@ -755,7 +704,6 @@ def run_crosscheck(
                 use_openalex=bool(use_openalex),
             )
 
-            # HARD ENFORCEMENT: normalize each row status and count from that
             for row in verify_rows:
                 row["status"] = _normalize_verify_status(row.get("status"))
                 verify_counts[row["status"]] += 1
@@ -765,13 +713,12 @@ def run_crosscheck(
         "total": int(sum(verify_counts.values())),
     }
 
-    # Stable nested block (what /verify + UI should rely on)
-    online_verification_block = {
+    # ✅ FIXED: stable shape for UI
+    online_verification = {
         "summary": verify_summary_out,
         "rows": verify_rows,
     }
 
-    # Backward-compatible fields still included
     return {
         "filename": filename,
         "style": style_norm,
@@ -787,14 +734,9 @@ def run_crosscheck(
         "reconciliation_intext_to_reference": c2r[:5000],
         "reconciliation_reference_to_intext": r2c[:5000],
 
-        # legacy fields
-        "online_verification": verify_rows,
-        "online_verification_summary": {
-            **verify_summary_out,
-            "enabled": bool(verify_online),
-        },
+        # ✅ stable block the UI should use
+        "online_verification": online_verification,
 
-        # stable block
-        "online_verification_block": online_verification_block,
-        "verify_mode_used": (verify_mode or "missing"),
+        "verify_mode_used": (verify_mode or "all"),
+        "verify_enabled": bool(verify_online),
     }
