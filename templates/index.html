@@ -1,103 +1,419 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Citation Crosschecker</title>
-  <link rel="stylesheet" href="/static/style.css" />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Citation Crosschecker</title>
+
+<style>
+  :root{
+    --bg:#f4f6f9;
+    --card:#ffffff;
+    --text:#0f172a;
+    --muted:#64748b;
+    --border:#e5e7eb;
+    --accent:#5b5bd6;
+    --accent2:#4a4ac2;
+    --good:#16a34a;
+    --warn:#d97706;
+    --bad:#dc2626;
+    --chip:#f1f5f9;
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    margin: 0;
+    color: var(--text);
+  }
+
+  .header{
+    background: var(--card);
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .header-inner{
+    max-width: 1100px;
+    margin: 0 auto;
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:16px;
+  }
+  .brand{
+    display:flex;
+    align-items:flex-start;
+    gap:12px;
+  }
+  .logo{
+    width:38px;height:38px;border-radius:10px;
+    display:grid;place-items:center;
+    background: linear-gradient(135deg, var(--accent), #8b5cf6);
+    color:#fff;
+    font-weight:800;
+  }
+  .title{
+    font-size: 28px;
+    font-weight: 800;
+    margin: 0;
+    letter-spacing: 0.2px;
+  }
+  .sub{
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .container{
+    max-width: 1100px;
+    margin: 18px auto 40px;
+    padding: 0 16px;
+  }
+
+  .card{
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    padding: 18px;
+    margin-top: 14px;
+  }
+
+  .section-title{
+    font-weight: 700;
+    margin: 0 0 10px;
+    font-size: 14px;
+    color: #111827;
+  }
+
+  .upload-strip{
+    display:flex;
+    gap:12px;
+    align-items:center;
+    flex-wrap:wrap;
+  }
+  .file-wrap{
+    flex: 1 1 420px;
+    display:flex;
+    gap:10px;
+    align-items:center;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fafafa;
+  }
+  input[type="file"]{ width: 100%; }
+
+  select, input[type="number"], input[type="text"]{
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    outline:none;
+  }
+  select{ min-width: 170px; }
+
+  button{
+    padding: 10px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #fff;
+    font-weight: 700;
+    cursor:pointer;
+  }
+  button:hover{ border-color: rgba(91,91,214,0.45); }
+  .btn-primary{
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover{
+    background: var(--accent2);
+    border-color: var(--accent2);
+  }
+
+  .btn-ghost{
+    background:#fff;
+  }
+
+  .toolbar{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:space-between;
+    margin-top: 12px;
+  }
+  .toolbar-left, .toolbar-right{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    align-items:center;
+  }
+
+  .settings{
+    display:flex;
+    gap:14px;
+    flex-wrap:wrap;
+    align-items:center;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fafafa;
+    margin-top: 12px;
+  }
+  .settings label{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  .settings .field{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .tabs{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+  }
+  .tab{
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-weight: 700;
+    color: #111827;
+    cursor:pointer;
+    user-select:none;
+  }
+  .tab.active{
+    background: rgba(91,91,214,0.10);
+    border-color: rgba(91,91,214,0.40);
+    color: #1f2a9e;
+  }
+
+  .tab-panel{ display:none; }
+  .tab-panel.active{ display:block; }
+
+  .kpis{
+    display:grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .kpi{
+    border:1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    background:#fff;
+  }
+  .kpi .k-title{ color: var(--muted); font-size: 12px; }
+  .kpi .k-val{ font-size: 24px; font-weight: 900; margin-top: 6px; }
+  .kpi.good .k-val{ color: var(--good); }
+  .kpi.warn .k-val{ color: var(--warn); }
+  .kpi.bad  .k-val{ color: var(--bad); }
+
+  .table-wrap{
+    overflow:auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background:#fff;
+  }
+  table{
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 820px;
+  }
+  thead th{
+    position: sticky;
+    top: 0;
+    background: #f8fafc;
+    color: var(--muted);
+    text-align:left;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+    white-space:nowrap;
+  }
+  tbody td{
+    padding: 10px 12px;
+    border-bottom: 1px solid #eef2f7;
+    vertical-align: top;
+    font-size: 13px;
+  }
+  tbody tr:hover{ background:#fafafa; }
+
+  .pill{
+    display:inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    background: var(--chip);
+    color: #111827;
+    white-space:nowrap;
+  }
+  .pill.good{ border-color: rgba(22,163,74,0.35); background: rgba(22,163,74,0.10); color: var(--good); }
+  .pill.warn{ border-color: rgba(217,119,6,0.35); background: rgba(217,119,6,0.10); color: var(--warn); }
+  .pill.bad { border-color: rgba(220,38,38,0.35); background: rgba(220,38,38,0.10); color: var(--bad); }
+
+  .muted{ color: var(--muted); }
+
+  .status{
+    margin-top: 12px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+  .status.ok{ color: var(--good); }
+  .status.busy{ color: var(--warn); }
+  .status.err{ color: var(--bad); }
+
+  .footer{
+    text-align:center;
+    color: var(--muted);
+    font-size: 13px;
+    padding: 20px 12px;
+    margin-top: 22px;
+  }
+
+  @media (max-width: 900px){
+    .kpis{ grid-template-columns: 1fr 1fr; }
+    table{ min-width: 720px; }
+  }
+  @media (max-width: 560px){
+    .kpis{ grid-template-columns: 1fr; }
+    table{ min-width: 680px; }
+  }
+</style>
 </head>
+
 <body>
-  <div class="page">
-    <header class="header">
+
+  <div class="header">
+    <div class="header-inner">
       <div class="brand">
         <div class="logo">CC</div>
         <div>
-          <h1>Citation Crosschecker</h1>
-          <p class="sub">Upload a DOCX or PDF. Run crosscheck fast, then run online verification only if needed.</p>
+          <h1 class="title">Citation Crosschecker</h1>
+          <div class="sub">Upload a DOCX or PDF. Run the fast check first, then verify online only when needed.</div>
         </div>
       </div>
-      <div class="badge">FastAPI</div>
-    </header>
+    </div>
+  </div>
 
-    <section class="card">
-      <div class="form-row">
-        <label class="file">
-          <input id="file" type="file" accept=".pdf,.docx" />
-          <span class="file-btn">Choose file</span>
-          <span id="fileName" class="file-name">No file selected</span>
-        </label>
+  <div class="container">
 
-        <label class="select">
-          <span class="label">Style</span>
-          <select id="style">
-            <option value="apa">APA / Harvard</option>
+    <!-- Controls -->
+    <div class="card">
+      <div class="section-title">Run</div>
+
+      <div class="upload-strip">
+        <div class="file-wrap">
+          <input type="file" id="file" />
+        </div>
+
+        <div class="field">
+          <div class="muted" style="font-size:12px;margin-bottom:4px;">Style</div>
+          <select id="style" aria-label="style">
+            <option value="apa">APA/Harvard</option>
             <option value="ieee">IEEE</option>
             <option value="vancouver">Vancouver</option>
           </select>
-        </label>
-
-        <button id="runBtn" class="btn primary">Run crosscheck</button>
-      </div>
-
-      <div class="action-row">
-        <button id="excelBtn" class="btn" disabled>Export Excel</button>
-        <button id="wordBtn" class="btn" disabled>Export Word</button>
-        <button id="pdfBtn" class="btn" disabled>Export PDF</button>
-      </div>
-
-      <div id="status" class="status"></div>
-    </section>
-
-    <section id="dashboard" class="grid hidden">
-      <div class="kpi">
-        <div class="kpi-title">In-text citations</div>
-        <div id="kpiCites" class="kpi-value">0</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-title">Reference entries</div>
-        <div id="kpiRefs" class="kpi-value">0</div>
-      </div>
-      <div class="kpi warn">
-        <div class="kpi-title">Missing in references</div>
-        <div id="kpiMissing" class="kpi-value">0</div>
-      </div>
-      <div class="kpi warn">
-        <div class="kpi-title">Uncited references</div>
-        <div id="kpiUncited" class="kpi-value">0</div>
-      </div>
-      <div class="kpi good">
-        <div class="kpi-title">Match rate</div>
-        <div id="kpiRate" class="kpi-value">0%</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-title">Runtime</div>
-        <div id="kpiTime" class="kpi-value">0.0s</div>
-      </div>
-    </section>
-
-    <section class="card hidden" id="tables">
-      <div class="tabs" role="tablist" aria-label="Results tabs">
-        <button class="tab active" data-tab="missing" role="tab" aria-selected="true">Missing in References</button>
-        <button class="tab" data-tab="uncited" role="tab" aria-selected="false">Uncited References</button>
-        <button class="tab" data-tab="recon" role="tab" aria-selected="false">Reconciliation</button>
-        <button class="tab" data-tab="verify" role="tab" aria-selected="false">Online Verification</button>
-      </div>
-
-      <div class="tab-panel" id="tab-missing" role="tabpanel">
-        <div class="panel-head">
-          <div>
-            <h2>Missing in References</h2>
-            <div class="hint">Citations that appear in the text but have no matching reference entry.</div>
-          </div>
-          <button id="missingCsvBtn" class="btn small">Download CSV</button>
         </div>
+
+        <button class="btn-primary" id="btnCheck" onclick="runCheck()">Run Check</button>
+        <button id="btnVerify" onclick="runOnlineVerification()">Run Online Verification</button>
+      </div>
+
+      <div class="settings">
+        <label><input type="checkbox" id="useCrossref" checked /> Use Crossref</label>
+        <label><input type="checkbox" id="useOpenAlex" checked /> Use OpenAlex</label>
+
+        <div class="field">
+          Throttle (seconds)
+          <input id="throttle" type="number" value="0.25" step="0.05" min="0" style="width:90px;" />
+        </div>
+
+        <div class="field">
+          Max verify (0 = all)
+          <input id="maxVerify" type="number" value="0" step="1" min="0" style="width:90px;" />
+        </div>
+
+        <div class="field">
+          Verify mode
+          <select id="verifyMode" aria-label="verify mode">
+            <option value="all" selected>All references</option>
+            <option value="missing_only">Only missing in references</option>
+            <option value="uncited_only">Only uncited references</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="status" class="status">Ready.</div>
+    </div>
+
+    <!-- Results -->
+    <div class="card" id="resultsCard" style="display:none;">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="section-title" style="margin:0;">Results</div>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn-ghost" id="btnCsv" onclick="exportCSV()" disabled>Export CSV</button>
+          <button class="btn-ghost" id="btnWord" onclick="exportWord()" disabled>Export Word</button>
+        </div>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Results tabs">
+        <div class="tab active" data-tab="tabSummary" role="tab" tabindex="0">Summary</div>
+        <div class="tab" data-tab="tabMissing" role="tab" tabindex="0">Missing in References</div>
+        <div class="tab" data-tab="tabUncited" role="tab" tabindex="0">Uncited References</div>
+        <div class="tab" data-tab="tabC2R" role="tab" tabindex="0">In-text → Reference</div>
+        <div class="tab" data-tab="tabR2C" role="tab" tabindex="0">Reference → In-text</div>
+        <div class="tab" data-tab="tabVerify" role="tab" tabindex="0">Online Verification</div>
+      </div>
+
+      <!-- Summary -->
+      <div class="tab-panel active" id="tabSummary">
+        <div class="kpis" id="kpis"></div>
+
+        <div style="height:14px;"></div>
+
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th style="width:64px;">No.</th>
+                <th style="width:260px;">Metric</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody id="summaryTableBody"></tbody>
+          </table>
+        </div>
+
+        <div style="height:10px;"></div>
+        <div class="muted" id="refHeadingMsg"></div>
+      </div>
+
+      <!-- Missing -->
+      <div class="tab-panel" id="tabMissing">
+        <div class="muted" style="margin-bottom:10px;">Citations found in text that have no matching reference entry.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:120px;">Count</th>
                 <th>Citation in text</th>
-                <th style="width:110px;">Count</th>
               </tr>
             </thead>
             <tbody id="missingBody"></tbody>
@@ -105,21 +421,15 @@
         </div>
       </div>
 
-      <div class="tab-panel hidden" id="tab-uncited" role="tabpanel">
-        <div class="panel-head">
-          <div>
-            <h2>Uncited References</h2>
-            <div class="hint">Reference entries that do not appear as in-text citations.</div>
-          </div>
-          <button id="uncitedCsvBtn" class="btn small">Download CSV</button>
-        </div>
+      <!-- Uncited -->
+      <div class="tab-panel" id="tabUncited">
+        <div class="muted" style="margin-bottom:10px;">Reference entries that were not cited in the main text.</div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th style="width:64px;">No.</th>
+                <th style="width:120px;">Times cited</th>
                 <th>Reference</th>
-                <th style="width:180px;">Note</th>
               </tr>
             </thead>
             <tbody id="uncitedBody"></tbody>
@@ -127,468 +437,591 @@
         </div>
       </div>
 
-      <div class="tab-panel hidden" id="tab-recon" role="tabpanel">
-        <div class="panel-head">
-          <div>
-            <h2>Reconciliation</h2>
-            <div class="hint">How each in-text citation matched to a reference entry.</div>
-          </div>
-          <button id="reconCsvBtn" class="btn small">Download CSV</button>
-        </div>
+      <!-- In-text → Reference -->
+      <div class="tab-panel" id="tabC2R">
+        <div class="muted" style="margin-bottom:10px;">Each in-text citation and the matched reference entry.</div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th style="width:140px;">Status</th>
-                <th style="width:320px;">In-text</th>
+                <th style="width:180px;">Status</th>
+                <th style="width:300px;">In-text citation</th>
                 <th>Matched reference</th>
               </tr>
             </thead>
-            <tbody id="reconBody"></tbody>
+            <tbody id="c2rBody"></tbody>
           </table>
         </div>
       </div>
 
-      <div class="tab-panel hidden" id="tab-verify" role="tabpanel">
-        <div class="panel-head">
-          <div>
-            <h2>Online Verification</h2>
-            <div class="hint">Runs Crossref and OpenAlex matching. Use after crosscheck to save time.</div>
-          </div>
-          <div class="right-actions">
-            <button id="verifyCsvBtn" class="btn small">Download CSV</button>
-          </div>
+      <!-- Reference → In-text -->
+      <div class="tab-panel" id="tabR2C">
+        <div class="muted" style="margin-bottom:10px;">Each reference and how often it appears in the text.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:120px;">Times cited</th>
+                <th style="width:520px;">Reference</th>
+                <th>Cited by (samples)</th>
+              </tr>
+            </thead>
+            <tbody id="r2cBody"></tbody>
+          </table>
         </div>
+      </div>
 
-        <div class="verify-controls">
-          <label class="check">
-            <input id="useCrossref" type="checkbox" checked />
-            <span>Use Crossref</span>
-          </label>
+      <!-- Online verification -->
+      <div class="tab-panel" id="tabVerify">
+        <div class="muted" style="margin-bottom:10px;">Online verification results (Crossref/OpenAlex).</div>
 
-          <label class="check">
-            <input id="useOpenalex" type="checkbox" checked />
-            <span>Use OpenAlex</span>
-          </label>
+        <div class="kpis" id="verifyKpis"></div>
 
-          <label class="select">
-            <span class="label">Throttle (seconds)</span>
-            <input id="throttle" class="input" type="number" min="0" step="0.05" value="0.25" />
-          </label>
-
-          <label class="select">
-            <span class="label">Max to verify (0 = all)</span>
-            <input id="maxVerify" class="input" type="number" min="0" step="1" value="0" />
-          </label>
-
-          <button id="verifyBtn" class="btn primary">Run Online Verification</button>
-        </div>
-
-        <div class="verify-kpis">
-          <div class="kpi mini good">
-            <div class="kpi-title">Verified</div>
-            <div id="kpiVerified" class="kpi-value">0</div>
-          </div>
-          <div class="kpi mini">
-            <div class="kpi-title">Likely</div>
-            <div id="kpiLikely" class="kpi-value">0</div>
-          </div>
-          <div class="kpi mini warn">
-            <div class="kpi-title">Needs review</div>
-            <div id="kpiNeedsReview" class="kpi-value">0</div>
-          </div>
-          <div class="kpi mini warn">
-            <div class="kpi-title">Not found</div>
-            <div id="kpiNotFound" class="kpi-value">0</div>
-          </div>
-          <div class="kpi mini">
-            <div class="kpi-title">Offline</div>
-            <div id="kpiOffline" class="kpi-value">0</div>
-          </div>
-        </div>
+        <div style="height:14px;"></div>
 
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th style="width:64px;">No.</th>
                 <th style="width:120px;">Status</th>
-                <th style="width:90px;">Source</th>
-                <th style="width:70px;">Score</th>
-                <th style="width:170px;">DOI</th>
-                <th style="width:90px;">Year</th>
+                <th style="width:90px;">Score</th>
+                <th style="width:220px;">DOI</th>
+                <th style="width:120px;">Source</th>
+                <th style="width:120px;">Year</th>
+                <th style="width:220px;">Matched authors</th>
                 <th>Matched title</th>
-                <th>Reference</th>
               </tr>
             </thead>
             <tbody id="verifyBody"></tbody>
           </table>
         </div>
 
-        <div class="muted small-note">
-          Tip: Online verification depends on external APIs, results can vary. Always double-check flagged items.
-        </div>
+        <div style="height:10px;"></div>
+        <div class="muted">Tip: Run online verification only when needed, it can take time on Render.</div>
       </div>
-    </section>
 
-    <footer class="footer">
-      <a href="/docs" target="_blank">API Docs</a>
-      <span>•</span>
-      <a href="/health" target="_blank">Health</a>
-    </footer>
+    </div>
 
-    <div class="legal">
-      <div class="legal-row">
-        <div>© Prof Anokye M. Adam, University of Cape Coast</div>
-        <div class="muted">Disclaimer: This checker can make mistakes. Please cross-check before final decisions.</div>
+    <div class="footer">
+      <div>© Prof Anokye M. Adam, University of Cape Coast</div>
+      <div style="margin-top:6px;">
+        Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.
       </div>
     </div>
+
   </div>
 
 <script>
-  const fileEl = document.getElementById("file");
-  const fileNameEl = document.getElementById("fileName");
-  const styleEl = document.getElementById("style");
-  const runBtn = document.getElementById("runBtn");
-  const statusEl = document.getElementById("status");
+  // --- State ---
+  let lastPayload = null; // stores latest /check or /verify response
 
-  const excelBtn = document.getElementById("excelBtn");
-  const wordBtn = document.getElementById("wordBtn");
-  const pdfBtn = document.getElementById("pdfBtn");
-
-  const dashboardEl = document.getElementById("dashboard");
-  const tablesEl = document.getElementById("tables");
-
-  const kpiCites = document.getElementById("kpiCites");
-  const kpiRefs = document.getElementById("kpiRefs");
-  const kpiMissing = document.getElementById("kpiMissing");
-  const kpiUncited = document.getElementById("kpiUncited");
-  const kpiRate = document.getElementById("kpiRate");
-  const kpiTime = document.getElementById("kpiTime");
-
-  const missingBody = document.getElementById("missingBody");
-  const uncitedBody = document.getElementById("uncitedBody");
-  const reconBody = document.getElementById("reconBody");
-  const verifyBody = document.getElementById("verifyBody");
-
-  const missingCsvBtn = document.getElementById("missingCsvBtn");
-  const uncitedCsvBtn = document.getElementById("uncitedCsvBtn");
-  const reconCsvBtn = document.getElementById("reconCsvBtn");
-  const verifyCsvBtn = document.getElementById("verifyCsvBtn");
-
-  // Online verification controls
-  const verifyBtn = document.getElementById("verifyBtn");
-  const useCrossrefEl = document.getElementById("useCrossref");
-  const useOpenalexEl = document.getElementById("useOpenalex");
-  const throttleEl = document.getElementById("throttle");
-  const maxVerifyEl = document.getElementById("maxVerify");
-
-  const kpiVerified = document.getElementById("kpiVerified");
-  const kpiLikely = document.getElementById("kpiLikely");
-  const kpiNeedsReview = document.getElementById("kpiNeedsReview");
-  const kpiNotFound = document.getElementById("kpiNotFound");
-  const kpiOffline = document.getElementById("kpiOffline");
-
-  // Hold latest data in memory for CSV export
-  let lastUI = null;
-  let lastVerify = null;
-
-  function setStatus(msg, kind="") {
-    statusEl.className = "status " + kind;
-    statusEl.textContent = msg || "";
+  // --- Tabs ---
+  function setActiveTab(tabId){
+    document.querySelectorAll(".tab").forEach(t => {
+      t.classList.toggle("active", t.dataset.tab === tabId);
+    });
+    document.querySelectorAll(".tab-panel").forEach(p => {
+      p.classList.toggle("active", p.id === tabId);
+    });
   }
 
-  function requireFile() {
-    if (!fileEl.files || !fileEl.files[0]) {
-      setStatus("Please choose a DOCX or PDF first.", "error");
-      return null;
-    }
-    return fileEl.files[0];
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest(".tab");
+    if(!t) return;
+    setActiveTab(t.dataset.tab);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if(e.key !== "Enter" && e.key !== " ") return;
+    const t = e.target.closest(".tab");
+    if(!t) return;
+    e.preventDefault();
+    setActiveTab(t.dataset.tab);
+  });
+
+  // --- Helpers ---
+  function setStatus(text, kind=""){
+    const el = document.getElementById("status");
+    el.className = "status" + (kind ? " " + kind : "");
+    el.textContent = text;
   }
 
-  function escapeHtml(s) {
-    return (s || "")
+  function pill(status){
+    const s = (status || "").toLowerCase();
+    if(s.includes("matched") || s === "verified") return `<span class="pill good">${escapeHtml(status)}</span>`;
+    if(s.includes("ambiguous") || s === "likely" || s === "needs_review") return `<span class="pill warn">${escapeHtml(status)}</span>`;
+    if(s.includes("not_found") || s === "offline") return `<span class="pill bad">${escapeHtml(status)}</span>`;
+    return `<span class="pill">${escapeHtml(status || "")}</span>`;
+  }
+
+  function escapeHtml(str){
+    return String(str || "")
       .replaceAll("&","&amp;")
       .replaceAll("<","&lt;")
       .replaceAll(">","&gt;")
-      .replaceAll('"',"&quot;");
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
   }
 
-  function num(x) {
-    const n = Number(x);
-    return Number.isFinite(n) ? n : 0;
+  function renderKpis(summary){
+    const k = document.getElementById("kpis");
+    const a = summary?.in_text_citations_found ?? 0;
+    const b = summary?.reference_entries_found ?? 0;
+    const c = summary?.missing_in_references ?? 0;
+    const d = summary?.uncited_references ?? 0;
+
+    k.innerHTML = `
+      <div class="kpi"><div class="k-title">In-text citations</div><div class="k-val">${a}</div></div>
+      <div class="kpi"><div class="k-title">Reference entries</div><div class="k-val">${b}</div></div>
+      <div class="kpi ${c ? "bad" : "good"}"><div class="k-title">Missing in references</div><div class="k-val">${c}</div></div>
+      <div class="kpi ${d ? "warn" : "good"}"><div class="k-title">Uncited references</div><div class="k-val">${d}</div></div>
+    `;
   }
 
-  function toCSV(rows) {
-    if (!rows || !rows.length) return "";
-    const cols = Object.keys(rows[0]);
-    const esc = (v) => {
-      const s = String(v ?? "");
-      if (s.includes('"') || s.includes(",") || s.includes("\n")) return `"${s.replaceAll('"','""')}"`;
-      return s;
-    };
-    const head = cols.map(esc).join(",");
-    const body = rows.map(r => cols.map(c => esc(r[c])).join(",")).join("\n");
-    return head + "\n" + body;
+  function renderSummaryTable(payload){
+    const tbody = document.getElementById("summaryTableBody");
+    const s = payload?.summary || {};
+    const items = [
+      ["Filename", payload?.filename || ""],
+      ["Style", payload?.style || ""],
+      ["Text length", payload?.text_length ?? ""],
+      ["Main text length", payload?.main_text_length ?? ""],
+      ["References detected", payload?.references_detected ?? ""],
+      ["In-text citations found", s?.in_text_citations_found ?? 0],
+      ["Reference entries found", s?.reference_entries_found ?? 0],
+      ["Missing in references", s?.missing_in_references ?? 0],
+      ["Uncited references", s?.uncited_references ?? 0],
+    ];
+    tbody.innerHTML = items.map(([k,v]) => `
+      <tr>
+        <td class="muted">${escapeHtml(k)}</td>
+        <td>${escapeHtml(String(v))}</td>
+      </tr>
+    `).join("");
+    document.getElementById("refHeadingMsg").textContent = payload?.reference_detection_message || "";
   }
 
-  function downloadText(filename, text, mime="text/csv") {
-    const blob = new Blob([text], { type: mime });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
-
-  fileEl.addEventListener("change", () => {
-    const f = fileEl.files && fileEl.files[0];
-    fileNameEl.textContent = f ? f.name : "No file selected";
-    excelBtn.disabled = !f;
-    wordBtn.disabled = !f;
-    pdfBtn.disabled = !f;
-  });
-
-  async function runCheck() {
-    const f = requireFile();
-    if (!f) return;
-
-    setStatus("Running crosscheck…", "busy");
-
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("style", styleEl.value);
-
-    const res = await fetch("/check", { method: "POST", body: fd });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      setStatus("Server error on /check. Try /docs for details.", "error");
-      console.log("CHECK ERROR:", t);
+  function renderMissing(missing){
+    const tbody = document.getElementById("missingBody");
+    const rows = Array.isArray(missing) ? missing : [];
+    if(!rows.length){
+      tbody.innerHTML = `<tr><td colspan="2" class="muted">No missing items.</td></tr>`;
       return;
     }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td><span class="pill">${escapeHtml(String(r.count_in_text ?? ""))}</span></td>
+        <td>${escapeHtml(r.citation_in_text || "")}</td>
+      </tr>
+    `).join("");
+  }
 
-    const data = await res.json();
-    const ui = data._ui || {};
-    const dash = ui.dashboard || {};
-
-    lastUI = ui;
-
-    dashboardEl.classList.remove("hidden");
-    tablesEl.classList.remove("hidden");
-
-    kpiCites.textContent = dash.in_text_citations_found ?? 0;
-    kpiRefs.textContent = dash.reference_entries_found ?? 0;
-    kpiMissing.textContent = dash.missing_in_references ?? 0;
-    kpiUncited.textContent = dash.uncited_references ?? 0;
-    kpiRate.textContent = (dash.match_rate_pct ?? 0) + "%";
-    kpiTime.textContent = (data.elapsed_seconds ?? 0) + "s";
-
-    // Tables with numbering
-    missingBody.innerHTML = "";
-    (ui.missing_rows || []).forEach((r, i) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${i+1}</td><td>${escapeHtml(r.citation_in_text || "")}</td><td>${escapeHtml(String(r.count_in_text ?? ""))}</td>`;
-      missingBody.appendChild(tr);
-    });
-    if ((ui.missing_rows || []).length === 0) {
-      missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
+  function renderUncited(uncited){
+    const tbody = document.getElementById("uncitedBody");
+    const rows = Array.isArray(uncited) ? uncited : [];
+    if(!rows.length){
+      tbody.innerHTML = `<tr><td colspan="2" class="muted">No uncited references.</td></tr>`;
+      return;
     }
+    tbody.innerHTML = rows.map(ref => `
+      <tr>
+        <td><span class="pill">0</span></td>
+        <td>${escapeHtml(ref)}</td>
+      </tr>
+    `).join("");
+  }
 
-    uncitedBody.innerHTML = "";
-    (ui.uncited_rows || []).forEach((r, i) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${i+1}</td><td class="wrap">${escapeHtml(r.reference || "")}</td><td>${escapeHtml(r.note || "")}</td>`;
-      uncitedBody.appendChild(tr);
-    });
-    if ((ui.uncited_rows || []).length === 0) {
-      uncitedBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
+  function renderC2R(c2r){
+    const tbody = document.getElementById("c2rBody");
+    const rows = Array.isArray(c2r) ? c2r : [];
+    if(!rows.length){
+      tbody.innerHTML = `<tr><td colspan="3" class="muted">No rows.</td></tr>`;
+      return;
     }
-
-    reconBody.innerHTML = "";
-    (ui.recon_rows || []).forEach((r, i) => {
-      const status = (r.status || "").toLowerCase();
-      const pill = status === "matched" ? "pill ok" : (status ? "pill warn" : "pill");
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td><span class="${pill}">${escapeHtml(r.status || "")}</span></td>
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${pill(r.status)}</td>
         <td>${escapeHtml(r.in_text || "")}</td>
-        <td class="wrap">${escapeHtml(r.matched_reference || "")}</td>
-      `;
-      reconBody.appendChild(tr);
-    });
-    if ((ui.recon_rows || []).length === 0) {
-      reconBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
-    }
-
-    // Clear verification view until user runs it
-    lastVerify = null;
-    verifyBody.innerHTML = `<tr><td colspan="8" class="muted">Click “Run Online Verification” to fetch results.</td></tr>`;
-    kpiVerified.textContent = "0";
-    kpiLikely.textContent = "0";
-    kpiNeedsReview.textContent = "0";
-    kpiNotFound.textContent = "0";
-    kpiOffline.textContent = "0";
-
-    setStatus("Crosscheck done. Run Online Verification if you want DOI checks.", "ok");
+        <td>${escapeHtml(r.matched_reference || "")}</td>
+      </tr>
+    `).join("");
   }
 
-  async function exportFile(kind) {
-    const f = requireFile();
-    if (!f) return;
+  function renderR2C(r2c){
+    const tbody = document.getElementById("r2cBody");
+    const rows = Array.isArray(r2c) ? r2c : [];
+    if(!rows.length){
+      tbody.innerHTML = `<tr><td colspan="3" class="muted">No rows.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const citedBy = Array.isArray(r.cited_by) ? r.cited_by.slice(0, 6) : [];
+      return `
+        <tr>
+          <td><span class="pill">${escapeHtml(String(r.times_cited ?? 0))}</span></td>
+          <td>${escapeHtml(r.reference || "")}</td>
+          <td class="muted">${escapeHtml(citedBy.join(" | "))}${(Array.isArray(r.cited_by) && r.cited_by.length > 6) ? " ..." : ""}</td>
+        </tr>
+      `;
+    }).join("");
+  }
 
-    setStatus("Preparing export…", "busy");
+  function renderVerify(online){
+    const k = document.getElementById("verifyKpis");
+    const tbody = document.getElementById("verifyBody");
 
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("style", styleEl.value);
+    const sum = online?.summary || {};
+    const rows = Array.isArray(online?.rows) ? online.rows : [];
 
-    const url = kind === "excel" ? "/export/excel" : kind === "word" ? "/export/word" : "/export/pdf";
+    k.innerHTML = `
+      <div class="kpi ${sum.verified ? "good" : ""}"><div class="k-title">Verified</div><div class="k-val">${sum.verified ?? 0}</div></div>
+      <div class="kpi"><div class="k-title">Likely</div><div class="k-val">${sum.likely ?? 0}</div></div>
+      <div class="kpi warn"><div class="k-title">Needs review</div><div class="k-val">${sum.needs_review ?? 0}</div></div>
+      <div class="kpi ${sum.not_found ? "bad" : ""}"><div class="k-title">Not found</div><div class="k-val">${sum.not_found ?? 0}</div></div>
+    `;
 
-    const res = await fetch(url, { method: "POST", body: fd });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      setStatus("Export failed. Check server logs.", "error");
-      console.log("EXPORT ERROR:", t);
+    if(!rows.length){
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">No online verification results yet.</td></tr>`;
       return;
     }
 
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    const disp = res.headers.get("content-disposition") || "";
-    const match = disp.match(/filename="(.+?)"/);
-    const filename = match ? match[1] : ("report." + (kind==="excel"?"xlsx":kind==="word"?"docx":"pdf"));
-
-    a.href = window.URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    setStatus("Export downloaded.", "ok");
-  }
-
-  function fillVerifyUI(payload) {
-    const ov = payload.online_verification || {};
-    const summary = ov.summary || {};
-    const rows = ov.rows || [];
-
-    lastVerify = { summary, rows };
-
-    // If summary missing, compute from rows
-    const computed = { verified:0, likely:0, needs_review:0, not_found:0, offline:0 };
-    (rows || []).forEach(r => {
-      const s = String(r.status || "").toLowerCase().trim();
-      if (s in computed) computed[s] += 1;
-    });
-
-    const verified = num(summary.verified ?? computed.verified);
-    const likely = num(summary.likely ?? computed.likely);
-    const needs = num(summary.needs_review ?? computed.needs_review);
-    const notFound = num(summary.not_found ?? computed.not_found);
-    const offline = num(summary.offline ?? computed.offline);
-
-    kpiVerified.textContent = verified;
-    kpiLikely.textContent = likely;
-    kpiNeedsReview.textContent = needs;
-    kpiNotFound.textContent = notFound;
-    kpiOffline.textContent = offline;
-
-    verifyBody.innerHTML = "";
-    (rows || []).forEach((r, i) => {
-      const status = String(r.status || "").toLowerCase();
-      const pill = status === "verified" ? "pill ok" : (status ? "pill warn" : "pill");
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${i+1}</td>
-        <td><span class="${pill}">${escapeHtml(r.status || "")}</span></td>
-        <td>${escapeHtml(r.source || "")}</td>
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${pill(r.status)}</td>
         <td>${escapeHtml(String(r.score ?? ""))}</td>
-        <td class="wrap">${escapeHtml(r.doi || "")}</td>
-        <td>${escapeHtml(r.matched_year || "")}</td>
-        <td class="wrap">${escapeHtml(r.matched_title || "")}</td>
-        <td class="wrap">${escapeHtml(r.reference || "")}</td>
-      `;
-      verifyBody.appendChild(tr);
-    });
-
-    if (!(rows || []).length) {
-      verifyBody.innerHTML = `<tr><td colspan="8" class="muted">No verification rows returned</td></tr>`;
-    }
+        <td class="muted">${escapeHtml(r.doi || "")}</td>
+        <td class="muted">${escapeHtml(r.source || "")}</td>
+        <td class="muted">${escapeHtml(r.matched_year || "")}</td>
+        <td class="muted">${escapeHtml(r.matched_authors || r.matched_first_author || "")}</td>
+        <td>${escapeHtml(r.matched_title || "")}</td>
+      </tr>
+    `).join("");
   }
 
-  async function runOnlineVerification() {
-    const f = requireFile();
-    if (!f) return;
+  function enableExportButtons(){
+    document.getElementById("btnCsv").disabled = !lastPayload;
+    document.getElementById("btnWord").disabled = !lastPayload;
+  }
 
-    setStatus("Running online verification…", "busy");
+  function renderAll(payload){
+    lastPayload = payload;
 
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("style", styleEl.value);
+    document.getElementById("resultsCard").style.display = "block";
+    enableExportButtons();
 
-    // IMPORTANT: keys must match main.py /verify endpoint
-    fd.append("use_crossref", String(!!useCrossrefEl.checked));
-    fd.append("use_openalex", String(!!useOpenalexEl.checked));
-    fd.append("throttle_s", String(throttleEl.value || "0.25"));
-    fd.append("max_verify", String(maxVerifyEl.value || "0"));
+    renderKpis(payload?.summary);
+    renderSummaryTable(payload);
 
-    const res = await fetch("/verify", { method: "POST", body: fd });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      setStatus("Online verification failed. Check /docs and logs.", "error");
-      console.log("VERIFY ERROR:", t);
+    renderMissing(payload?.missing_in_references);
+    renderUncited(payload?.uncited_references);
+    renderC2R(payload?.reconciliation_intext_to_reference);
+    renderR2C(payload?.reconciliation_reference_to_intext);
+    renderVerify(payload?.online_verification);
+
+    setActiveTab("tabSummary");
+  }
+
+  async function apiPost(endpoint, formData){
+    const res = await fetch(endpoint, { method:"POST", body: formData });
+    const ct = res.headers.get("content-type") || "";
+    let data = null;
+
+    if(ct.includes("application/json")){
+      data = await res.json();
+    } else {
+      const txt = await res.text();
+      data = { error: txt || "Unexpected response" };
+    }
+
+    if(!res.ok){
+      return { ok:false, data };
+    }
+    return { ok:true, data };
+  }
+
+  // --- Actions ---
+  async function runCheck(){
+    const file = document.getElementById("file").files[0];
+    if(!file){
+      alert("Select a DOCX or PDF first.");
       return;
     }
 
-    const data = await res.json();
-    fillVerifyUI(data);
+    const form = new FormData();
+    form.append("file", file);
+    form.append("style", document.getElementById("style").value);
+
+    setStatus("Running check...", "busy");
+    document.getElementById("btnCheck").disabled = true;
+    document.getElementById("btnVerify").disabled = true;
+
+    const { ok, data } = await apiPost("/check", form);
+
+    document.getElementById("btnCheck").disabled = false;
+    document.getElementById("btnVerify").disabled = false;
+
+    if(!ok || data?.error){
+      setStatus("Server error. Try again.", "err");
+      alert(data?.error || "Server error");
+      return;
+    }
+
+    setStatus("Check complete.", "ok");
+    renderAll(data);
+  }
+
+  async function runOnlineVerification(){
+    const file = document.getElementById("file").files[0];
+    if(!file){
+      alert("Select a DOCX or PDF first.");
+      return;
+    }
+
+    const form = new FormData();
+    form.append("file", file);
+    form.append("style", document.getElementById("style").value);
+
+    // IMPORTANT: align with engine.py signature
+    form.append("verify_online", "true");
+    form.append("use_crossref", document.getElementById("useCrossref").checked ? "true" : "false");
+    form.append("use_openalex", document.getElementById("useOpenAlex").checked ? "true" : "false");
+    form.append("throttle_s", String(parseFloat(document.getElementById("throttle").value || "0")));
+    form.append("max_verify", String(parseInt(document.getElementById("maxVerify").value || "0", 10)));
+    form.append("verify_mode", document.getElementById("verifyMode").value);
+
+    setStatus("Running online verification...", "busy");
+    document.getElementById("btnVerify").disabled = true;
+    document.getElementById("btnCheck").disabled = true;
+
+    const { ok, data } = await apiPost("/verify", form);
+
+    document.getElementById("btnVerify").disabled = false;
+    document.getElementById("btnCheck").disabled = false;
+
+    if(!ok || data?.error){
+      setStatus("Server error. Try again.", "err");
+      alert(data?.error || "Server error");
+      return;
+    }
 
     setStatus("Online verification complete.", "ok");
+    renderAll(data);
+    setActiveTab("tabVerify");
   }
 
-  runBtn.addEventListener("click", (e) => { e.preventDefault(); runCheck(); });
-  excelBtn.addEventListener("click", () => exportFile("excel"));
-  wordBtn.addEventListener("click", () => exportFile("word"));
-  pdfBtn.addEventListener("click", () => exportFile("pdf"));
+  // --- Export: CSV (client-side) ---
+  // Exports multiple sections into ONE CSV with a "section" column.
+  function exportCSV(){
+    if(!lastPayload){ return; }
 
-  verifyBtn.addEventListener("click", (e) => { e.preventDefault(); runOnlineVerification(); });
+    const rows = [];
+    const pushRow = (section, obj) => rows.push({ section, ...obj });
 
-  // Tabs
-  document.querySelectorAll(".tab").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach(b => {
-        b.classList.remove("active");
-        b.setAttribute("aria-selected", "false");
+    // Summary as rows
+    const s = lastPayload.summary || {};
+    pushRow("summary", { metric:"filename", value:lastPayload.filename || "" });
+    pushRow("summary", { metric:"style", value:lastPayload.style || "" });
+    pushRow("summary", { metric:"in_text_citations_found", value:s.in_text_citations_found ?? 0 });
+    pushRow("summary", { metric:"reference_entries_found", value:s.reference_entries_found ?? 0 });
+    pushRow("summary", { metric:"missing_in_references", value:s.missing_in_references ?? 0 });
+    pushRow("summary", { metric:"uncited_references", value:s.uncited_references ?? 0 });
+
+    // Missing
+    (lastPayload.missing_in_references || []).forEach(r => {
+      pushRow("missing_in_references", {
+        count_in_text: r.count_in_text ?? "",
+        citation_in_text: r.citation_in_text ?? ""
       });
-      btn.classList.add("active");
-      btn.setAttribute("aria-selected", "true");
-
-      const tab = btn.dataset.tab;
-      document.getElementById("tab-missing").classList.toggle("hidden", tab !== "missing");
-      document.getElementById("tab-uncited").classList.toggle("hidden", tab !== "uncited");
-      document.getElementById("tab-recon").classList.toggle("hidden", tab !== "recon");
-      document.getElementById("tab-verify").classList.toggle("hidden", tab !== "verify");
     });
-  });
 
-  // CSV buttons
-  missingCsvBtn.addEventListener("click", () => {
-    const rows = (lastUI && lastUI.missing_rows) || [];
-    downloadText("missing_in_references.csv", toCSV(rows));
-  });
-  uncitedCsvBtn.addEventListener("click", () => {
-    const rows = (lastUI && lastUI.uncited_rows) || [];
-    downloadText("uncited_references.csv", toCSV(rows));
-  });
-  reconCsvBtn.addEventListener("click", () => {
-    const rows = (lastUI && lastUI.recon_rows) || [];
-    downloadText("reconciliation.csv", toCSV(rows));
-  });
-  verifyCsvBtn.addEventListener("click", () => {
-    const rows = (lastVerify && lastVerify.rows) || [];
-    downloadText("online_verification.csv", toCSV(rows));
-  });
+    // Uncited
+    (lastPayload.uncited_references || []).forEach(ref => {
+      pushRow("uncited_references", { reference: ref });
+    });
+
+    // In-text -> ref
+    (lastPayload.reconciliation_intext_to_reference || []).forEach(r => {
+      pushRow("intext_to_reference", {
+        status: r.status ?? "",
+        in_text: r.in_text ?? "",
+        matched_reference: r.matched_reference ?? ""
+      });
+    });
+
+    // Ref -> in-text
+    (lastPayload.reconciliation_reference_to_intext || []).forEach(r => {
+      pushRow("reference_to_intext", {
+        times_cited: r.times_cited ?? 0,
+        reference: r.reference ?? "",
+        cited_by: Array.isArray(r.cited_by) ? r.cited_by.join(" | ") : ""
+      });
+    });
+
+    // Online verification
+    const ov = lastPayload.online_verification || {};
+    (ov.rows || []).forEach(r => {
+      pushRow("online_verification", {
+        status: r.status ?? "",
+        source: r.source ?? "",
+        score: r.score ?? "",
+        doi: r.doi ?? "",
+        matched_year: r.matched_year ?? "",
+        matched_authors: r.matched_authors || r.matched_first_author || "",
+        matched_title: r.matched_title ?? "",
+        query_used: r.query_used ?? "",
+        error: r.error || ""
+      });
+    });
+
+    // Convert to CSV
+    const csv = toCSV(rows);
+    downloadBlob(csv, `citation_crosschecker_results_${dateStamp()}.csv`, "text/csv;charset=utf-8");
+  }
+
+  function toCSV(rows){
+    if(!rows.length) return "";
+    // collect all headers
+    const headers = Array.from(rows.reduce((set, r) => {
+      Object.keys(r).forEach(k => set.add(k));
+      return set;
+    }, new Set()));
+
+    const esc = (v) => {
+      const s = String(v ?? "");
+      if(/[",\n]/.test(s)) return `"${s.replaceAll('"','""')}"`;
+      return s;
+    };
+
+    const lines = [];
+    lines.push(headers.map(esc).join(","));
+    rows.forEach(r => {
+      lines.push(headers.map(h => esc(r[h])).join(","));
+    });
+    return lines.join("\n");
+  }
+
+  function downloadBlob(content, filename, mime){
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function dateStamp(){
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2,"0");
+    return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+
+  // --- Export: Word ---
+  // Simple .doc file (HTML-based) that Word opens.
+  // If you already have a backend /export/word endpoint, you can switch this to call it instead.
+  function exportWord(){
+    if(!lastPayload){ return; }
+
+    const s = lastPayload.summary || {};
+    const ov = lastPayload.online_verification || {};
+    const html = `
+      <html><head><meta charset="utf-8"></head><body>
+      <h1>Citation Crosschecker Results</h1>
+      <p><strong>Filename:</strong> ${escapeHtml(lastPayload.filename || "")}<br/>
+      <strong>Style:</strong> ${escapeHtml(lastPayload.style || "")}</p>
+
+      <h2>Summary</h2>
+      <ul>
+        <li>In-text citations found: ${s.in_text_citations_found ?? 0}</li>
+        <li>Reference entries found: ${s.reference_entries_found ?? 0}</li>
+        <li>Missing in references: ${s.missing_in_references ?? 0}</li>
+        <li>Uncited references: ${s.uncited_references ?? 0}</li>
+      </ul>
+
+      <h2>Missing in References</h2>
+      ${listTable(
+        ["Count", "Citation in text"],
+        (lastPayload.missing_in_references || []).map(r => [r.count_in_text ?? "", r.citation_in_text ?? ""])
+      )}
+
+      <h2>Uncited References</h2>
+      ${listTable(
+        ["Reference"],
+        (lastPayload.uncited_references || []).map(r => [r])
+      )}
+
+      <h2>In-text → Reference</h2>
+      ${listTable(
+        ["Status", "In-text citation", "Matched reference"],
+        (lastPayload.reconciliation_intext_to_reference || []).map(r => [r.status ?? "", r.in_text ?? "", r.matched_reference ?? ""])
+      )}
+
+      <h2>Reference → In-text</h2>
+      ${listTable(
+        ["Times cited", "Reference", "Cited by"],
+        (lastPayload.reconciliation_reference_to_intext || []).map(r => [
+          r.times_cited ?? 0,
+          r.reference ?? "",
+          Array.isArray(r.cited_by) ? r.cited_by.join(" | ") : ""
+        ])
+      )}
+
+      <h2>Online Verification</h2>
+      <p>
+        Verified: ${ov.summary?.verified ?? 0},
+        Likely: ${ov.summary?.likely ?? 0},
+        Needs review: ${ov.summary?.needs_review ?? 0},
+        Not found: ${ov.summary?.not_found ?? 0},
+        Offline: ${ov.summary?.offline ?? 0}
+      </p>
+      ${listTable(
+        ["Status", "Source", "Score", "DOI", "Year", "Matched authors", "Matched title"],
+        (ov.rows || []).map(r => [
+          r.status ?? "",
+          r.source ?? "",
+          r.score ?? "",
+          r.doi ?? "",
+          r.matched_year ?? "",
+          r.matched_authors || r.matched_first_author || "",
+          r.matched_title ?? ""
+        ])
+      )}
+
+      <hr/>
+      <p>© Prof Anokye M. Adam, University of Cape Coast</p>
+      <p><em>Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.</em></p>
+      </body></html>
+    `;
+
+    // Word-friendly wrapper
+    const doc = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office"
+            xmlns:w="urn:schemas-microsoft-com:office:word"
+            xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="utf-8"><title>Citation Crosschecker Results</title></head>
+        <body>${html}</body>
+      </html>
+    `;
+
+    downloadBlob(doc, `citation_crosschecker_results_${dateStamp()}.doc`, "application/msword");
+  }
+
+  function listTable(headers, rows){
+    const th = headers.map(h => `<th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;text-align:left;">${escapeHtml(h)}</th>`).join("");
+    const tr = (rows || []).map(r => {
+      const tds = r.map(c => `<td style="border:1px solid #ddd;padding:6px;vertical-align:top;">${escapeHtml(String(c ?? ""))}</td>`).join("");
+      return `<tr>${tds}</tr>`;
+    }).join("");
+    return `
+      <table style="border-collapse:collapse;width:100%;margin-bottom:14px;">
+        <thead><tr>${th}</tr></thead>
+        <tbody>${tr || `<tr><td colspan="${headers.length}" style="border:1px solid #ddd;padding:6px;color:#6b7280;">No rows.</td></tr>`}</tbody>
+      </table>
+    `;
+  }
 </script>
+
 </body>
 </html>
