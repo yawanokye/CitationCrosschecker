@@ -1,7 +1,7 @@
 # verify.py
 import re
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import requests
 from rapidfuzz import fuzz
@@ -9,9 +9,11 @@ from rapidfuzz import fuzz
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
 
 
+# -----------------------------
+# Basic helpers
+# -----------------------------
 def _normalize_verify_status(s: str) -> str:
-    st = (s or "").strip().lower()
-    st = st.replace(" ", "_")
+    st = (s or "").strip().lower().replace(" ", "_")
     if st not in _ALLOWED_VERIFY_STATUSES:
         st = "needs_review"
     return st
@@ -23,7 +25,13 @@ def _normalize_doi(doi: str) -> str:
         return ""
     d = d.replace("https://doi.org/", "").replace("http://doi.org/", "")
     d = d.replace("https://dx.doi.org/", "").replace("http://dx.doi.org/", "")
-    return d.strip()
+    return d.strip().lower()
+
+
+def _clean_text(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
 
 
 def _safe_get_json(
@@ -55,101 +63,178 @@ def _safe_get_json(
     return None
 
 
+# -----------------------------
+# Reference parsing (lightweight but effective)
+# -----------------------------
+_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", re.I)
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>\"']+\b", re.I)
+
+
 def _extract_year(text: str) -> str:
-    m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", text or "", flags=re.I)
+    m = _YEAR_RE.search(text or "")
     return (m.group(1) + (m.group(2) or "")).lower() if m else ""
 
 
-def _extract_first_author_surname(text: str) -> str:
-    t = (text or "").strip()
-    if not t:
-        return ""
-    # remove leading numbering
-    t = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", t)
-
-    if "," in t:
-        first = t.split(",", 1)[0].strip()
-        return re.sub(r"[^A-Za-z\-']", "", first).lower()
-
-    first = re.split(r"\s+", t)[0].strip()
-    return re.sub(r"[^A-Za-z\-']", "", first).lower()
+def _extract_doi(text: str) -> str:
+    m = _DOI_RE.search(text or "")
+    return _normalize_doi(m.group(0)) if m else ""
 
 
-def _extract_title_guess(text: str) -> str:
-    t = re.sub(r"\s+", " ", (text or "").strip())
-    t = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", t)
-    t = re.sub(r"\(\s*(1[6-9]\d{2}|20\d{2})([a-z])?\s*\)", "", t, flags=re.I)
-    return t.strip()
+def _strip_leading_numbering(ref: str) -> str:
+    r = ref or ""
+    r = re.sub(r"^\s*\[\s*\d+\s*\]\s*", "", r)  # [12]
+    r = re.sub(r"^\s*\d+\s*[\.\)]\s*", "", r)  # 12. or 12)
+    return r.strip()
 
 
-def _score_candidate(ref_raw: str, cand: dict) -> Dict[str, Any]:
-    ref_year = _extract_year(ref_raw)
-    ref_author = _extract_first_author_surname(ref_raw)
-    ref_title = _extract_title_guess(ref_raw)
+def _split_authors_segment(seg: str) -> List[str]:
+    seg = (seg or "").replace("&", " and ")
+    seg = re.sub(r"\bet\s+al\.?\b", "", seg, flags=re.I)
+    parts = re.split(r"\s+and\s+|,", seg)
+    names = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # take surname-ish token
+        tok = re.sub(r"[^A-Za-z\-']", " ", p).strip()
+        if not tok:
+            continue
+        # surname usually last word in token
+        surn = tok.split()[-1].lower()
+        if len(surn) >= 2:
+            names.append(surn)
+    # de-dup preserving order
+    seen = set()
+    out = []
+    for n in names:
+        if n not in seen:
+            out.append(n)
+            seen.add(n)
+    return out[:8]
 
-    cand_title = ""
-    cand_year = ""
-    cand_author = ""
-    cand_authors = ""
-    cand_doi = ""
 
-    if cand.get("source") == "crossref":
-        item = cand.get("item", {}) or {}
-        cand_doi = _normalize_doi((item.get("DOI") or "").strip())
-        titles = item.get("title") or []
-        cand_title = (titles[0] if titles else "") or ""
-        cand_year = str((item.get("published-print", {}).get("date-parts") or [[None]])[0][0] or
-                        (item.get("published-online", {}).get("date-parts") or [[None]])[0][0] or "")
-        authors = item.get("author") or []
-        if authors:
-            cand_author = (authors[0].get("family") or "").lower()
-            cand_authors = ", ".join([(a.get("family") or "").strip() for a in authors[:6] if (a.get("family") or "").strip()])
+def _extract_authors_guess(ref: str) -> List[str]:
+    """
+    Best effort:
+    - APA-like: "Surname, I., Surname, I., & Surname, I. (Year)..."
+    - Numeric: "Surname AB, Surname CD. Title. Year..."
+    We take up to the first 3 surnames as strong signal.
+    """
+    r = _strip_leading_numbering(ref)
+    if not r:
+        return []
+    # Stop at year parentheses if present
+    cut = r
+    m = re.search(r"\(\s*(1[6-9]\d{2}|20\d{2})", r)
+    if m:
+        cut = r[:m.start()].strip()
 
-    if cand.get("source") == "openalex":
-        item = cand.get("item", {}) or {}
-        cand_doi = _normalize_doi((item.get("doi") or "").replace("https://doi.org/", "").strip())
-        cand_title = (item.get("title") or "") or ""
-        cand_year = str(item.get("publication_year") or "")
-        auths = item.get("authorships") or []
-        if auths and auths[0].get("author"):
-            cand_author = (auths[0]["author"].get("display_name") or "").split()[-1].lower()
-        cand_authors = ", ".join(
-            [((a.get("author") or {}).get("display_name") or "").strip() for a in auths[:6] if ((a.get("author") or {}).get("display_name") or "").strip()]
-        )
+    # Stop at first period if it looks like end of author list
+    # Many styles separate authors and title with a period
+    if "." in cut:
+        left = cut.split(".", 1)[0]
+        if len(left) > 5:
+            cut = left
 
-    title_score = fuzz.token_set_ratio(ref_title, cand_title) if (ref_title and cand_title) else 0
-    author_match = 1 if (ref_author and cand_author and ref_author == cand_author) else 0
-    year_match = 1 if (ref_year and cand_year and ref_year[:4] == str(cand_year)[:4]) else 0
+    return _split_authors_segment(cut)[:3]
 
-    score = int(title_score) + (20 * author_match) + (10 * year_match)
 
+def _extract_title_guess(ref: str) -> str:
+    """
+    For verification, title similarity is dominant.
+    We remove leading numbering, authors, year parentheses, and then take a title-ish chunk.
+    """
+    r = _strip_leading_numbering(ref)
+    r = re.sub(r"\s+", " ", r).strip()
+
+    # remove DOI/URL tail
+    r = re.sub(r"https?://\S+", "", r, flags=re.I).strip()
+    r = re.sub(_DOI_RE, "", r).strip()
+
+    # remove year in parentheses
+    r = re.sub(r"\(\s*(1[6-9]\d{2}|20\d{2})([a-z])?\s*\)", "", r, flags=re.I).strip()
+
+    # common pattern: authors. title. journal...
+    # take between first period and second period, if plausible
+    parts = [p.strip() for p in r.split(".") if p.strip()]
+    if len(parts) >= 2:
+        # parts[0] often authors, parts[1] often title
+        title = parts[1]
+        if len(title) >= 10:
+            return title
+
+    # fallback: remove first author segment heuristically
+    # if comma exists, remove up to last comma + maybe initials
+    if "," in r and len(r.split(",", 1)[0]) < 40:
+        # remove first chunk before first period if any
+        if "." in r:
+            return r.split(".", 1)[1].strip()
+    return r[:220].strip()
+
+
+def _reference_features(ref: str) -> Dict[str, Any]:
+    ref_clean = _clean_text(ref)
     return {
-        "score": int(score),
-        "title_score": int(title_score),
-        "author_match": int(author_match),
-        "year_match": int(year_match),
-        "doi": cand_doi,
-        "matched_title": cand_title,
-        "matched_year": cand_year,
-        "matched_first_author": cand_author,
-        "matched_authors": cand_authors,
+        "ref": ref_clean,
+        "doi": _extract_doi(ref_clean),
+        "year": _extract_year(ref_clean),
+        "authors": _extract_authors_guess(ref_clean),
+        "title": _extract_title_guess(ref_clean),
     }
 
 
-def _classify(score: int, author_match: int, year_match: int) -> str:
-    # Stable conservative thresholds
-    if score >= 120 and author_match and year_match:
-        return "verified"
-    if score >= 105 and (author_match or year_match):
-        return "likely"
-    if score >= 85:
-        return "needs_review"
-    return "not_found"
+# -----------------------------
+# Query building (multi-strategy)
+# -----------------------------
+def _build_queries(feat: Dict[str, Any]) -> List[str]:
+    """
+    Multiple strategies, fastest and most precise first.
+    """
+    ref = feat.get("ref", "")
+    doi = feat.get("doi", "")
+    year = feat.get("year", "")
+    authors = feat.get("authors", []) or []
+    title = feat.get("title", "")
+
+    qs = []
+
+    # If DOI exists, DOI wins (some refs include DOI)
+    if doi:
+        qs.append(f"DOI:{doi}")
+
+    # Strong structured queries
+    if title and authors:
+        qs.append(f"{' '.join(authors[:2])} {year[:4]} {title}")
+        qs.append(f"{' '.join(authors[:2])} {title}")
+
+    if title:
+        # title-first query reduces noise a lot
+        if year:
+            qs.append(f"{title} {year[:4]}")
+        qs.append(title)
+
+    # fallback: raw ref
+    qs.append(ref)
+
+    # de-dup, preserve order
+    seen = set()
+    out = []
+    for q in qs:
+        q = _clean_text(q)
+        if q and q.lower() not in seen:
+            out.append(q)
+            seen.add(q.lower())
+
+    return out[:6]
 
 
-def _query_crossref(session: requests.Session, ref_raw: str) -> List[Dict[str, Any]]:
+# -----------------------------
+# API queries
+# -----------------------------
+def _query_crossref(session: requests.Session, query: str) -> List[Dict[str, Any]]:
     url = "https://api.crossref.org/works"
-    params = {"query.bibliographic": ref_raw, "rows": 5}
+    params = {"query.bibliographic": query, "rows": 8}
     data = _safe_get_json(session, url, params=params, timeout=12, retries=2)
     if not data:
         return []
@@ -157,10 +242,9 @@ def _query_crossref(session: requests.Session, ref_raw: str) -> List[Dict[str, A
     return [{"source": "crossref", "item": it} for it in items]
 
 
-def _query_openalex(session: requests.Session, ref_raw: str) -> List[Dict[str, Any]]:
+def _query_openalex(session: requests.Session, query: str) -> List[Dict[str, Any]]:
     url = "https://api.openalex.org/works"
-    # ✅ FIX: correct OpenAlex param is per_page, not per-page
-    params = {"search": ref_raw, "per_page": 5}
+    params = {"search": query, "per_page": 8}
     data = _safe_get_json(session, url, params=params, timeout=12, retries=2)
     if not data:
         return []
@@ -168,10 +252,130 @@ def _query_openalex(session: requests.Session, ref_raw: str) -> List[Dict[str, A
     return [{"source": "openalex", "item": it} for it in results]
 
 
+# -----------------------------
+# Candidate extraction and scoring
+# -----------------------------
+def _candidate_fields(cand: Dict[str, Any]) -> Dict[str, str]:
+    src = cand.get("source")
+    item = cand.get("item", {}) or {}
+
+    if src == "crossref":
+        doi = _normalize_doi(item.get("DOI") or "")
+        titles = item.get("title") or []
+        title = (titles[0] if titles else "") or ""
+        year = ""
+        year = str(
+            (item.get("published-print", {}).get("date-parts") or [[None]])[0][0]
+            or (item.get("published-online", {}).get("date-parts") or [[None]])[0][0]
+            or ""
+        )
+        authors = item.get("author") or []
+        author_surnames = [((a.get("family") or "")).strip().lower() for a in authors if (a.get("family") or "").strip()]
+        return {
+            "doi": doi,
+            "title": title,
+            "year": year,
+            "authors": ", ".join(author_surnames[:8]),
+            "first_author": (author_surnames[0] if author_surnames else ""),
+        }
+
+    if src == "openalex":
+        doi = _normalize_doi((item.get("doi") or "").replace("https://doi.org/", ""))
+        title = (item.get("title") or "") or ""
+        year = str(item.get("publication_year") or "")
+        auths = item.get("authorships") or []
+        author_surnames = []
+        for a in auths:
+            nm = ((a.get("author") or {}).get("display_name") or "").strip()
+            if nm:
+                author_surnames.append(nm.split()[-1].lower())
+        return {
+            "doi": doi,
+            "title": title,
+            "year": year,
+            "authors": ", ".join(author_surnames[:8]),
+            "first_author": (author_surnames[0] if author_surnames else ""),
+        }
+
+    return {"doi": "", "title": "", "year": "", "authors": "", "first_author": ""}
+
+
+def _author_overlap_score(ref_authors: List[str], cand_authors_csv: str) -> int:
+    if not ref_authors:
+        return 0
+    cand_authors = [a.strip().lower() for a in (cand_authors_csv or "").split(",") if a.strip()]
+    if not cand_authors:
+        return 0
+    hit = 0
+    for ra in ref_authors[:3]:
+        if ra and ra in cand_authors:
+            hit += 1
+    # scale to 0..30
+    return min(30, hit * 15)
+
+
+def _score(ref_feat: Dict[str, Any], cand: Dict[str, Any]) -> Dict[str, Any]:
+    cf = _candidate_fields(cand)
+
+    ref_title = ref_feat.get("title", "")
+    ref_year = ref_feat.get("year", "")
+    ref_authors = ref_feat.get("authors", []) or []
+    ref_doi = ref_feat.get("doi", "")
+
+    title_score = int(fuzz.token_set_ratio(ref_title, cf["title"])) if (ref_title and cf["title"]) else 0
+
+    year_match = 0
+    if ref_year and cf["year"] and ref_year[:4] == str(cf["year"])[:4]:
+        year_match = 10
+
+    author_score = _author_overlap_score(ref_authors, cf["authors"])
+
+    doi_bonus = 0
+    if ref_doi and cf["doi"] and ref_doi == cf["doi"]:
+        doi_bonus = 60
+
+    # Total score
+    total = title_score + author_score + year_match + doi_bonus
+
+    return {
+        "score": int(total),
+        "title_score": int(title_score),
+        "author_score": int(author_score),
+        "year_bonus": int(year_match),
+        "doi_bonus": int(doi_bonus),
+        "doi": cf["doi"],
+        "matched_title": cf["title"],
+        "matched_year": cf["year"],
+        "matched_first_author": cf["first_author"],
+        "matched_authors": cf["authors"],
+    }
+
+
+def _classify(score: int, doi_bonus: int, title_score: int, author_score: int, year_bonus: int) -> str:
+    # DOI exact match is verified
+    if doi_bonus >= 60:
+        return "verified"
+
+    # Strong combined evidence
+    if score >= 135 and title_score >= 80 and (author_score >= 15 or year_bonus >= 10):
+        return "verified"
+
+    if score >= 115 and title_score >= 70 and (author_score >= 15 or year_bonus >= 10):
+        return "likely"
+
+    if score >= 95 and title_score >= 60:
+        return "needs_review"
+
+    return "not_found"
+
+
+# -----------------------------
+# Main function
+# -----------------------------
 def verify_references_batch(
     references: List[str],
     max_to_check: int = 0,
-    throttle_s: float = 0.15,
+    throttle_s: float = 0.12,
     use_crossref: bool = True,
     use_openalex: bool = True,
 ) -> List[Dict[str, Any]]:
@@ -190,8 +394,11 @@ def verify_references_batch(
     session = requests.Session()
 
     for ref in refs:
+        feat = _reference_features(ref)
+        queries = _build_queries(feat)
+
         row: Dict[str, Any] = {
-            "reference": ref,
+            "reference": feat["ref"],
             "status": "offline",
             "source": "",
             "score": 0,
@@ -200,51 +407,70 @@ def verify_references_batch(
             "matched_first_author": "",
             "matched_authors": "",
             "matched_title": "",
-            "query_used": ref,
+            "query_used": "",
             "error": "",
         }
 
         try:
-            candidates: List[Dict[str, Any]] = []
+            all_candidates: List[Dict[str, Any]] = []
+            used_query = ""
 
-            if use_crossref:
-                candidates.extend(_query_crossref(session, ref))
-                if throttle_s:
-                    time.sleep(max(0.0, float(throttle_s)))
+            # Try queries from strongest to weakest, break early if very good match appears
+            best_meta = None
+            best_cand = None
+            best_src = ""
 
-            if use_openalex:
-                candidates.extend(_query_openalex(session, ref))
-                if throttle_s:
-                    time.sleep(max(0.0, float(throttle_s)))
+            for q in queries:
+                used_query = q
 
-            if not candidates:
+                candidates: List[Dict[str, Any]] = []
+                if use_crossref:
+                    candidates.extend(_query_crossref(session, q))
+                    if throttle_s:
+                        time.sleep(max(0.0, float(throttle_s)))
+
+                if use_openalex:
+                    candidates.extend(_query_openalex(session, q))
+                    if throttle_s:
+                        time.sleep(max(0.0, float(throttle_s)))
+
+                if not candidates:
+                    continue
+
+                for cand in candidates:
+                    meta = _score(feat, cand)
+                    if (best_meta is None) or (meta["score"] > best_meta["score"]):
+                        best_meta = meta
+                        best_cand = cand
+                        best_src = cand.get("source", "")
+
+                # early exit if verified already
+                if best_meta and best_meta.get("doi_bonus", 0) >= 60:
+                    break
+                if best_meta and best_meta["score"] >= 150 and best_meta["title_score"] >= 85:
+                    break
+
+            if not best_meta:
                 row["status"] = "not_found"
+                row["query_used"] = used_query or (queries[0] if queries else "")
                 rows.append(row)
                 continue
 
-            best_score = -1
-            best = None
-            best_meta = None
-
-            for cand in candidates:
-                meta = _score_candidate(ref, cand)
-                if meta["score"] > best_score:
-                    best_score = meta["score"]
-                    best = cand
-                    best_meta = meta
-
-            row["source"] = best.get("source") if best else ""
-            row["score"] = int(best_meta["score"] if best_meta else 0)
-            row["doi"] = best_meta.get("doi", "") if best_meta else ""
-            row["matched_year"] = str(best_meta.get("matched_year", "") if best_meta else "")
-            row["matched_first_author"] = best_meta.get("matched_first_author", "") if best_meta else ""
-            row["matched_authors"] = best_meta.get("matched_authors", "") if best_meta else ""
-            row["matched_title"] = best_meta.get("matched_title", "") if best_meta else ""
+            row["source"] = best_src
+            row["score"] = int(best_meta["score"])
+            row["doi"] = best_meta.get("doi", "")
+            row["matched_year"] = str(best_meta.get("matched_year", "") or "")
+            row["matched_first_author"] = best_meta.get("matched_first_author", "")
+            row["matched_authors"] = best_meta.get("matched_authors", "")
+            row["matched_title"] = best_meta.get("matched_title", "")
+            row["query_used"] = used_query
 
             status = _classify(
-                score=int(row["score"]),
-                author_match=int(best_meta.get("author_match", 0) if best_meta else 0),
-                year_match=int(best_meta.get("year_match", 0) if best_meta else 0),
+                score=int(best_meta["score"]),
+                doi_bonus=int(best_meta.get("doi_bonus", 0)),
+                title_score=int(best_meta.get("title_score", 0)),
+                author_score=int(best_meta.get("author_score", 0)),
+                year_bonus=int(best_meta.get("year_bonus", 0)),
             )
             row["status"] = _normalize_verify_status(status)
             rows.append(row)
