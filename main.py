@@ -1,8 +1,9 @@
 # main.py
 import io
 import time
+import hashlib
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -37,6 +38,34 @@ templates = Jinja2Templates(directory="templates")
 
 
 # -----------------------------
+# Small in-memory cache (fast)
+# -----------------------------
+# Cache check results by (sha256(file_bytes), style)
+_CHECK_CACHE: Dict[str, Dict[str, Any]] = {}
+_CACHE_MAX = 20
+
+
+def _cache_key(file_bytes: bytes, style: str) -> str:
+    h = hashlib.sha256(file_bytes).hexdigest()
+    return f"{h}:{style}"
+
+
+def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+    return _CHECK_CACHE.get(key)
+
+
+def _cache_set(key: str, value: Dict[str, Any]) -> None:
+    if key in _CHECK_CACHE:
+        _CHECK_CACHE[key] = value
+        return
+    if len(_CHECK_CACHE) >= _CACHE_MAX:
+        # remove oldest inserted (simple FIFO)
+        first_key = next(iter(_CHECK_CACHE.keys()))
+        _CHECK_CACHE.pop(first_key, None)
+    _CHECK_CACHE[key] = value
+
+
+# -----------------------------
 # Helpers
 # -----------------------------
 def normalize_style(s: str) -> str:
@@ -57,11 +86,11 @@ def safe_get(d: Dict[str, Any], key: str, default=None):
 def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalise engine output into consistent tables for UI + exports.
-    Engine keys used:
+    Expected engine keys:
       - summary
-      - missing_in_references
-      - uncited_references
-      - reconciliation_intext_to_reference
+      - missing_in_references (list[dict])
+      - uncited_references (list[str] or list[dict])
+      - reconciliation_intext_to_reference (list[dict])
       - online_verification: {summary, rows}
     """
     summary = safe_get(result, "summary", {}) or {}
@@ -70,13 +99,12 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     uncited = safe_get(result, "uncited_references", []) or []
     recon = safe_get(result, "reconciliation_intext_to_reference", []) or []
 
-    # Make everything list-of-dicts for easier table rendering
     missing_rows = []
     for x in missing:
         if isinstance(x, dict):
             missing_rows.append(
                 {
-                    "no": "",  # filled later
+                    "no": "",
                     "citation_in_text": x.get("citation_in_text", ""),
                     "count_in_text": x.get("count_in_text", ""),
                 }
@@ -87,7 +115,6 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     uncited_rows = []
     for x in uncited:
         if isinstance(x, dict):
-            # accept different shapes
             uncited_rows.append(
                 {
                     "no": "",
@@ -112,7 +139,6 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         else:
             recon_rows.append({"no": "", "in_text": str(x), "status": "", "matched_reference": ""})
 
-    # Add numbering
     for i, r in enumerate(missing_rows, start=1):
         r["no"] = i
     for i, r in enumerate(uncited_rows, start=1):
@@ -120,7 +146,6 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     for i, r in enumerate(recon_rows, start=1):
         r["no"] = i
 
-    # Extra stats
     itc = int(summary.get("in_text_citations_found", 0) or 0)
     refn = int(summary.get("reference_entries_found", 0) or 0)
     miss = int(summary.get("missing_in_references", 0) or 0)
@@ -139,7 +164,6 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
-    # Online verification tables (already structured in engine)
     ov = safe_get(result, "online_verification", {}) or {}
     ov_summary = safe_get(ov, "summary", {}) or {}
     ov_rows = safe_get(ov, "rows", []) or []
@@ -155,6 +179,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "score": x.get("score", ""),
                     "doi": x.get("doi", ""),
                     "matched_year": x.get("matched_year", ""),
+                    "matched_first_author": x.get("matched_first_author", ""),
+                    "matched_authors": x.get("matched_authors", ""),
                     "matched_title": x.get("matched_title", ""),
                     "reference": x.get("reference", ""),
                     "query_used": x.get("query_used", ""),
@@ -170,6 +196,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "score": "",
                     "doi": "",
                     "matched_year": "",
+                    "matched_first_author": "",
+                    "matched_authors": "",
                     "matched_title": "",
                     "reference": str(x),
                     "query_used": "",
@@ -195,8 +223,29 @@ def make_csv_bytes(result: Dict[str, Any]) -> bytes:
         raise RuntimeError("pandas not installed. Add pandas to requirements.txt")
 
     t = extract_tables(result)
-    # Default CSV = reconciliation, plus status for quick filtering
-    df = pd.DataFrame(t["recon_rows"])
+
+    # One CSV with sections
+    rows: List[Dict[str, Any]] = []
+    s = t["dashboard"]
+    rows.append({"section": "dashboard", "metric": "in_text_citations_found", "value": s["in_text_citations_found"]})
+    rows.append({"section": "dashboard", "metric": "reference_entries_found", "value": s["reference_entries_found"]})
+    rows.append({"section": "dashboard", "metric": "missing_in_references", "value": s["missing_in_references"]})
+    rows.append({"section": "dashboard", "metric": "uncited_references", "value": s["uncited_references"]})
+    rows.append({"section": "dashboard", "metric": "match_rate_pct", "value": s["match_rate_pct"]})
+
+    for r in t["missing_rows"]:
+        rows.append({"section": "missing_in_references", **r})
+
+    for r in t["uncited_rows"]:
+        rows.append({"section": "uncited_references", **r})
+
+    for r in t["recon_rows"]:
+        rows.append({"section": "reconciliation", **r})
+
+    for r in t["verify_rows"]:
+        rows.append({"section": "online_verification", **r})
+
+    df = pd.DataFrame(rows)
     return df.to_csv(index=False).encode("utf-8")
 
 
@@ -208,8 +257,7 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     doc = Document()
 
     doc.add_heading("Citation Crosschecker Report", level=1)
-    meta = doc.add_paragraph()
-    meta.add_run(f"Generated: {t['dashboard']['timestamp']}\n")
+    doc.add_paragraph(f"Generated: {t['dashboard']['timestamp']}")
 
     doc.add_heading("Dashboard", level=2)
     dash = t["dashboard"]
@@ -260,15 +308,13 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
         [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference")],
     )
 
-    # Online verification section (if present)
     doc.add_heading("Online Verification", level=2)
     vs = t.get("verify_summary") or {}
-    if vs.get("enabled"):
-        p = doc.add_paragraph()
-        p.add_run(
+    if vs:
+        doc.add_paragraph(
             f"Verified: {vs.get('verified', 0)}, Likely: {vs.get('likely', 0)}, "
             f"Needs review: {vs.get('needs_review', 0)}, Not found: {vs.get('not_found', 0)}, "
-            f"Offline: {vs.get('offline', 0)}"
+            f"Offline: {vs.get('offline', 0)}, Total: {vs.get('total', 0)}"
         )
         add_table(
             "Verification Results",
@@ -280,6 +326,7 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
                 ("score", "Score"),
                 ("doi", "DOI"),
                 ("matched_year", "Year"),
+                ("matched_first_author", "First Author"),
                 ("matched_title", "Matched Title"),
                 ("reference", "Reference"),
             ],
@@ -287,10 +334,9 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     else:
         doc.add_paragraph("Not run.")
 
-    # Footer (copyright + disclaimer)
     doc.add_paragraph("")
-    doc.add_paragraph("Copyright © Prof Anokye M. Adam, University of Cape Coast.")
-    doc.add_paragraph("Disclaimer: This checker can make mistakes. Always cross-check results before final decisions.")
+    doc.add_paragraph("© Prof Anokye M. Adam, University of Cape Coast.")
+    doc.add_paragraph("Disclaimer: This checker can make mistakes. Please cross-check before final decisions.")
 
     out = io.BytesIO()
     doc.save(out)
@@ -348,19 +394,18 @@ def make_pdf_bytes(result: Dict[str, Any]) -> bytes:
             line(f"{r.get('no','')}. {(r.get('reference','') or '')[:160]}")
 
     c.setFont("Helvetica-Bold", 12)
-    line("Reconciliation (first 60)", dy=16)
+    line("Online Verification (first 50)", dy=16)
     c.setFont("Helvetica", 9)
-    for r in t["recon_rows"][:60]:
-        line(f"{r.get('no','')}. {r.get('status','')} | {(r.get('in_text','') or '')[:120]}")
-        mr = (r.get("matched_reference", "") or "")[:150]
-        if mr:
-            line(f"   -> {mr}", dy=12)
+    for r in t["verify_rows"][:50]:
+        line(f"{r.get('no','')}. {r.get('status','')} | {r.get('source','')} | {r.get('doi','')}")
+        mt = (r.get("matched_title", "") or "")[:160]
+        if mt:
+            line(f"   -> {mt}", dy=12)
 
-    # Footer (copyright + disclaimer)
     c.setFont("Helvetica", 9)
     line("")
-    line("Copyright © Prof Anokye M. Adam, University of Cape Coast.")
-    line("Disclaimer: This checker can make mistakes. Always cross-check results before final decisions.")
+    line("© Prof Anokye M. Adam, University of Cape Coast.")
+    line("Disclaimer: This checker can make mistakes. Please cross-check before final decisions.")
 
     c.save()
     return out.getvalue()
@@ -395,6 +440,16 @@ async def check(
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
+    key = _cache_key(file_bytes, style_norm)
+    cached = _cache_get(key)
+    if cached:
+        # refresh ui + timing only
+        result = dict(cached)
+        result["filename"] = filename
+        elapsed = round(time.time() - t0, 3)
+        result["elapsed_seconds"] = elapsed
+        return JSONResponse(result)
+
     result = run_crosscheck(
         file_bytes=file_bytes,
         filename=filename,
@@ -414,17 +469,18 @@ async def check(
         "recon_rows": tables["recon_rows"],
     }
 
+    _cache_set(key, dict(result))
     return JSONResponse(result)
 
 
-# ✅ Updated /verify endpoint: ALWAYS WRAPS output
 @app.post("/verify")
 async def verify(
     file: UploadFile = File(...),
     style: str = Form("apa"),
+    verify_mode: str = Form("all"),        # all | missing_only | uncited_only
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
-    throttle_s: float = Form(0.25),
+    throttle_s: float = Form(0.15),
     max_verify: int = Form(0),
 ):
     t0 = time.time()
@@ -437,6 +493,7 @@ async def verify(
         filename=filename,
         style=style_norm,
         verify_online=True,
+        verify_mode=verify_mode,
         use_crossref=bool(use_crossref),
         use_openalex=bool(use_openalex),
         throttle_s=float(throttle_s or 0.0),
@@ -444,25 +501,21 @@ async def verify(
     )
 
     elapsed = round(time.time() - t0, 3)
+    result["elapsed_seconds"] = elapsed
+    result["style"] = style_norm
+    result["filename"] = filename
 
-    # Wrap consistently for the UI (and future-proofing)
-    ov = result.get("online_verification", {"summary": {}, "rows": []}) or {"summary": {}, "rows": []}
     tables = extract_tables(result)
-
-    payload = {
-        "filename": filename,
-        "style": style_norm,
-        "elapsed_seconds": elapsed,
-        "online_verification": {
-            "summary": ov.get("summary", {}) or {},
-            "rows": ov.get("rows", []) or [],
-        },
-        "_ui": {
-            "verify_summary": tables.get("verify_summary", {}) or {},
-            "verify_rows": tables.get("verify_rows", []) or [],
-        },
+    result["_ui"] = {
+        "dashboard": tables["dashboard"],
+        "missing_rows": tables["missing_rows"],
+        "uncited_rows": tables["uncited_rows"],
+        "recon_rows": tables["recon_rows"],
+        "verify_summary": tables["verify_summary"],
+        "verify_rows": tables["verify_rows"],
     }
-    return JSONResponse(payload)
+
+    return JSONResponse(result)
 
 
 @app.post("/export/csv")
@@ -474,7 +527,14 @@ async def export_csv(
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+    key = _cache_key(file_bytes, style_norm)
+    cached = _cache_get(key)
+
+    if cached:
+        result = dict(cached)
+    else:
+        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+
     csv_bytes = make_csv_bytes(result)
 
     base = filename_base(filename)
@@ -496,7 +556,14 @@ async def export_word(
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+    key = _cache_key(file_bytes, style_norm)
+    cached = _cache_get(key)
+
+    if cached:
+        result = dict(cached)
+    else:
+        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+
     docx_bytes = make_word_bytes(result)
 
     base = filename_base(filename)
@@ -518,7 +585,14 @@ async def export_pdf(
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+    key = _cache_key(file_bytes, style_norm)
+    cached = _cache_get(key)
+
+    if cached:
+        result = dict(cached)
+    else:
+        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+
     pdf_bytes = make_pdf_bytes(result)
 
     base = filename_base(filename)
