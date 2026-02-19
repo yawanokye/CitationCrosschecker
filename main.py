@@ -1,16 +1,17 @@
 # main.py
 import time
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List
 
+import pandas as pd
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-
-import pandas as pd
 
 try:
     from docx import Document
@@ -21,9 +22,41 @@ from engine import run_crosscheck
 
 app = FastAPI(title="Citation Crosschecker", version="1.0.0")
 
+# -----------------------------
+# Static + homepage (fixes {"detail":"Not Found"} on /)
+# -----------------------------
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
+
+# Serve /static/style.css
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    """
+    Serves the dashboard UI.
+    Put your HTML at: templates/index.html
+    Put your CSS at:  static/style.css
+    """
+    index_path = TEMPLATES_DIR / "index.html"
+    if not index_path.exists():
+        return HTMLResponse(
+            "<h3>index.html not found</h3>"
+            "<p>Create <b>templates/index.html</b> and <b>static/style.css</b>.</p>",
+            status_code=500,
+        )
+    return HTMLResponse(index_path.read_text(encoding="utf-8"))
+
+
+# -----------------------------
+# CORS
+# -----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten later
+    allow_origins=["*"],  # tighten later if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -194,21 +227,18 @@ async def check(
 ):
     t0 = time.time()
     contents = await file.read()
+
     result = run_crosscheck(
         file_bytes=contents,
         filename=file.filename,
         style=style,
         verify_online=False,
     )
+
     ui = _build_ui_payload(result)
     elapsed = round(time.time() - t0, 3)
 
-    # IMPORTANT: match index.html expectations
-    return JSONResponse({
-        **result,
-        "_ui": ui,
-        "elapsed_seconds": elapsed,
-    })
+    return JSONResponse({**result, "_ui": ui, "elapsed_seconds": elapsed})
 
 
 @app.post("/verify")
@@ -222,6 +252,7 @@ async def verify(
     use_openalex: bool = Form(True),
 ):
     contents = await file.read()
+
     result = run_crosscheck(
         file_bytes=contents,
         filename=file.filename,
@@ -239,7 +270,6 @@ async def verify(
         "rows": (result.get("online_verification") or []),
     }
 
-    # Stable response contract your fillVerifyUI uses
     return JSONResponse({"online_verification": block})
 
 
@@ -249,6 +279,7 @@ async def export_excel(
     style: str = Form("apa"),
 ):
     contents = await file.read()
+
     result = run_crosscheck(
         file_bytes=contents,
         filename=file.filename,
@@ -284,6 +315,7 @@ async def export_word(
     use_openalex: bool = Form(True),
 ):
     contents = await file.read()
+
     result = run_crosscheck(
         file_bytes=contents,
         filename=file.filename,
@@ -316,6 +348,7 @@ async def export_pdf(
     use_openalex: bool = Form(True),
 ):
     contents = await file.read()
+
     result = run_crosscheck(
         file_bytes=contents,
         filename=file.filename,
