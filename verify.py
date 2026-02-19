@@ -1,15 +1,7 @@
 # verify.py
-# Strict online verification (Crossref + OpenAlex)
-# Criteria (stricter):
-# - Exact year match (if year is available)
-# - Title must match very strongly (near-exact similarity)
-# - Author match uses MULTIPLE authors where available (not just first author)
-# - Returns DOI when verified
-
 import re
 import time
-import unicodedata
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
 from rapidfuzz import fuzz
@@ -22,43 +14,31 @@ YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
 YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
 
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "citation-crosschecker/fastapi (contact: admin)"})
+SESSION.headers.update({"User-Agent": "citation-crosschecker/fastapi (contact: admin@example.com)"})
+
+COMMON_NON_AUTHOR = {
+    "journal","research","study","analysis","results","discussion","evidence","theory","review",
+    "report","proceedings","conference","international","national","university","press","publisher",
+    "volume","vol","issue","no","pp","pages","doi","http","https","org",
+}
 
 
-# -----------------------------
-# HTTP
-# -----------------------------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=6))
 def _get_json(url: str, params: dict) -> dict:
-    r = SESSION.get(url, params=params, timeout=20)
+    r = SESSION.get(url, params=params, timeout=25)
     r.raise_for_status()
     return r.json()
 
 
-# -----------------------------
-# Normalisation
-# -----------------------------
-def _strip_accents(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s or "")
-    return "".join(ch for ch in s if not unicodedata.combining(ch))
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip()).lower()
 
 
-def norm_text(s: str) -> str:
-    s = _strip_accents(s or "")
-    s = s.lower()
-    s = s.replace("’", "'").replace("“", '"').replace("”", '"')
-    s = re.sub(r"\s+", " ", s)
-    s = s.strip()
-    return s
-
-
-def norm_title(s: str) -> str:
-    s = norm_text(s)
-    s = re.sub(r"https?://\S+", " ", s)
-    s = re.sub(r"\b10\.\d{4,9}/\S+", " ", s)
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+def _as_int_year(y: Optional[str]) -> Optional[int]:
+    if not y:
+        return None
+    m = re.search(r"(16|17|18|19|20)\d{2}", str(y))
+    return int(m.group(0)) if m else None
 
 
 def extract_doi(text: str) -> Optional[str]:
@@ -76,130 +56,63 @@ def extract_doi(text: str) -> Optional[str]:
     return doi if doi.lower().startswith("10.") else None
 
 
-def _as_int_year(y: Optional[str]) -> Optional[int]:
-    if not y:
-        return None
-    m = re.search(r"(16|17|18|19|20)\d{2}", str(y))
-    return int(m.group(0)) if m else None
-
-
-# -----------------------------
-# Reference parsing (title + authors)
-# -----------------------------
-def _clean_author_token(a: str) -> str:
-    a = (a or "").strip()
-    a = a.replace("&", " and ")
-    a = re.sub(r"\bet\s+al\.?\b", " ", a, flags=re.I)
-    a = re.sub(r"[^A-Za-z\-\s']", " ", a)
-    a = re.sub(r"\s+", " ", a).strip()
-    return a
-
-
-def extract_authors_from_reference(ref: str, max_authors: int = 8) -> List[str]:
-    """
-    Returns a list of likely author surnames from the start of the reference.
-    Works for typical APA-like: Surname, I., Surname, I., & Surname, I. (Year) ...
-    Also tolerates some variations.
-    """
-    if not ref:
-        return []
-
-    s = " ".join(ref.split())
-    # Cut at year if present
-    m = YEAR_RE.search(s)
-    head = s[: m.start()].strip() if m else s[:250].strip()
-
-    head = _clean_author_token(head)
-
-    # Split by 'and' or commas
-    parts = [p.strip() for p in re.split(r"\s+and\s+|,", head) if p.strip()]
-
-    surnames: List[str] = []
-    for p in parts:
-        toks = p.split()
-        if not toks:
-            continue
-        # heuristic: surname is last token in chunk
-        sn = toks[-1].strip()
-        if len(sn) < 2:
-            continue
-        if not re.fullmatch(r"[A-Za-z\-']{2,40}", sn):
-            continue
-        surnames.append(sn)
-
-    # De-dup preserve order
-    out = []
-    seen = set()
-    for sn in surnames:
-        k = sn.lower()
-        if k not in seen:
-            out.append(sn)
-            seen.add(k)
-        if len(out) >= max_authors:
-            break
-    return out
-
-
 def extract_year_from_reference(ref: str) -> Optional[str]:
     m = YEAR_RE.search(ref or "")
     return m.group(1) if m else None
 
 
+def extract_authors_surnames(ref: str, max_authors: int = 5) -> List[str]:
+    if not ref:
+        return []
+    y = YEAR_RE.search(ref)
+    head = ref[: y.start()] if y else ref[:240]
+
+    # Prefer APA-like "Surname," patterns
+    surnames = []
+    for m in re.finditer(r"\b([A-Z][A-Za-z\-']{1,40})\s*,", head):
+        s = m.group(1).strip()
+        if _norm(s) not in COMMON_NON_AUTHOR:
+            surnames.append(s)
+        if len(surnames) >= max_authors:
+            break
+
+    # Fallback: first token before comma
+    if not surnames and "," in head:
+        first = head.split(",")[0].strip()
+        if first and _norm(first) not in COMMON_NON_AUTHOR:
+            surnames = [first]
+
+    # Dedup
+    seen = set()
+    out = []
+    for s in surnames:
+        k = _norm(s)
+        if k and k not in seen:
+            out.append(s)
+            seen.add(k)
+    return out
+
+
 def extract_title_from_reference(ref: str) -> str:
-    """
-    Tries to pull a cleaner title candidate:
-    - Remove DOI/URLs
-    - Prefer quoted title if present
-    - Else take text after year and before next period
-    - Fallback to robust snippet
-    """
     if not ref:
         return ""
-
-    s = " ".join(ref.split())
-    s = re.sub(r"https?://doi\.org/\S+", " ", s, flags=re.I)
-    s = re.sub(r"\b10\.\d{4,9}/\S+", " ", s, flags=re.I)
-    s = " ".join(s.split())
-
-    # Quoted title
-    qm = re.search(r"\"([^\"]{8,300})\"", s)
-    if qm:
-        return qm.group(1).strip()
-
-    # After year, up to next period
-    ym = YEAR_RE.search(s)
-    if ym:
-        tail = s[ym.end() :].strip()
-        # remove leading punctuation
-        tail = re.sub(r"^[\)\]\}\s\.\-:;]+", "", tail)
-        # stop at first period that likely ends title
-        # (titles sometimes have colon, keep it)
-        pm = re.search(r"\.\s", tail)
-        if pm:
-            cand = tail[: pm.start()].strip()
-            if len(cand.split()) >= 3:
-                return cand
-
-    # Fallback: robust snippet
-    return guess_title_snippet(s)
-
-
-def guess_title_snippet(ref: str) -> str:
-    r = " ".join((ref or "").split())
+    r = " ".join(ref.split())
     r = re.sub(r"https?://doi\.org/\S+", " ", r, flags=re.I)
     r = re.sub(r"\b10\.\d{4,9}/\S+", " ", r, flags=re.I)
-    r = re.sub(rf"\(.*?\b{YEAR}\b.*?\)", " ", r, flags=re.I)
-    r = " ".join(r.split())
-    # remove leading author blob roughly
-    r = re.sub(r"^[^\.]{1,260}\.\s*", " ", r)
-    r = " ".join(r.split())
-    words = r.split()
-    return " ".join(words[:24])[:320]
+
+    # After "(YEAR). "
+    m = re.search(rf"\(\s*{YEAR}\s*\)\.\s*", r)
+    if m:
+        tail = r[m.end():]
+        parts = tail.split(".")
+        title = parts[0].strip() if parts else ""
+        return title[:300]
+
+    # If no "(YEAR)." pattern, use first sentence chunk
+    parts = r.split(".")
+    return (parts[0].strip() if parts else r.strip())[:300]
 
 
-# -----------------------------
-# Crossref helpers
-# -----------------------------
 def crossref_item_year(it: dict) -> Optional[int]:
     for key in ["issued", "published-print", "published-online", "created"]:
         dp = (it.get(key, {}) or {}).get("date-parts", [])
@@ -211,12 +124,12 @@ def crossref_item_year(it: dict) -> Optional[int]:
     return None
 
 
-def crossref_authors_families(it: dict, max_n: int = 10) -> List[str]:
+def crossref_authors_families(it: dict, max_authors: int = 8) -> List[str]:
     authors = it.get("author") or []
     fams = []
-    for a in authors[:max_n]:
+    for a in authors[:max_authors]:
         fam = (a.get("family") or "").strip()
-        if fam:
+        if fam and _norm(fam) not in COMMON_NON_AUTHOR:
             fams.append(fam)
     return fams
 
@@ -226,41 +139,6 @@ def crossref_title(it: dict) -> str:
     return (t[0] if t else "") or ""
 
 
-def _crossref_lookup_by_doi(doi: str) -> Optional[dict]:
-    try:
-        data = _get_json(f"{CROSSREF_API}/{doi}", params={})
-        return data.get("message")
-    except Exception:
-        return None
-
-
-def _crossref_search_strict(title: str, authors: List[str], year: Optional[int], rows: int = 20) -> List[dict]:
-    """
-    Uses Crossref query.title + query.author and year filter if provided.
-    This is stricter than query.bibliographic.
-    """
-    params: Dict[str, Any] = {"rows": rows}
-    title = (title or "").strip()
-    if title:
-        params["query.title"] = title[:300]
-    # Include up to 2 authors in query.author to reduce false hits
-    if authors:
-        params["query.author"] = " ".join(authors[:2])[:120]
-
-    # Year filter: exact window
-    if year:
-        params["filter"] = f"from-pub-date:{year}-01-01,until-pub-date:{year}-12-31"
-
-    try:
-        data = _get_json(CROSSREF_API, params=params)
-        return data.get("message", {}).get("items", []) or []
-    except Exception:
-        return []
-
-
-# -----------------------------
-# OpenAlex helpers
-# -----------------------------
 def openalex_year(it: dict) -> Optional[int]:
     y = it.get("publication_year")
     try:
@@ -269,13 +147,15 @@ def openalex_year(it: dict) -> Optional[int]:
         return None
 
 
-def openalex_authors_families(it: dict, max_n: int = 10) -> List[str]:
+def openalex_authors_families(it: dict, max_authors: int = 8) -> List[str]:
     authorships = it.get("authorships") or []
     fams = []
-    for au in authorships[:max_n]:
+    for au in authorships[:max_authors]:
         dn = ((au.get("author") or {}).get("display_name") or "").strip()
         if dn:
-            fams.append(dn.split()[-1])
+            fam = dn.split()[-1]
+            if _norm(fam) not in COMMON_NON_AUTHOR:
+                fams.append(fam)
     return fams
 
 
@@ -292,246 +172,184 @@ def openalex_doi(it: dict) -> str:
     return d
 
 
-def _openalex_search_strict(title: str, year: Optional[int], per_page: int = 20) -> List[dict]:
-    params: Dict[str, Any] = {"search": (title or "")[:300], "per-page": per_page}
-    if year:
-        params["filter"] = f"publication_year:{year}"
+def author_overlap(ref_surnames: List[str], cand_surnames: List[str]) -> int:
+    rs = {_norm(x) for x in (ref_surnames or []) if x}
+    cs = {_norm(x) for x in (cand_surnames or []) if x}
+    return len(rs.intersection(cs))
+
+
+def year_score(ref_year: Optional[int], cand_year: Optional[int]) -> float:
+    if ref_year is None or cand_year is None:
+        return 0.0
+    if ref_year == cand_year:
+        return 1.0
+    d = abs(ref_year - cand_year)
+    if d == 1:
+        return 0.8
+    if d == 2:
+        return 0.4
+    return 0.0
+
+
+def _crossref_lookup_by_doi(doi: str) -> Optional[dict]:
     try:
-        data = _get_json(OPENALEX_API, params=params)
+        data = _get_json(f"{CROSSREF_API}/{doi}", params={})
+        return data.get("message")
+    except Exception:
+        return None
+
+
+def _crossref_search(query: str, rows: int = 12) -> List[dict]:
+    try:
+        data = _get_json(CROSSREF_API, params={"query.bibliographic": query, "rows": rows})
+        return data.get("message", {}).get("items", []) or []
+    except Exception:
+        return []
+
+
+def _openalex_search(query: str, per_page: int = 12) -> List[dict]:
+    try:
+        data = _get_json(OPENALEX_API, params={"search": query, "per-page": per_page})
         return data.get("results", []) or []
     except Exception:
         return []
 
 
-# -----------------------------
-# Matching logic (STRICT)
-# -----------------------------
-def _author_overlap(ref_authors: List[str], cand_authors: List[str]) -> Tuple[int, int]:
-    """
-    returns (matches, required)
-    required is dynamic:
-      - if ref has >=3 authors -> require 2 matches
-      - if ref has 2 authors -> require 2 matches
-      - if ref has 1 author -> require 1 match
-    """
-    ref_set = {a.lower() for a in (ref_authors or []) if a}
-    cand_set = {a.lower() for a in (cand_authors or []) if a}
-    matches = len(ref_set.intersection(cand_set))
-
-    if len(ref_set) >= 2:
-        required = 2
-    else:
-        required = 1
-
-    # If we could not extract authors reliably, force required=0 (don’t block)
-    if len(ref_set) == 0:
-        required = 0
-
-    return matches, required
-
-
-def _year_ok_strict(ref_year: Optional[int], cand_year: Optional[int]) -> bool:
-    if ref_year is None:
-        return True  # allow if reference has no year
-    if cand_year is None:
-        return False
-    return ref_year == cand_year
-
-
-def _title_score_strict(ref_title: str, cand_title: str) -> int:
-    a = norm_title(ref_title)
-    b = norm_title(cand_title)
-    if not a or not b:
-        return 0
-    # Use two measures and take the minimum for strictness
-    s1 = fuzz.WRatio(a, b)
-    s2 = fuzz.token_set_ratio(a, b)
-    return int(min(s1, s2))
-
-
-def _is_verified_strict(title_score: int, author_matches: int, author_required: int, year_ok: bool) -> bool:
-    if not year_ok:
-        return False
-    if title_score < 96:  # near-exact
-        return False
-    if author_required > 0 and author_matches < author_required:
-        return False
-    return True
-
-
-# -----------------------------
-# Public API
-# -----------------------------
-def verify_one_reference(
+def verify_one_reference_optimised(
     reference_text: str,
     throttle_s: float = 0.25,
     use_crossref: bool = True,
     use_openalex: bool = True,
 ) -> Dict[str, Any]:
     """
-    Returns:
-      status: verified | needs_review | not_found | offline
-      source: crossref_doi | crossref | openalex
-      score: int (strict title score)
-      verified: bool
-      doi, matched_year, matched_authors, matched_title
-      query_used, error
-      reason: why verified/not
+    Optimised verification:
+      - Weighted score: Title(0.60) + Authors(0.30) + Year(0.10)
+      - Controlled relaxation: year ±2 gives some credit, not an outright rejection
+      - Requires at least 1 author overlap if reference has authors
+      - Guards against title/journal tokens being treated as authors
     """
     try:
         time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-        ref_doi = extract_doi(reference_text)
+        doi = extract_doi(reference_text)
         ref_year = _as_int_year(extract_year_from_reference(reference_text))
-        ref_authors = extract_authors_from_reference(reference_text)
+        ref_authors = extract_authors_surnames(reference_text, max_authors=5)
         ref_title = extract_title_from_reference(reference_text)
 
-        # DOI path first (Crossref DOI is authoritative)
-        if ref_doi and use_crossref:
-            cr = _crossref_lookup_by_doi(ref_doi)
+        # DOI shortcut
+        if doi and use_crossref:
+            cr = _crossref_lookup_by_doi(doi)
             if cr:
-                cand_year = crossref_item_year(cr)
-                cand_title = crossref_title(cr)
-                cand_authors = crossref_authors_families(cr)
-
-                title_score = _title_score_strict(ref_title, cand_title) if ref_title else 100
-                year_ok = _year_ok_strict(ref_year, cand_year)
-                am, req = _author_overlap(ref_authors, cand_authors)
-
-                verified = year_ok and (req == 0 or am >= req) and (title_score >= 90)
-                reason = "DOI lookup matched" if verified else "DOI found but metadata mismatch"
-
                 return {
-                    "status": "verified" if verified else "needs_review",
-                    "verified": bool(verified),
+                    "status": "verified",
                     "source": "crossref_doi",
-                    "score": int(title_score),
-                    "doi": ref_doi,
-                    "matched_year": str(cand_year or ""),
-                    "matched_authors": ", ".join(cand_authors[:6]),
-                    "matched_title": (cand_title or "")[:220],
+                    "score": 100,
+                    "doi": doi,
+                    "matched_year": str(crossref_item_year(cr) or ""),
+                    "matched_authors": ", ".join(crossref_authors_families(cr)[:5]),
+                    "matched_title": (crossref_title(cr) or "")[:180],
                     "query_used": "doi_lookup",
                     "error": "",
-                    "reason": reason,
                 }
 
-            return {
-                "status": "not_found",
-                "verified": False,
-                "source": "crossref_doi",
-                "score": 0,
-                "doi": ref_doi,
-                "matched_year": "",
-                "matched_authors": "",
-                "matched_title": "",
-                "query_used": "doi_lookup",
-                "error": "",
-                "reason": "DOI not found in Crossref",
-            }
-
-        # Build strict query parts
-        title_q = (ref_title or "").strip()
-        if not title_q:
-            # Title missing, fall back (still strict-ish)
-            title_q = guess_title_snippet(reference_text)
-
-        query_used = f"title={title_q[:180]}"
+        # Query strategy: title + first author + year (when available)
+        q_parts = []
+        if ref_title:
+            q_parts.append(ref_title)
         if ref_authors:
-            query_used += f" | authors={','.join(ref_authors[:3])}"
+            q_parts.append(ref_authors[0])
         if ref_year:
-            query_used += f" | year={ref_year}"
+            q_parts.append(str(ref_year))
+        query = " ".join(q_parts).strip() or reference_text[:220]
 
         best = {
             "status": "not_found",
-            "verified": False,
             "source": "",
             "score": 0,
-            "doi": "",
+            "doi": doi or "",
             "matched_year": "",
             "matched_authors": "",
             "matched_title": "",
-            "query_used": query_used[:240],
+            "query_used": query[:220],
             "error": "",
-            "reason": "No acceptable match found",
         }
 
-        # --- Crossref strict search
+        # If ref has authors, require at least one overlap to accept candidate
+        require_author_overlap = len(ref_authors) > 0
+
+        def evaluate_candidate(cand_title: str, cand_year: Optional[int], cand_authors: List[str], cand_doi: str, source: str):
+            nonlocal best
+
+            # Title similarity (relaxed but guarded)
+            t_sim = fuzz.WRatio(_norm(ref_title), _norm(cand_title)) if (ref_title and cand_title) else 0
+            if t_sim < 82:
+                return
+
+            # Author overlap score
+            overlap = author_overlap(ref_authors, cand_authors)
+            if require_author_overlap and overlap < 1:
+                return
+
+            # author ratio: overlap / min(len(ref), len(cand))
+            denom = max(1, min(len(ref_authors), len(cand_authors)))
+            a_ratio = overlap / denom if denom else 0.0
+
+            # Year score
+            y_sc = year_score(ref_year, cand_year)
+
+            # Weighted score (0..100)
+            score = (0.60 * (t_sim / 100.0) + 0.30 * a_ratio + 0.10 * y_sc) * 100.0
+            score_i = int(round(score))
+
+            if score_i > best["score"]:
+                if score_i >= 90:
+                    status = "verified"
+                elif score_i >= 80:
+                    status = "likely"
+                elif score_i >= 70:
+                    status = "needs_review"
+                else:
+                    status = "not_found"
+
+                best = {
+                    "status": status,
+                    "source": source,
+                    "score": score_i,
+                    "doi": cand_doi or "",
+                    "matched_year": str(cand_year or ""),
+                    "matched_authors": ", ".join(cand_authors[:5]),
+                    "matched_title": (cand_title or "")[:180],
+                    "query_used": query[:220],
+                    "error": "",
+                }
+
         if use_crossref:
-            items = _crossref_search_strict(title=title_q, authors=ref_authors, year=ref_year, rows=20)
+            items = _crossref_search(query, rows=12)
             for it in items:
-                cand_year = crossref_item_year(it)
-                cand_title = crossref_title(it)
-                cand_authors = crossref_authors_families(it)
-                cand_doi = (it.get("DOI") or "").strip()
+                evaluate_candidate(
+                    cand_title=crossref_title(it),
+                    cand_year=crossref_item_year(it),
+                    cand_authors=crossref_authors_families(it, max_authors=8),
+                    cand_doi=(it.get("DOI") or "").strip(),
+                    source="crossref",
+                )
 
-                year_ok = _year_ok_strict(ref_year, cand_year)
-                title_score = _title_score_strict(title_q, cand_title)
-                am, req = _author_overlap(ref_authors, cand_authors)
-                verified = _is_verified_strict(title_score, am, req, year_ok)
-
-                # Candidate ranking: prefer verified; otherwise highest strict title score with year_ok
-                rank = title_score + (50 if verified else 0) + (10 if year_ok else 0) + (5 if am >= req and req > 0 else 0)
-
-                if rank > best["score"]:
-                    best = {
-                        "status": "verified" if verified else ("needs_review" if year_ok and title_score >= 90 else "not_found"),
-                        "verified": bool(verified),
-                        "source": "crossref",
-                        "score": int(rank),
-                        "doi": cand_doi,
-                        "matched_year": str(cand_year or ""),
-                        "matched_authors": ", ".join(cand_authors[:6]),
-                        "matched_title": (cand_title or "")[:220],
-                        "query_used": query_used[:240],
-                        "error": "",
-                        "reason": (
-                            "Strict match: title + authors + year" if verified
-                            else f"Closest Crossref hit, title_score={title_score}, author_matches={am}/{req}, year_ok={year_ok}"
-                        ),
-                    }
-
-        # --- OpenAlex strict search
         if use_openalex:
-            items = _openalex_search_strict(title=title_q, year=ref_year, per_page=20)
+            items = _openalex_search(query, per_page=12)
             for it in items:
-                cand_year = openalex_year(it)
-                cand_title = openalex_title(it)
-                cand_authors = openalex_authors_families(it)
-                cand_doi = openalex_doi(it)
+                evaluate_candidate(
+                    cand_title=openalex_title(it),
+                    cand_year=openalex_year(it),
+                    cand_authors=openalex_authors_families(it, max_authors=8),
+                    cand_doi=openalex_doi(it),
+                    source="openalex",
+                )
 
-                year_ok = _year_ok_strict(ref_year, cand_year)
-                title_score = _title_score_strict(title_q, cand_title)
-                am, req = _author_overlap(ref_authors, cand_authors)
-                verified = _is_verified_strict(title_score, am, req, year_ok)
-
-                rank = title_score + (50 if verified else 0) + (10 if year_ok else 0) + (5 if am >= req and req > 0 else 0)
-
-                if rank > best["score"]:
-                    best = {
-                        "status": "verified" if verified else ("needs_review" if year_ok and title_score >= 90 else "not_found"),
-                        "verified": bool(verified),
-                        "source": "openalex",
-                        "score": int(rank),
-                        "doi": cand_doi,
-                        "matched_year": str(cand_year or ""),
-                        "matched_authors": ", ".join(cand_authors[:6]),
-                        "matched_title": (cand_title or "")[:220],
-                        "query_used": query_used[:240],
-                        "error": "",
-                        "reason": (
-                            "Strict match: title + authors + year" if verified
-                            else f"Closest OpenAlex hit, title_score={title_score}, author_matches={am}/{req}, year_ok={year_ok}"
-                        ),
-                    }
-
-        # Convert rank score back to a meaningful strict title score for display (optional)
-        # We keep rank in "score" because it helps selection, but you can display reason anyway.
         return best
 
     except Exception as e:
         return {
             "status": "offline",
-            "verified": False,
             "source": "",
             "score": 0,
             "doi": "",
@@ -540,24 +358,23 @@ def verify_one_reference(
             "matched_title": "",
             "query_used": "",
             "error": str(e)[:220],
-            "reason": "Verification crashed",
         }
 
 
 def verify_references_batch(
     references: List[str],
-    max_to_check: int = 0,          # 0 = ALL
+    max_to_check: int = 0,
     throttle_s: float = 0.25,
     use_crossref: bool = True,
     use_openalex: bool = True,
 ) -> List[Dict[str, Any]]:
-    work = list(references or [])
-    if max_to_check and max_to_check > 0:
+    work = references or []
+    if max_to_check and int(max_to_check) > 0:
         work = work[: int(max_to_check)]
 
     rows: List[Dict[str, Any]] = []
     for ref in work:
-        res = verify_one_reference(
+        res = verify_one_reference_optimised(
             reference_text=ref,
             throttle_s=throttle_s,
             use_crossref=use_crossref,
@@ -567,7 +384,6 @@ def verify_references_batch(
             {
                 "reference": ref,
                 "status": res.get("status", ""),
-                "verified": res.get("verified", False),
                 "source": res.get("source", ""),
                 "score": res.get("score", ""),
                 "doi": res.get("doi", ""),
@@ -575,7 +391,6 @@ def verify_references_batch(
                 "matched_authors": res.get("matched_authors", ""),
                 "matched_title": res.get("matched_title", ""),
                 "query_used": res.get("query_used", ""),
-                "reason": res.get("reason", ""),
                 "error": res.get("error", ""),
             }
         )
