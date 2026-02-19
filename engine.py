@@ -46,7 +46,6 @@ NONCITE_LEADS = {
     "chapter", "section", "table", "figure", "eq", "equation", "appendix",
 }
 
-# Words that should NEVER be treated as author surnames (narrative lead-ins)
 BAD_NARRATIVE_PREFIX_WORDS = {
     "similarly", "however", "nonetheless", "therefore", "thus", "hence",
     "moreover", "furthermore", "consequently", "instead", "meanwhile",
@@ -58,7 +57,6 @@ BAD_NARRATIVE_PREFIX_WORDS = {
     "table", "figure", "equation", "appendix", "chapter", "section",
 }
 
-# Helps block common title phrases like "Journal of X (2018)" being treated as author
 COMMON_TITLE_TOKENS = {
     "journal", "research", "study", "analysis", "results", "discussion",
     "evidence", "theory", "review", "report", "proceedings", "conference",
@@ -75,6 +73,16 @@ ORG_ALIASES = {
     "unicef": ["unicef", "united nations children's fund", "united nations childrens fund"],
 }
 ORG_ACRONYMS = {k.upper() for k in ["WHO", "UN", "OECD", "IMF", "UNESCO", "UNICEF", "WORLD BANK", "IBRD"]}
+
+_ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
+
+
+def _normalize_verify_status(s: str) -> str:
+    st = (s or "").strip().lower()
+    st = st.replace(" ", "_")
+    if st not in _ALLOWED_VERIFY_STATUSES:
+        st = "needs_review"
+    return st
 
 
 # -----------------------------
@@ -259,25 +267,21 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
     if not r:
         return None
 
-    # Prefer (YEAR) in parentheses
     m = re.search(rf"\(\s*({YEAR})\s*\)", r, flags=re.I)
     if m:
         year = m.group(1)
         pre = r[: m.start()].strip()
     else:
-        # fallback first YEAR anywhere
         m2 = YEAR_RE.search(r)
         if not m2:
             return None
         year = m2.group(1)
         pre = r[: m2.start()].strip()
 
-    # Org author
     if is_known_org(pre) or pre.upper() in ORG_ACRONYMS:
         k = f"org_{canon_org(pre)}_{year.lower()}"
         return ReferenceEntry(raw=r, key=k, year=year, surnames=(pre,), number=None)
 
-    # First author surname
     if "," in pre:
         first = pre.split(",")[0].strip()
     else:
@@ -343,7 +347,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
                 return True
         return False
 
-    # Parenthetical blocks: (Adam, 2018; Kofi, 2019)
     for m in re.finditer(rf"\(([^()]*\b{YEAR}\b[^()]*)\)", txt, flags=re.I):
         inside = m.group(1).strip()
         if is_bare_year_parenthetical(inside):
@@ -366,7 +369,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
                 out.append(InTextCitation("author-year", f"({norm_space(c)})", k, year=y, surnames=(left,)))
                 continue
 
-            # et al.
             if re.search(r"\bet\s+al\.?\b", left, flags=re.I):
                 first = clean_surname(left)
                 if looks_like_surname(first):
@@ -382,7 +384,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             first = cand[0]
             out.append(InTextCitation("author-year", f"({norm_space(c)})", key_author_year(first, y), year=y, surnames=tuple(cand)))
 
-    # Harvard narrative with commas: Adam, Kofi, & Yaw (2018)  OR  Adam, Kofi and Yaw (2018)
     narr_harvard_commas = re.finditer(
         rf"""
         (?<![A-Za-z])
@@ -415,7 +416,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
         out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=tuple(cand)))
         taken_spans.append(span)
 
-    # Multi-author narrative: Adam and Yaw (2018)
     narr_multi = re.finditer(
         rf"""
         (?<![A-Za-z])
@@ -453,7 +453,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
         out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=tuple(cand)))
         taken_spans.append(span)
 
-    # et al. narrative
     for m in re.finditer(
         rf"\b(?P<a>[A-Z][A-Za-z\-']{{1,40}})\s+et\s+al\.\s*\(\s*(?P<y>{YEAR})\s*\)",
         txt,
@@ -471,7 +470,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=(first,)))
             taken_spans.append(span)
 
-    # Single author narrative (guarded)
     for m in re.finditer(rf"\b(?P<author>[A-Z][A-Za-z\-']{{1,40}})\s*\(\s*(?P<year>{YEAR})\s*\)", txt, flags=re.I):
         span = (m.start(), m.end())
         if _overlaps(span, taken_spans):
@@ -492,7 +490,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             if looks_like_surname(au):
                 out.append(InTextCitation("author-year", m.group(0), key_author_year(au, y), year=y, surnames=(au,)))
 
-    # De-duplicate by raw
     uniq: List[InTextCitation] = []
     seen = set()
     for c in out:
@@ -648,28 +645,19 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
 
 def _online_verify_select_refs(
     refs: List[ReferenceEntry],
-    cites: List[InTextCitation],
     uncited_raw: List[str],
     verify_mode: str,
 ) -> List[str]:
-    """
-    verify_mode options (aligned with /verify endpoint):
-      - "all": verify all reference entries
-      - "missing": faster mode, verify uncited references first (falls back to all if none)
-    """
     mode = (verify_mode or "missing").strip().lower()
-
     all_ref_texts = [r.raw for r in refs]
+
     if mode == "all":
         return all_ref_texts
 
-    # "missing" mode: verify uncited references (often where problems hide)
-    work = [r for r in all_ref_texts if r in set(uncited_raw)]
-    if work:
-        return work
-
-    # fallback to all if no uncited
-    return all_ref_texts
+    # missing mode: verify uncited
+    uncited_set = set(uncited_raw or [])
+    work = [r for r in all_ref_texts if r in uncited_set]
+    return work if work else all_ref_texts
 
 
 # -----------------------------
@@ -686,21 +674,6 @@ def run_crosscheck(
     use_crossref: bool = True,
     use_openalex: bool = True,
 ) -> Dict[str, Any]:
-    """
-    FINAL SIGNATURE (matches /verify endpoint exactly):
-
-    run_crosscheck(
-        file_bytes, filename, style,
-        verify_online, verify_mode, max_verify,
-        throttle_s, use_crossref, use_openalex
-    )
-
-    Notes:
-    - verify_online=False makes /check fast
-    - verify_online=True runs verification and returns:
-        online_verification: List[Dict[str,Any]]   (rows only)
-        online_verification_summary: Dict[str,int] (counts)
-    """
     name = (filename or "").lower().strip()
 
     if name.endswith(".docx"):
@@ -725,7 +698,6 @@ def run_crosscheck(
         references_raw = _merge_reference_lines(ref_block_lines)
 
     style_norm = (style or "apa").strip().lower()
-    # Treat APA/Harvard as "apa" here
     if style_norm in ("apa/harvard", "harvard", "author-year"):
         style_norm = "apa"
 
@@ -740,7 +712,6 @@ def run_crosscheck(
         refs = [r for r in refs if r is not None]
         c2r, r2c = reconcile_numeric(cites, refs)
     else:
-        # Vancouver
         cites = extract_vancouver_numeric_citations(main_text)
         refs = [parse_reference_numeric(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
@@ -752,18 +723,9 @@ def run_crosscheck(
     # Online verification (optional)
     # -----------------------------
     verify_rows: List[Dict[str, Any]] = []
-    verify_summary = {
-        "enabled": False,
-        "verified": 0,
-        "likely": 0,
-        "needs_review": 0,
-        "not_found": 0,
-        "offline": 0,
-    }
+    verify_counts = {k: 0 for k in ["verified", "likely", "needs_review", "not_found", "offline"]}
 
     if verify_online:
-        verify_summary["enabled"] = True
-
         if not VERIFY_OK:
             verify_rows = [{
                 "reference": "",
@@ -777,16 +739,10 @@ def run_crosscheck(
                 "query_used": "",
                 "error": "verify.py not available or import failed",
             }]
-            verify_summary["offline"] = 1
+            verify_counts["offline"] = 1
         else:
-            selected = _online_verify_select_refs(
-                refs=refs,
-                cites=cites,
-                uncited_raw=uncited,
-                verify_mode=verify_mode,
-            )
+            selected = _online_verify_select_refs(refs=refs, uncited_raw=uncited, verify_mode=verify_mode)
 
-            # Apply max_verify (0 = all)
             mv = int(max_verify or 0)
             if mv > 0:
                 selected = selected[:mv]
@@ -799,13 +755,23 @@ def run_crosscheck(
                 use_openalex=bool(use_openalex),
             )
 
+            # HARD ENFORCEMENT: normalize each row status and count from that
             for row in verify_rows:
-                st = (row.get("status") or "").strip().lower()
-                if st in verify_summary:
-                    verify_summary[st] += 1
+                row["status"] = _normalize_verify_status(row.get("status"))
+                verify_counts[row["status"]] += 1
 
-    # Important: return online_verification as LIST (rows),
-    # so main.py extract_tables can display it directly.
+    verify_summary_out = {
+        **verify_counts,
+        "total": int(sum(verify_counts.values())),
+    }
+
+    # Stable nested block (what /verify + UI should rely on)
+    online_verification_block = {
+        "summary": verify_summary_out,
+        "rows": verify_rows,
+    }
+
+    # Backward-compatible fields still included
     return {
         "filename": filename,
         "style": style_norm,
@@ -821,8 +787,14 @@ def run_crosscheck(
         "reconciliation_intext_to_reference": c2r[:5000],
         "reconciliation_reference_to_intext": r2c[:5000],
 
-        # UI expects list-of-dicts here
+        # legacy fields
         "online_verification": verify_rows,
-        "online_verification_summary": verify_summary,
+        "online_verification_summary": {
+            **verify_summary_out,
+            "enabled": bool(verify_online),
+        },
+
+        # stable block
+        "online_verification_block": online_verification_block,
         "verify_mode_used": (verify_mode or "missing"),
     }
