@@ -18,8 +18,6 @@
     --warn:#d97706;
     --bad:#dc2626;
     --chip:#f1f5f9;
-    --mono:#0b1220;
-    --monoText:#a7f3d0;
   }
 
   *{ box-sizing:border-box; }
@@ -89,7 +87,6 @@
     color: #111827;
   }
 
-  /* Upload strip */
   .upload-strip{
     display:flex;
     gap:12px;
@@ -137,6 +134,25 @@
     border-color: var(--accent2);
   }
 
+  .btn-ghost{
+    background:#fff;
+  }
+
+  .toolbar{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:space-between;
+    margin-top: 12px;
+  }
+  .toolbar-left, .toolbar-right{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    align-items:center;
+  }
+
   .settings{
     display:flex;
     gap:14px;
@@ -146,6 +162,7 @@
     border: 1px solid var(--border);
     border-radius: 12px;
     background: #fafafa;
+    margin-top: 12px;
   }
   .settings label{
     display:flex;
@@ -162,7 +179,6 @@
     font-size: 14px;
   }
 
-  /* Tabs */
   .tabs{
     display:flex;
     gap:8px;
@@ -190,7 +206,6 @@
   .tab-panel{ display:none; }
   .tab-panel.active{ display:block; }
 
-  /* KPIs */
   .kpis{
     display:grid;
     grid-template-columns: repeat(4, 1fr);
@@ -208,7 +223,6 @@
   .kpi.warn .k-val{ color: var(--warn); }
   .kpi.bad  .k-val{ color: var(--bad); }
 
-  /* Table */
   .table-wrap{
     overflow:auto;
     border: 1px solid var(--border);
@@ -264,17 +278,6 @@
   .status.busy{ color: var(--warn); }
   .status.err{ color: var(--bad); }
 
-  .mono{
-    background: #0b1220;
-    color: var(--monoText);
-    padding: 12px;
-    border-radius: 12px;
-    overflow:auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px;
-    border: 1px solid rgba(255,255,255,0.08);
-  }
-
   .footer{
     text-align:center;
     color: var(--muted);
@@ -289,6 +292,7 @@
   }
   @media (max-width: 560px){
     .kpis{ grid-template-columns: 1fr; }
+    table{ min-width: 680px; }
   }
 </style>
 </head>
@@ -331,8 +335,6 @@
         <button id="btnVerify" onclick="runOnlineVerification()">Run Online Verification</button>
       </div>
 
-      <div style="height:12px;"></div>
-
       <div class="settings">
         <label><input type="checkbox" id="useCrossref" checked /> Use Crossref</label>
         <label><input type="checkbox" id="useOpenAlex" checked /> Use OpenAlex</label>
@@ -362,7 +364,15 @@
 
     <!-- Results -->
     <div class="card" id="resultsCard" style="display:none;">
-      <div class="section-title">Results</div>
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="section-title" style="margin:0;">Results</div>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn-ghost" id="btnCsv" onclick="exportCSV()" disabled>Export CSV</button>
+          <button class="btn-ghost" id="btnWord" onclick="exportWord()" disabled>Export Word</button>
+        </div>
+      </div>
 
       <div class="tabs" role="tablist" aria-label="Results tabs">
         <div class="tab active" data-tab="tabSummary" role="tab" tabindex="0">Summary</div>
@@ -371,7 +381,6 @@
         <div class="tab" data-tab="tabC2R" role="tab" tabindex="0">In-text → Reference</div>
         <div class="tab" data-tab="tabR2C" role="tab" tabindex="0">Reference → In-text</div>
         <div class="tab" data-tab="tabVerify" role="tab" tabindex="0">Online Verification</div>
-        <div class="tab" data-tab="tabRaw" role="tab" tabindex="0">Raw JSON</div>
       </div>
 
       <!-- Summary -->
@@ -488,13 +497,7 @@
         </div>
 
         <div style="height:10px;"></div>
-        <div class="muted">Tip: If verified is low, reduce strictness in verify.py or increase search rows.</div>
-      </div>
-
-      <!-- Raw -->
-      <div class="tab-panel" id="tabRaw">
-        <div class="muted" style="margin-bottom:10px;">Raw response from the API.</div>
-        <pre class="mono" id="rawJson"></pre>
+        <div class="muted">Tip: Run online verification only when needed, it can take time on Render.</div>
       </div>
 
     </div>
@@ -510,7 +513,7 @@
 
 <script>
   // --- State ---
-  let lastCheckPayload = null; // stores /check result for later /verify calls if needed
+  let lastPayload = null; // stores latest /check or /verify response
 
   // --- Tabs ---
   function setActiveTab(tabId){
@@ -620,7 +623,6 @@
       tbody.innerHTML = `<tr><td colspan="2" class="muted">No uncited references.</td></tr>`;
       return;
     }
-    // uncited list is strings in your engine.py output
     tbody.innerHTML = rows.map(ref => `
       <tr>
         <td><span class="pill">0</span></td>
@@ -696,28 +698,26 @@
     `).join("");
   }
 
+  function enableExportButtons(){
+    document.getElementById("btnCsv").disabled = !lastPayload;
+    document.getElementById("btnWord").disabled = !lastPayload;
+  }
+
   function renderAll(payload){
-    lastCheckPayload = payload;
+    lastPayload = payload;
 
     document.getElementById("resultsCard").style.display = "block";
+    enableExportButtons();
 
-    // Summary
     renderKpis(payload?.summary);
     renderSummaryTable(payload);
 
-    // Missing / Uncited / Tables
     renderMissing(payload?.missing_in_references);
     renderUncited(payload?.uncited_references);
     renderC2R(payload?.reconciliation_intext_to_reference);
     renderR2C(payload?.reconciliation_reference_to_intext);
-
-    // Verify
     renderVerify(payload?.online_verification);
 
-    // Raw JSON
-    document.getElementById("rawJson").textContent = JSON.stringify(payload, null, 2);
-
-    // Always land on Summary after run
     setActiveTab("tabSummary");
   }
 
@@ -761,10 +761,8 @@
     document.getElementById("btnVerify").disabled = false;
 
     if(!ok || data?.error){
-      setStatus("Server error. See Raw JSON tab.", "err");
-      document.getElementById("resultsCard").style.display = "block";
-      document.getElementById("rawJson").textContent = JSON.stringify(data, null, 2);
-      setActiveTab("tabRaw");
+      setStatus("Server error. Try again.", "err");
+      alert(data?.error || "Server error");
       return;
     }
 
@@ -801,16 +799,227 @@
     document.getElementById("btnCheck").disabled = false;
 
     if(!ok || data?.error){
-      setStatus("Server error. See Raw JSON tab.", "err");
-      document.getElementById("resultsCard").style.display = "block";
-      document.getElementById("rawJson").textContent = JSON.stringify(data, null, 2);
-      setActiveTab("tabRaw");
+      setStatus("Server error. Try again.", "err");
+      alert(data?.error || "Server error");
       return;
     }
 
     setStatus("Online verification complete.", "ok");
     renderAll(data);
     setActiveTab("tabVerify");
+  }
+
+  // --- Export: CSV (client-side) ---
+  // Exports multiple sections into ONE CSV with a "section" column.
+  function exportCSV(){
+    if(!lastPayload){ return; }
+
+    const rows = [];
+    const pushRow = (section, obj) => rows.push({ section, ...obj });
+
+    // Summary as rows
+    const s = lastPayload.summary || {};
+    pushRow("summary", { metric:"filename", value:lastPayload.filename || "" });
+    pushRow("summary", { metric:"style", value:lastPayload.style || "" });
+    pushRow("summary", { metric:"in_text_citations_found", value:s.in_text_citations_found ?? 0 });
+    pushRow("summary", { metric:"reference_entries_found", value:s.reference_entries_found ?? 0 });
+    pushRow("summary", { metric:"missing_in_references", value:s.missing_in_references ?? 0 });
+    pushRow("summary", { metric:"uncited_references", value:s.uncited_references ?? 0 });
+
+    // Missing
+    (lastPayload.missing_in_references || []).forEach(r => {
+      pushRow("missing_in_references", {
+        count_in_text: r.count_in_text ?? "",
+        citation_in_text: r.citation_in_text ?? ""
+      });
+    });
+
+    // Uncited
+    (lastPayload.uncited_references || []).forEach(ref => {
+      pushRow("uncited_references", { reference: ref });
+    });
+
+    // In-text -> ref
+    (lastPayload.reconciliation_intext_to_reference || []).forEach(r => {
+      pushRow("intext_to_reference", {
+        status: r.status ?? "",
+        in_text: r.in_text ?? "",
+        matched_reference: r.matched_reference ?? ""
+      });
+    });
+
+    // Ref -> in-text
+    (lastPayload.reconciliation_reference_to_intext || []).forEach(r => {
+      pushRow("reference_to_intext", {
+        times_cited: r.times_cited ?? 0,
+        reference: r.reference ?? "",
+        cited_by: Array.isArray(r.cited_by) ? r.cited_by.join(" | ") : ""
+      });
+    });
+
+    // Online verification
+    const ov = lastPayload.online_verification || {};
+    (ov.rows || []).forEach(r => {
+      pushRow("online_verification", {
+        status: r.status ?? "",
+        source: r.source ?? "",
+        score: r.score ?? "",
+        doi: r.doi ?? "",
+        matched_year: r.matched_year ?? "",
+        matched_authors: r.matched_authors || r.matched_first_author || "",
+        matched_title: r.matched_title ?? "",
+        query_used: r.query_used ?? "",
+        error: r.error || ""
+      });
+    });
+
+    // Convert to CSV
+    const csv = toCSV(rows);
+    downloadBlob(csv, `citation_crosschecker_results_${dateStamp()}.csv`, "text/csv;charset=utf-8");
+  }
+
+  function toCSV(rows){
+    if(!rows.length) return "";
+    // collect all headers
+    const headers = Array.from(rows.reduce((set, r) => {
+      Object.keys(r).forEach(k => set.add(k));
+      return set;
+    }, new Set()));
+
+    const esc = (v) => {
+      const s = String(v ?? "");
+      if(/[",\n]/.test(s)) return `"${s.replaceAll('"','""')}"`;
+      return s;
+    };
+
+    const lines = [];
+    lines.push(headers.map(esc).join(","));
+    rows.forEach(r => {
+      lines.push(headers.map(h => esc(r[h])).join(","));
+    });
+    return lines.join("\n");
+  }
+
+  function downloadBlob(content, filename, mime){
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function dateStamp(){
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2,"0");
+    return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+
+  // --- Export: Word ---
+  // Simple .doc file (HTML-based) that Word opens.
+  // If you already have a backend /export/word endpoint, you can switch this to call it instead.
+  function exportWord(){
+    if(!lastPayload){ return; }
+
+    const s = lastPayload.summary || {};
+    const ov = lastPayload.online_verification || {};
+    const html = `
+      <html><head><meta charset="utf-8"></head><body>
+      <h1>Citation Crosschecker Results</h1>
+      <p><strong>Filename:</strong> ${escapeHtml(lastPayload.filename || "")}<br/>
+      <strong>Style:</strong> ${escapeHtml(lastPayload.style || "")}</p>
+
+      <h2>Summary</h2>
+      <ul>
+        <li>In-text citations found: ${s.in_text_citations_found ?? 0}</li>
+        <li>Reference entries found: ${s.reference_entries_found ?? 0}</li>
+        <li>Missing in references: ${s.missing_in_references ?? 0}</li>
+        <li>Uncited references: ${s.uncited_references ?? 0}</li>
+      </ul>
+
+      <h2>Missing in References</h2>
+      ${listTable(
+        ["Count", "Citation in text"],
+        (lastPayload.missing_in_references || []).map(r => [r.count_in_text ?? "", r.citation_in_text ?? ""])
+      )}
+
+      <h2>Uncited References</h2>
+      ${listTable(
+        ["Reference"],
+        (lastPayload.uncited_references || []).map(r => [r])
+      )}
+
+      <h2>In-text → Reference</h2>
+      ${listTable(
+        ["Status", "In-text citation", "Matched reference"],
+        (lastPayload.reconciliation_intext_to_reference || []).map(r => [r.status ?? "", r.in_text ?? "", r.matched_reference ?? ""])
+      )}
+
+      <h2>Reference → In-text</h2>
+      ${listTable(
+        ["Times cited", "Reference", "Cited by"],
+        (lastPayload.reconciliation_reference_to_intext || []).map(r => [
+          r.times_cited ?? 0,
+          r.reference ?? "",
+          Array.isArray(r.cited_by) ? r.cited_by.join(" | ") : ""
+        ])
+      )}
+
+      <h2>Online Verification</h2>
+      <p>
+        Verified: ${ov.summary?.verified ?? 0},
+        Likely: ${ov.summary?.likely ?? 0},
+        Needs review: ${ov.summary?.needs_review ?? 0},
+        Not found: ${ov.summary?.not_found ?? 0},
+        Offline: ${ov.summary?.offline ?? 0}
+      </p>
+      ${listTable(
+        ["Status", "Source", "Score", "DOI", "Year", "Matched authors", "Matched title"],
+        (ov.rows || []).map(r => [
+          r.status ?? "",
+          r.source ?? "",
+          r.score ?? "",
+          r.doi ?? "",
+          r.matched_year ?? "",
+          r.matched_authors || r.matched_first_author || "",
+          r.matched_title ?? ""
+        ])
+      )}
+
+      <hr/>
+      <p>© Prof Anokye M. Adam, University of Cape Coast</p>
+      <p><em>Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.</em></p>
+      </body></html>
+    `;
+
+    // Word-friendly wrapper
+    const doc = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office"
+            xmlns:w="urn:schemas-microsoft-com:office:word"
+            xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="utf-8"><title>Citation Crosschecker Results</title></head>
+        <body>${html}</body>
+      </html>
+    `;
+
+    downloadBlob(doc, `citation_crosschecker_results_${dateStamp()}.doc`, "application/msword");
+  }
+
+  function listTable(headers, rows){
+    const th = headers.map(h => `<th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;text-align:left;">${escapeHtml(h)}</th>`).join("");
+    const tr = (rows || []).map(r => {
+      const tds = r.map(c => `<td style="border:1px solid #ddd;padding:6px;vertical-align:top;">${escapeHtml(String(c ?? ""))}</td>`).join("");
+      return `<tr>${tds}</tr>`;
+    }).join("");
+    return `
+      <table style="border-collapse:collapse;width:100%;margin-bottom:14px;">
+        <thead><tr>${th}</tr></thead>
+        <tbody>${tr || `<tr><td colspan="${headers.length}" style="border:1px solid #ddd;padding:6px;color:#6b7280;">No rows.</td></tr>`}</tbody>
+      </table>
+    `;
   }
 </script>
 
