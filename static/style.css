@@ -259,14 +259,38 @@ td.wrap{
   margin-top: 16px;
   color: var(--muted);
   display:flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content:center;
+  align-items: center;
+  text-align: center;
+}
+.footerLinks{
+  display:flex;
   gap:10px;
   justify-content:center;
+  align-items:center;
 }
 .footer a{
   color: var(--muted);
   text-decoration:none;
 }
 .footer a:hover{ color: var(--text); }
+
+.legal{
+  max-width: 980px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.copyright{
+  color: var(--text);
+  font-weight: 600;
+}
+.disclaimer{
+  margin-top: 4px;
+  color: var(--muted);
+}
+
 
 .hidden{ display:none; }
 
