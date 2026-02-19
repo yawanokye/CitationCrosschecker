@@ -1,488 +1,297 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Citation Crosschecker</title>
-  <link rel="stylesheet" href="/static/style.css" />
+<meta charset="UTF-8">
+<title>Citation Crosschecker</title>
+
+<style>
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial;
+    background: #f4f6f9;
+    margin: 0;
+}
+
+/* Header */
+.header {
+    background: white;
+    padding: 20px 40px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.header-title {
+    font-size: 30px;
+    font-weight: 700;
+    color: #1a1a1a;
+}
+
+.header-sub {
+    color: #666;
+    margin-top: 4px;
+}
+
+/* Main container */
+.container {
+    max-width: 950px;
+    margin: 30px auto;
+    background: white;
+    padding: 30px;
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+}
+
+/* Sections */
+.section {
+    margin-bottom: 25px;
+}
+
+.section-title {
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+/* File input */
+.file-box {
+    border: 2px dashed #ccc;
+    padding: 18px;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+/* Controls row */
+.row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+/* Buttons */
+button {
+    padding: 10px 18px;
+    border-radius: 6px;
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-primary {
+    background: #5b5bd6;
+    color: white;
+}
+
+.btn-secondary {
+    background: #e7e7ef;
+}
+
+.btn-primary:hover {
+    background: #4a4ac2;
+}
+
+.btn-secondary:hover {
+    background: #d8d8e2;
+}
+
+/* Settings box */
+.settings {
+    background: #fafafa;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+}
+
+/* Export buttons */
+.export-row {
+    margin-top: 15px;
+}
+
+/* Status */
+.status {
+    margin-top: 15px;
+    font-weight: 600;
+    color: #2e7d32;
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 20px;
+    margin-top: 40px;
+    font-size: 13px;
+    color: #666;
+}
+
+.footer .copyright {
+    margin-bottom: 6px;
+}
+
+</style>
+
 </head>
+
 <body>
-  <div class="page">
-    <header class="header">
-      <div class="brand">
-        <div class="logo">CC</div>
-        <div>
-          <h1>Citation Crosschecker</h1>
-          <p class="sub">Upload a DOCX or PDF. Run a fast check first, then verify online only when needed.</p>
-          <p class="sub small">© Prof Anokye M. Adam, University of Cape Coast</p>
-          <p class="sub small">Disclaimer: This checker can make mistakes. Always cross-check critical citations manually.</p>
+
+<div class="header">
+    <div class="header-title">Citation Crosschecker</div>
+    <div class="header-sub">
+        Upload a DOCX or PDF. Run fast check first, verify online only if needed.
+    </div>
+</div>
+
+
+<div class="container">
+
+    <!-- Upload -->
+    <div class="section">
+        <div class="section-title">Document</div>
+
+        <div class="file-box">
+            <input type="file" id="file">
         </div>
-      </div>
-      <div class="badge">FastAPI</div>
-    </header>
+    </div>
 
-    <section class="card">
-      <div class="form-row">
-        <label class="file">
-          <input id="file" type="file" accept=".pdf,.docx" />
-          <span class="file-btn">Choose file</span>
-          <span id="fileName" class="file-name">No file selected</span>
-        </label>
 
-        <label class="select">
-          <span class="label">Style</span>
-          <select id="style">
-            <option value="apa">APA/Harvard</option>
-            <option value="ieee">IEEE</option>
-            <option value="vancouver">Vancouver</option>
-          </select>
-        </label>
+    <!-- Style and Run -->
+    <div class="section">
+        <div class="section-title">Citation Style and Analysis</div>
 
-        <button id="runBtn" class="btn primary">Run Check</button>
-        <button id="verifyBtn" class="btn" disabled>Run Online Verification</button>
-      </div>
+        <div class="row">
 
-      <div class="verify-box">
-        <div class="verify-row">
-          <label class="check">
-            <input id="useCrossref" type="checkbox" checked />
-            <span>Use Crossref</span>
-          </label>
-
-          <label class="check">
-            <input id="useOpenalex" type="checkbox" checked />
-            <span>Use OpenAlex</span>
-          </label>
-        </div>
-
-        <div class="verify-row">
-          <label class="field">
-            <span class="label">Throttle (seconds)</span>
-            <input id="throttle" type="number" min="0" step="0.05" value="0.25" />
-          </label>
-
-          <label class="field">
-            <span class="label">Max verify (0 = all)</span>
-            <input id="maxVerify" type="number" min="0" step="1" value="0" />
-          </label>
-
-          <label class="select">
-            <span class="label">Verify mode</span>
-            <select id="verifyMode">
-              <option value="missing" selected>Missing only (faster)</option>
-              <option value="all">All references</option>
+            <select id="style">
+                <option value="apa">APA / Harvard</option>
+                <option value="ieee">IEEE</option>
+                <option value="vancouver">Vancouver</option>
             </select>
-          </label>
+
+            <button class="btn-primary" onclick="runCheck()">
+                Run Check
+            </button>
+
+            <button class="btn-secondary" onclick="runVerify()">
+                Run Online Verification
+            </button>
+
         </div>
-      </div>
+    </div>
 
-      <div class="action-row">
-        <button id="excelBtn" class="btn" disabled>Export Excel</button>
-        <button id="wordBtn" class="btn" disabled>Export Word</button>
-        <button id="pdfBtn" class="btn" disabled>Export PDF</button>
-      </div>
 
-      <div id="status" class="status"></div>
-      <pre id="errorBox" class="errorbox hidden"></pre>
-    </section>
+    <!-- Settings -->
+    <div class="section settings">
 
-    <section id="dashboard" class="grid hidden">
-      <div class="kpi">
-        <div class="kpi-title">In-text citations</div>
-        <div id="kpiCites" class="kpi-value">0</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-title">Reference entries</div>
-        <div id="kpiRefs" class="kpi-value">0</div>
-      </div>
-      <div class="kpi warn">
-        <div class="kpi-title">Missing in references</div>
-        <div id="kpiMissing" class="kpi-value">0</div>
-      </div>
-      <div class="kpi warn">
-        <div class="kpi-title">Uncited references</div>
-        <div id="kpiUncited" class="kpi-value">0</div>
-      </div>
-      <div class="kpi good">
-        <div class="kpi-title">Match rate</div>
-        <div id="kpiRate" class="kpi-value">0%</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-title">Online verified</div>
-        <div id="kpiVerified" class="kpi-value">0/0</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-title">Runtime</div>
-        <div id="kpiTime" class="kpi-value">0.0s</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-title">Verify runtime</div>
-        <div id="kpiVTime" class="kpi-value">0.0s</div>
-      </div>
-    </section>
+        <div class="section-title">Verification Settings</div>
 
-    <section class="card hidden" id="tables">
-      <div class="tabs">
-        <button class="tab active" data-tab="missing">Missing</button>
-        <button class="tab" data-tab="uncited">Uncited</button>
-        <button class="tab" data-tab="recon">Reconciliation</button>
-        <button class="tab" data-tab="verify">Online Verification</button>
-      </div>
+        <div class="row">
 
-      <div class="tab-panel" id="tab-missing">
-        <h2>Missing in References</h2>
-        <div class="hint">Citations that appear in the text but have no matching reference entry.</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>No.</th>
-                <th>Citation in text</th>
-                <th>Count</th>
-              </tr>
-            </thead>
-            <tbody id="missingBody"></tbody>
-          </table>
+            <label>
+                <input type="checkbox" id="useCrossref" checked>
+                Crossref
+            </label>
+
+            <label>
+                <input type="checkbox" id="useOpenAlex" checked>
+                OpenAlex
+            </label>
+
+            <label>
+                Throttle:
+                <input id="throttle" type="number" value="0.25" step="0.1" style="width:70px">
+            </label>
+
+            <label>
+                Max verify:
+                <input id="maxVerify" type="number" value="0" style="width:70px">
+            </label>
+
         </div>
-      </div>
 
-      <div class="tab-panel hidden" id="tab-uncited">
-        <h2>Uncited References</h2>
-        <div class="hint">Reference entries that do not appear as in-text citations.</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>No.</th>
-                <th>Reference</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody id="uncitedBody"></tbody>
-          </table>
-        </div>
-      </div>
+    </div>
 
-      <div class="tab-panel hidden" id="tab-recon">
-        <h2>Reconciliation</h2>
-        <div class="hint">How each in-text citation matched to a reference entry.</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>No.</th>
-                <th>Status</th>
-                <th>In-text</th>
-                <th>Matched reference</th>
-              </tr>
-            </thead>
-            <tbody id="reconBody"></tbody>
-          </table>
-        </div>
-      </div>
 
-      <div class="tab-panel hidden" id="tab-verify">
-        <h2>Online Verification</h2>
-        <div class="hint">Results from Crossref and OpenAlex. Run this only if needed.</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>No.</th>
-                <th>Status</th>
-                <th>DOI</th>
-                <th>Year</th>
-                <th>Matched author</th>
-                <th>Matched title</th>
-                <th>Source</th>
-                <th>Score</th>
-                <th>Error</th>
-              </tr>
-            </thead>
-            <tbody id="verifyBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+    <!-- Export -->
+    <div class="section export-row">
 
-    <footer class="footer">
-      <a href="/docs" target="_blank">API Docs</a>
-      <span>•</span>
-      <a href="/health" target="_blank">Health</a>
-    </footer>
-  </div>
+        <button class="btn-secondary">Export Excel</button>
+        <button class="btn-secondary">Export Word</button>
+        <button class="btn-secondary">Export PDF</button>
+
+    </div>
+
+
+    <!-- Status -->
+    <div id="status" class="status"></div>
+
+
+</div>
+
+
+<!-- Footer -->
+<div class="footer">
+
+    <div class="copyright">
+        © Prof Anokye M. Adam, University of Cape Coast
+    </div>
+
+    <div>
+        Disclaimer: This checker may produce false positives or false negatives.
+        Always verify critical citations manually before publication.
+    </div>
+
+</div>
+
+
 
 <script>
-  const fileEl = document.getElementById("file");
-  const fileNameEl = document.getElementById("fileName");
-  const styleEl = document.getElementById("style");
-  const runBtn = document.getElementById("runBtn");
-  const verifyBtn = document.getElementById("verifyBtn");
-  const statusEl = document.getElementById("status");
-  const errorBox = document.getElementById("errorBox");
 
-  const excelBtn = document.getElementById("excelBtn");
-  const wordBtn = document.getElementById("wordBtn");
-  const pdfBtn = document.getElementById("pdfBtn");
+async function runCheck() {
 
-  const dashboardEl = document.getElementById("dashboard");
-  const tablesEl = document.getElementById("tables");
+    const file = document.getElementById("file").files[0];
 
-  const kpiCites = document.getElementById("kpiCites");
-  const kpiRefs = document.getElementById("kpiRefs");
-  const kpiMissing = document.getElementById("kpiMissing");
-  const kpiUncited = document.getElementById("kpiUncited");
-  const kpiRate = document.getElementById("kpiRate");
-  const kpiVerified = document.getElementById("kpiVerified");
-  const kpiTime = document.getElementById("kpiTime");
-  const kpiVTime = document.getElementById("kpiVTime");
-
-  const missingBody = document.getElementById("missingBody");
-  const uncitedBody = document.getElementById("uncitedBody");
-  const reconBody = document.getElementById("reconBody");
-  const verifyBody = document.getElementById("verifyBody");
-
-  const useCrossrefEl = document.getElementById("useCrossref");
-  const useOpenalexEl = document.getElementById("useOpenalex");
-  const throttleEl = document.getElementById("throttle");
-  const maxVerifyEl = document.getElementById("maxVerify");
-  const verifyModeEl = document.getElementById("verifyMode");
-
-  function setStatus(msg, kind="") {
-    statusEl.className = "status " + kind;
-    statusEl.textContent = msg || "";
-  }
-
-  function showError(obj) {
-    errorBox.classList.remove("hidden");
-    errorBox.textContent = JSON.stringify(obj, null, 2);
-  }
-  function clearError() {
-    errorBox.classList.add("hidden");
-    errorBox.textContent = "";
-  }
-
-  function requireFile() {
-    if (!fileEl.files || !fileEl.files[0]) {
-      setStatus("Please choose a DOCX or PDF first.", "error");
-      return null;
+    if (!file) {
+        alert("Select file first");
+        return;
     }
-    return fileEl.files[0];
-  }
 
-  fileEl.addEventListener("change", () => {
-    const f = fileEl.files && fileEl.files[0];
-    fileNameEl.textContent = f ? f.name : "No file selected";
-    excelBtn.disabled = !f;
-    wordBtn.disabled = !f;
-    pdfBtn.disabled = !f;
-    verifyBtn.disabled = true; // must run check first
-    clearError();
-  });
+    const form = new FormData();
+    form.append("file", file);
+    form.append("style", document.getElementById("style").value);
 
-  function escapeHtml(s) {
-    return (s || "")
-      .replaceAll("&","&amp;")
-      .replaceAll("<","&lt;")
-      .replaceAll(">","&gt;")
-      .replaceAll('"',"&quot;");
-  }
+    document.getElementById("status").innerText = "Running check...";
 
-  function renderAll(data) {
-    const ui = data._ui || {};
-    const dash = ui.dashboard || {};
-
-    dashboardEl.classList.remove("hidden");
-    tablesEl.classList.remove("hidden");
-
-    kpiCites.textContent = dash.in_text_citations_found ?? 0;
-    kpiRefs.textContent = dash.reference_entries_found ?? 0;
-    kpiMissing.textContent = dash.missing_in_references ?? 0;
-    kpiUncited.textContent = dash.uncited_references ?? 0;
-    kpiRate.textContent = (dash.match_rate_pct ?? 0) + "%";
-    kpiVerified.textContent = (dash.verified_online ?? 0) + "/" + (dash.verified_online_total ?? 0);
-    kpiTime.textContent = (data.elapsed_seconds ?? 0) + "s";
-    kpiVTime.textContent = (data.verify_elapsed_seconds ?? 0) + "s";
-
-    // Missing
-    missingBody.innerHTML = "";
-    (ui.missing_rows || []).forEach(r => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${r.no ?? ""}</td><td>${escapeHtml(r.citation_in_text || "")}</td><td>${escapeHtml(String(r.count_in_text ?? ""))}</td>`;
-      missingBody.appendChild(tr);
+    const res = await fetch("/check", {
+        method: "POST",
+        body: form
     });
-    if ((ui.missing_rows || []).length === 0) {
-      missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
+
+    document.getElementById("status").innerText = "Check complete.";
+}
+
+
+async function runVerify() {
+
+    const file = document.getElementById("file").files[0];
+
+    if (!file) {
+        alert("Run check first.");
+        return;
     }
 
-    // Uncited
-    uncitedBody.innerHTML = "";
-    (ui.uncited_rows || []).forEach(r => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${r.no ?? ""}</td><td>${escapeHtml(r.reference || "")}</td><td>${escapeHtml(r.note || "")}</td>`;
-      uncitedBody.appendChild(tr);
+    const form = new FormData();
+    form.append("file", file);
+    form.append("style", document.getElementById("style").value);
+    form.append("verify_online", true);
+
+    document.getElementById("status").innerText = "Running online verification...";
+
+    const res = await fetch("/verify", {
+        method: "POST",
+        body: form
     });
-    if ((ui.uncited_rows || []).length === 0) {
-      uncitedBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
-    }
 
-    // Recon
-    reconBody.innerHTML = "";
-    (ui.recon_rows || []).forEach(r => {
-      const status = (r.status || "").toLowerCase();
-      const pill = status === "matched" ? "pill ok" : (status ? "pill warn" : "pill");
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${r.no ?? ""}</td>
-        <td><span class="${pill}">${escapeHtml(r.status || "")}</span></td>
-        <td>${escapeHtml(r.in_text || "")}</td>
-        <td class="wrap">${escapeHtml(r.matched_reference || "")}</td>
-      `;
-      reconBody.appendChild(tr);
-    });
-    if ((ui.recon_rows || []).length === 0) {
-      reconBody.innerHTML = `<tr><td colspan="4" class="muted">None</td></tr>`;
-    }
+    document.getElementById("status").innerText = "Online verification complete.";
 
-    // Verify
-    verifyBody.innerHTML = "";
-    (ui.verify_rows || []).forEach(r => {
-      const status = (r.status || "").toLowerCase();
-      const pill = status === "verified" ? "pill ok" : (status ? "pill warn" : "pill");
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${r.no ?? ""}</td>
-        <td><span class="${pill}">${escapeHtml(r.status || "")}</span></td>
-        <td class="wrap">${escapeHtml(r.doi || "")}</td>
-        <td>${escapeHtml(r.matched_year || "")}</td>
-        <td>${escapeHtml(r.matched_author || "")}</td>
-        <td class="wrap">${escapeHtml(r.matched_title || "")}</td>
-        <td>${escapeHtml(r.source || "")}</td>
-        <td>${escapeHtml(String(r.score ?? ""))}</td>
-        <td class="wrap">${escapeHtml(r.error || "")}</td>
-      `;
-      verifyBody.appendChild(tr);
-    });
-    if ((ui.verify_rows || []).length === 0) {
-      verifyBody.innerHTML = `<tr><td colspan="9" class="muted">No verification results yet. Click “Run Online Verification”.</td></tr>`;
-    }
-  }
+}
 
-  async function runCheck() {
-    const f = requireFile();
-    if (!f) return;
-
-    clearError();
-    setStatus("Running check…", "busy");
-
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("style", styleEl.value);
-
-    const res = await fetch("/check", { method: "POST", body: fd });
-    const text = await res.text();
-
-    let data = null;
-    try { data = JSON.parse(text); } catch(e) {}
-
-    if (!res.ok) {
-      setStatus("Server error. See details below.", "error");
-      showError(data || {error: "Unknown error", raw: text});
-      return;
-    }
-
-    renderAll(data);
-    verifyBtn.disabled = false;
-    setStatus("Done. Click “Run Online Verification” if needed.", "ok");
-  }
-
-  async function runVerify() {
-    const f = requireFile();
-    if (!f) return;
-
-    clearError();
-    setStatus("Running online verification…", "busy");
-
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("style", styleEl.value);
-    fd.append("use_crossref", useCrossrefEl.checked ? "true" : "false");
-    fd.append("use_openalex", useOpenalexEl.checked ? "true" : "false");
-    fd.append("throttle_s", throttleEl.value || "0.25");
-    fd.append("max_verify", maxVerifyEl.value || "0");
-    fd.append("verify_mode", verifyModeEl.value || "missing");
-
-    const res = await fetch("/verify", { method: "POST", body: fd });
-    const text = await res.text();
-
-    let data = null;
-    try { data = JSON.parse(text); } catch(e) {}
-
-    if (!res.ok) {
-      setStatus("Verification failed. See details below.", "error");
-      showError(data || {error: "Unknown error", raw: text});
-      return;
-    }
-
-    renderAll(data);
-    setStatus("Online verification complete.", "ok");
-  }
-
-  async function exportFile(kind) {
-    const f = requireFile();
-    if (!f) return;
-
-    clearError();
-    setStatus("Preparing export…", "busy");
-
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("style", styleEl.value);
-
-    const url = kind === "excel" ? "/export/excel" : kind === "word" ? "/export/word" : "/export/pdf";
-    const res = await fetch(url, { method: "POST", body: fd });
-
-    if (!res.ok) {
-      const t = await res.text();
-      setStatus("Export failed. See details below.", "error");
-      try { showError(JSON.parse(t)); } catch(e) { showError({raw: t}); }
-      return;
-    }
-
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    const disp = res.headers.get("content-disposition") || "";
-    const match = disp.match(/filename="(.+?)"/);
-    const filename = match ? match[1] : ("report." + (kind==="excel"?"xlsx":kind==="word"?"docx":"pdf"));
-
-    a.href = window.URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    setStatus("Export downloaded.", "ok");
-  }
-
-  runBtn.addEventListener("click", (e) => { e.preventDefault(); runCheck(); });
-  verifyBtn.addEventListener("click", (e) => { e.preventDefault(); runVerify(); });
-  excelBtn.addEventListener("click", () => exportFile("excel"));
-  wordBtn.addEventListener("click", () => exportFile("word"));
-  pdfBtn.addEventListener("click", () => exportFile("pdf"));
-
-  // Tabs
-  document.querySelectorAll(".tab").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-
-      const tab = btn.dataset.tab;
-      document.getElementById("tab-missing").classList.toggle("hidden", tab !== "missing");
-      document.getElementById("tab-uncited").classList.toggle("hidden", tab !== "uncited");
-      document.getElementById("tab-recon").classList.toggle("hidden", tab !== "recon");
-      document.getElementById("tab-verify").classList.toggle("hidden", tab !== "verify");
-    });
-  });
 </script>
+
 </body>
 </html>
