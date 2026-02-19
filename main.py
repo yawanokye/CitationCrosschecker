@@ -477,10 +477,10 @@ async def check(
 async def verify(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_mode: str = Form("all"),        # all | missing_only | uncited_only
+    verify_mode: str = Form("all"),
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
-    throttle_s: float = Form(0.15),
+    throttle_s: float = Form(0.12),
     max_verify: int = Form(0),
 ):
     t0 = time.time()
@@ -516,6 +516,7 @@ async def verify(
     }
 
     return JSONResponse(result)
+
 
 
 @app.post("/export/csv")
@@ -603,3 +604,4 @@ async def export_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
     )
+
