@@ -1,3 +1,4 @@
+<!-- templates/index.html -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -13,7 +14,7 @@
         <div class="logo">CC</div>
         <div>
           <h1>Citation Crosschecker</h1>
-          <p class="sub">Upload a DOCX or PDF. Run check, then verify online for stronger evidence.</p>
+          <p class="sub">Upload a DOCX or PDF. Run crosscheck fast, then verify online only if needed.</p>
         </div>
       </div>
       <div class="badge">FastAPI</div>
@@ -36,7 +37,7 @@
           </select>
         </label>
 
-        <button id="runBtn" class="btn primary">Run check</button>
+        <button id="runBtn" class="btn primary">Run crosscheck</button>
       </div>
 
       <div id="status" class="status"></div>
@@ -71,18 +72,19 @@
 
     <section class="card hidden" id="tables">
       <div class="tabs" role="tablist" aria-label="Results tabs">
-        <button class="tab active" data-tab="missing" role="tab" aria-selected="true">Missing</button>
-        <button class="tab" data-tab="uncited" role="tab" aria-selected="false">Uncited</button>
+        <button class="tab active" data-tab="missing" role="tab" aria-selected="true">Missing in References</button>
+        <button class="tab" data-tab="uncited" role="tab" aria-selected="false">Uncited References</button>
         <button class="tab" data-tab="recon" role="tab" aria-selected="false">Reconciliation</button>
         <button class="tab" data-tab="verify" role="tab" aria-selected="false">Online Verification</button>
         <button class="tab" data-tab="export" role="tab" aria-selected="false">Export</button>
       </div>
 
+      <!-- Missing -->
       <div class="tab-panel" id="tab-missing" role="tabpanel">
         <div class="panel-head">
           <div>
             <h2>Missing in References</h2>
-            <div class="hint">Citations in the text without matching reference entries.</div>
+            <div class="hint">Citations in the text that have no matching reference entry. “Flags” show context leads like see/and/by.</div>
           </div>
           <button id="missingCsvBtn" class="btn small">Download CSV</button>
         </div>
@@ -93,6 +95,7 @@
                 <th style="width:64px;">No.</th>
                 <th>Citation in text</th>
                 <th style="width:110px;">Count</th>
+                <th style="width:180px;">Flags</th>
               </tr>
             </thead>
             <tbody id="missingBody"></tbody>
@@ -100,11 +103,12 @@
         </div>
       </div>
 
+      <!-- Uncited -->
       <div class="tab-panel hidden" id="tab-uncited" role="tabpanel">
         <div class="panel-head">
           <div>
             <h2>Uncited References</h2>
-            <div class="hint">Reference entries not detected in the in-text citations.</div>
+            <div class="hint">Reference entries that do not appear as in-text citations.</div>
           </div>
           <button id="uncitedCsvBtn" class="btn small">Download CSV</button>
         </div>
@@ -122,6 +126,7 @@
         </div>
       </div>
 
+      <!-- Recon -->
       <div class="tab-panel hidden" id="tab-recon" role="tabpanel">
         <div class="panel-head">
           <div>
@@ -134,8 +139,8 @@
           <table>
             <thead>
               <tr>
-                <th style="width:140px;">Status</th>
-                <th style="width:320px;">In-text</th>
+                <th style="width:160px;">Status</th>
+                <th style="width:340px;">In-text</th>
                 <th>Matched reference</th>
               </tr>
             </thead>
@@ -144,18 +149,19 @@
         </div>
       </div>
 
+      <!-- Verify -->
       <div class="tab-panel hidden" id="tab-verify" role="tabpanel">
         <div class="panel-head">
           <div>
             <h2>Online Verification</h2>
-            <div class="hint">Uses Crossref and OpenAlex. Better matching based on title and author overlap.</div>
+            <div class="hint">Uses Crossref and OpenAlex. Better matching based on title, author, year, and DOI.</div>
           </div>
           <div class="right-actions">
             <button id="verifyCsvBtn" class="btn small">Download CSV</button>
           </div>
         </div>
 
-        <div class="verify-controls">
+        <div class="verify-strip">
           <label class="check">
             <input id="useCrossref" type="checkbox" checked />
             <span>Crossref</span>
@@ -168,7 +174,7 @@
 
           <label class="select compact">
             <span class="label">Throttle (s)</span>
-            <input id="throttle" class="input" type="number" min="0" step="0.03" value="0.12" />
+            <input id="throttle" class="input" type="number" min="0" step="0.01" value="0.12" />
           </label>
 
           <label class="select compact">
@@ -178,9 +184,11 @@
 
           <label class="select compact">
             <span class="label">Mode</span>
-            <select id="verifyMode" class="input">
+            <select id="verifyMode">
               <option value="all" selected>All references</option>
-              <option value="uncited_only">Only uncited</option>
+              <option value="cited_only">Only cited references</option>
+              <option value="uncited_only">Only uncited references</option>
+              <option value="missing_only">Missing in references</option>
             </select>
           </label>
 
@@ -210,17 +218,19 @@
           </div>
         </div>
 
+        <div id="verifyNote" class="muted small-note"></div>
+
         <div class="table-wrap">
-          <table class="wide">
+          <table>
             <thead>
               <tr>
                 <th style="width:64px;">No.</th>
-                <th style="width:130px;">Status</th>
+                <th style="width:120px;">Status</th>
                 <th style="width:90px;">Source</th>
                 <th style="width:70px;">Score</th>
-                <th style="width:165px;">DOI</th>
-                <th style="width:80px;">Year</th>
-                <th style="width:160px;">Authors</th>
+                <th style="width:170px;">DOI</th>
+                <th style="width:90px;">Year</th>
+                <th style="width:160px;">First author</th>
                 <th>Matched title</th>
                 <th>Reference</th>
               </tr>
@@ -230,26 +240,23 @@
         </div>
 
         <div class="muted small-note">
-          Tip: “Needs review” means some fields match, but not enough for a confident match.
+          Tip: start with throttle 0.12. If Render slows or rate-limits, raise to 0.20 to 0.35.
         </div>
       </div>
 
+      <!-- Export -->
       <div class="tab-panel hidden" id="tab-export" role="tabpanel">
         <div class="panel-head">
           <div>
             <h2>Export</h2>
-            <div class="hint">Exports use the same uploaded file. Word and PDF include dashboard + tables.</div>
+            <div class="hint">Exports are generated server-side for reliable formatting.</div>
           </div>
         </div>
 
-        <div class="export-grid">
-          <button id="csvExportBtn" class="btn">Export CSV</button>
-          <button id="wordExportBtn" class="btn">Export Word</button>
-          <button id="pdfExportBtn" class="btn">Export PDF</button>
-        </div>
-
-        <div class="muted small-note">
-          CSV includes all sections with a “section” column.
+        <div class="export-box">
+          <button id="exportCsvServerBtn" class="btn">Export CSV (server)</button>
+          <button id="exportWordServerBtn" class="btn">Export Word (server)</button>
+          <div class="muted small-note">Tip: run “Run crosscheck” first to confirm extraction. Exports re-run check for the selected file.</div>
         </div>
       </div>
     </section>
@@ -263,7 +270,7 @@
     <div class="legal">
       <div class="legal-row">
         <div>© Prof Anokye M. Adam, University of Cape Coast</div>
-        <div class="muted">Disclaimer: This checker can make mistakes. Please cross-check.</div>
+        <div class="muted">Disclaimer: This checker can make mistakes. Please cross-check before final decisions.</div>
       </div>
     </div>
   </div>
@@ -307,10 +314,10 @@
   const kpiNeedsReview = document.getElementById("kpiNeedsReview");
   const kpiNotFound = document.getElementById("kpiNotFound");
   const kpiOffline = document.getElementById("kpiOffline");
+  const verifyNote = document.getElementById("verifyNote");
 
-  const csvExportBtn = document.getElementById("csvExportBtn");
-  const wordExportBtn = document.getElementById("wordExportBtn");
-  const pdfExportBtn = document.getElementById("pdfExportBtn");
+  const exportCsvServerBtn = document.getElementById("exportCsvServerBtn");
+  const exportWordServerBtn = document.getElementById("exportWordServerBtn");
 
   let lastUI = null;
   let lastVerify = null;
@@ -322,7 +329,7 @@
 
   function requireFile() {
     if (!fileEl.files || !fileEl.files[0]) {
-      setStatus("Choose a DOCX or PDF first.", "error");
+      setStatus("Please choose a DOCX or PDF first.", "error");
       return null;
     }
     return fileEl.files[0];
@@ -334,11 +341,6 @@
       .replaceAll("<","&lt;")
       .replaceAll(">","&gt;")
       .replaceAll('"',"&quot;");
-  }
-
-  function num(x) {
-    const n = Number(x);
-    return Number.isFinite(n) ? n : 0;
   }
 
   function toCSV(rows) {
@@ -364,42 +366,6 @@
     a.remove();
   }
 
-  async function exportServer(kind){
-    const f = requireFile();
-    if(!f) return;
-
-    setStatus("Preparing export…", "busy");
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("style", styleEl.value);
-
-    const url =
-      kind === "csv" ? "/export/csv" :
-      kind === "word" ? "/export/word" :
-      "/export/pdf";
-
-    const res = await fetch(url, { method:"POST", body: fd });
-    if(!res.ok){
-      const t = await res.text().catch(() => "");
-      setStatus("Export failed. Check server logs.", "error");
-      console.log("EXPORT ERROR:", t);
-      return;
-    }
-    const blob = await res.blob();
-    const disp = res.headers.get("content-disposition") || "";
-    const match = disp.match(/filename="(.+?)"/);
-    const filename = match ? match[1] : ("report." + (kind==="csv"?"csv":kind==="word"?"docx":"pdf"));
-
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    setStatus("Export downloaded.", "ok");
-  }
-
   fileEl.addEventListener("change", () => {
     const f = fileEl.files && fileEl.files[0];
     fileNameEl.textContent = f ? f.name : "No file selected";
@@ -409,7 +375,7 @@
     const f = requireFile();
     if (!f) return;
 
-    setStatus("Running check…", "busy");
+    setStatus("Running crosscheck…", "busy");
 
     const fd = new FormData();
     fd.append("file", f);
@@ -418,7 +384,7 @@
     const res = await fetch("/check", { method: "POST", body: fd });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      setStatus("Server error on /check.", "error");
+      setStatus("Server error on /check. Try /docs for details.", "error");
       console.log("CHECK ERROR:", t);
       return;
     }
@@ -426,7 +392,6 @@
     const data = await res.json();
     const ui = data._ui || {};
     const dash = ui.dashboard || {};
-
     lastUI = ui;
 
     dashboardEl.classList.remove("hidden");
@@ -439,16 +404,22 @@
     kpiRate.textContent = (dash.match_rate_pct ?? 0) + "%";
     kpiTime.textContent = (data.elapsed_seconds ?? 0) + "s";
 
+    // Missing
     missingBody.innerHTML = "";
     (ui.missing_rows || []).forEach((r, i) => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${i+1}</td><td>${escapeHtml(r.citation_in_text || "")}</td><td>${escapeHtml(String(r.count_in_text ?? ""))}</td>`;
+      tr.innerHTML =
+        `<td>${i+1}</td>` +
+        `<td>${escapeHtml(r.citation_in_text || "")}</td>` +
+        `<td>${escapeHtml(String(r.count_in_text ?? ""))}</td>` +
+        `<td>${escapeHtml(String(r.flags ?? ""))}</td>`;
       missingBody.appendChild(tr);
     });
     if ((ui.missing_rows || []).length === 0) {
-      missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
+      missingBody.innerHTML = `<tr><td colspan="4" class="muted">None</td></tr>`;
     }
 
+    // Uncited
     uncitedBody.innerHTML = "";
     (ui.uncited_rows || []).forEach((r, i) => {
       const tr = document.createElement("tr");
@@ -459,10 +430,11 @@
       uncitedBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
     }
 
+    // Reconciliation
     reconBody.innerHTML = "";
     (ui.recon_rows || []).forEach((r) => {
       const status = (r.status || "").toLowerCase();
-      const pill = status === "matched" ? "pill ok" : (status ? "pill warn" : "pill");
+      const pill = status.includes("matched") ? "pill ok" : (status ? "pill warn" : "pill");
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td><span class="${pill}">${escapeHtml(r.status || "")}</span></td>
@@ -475,6 +447,7 @@
       reconBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
     }
 
+    // Reset verify view
     lastVerify = null;
     verifyBody.innerHTML = `<tr><td colspan="9" class="muted">Click “Run verification” to fetch results.</td></tr>`;
     kpiVerified.textContent = "0";
@@ -482,22 +455,24 @@
     kpiNeedsReview.textContent = "0";
     kpiNotFound.textContent = "0";
     kpiOffline.textContent = "0";
+    verifyNote.textContent = "";
 
-    setStatus("Check done. Go to Online Verification if you want.", "ok");
+    setStatus("Crosscheck done. Use Online Verification if you want DOI checks.", "ok");
   }
 
   function fillVerifyUI(data) {
-    const ov = data.online_verification || {};
+    const ov = (data && data.online_verification) ? data.online_verification : { summary: {}, rows: [] };
     const summary = ov.summary || {};
     const rows = ov.rows || [];
 
     lastVerify = { summary, rows };
 
-    kpiVerified.textContent = num(summary.verified ?? 0);
-    kpiLikely.textContent = num(summary.likely ?? 0);
-    kpiNeedsReview.textContent = num(summary.needs_review ?? 0);
-    kpiNotFound.textContent = num(summary.not_found ?? 0);
-    kpiOffline.textContent = num(summary.offline ?? 0);
+    kpiVerified.textContent = summary.verified ?? 0;
+    kpiLikely.textContent = summary.likely ?? 0;
+    kpiNeedsReview.textContent = summary.needs_review ?? 0;
+    kpiNotFound.textContent = summary.not_found ?? 0;
+    kpiOffline.textContent = summary.offline ?? 0;
+    verifyNote.textContent = summary.note || "";
 
     verifyBody.innerHTML = "";
     (rows || []).forEach((r, i) => {
@@ -511,7 +486,7 @@
         <td>${escapeHtml(String(r.score ?? ""))}</td>
         <td class="wrap">${escapeHtml(r.doi || "")}</td>
         <td>${escapeHtml(r.matched_year || "")}</td>
-        <td class="wrap">${escapeHtml(r.matched_authors || "")}</td>
+        <td>${escapeHtml(r.matched_first_author || "")}</td>
         <td class="wrap">${escapeHtml(r.matched_title || "")}</td>
         <td class="wrap">${escapeHtml(r.reference || "")}</td>
       `;
@@ -532,7 +507,6 @@
     const fd = new FormData();
     fd.append("file", f);
     fd.append("style", styleEl.value);
-
     fd.append("use_crossref", String(!!useCrossrefEl.checked));
     fd.append("use_openalex", String(!!useOpenalexEl.checked));
     fd.append("throttle_s", String(throttleEl.value || "0.12"));
@@ -542,23 +516,56 @@
     const res = await fetch("/verify", { method: "POST", body: fd });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      setStatus("Online verification failed.", "error");
+      setStatus("Online verification failed. Check /docs and logs.", "error");
       console.log("VERIFY ERROR:", t);
       return;
     }
 
     const data = await res.json();
     fillVerifyUI(data);
+
     setStatus("Online verification complete.", "ok");
+  }
+
+  async function exportServer(kind) {
+    const f = requireFile();
+    if (!f) return;
+
+    setStatus("Preparing export…", "busy");
+
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("style", styleEl.value);
+
+    const url = (kind === "csv") ? "/export/csv" : "/export/word";
+    const res = await fetch(url, { method: "POST", body: fd });
+
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      setStatus("Export failed. Check server logs.", "error");
+      console.log("EXPORT ERROR:", t);
+      return;
+    }
+
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    const disp = res.headers.get("content-disposition") || "";
+    const match = disp.match(/filename="(.+?)"/);
+    const filename = match ? match[1] : ("report." + (kind==="csv" ? "csv" : "docx"));
+
+    a.href = window.URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    setStatus("Export downloaded.", "ok");
   }
 
   runBtn.addEventListener("click", (e) => { e.preventDefault(); runCheck(); });
   verifyBtn.addEventListener("click", (e) => { e.preventDefault(); runOnlineVerification(); });
 
-  csvExportBtn.addEventListener("click", () => exportServer("csv"));
-  wordExportBtn.addEventListener("click", () => exportServer("word"));
-  pdfExportBtn.addEventListener("click", () => exportServer("pdf"));
-
+  // Tabs
   document.querySelectorAll(".tab").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach(b => {
@@ -577,22 +584,27 @@
     });
   });
 
+  // CSV buttons (client-side)
   missingCsvBtn.addEventListener("click", () => {
     const rows = (lastUI && lastUI.missing_rows) || [];
-    downloadText("missing_in_references.csv", (rows.length ? toCSV(rows) : ""));
+    downloadText("missing_in_references.csv", toCSV(rows));
   });
   uncitedCsvBtn.addEventListener("click", () => {
     const rows = (lastUI && lastUI.uncited_rows) || [];
-    downloadText("uncited_references.csv", (rows.length ? toCSV(rows) : ""));
+    downloadText("uncited_references.csv", toCSV(rows));
   });
   reconCsvBtn.addEventListener("click", () => {
     const rows = (lastUI && lastUI.recon_rows) || [];
-    downloadText("reconciliation.csv", (rows.length ? toCSV(rows) : ""));
+    downloadText("reconciliation.csv", toCSV(rows));
   });
   verifyCsvBtn.addEventListener("click", () => {
     const rows = (lastVerify && lastVerify.rows) || [];
-    downloadText("online_verification.csv", (rows.length ? toCSV(rows) : ""));
+    downloadText("online_verification.csv", toCSV(rows));
   });
+
+  // Export tab (server-side)
+  exportCsvServerBtn.addEventListener("click", () => exportServer("csv"));
+  exportWordServerBtn.addEventListener("click", () => exportServer("word"));
 </script>
 </body>
 </html>
