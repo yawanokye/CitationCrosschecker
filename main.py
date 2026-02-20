@@ -1,8 +1,8 @@
-# main.py
 import io
 import time
+import traceback
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple
 
 from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -22,24 +22,13 @@ try:
 except Exception:
     Document = None
 
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import cm
-    from reportlab.pdfgen import canvas
-except Exception:
-    canvas = None
 
+app = FastAPI(title="Citation Crosschecker", version="1.2.0")
 
-app = FastAPI(title="Citation Crosschecker", version="1.0.0")
-
-# IMPORTANT: keep these paths exactly
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
 def normalize_style(s: str) -> str:
     s = (s or "").strip().lower()
     if s in ("apa", "apa7", "apa-7", "harvard", "apa/harvard", "author-year"):
@@ -56,16 +45,6 @@ def safe_get(d: Dict[str, Any], key: str, default=None):
 
 
 def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalise engine output into consistent tables for UI + exports.
-    Engine keys:
-      - summary
-      - missing_in_references
-      - uncited_references
-      - reconciliation_intext_to_reference
-      - reconciliation_reference_to_intext
-      - online_verification: {summary, rows}
-    """
     summary = safe_get(result, "summary", {}) or {}
 
     missing = safe_get(result, "missing_in_references", []) or []
@@ -77,11 +56,13 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         rows = []
         for x in items:
             if isinstance(x, dict):
-                rows.append({
-                    "no": "",
-                    "citation_in_text": x.get("citation_in_text", ""),
-                    "count_in_text": x.get("count_in_text", ""),
-                })
+                rows.append(
+                    {
+                        "no": "",
+                        "citation_in_text": x.get("citation_in_text", ""),
+                        "count_in_text": x.get("count_in_text", ""),
+                    }
+                )
             else:
                 rows.append({"no": "", "citation_in_text": str(x), "count_in_text": ""})
         for i, r in enumerate(rows, start=1):
@@ -92,7 +73,13 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         rows = []
         for x in items:
             if isinstance(x, dict):
-                rows.append({"no": "", "reference": x.get("reference", x.get("text", str(x))), "note": x.get("note", "")})
+                rows.append(
+                    {
+                        "no": "",
+                        "reference": x.get("reference", x.get("text", str(x))),
+                        "note": x.get("note", ""),
+                    }
+                )
             else:
                 rows.append({"no": "", "reference": str(x), "note": ""})
         for i, r in enumerate(rows, start=1):
@@ -103,13 +90,15 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         rows = []
         for x in items:
             if isinstance(x, dict):
-                rows.append({
-                    "no": "",
-                    "status": x.get("status", ""),
-                    "in_text": x.get("in_text", ""),
-                    "matched_reference": x.get("matched_reference", ""),
-                    "flags": x.get("flags", ""),
-                })
+                rows.append(
+                    {
+                        "no": "",
+                        "status": x.get("status", ""),
+                        "in_text": x.get("in_text", ""),
+                        "matched_reference": x.get("matched_reference", ""),
+                        "flags": x.get("flags", ""),
+                    }
+                )
             else:
                 rows.append({"no": "", "status": "", "in_text": str(x), "matched_reference": "", "flags": ""})
         for i, r in enumerate(rows, start=1):
@@ -123,12 +112,14 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                 cited_by = x.get("cited_by", [])
                 if not isinstance(cited_by, list):
                     cited_by = []
-                rows.append({
-                    "no": "",
-                    "times_cited": x.get("times_cited", 0),
-                    "reference": x.get("reference", ""),
-                    "cited_by": " | ".join(cited_by[:8]) + (" ..." if len(cited_by) > 8 else ""),
-                })
+                rows.append(
+                    {
+                        "no": "",
+                        "times_cited": x.get("times_cited", 0),
+                        "reference": x.get("reference", ""),
+                        "cited_by": " | ".join(cited_by[:8]) + (" ..." if len(cited_by) > 8 else ""),
+                    }
+                )
             else:
                 rows.append({"no": "", "times_cited": "", "reference": str(x), "cited_by": ""})
         for i, r in enumerate(rows, start=1):
@@ -165,33 +156,37 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     verify_rows = []
     for x in ov_rows:
         if isinstance(x, dict):
-            verify_rows.append({
-                "no": "",
-                "status": x.get("status", ""),
-                "source": x.get("source", ""),
-                "score": x.get("score", ""),
-                "doi": x.get("doi", ""),
-                "matched_year": x.get("matched_year", ""),
-                "matched_authors": x.get("matched_authors", x.get("matched_first_author", "")),
-                "matched_title": x.get("matched_title", ""),
-                "reference": x.get("reference", ""),
-                "query_used": x.get("query_used", ""),
-                "error": x.get("error", ""),
-            })
+            verify_rows.append(
+                {
+                    "no": "",
+                    "status": x.get("status", ""),
+                    "source": x.get("source", ""),
+                    "score": x.get("score", ""),
+                    "doi": x.get("doi", ""),
+                    "matched_year": x.get("matched_year", ""),
+                    "matched_authors": x.get("matched_authors", x.get("matched_first_author", "")),
+                    "matched_title": x.get("matched_title", ""),
+                    "reference": x.get("reference", ""),
+                    "query_used": x.get("query_used", ""),
+                    "error": x.get("error", ""),
+                }
+            )
         else:
-            verify_rows.append({
-                "no": "",
-                "status": "",
-                "source": "",
-                "score": "",
-                "doi": "",
-                "matched_year": "",
-                "matched_authors": "",
-                "matched_title": "",
-                "reference": str(x),
-                "query_used": "",
-                "error": "",
-            })
+            verify_rows.append(
+                {
+                    "no": "",
+                    "status": "",
+                    "source": "",
+                    "score": "",
+                    "doi": "",
+                    "matched_year": "",
+                    "matched_authors": "",
+                    "matched_title": "",
+                    "reference": str(x),
+                    "query_used": "",
+                    "error": "",
+                }
+            )
     for i, r in enumerate(verify_rows, start=1):
         r["no"] = i
 
@@ -216,7 +211,6 @@ def make_csv_bytes(result: Dict[str, Any]) -> bytes:
     if pd is None:
         raise RuntimeError("pandas not installed. Add pandas to requirements.txt")
     t = extract_tables(result)
-    # export reconciliation table by default
     df = pd.DataFrame(t["c2r_rows"])
     return df.to_csv(index=False).encode("utf-8")
 
@@ -258,26 +252,10 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
             for i, (key, _) in enumerate(cols):
                 cells[i].text = str(r.get(key, ""))
 
-    add_table(
-        "Missing in References",
-        t["missing_rows"],
-        [("no", "No."), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")],
-    )
-    add_table(
-        "Uncited References",
-        t["uncited_rows"],
-        [("no", "No."), ("reference", "Reference"), ("note", "Note")],
-    )
-    add_table(
-        "In-text → Reference",
-        t["c2r_rows"],
-        [("no", "No."), ("status", "Status"), ("in_text", "In-text citation"), ("matched_reference", "Matched reference"), ("flags", "Flags")],
-    )
-    add_table(
-        "Reference → In-text",
-        t["r2c_rows"],
-        [("no", "No."), ("times_cited", "Times cited"), ("reference", "Reference"), ("cited_by", "Cited by (samples)")],
-    )
+    add_table("Missing in References", t["missing_rows"], [("no", "No."), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")])
+    add_table("Uncited References", t["uncited_rows"], [("no", "No."), ("reference", "Reference"), ("note", "Note")])
+    add_table("In-text → Reference", t["c2r_rows"], [("no", "No."), ("status", "Status"), ("in_text", "In-text citation"), ("matched_reference", "Matched reference"), ("flags", "Flags")])
+    add_table("Reference → In-text", t["r2c_rows"], [("no", "No."), ("times_cited", "Times cited"), ("reference", "Reference"), ("cited_by", "Cited by (samples)")])
 
     doc.add_heading("Online Verification", level=2)
     vs = t.get("verify_summary") or {}
@@ -290,8 +268,18 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
         add_table(
             "Verification Results",
             t["verify_rows"],
-            [("no", "No."), ("status", "Status"), ("source", "Source"), ("score", "Score"), ("doi", "DOI"), ("matched_year", "Year"),
-             ("matched_authors", "Matched authors"), ("matched_title", "Matched title"), ("reference", "Reference"), ("error", "Error")],
+            [
+                ("no", "No."),
+                ("status", "Status"),
+                ("source", "Source"),
+                ("score", "Score"),
+                ("doi", "DOI"),
+                ("matched_year", "Year"),
+                ("matched_authors", "Matched authors"),
+                ("matched_title", "Matched title"),
+                ("reference", "Reference"),
+                ("error", "Error"),
+            ],
         )
     else:
         doc.add_paragraph("Not run or no results returned.")
@@ -305,9 +293,6 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     return out.getvalue()
 
 
-# -----------------------------
-# Routes
-# -----------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -323,26 +308,35 @@ async def check(
     file: UploadFile = File(...),
     style: str = Form("apa"),
 ):
-    t0 = time.time()
-    file_bytes = await file.read()
-    filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
+    try:
+        t0 = time.time()
+        file_bytes = await file.read()
+        filename = file.filename or "uploaded"
+        style_norm = normalize_style(style)
 
-    result = run_crosscheck(
-        file_bytes=file_bytes,
-        filename=filename,
-        style=style_norm,
-        verify_online=False,
-    )
+        result = run_crosscheck(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style_norm,
+            verify_online=False,
+        )
 
-    result["elapsed_seconds"] = round(time.time() - t0, 3)
-    result["style"] = style_norm
+        if "error" in result:
+            return JSONResponse({"error": result["error"]}, status_code=400)
 
-    # attach UI tables to make frontend rendering stable
-    tables = extract_tables(result)
-    result["_ui"] = tables
+        result["elapsed_seconds"] = round(time.time() - t0, 3)
+        result["style"] = style_norm
+        result["_ui"] = extract_tables(result)
+        return JSONResponse(result)
 
-    return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse(
+            {
+                "error": f"Check failed: {type(e).__name__}: {str(e)}",
+                "detail": traceback.format_exc()[:4000],
+            },
+            status_code=500,
+        )
 
 
 @app.post("/verify")
@@ -352,35 +346,43 @@ async def verify(
     verify_mode: str = Form("all"),
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
-    use_semantic_scholar: bool = Form(True),
     throttle_s: float = Form(0.12),
     max_verify: int = Form(0),
 ):
-    t0 = time.time()
-    file_bytes = await file.read()
-    filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
+    try:
+        t0 = time.time()
+        file_bytes = await file.read()
+        filename = file.filename or "uploaded"
+        style_norm = normalize_style(style)
 
-    result = run_crosscheck(
-        file_bytes=file_bytes,
-        filename=filename,
-        style=style_norm,
-        verify_online=True,
-        verify_mode=verify_mode,
-        use_crossref=bool(use_crossref),
-        use_openalex=bool(use_openalex),
-        use_semantic_scholar=bool(use_semantic_scholar),
-        throttle_s=float(throttle_s or 0.0),
-        max_verify=int(max_verify or 0),
-    )
+        result = run_crosscheck(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style_norm,
+            verify_online=True,
+            verify_mode=verify_mode,
+            use_crossref=bool(use_crossref),
+            use_openalex=bool(use_openalex),
+            throttle_s=float(throttle_s or 0.0),
+            max_verify=int(max_verify or 0),
+        )
 
-    result["elapsed_seconds"] = round(time.time() - t0, 3)
-    result["style"] = style_norm
+        if "error" in result:
+            return JSONResponse({"error": result["error"]}, status_code=400)
 
-    tables = extract_tables(result)
-    result["_ui"] = tables
+        result["elapsed_seconds"] = round(time.time() - t0, 3)
+        result["style"] = style_norm
+        result["_ui"] = extract_tables(result)
+        return JSONResponse(result)
 
-    return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse(
+            {
+                "error": f"Online verification failed: {type(e).__name__}: {str(e)}",
+                "detail": traceback.format_exc()[:4000],
+            },
+            status_code=500,
+        )
 
 
 @app.post("/export/csv")
@@ -393,8 +395,10 @@ async def export_csv(
     style_norm = normalize_style(style)
 
     result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-    csv_bytes = make_csv_bytes(result)
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=400)
 
+    csv_bytes = make_csv_bytes(result)
     base = filename_base(filename)
     out_name = f"{base}_citation_report.csv"
 
@@ -415,8 +419,10 @@ async def export_word(
     style_norm = normalize_style(style)
 
     result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-    docx_bytes = make_word_bytes(result)
+    if "error" in result:
+        return JSONResponse({"error": result["error"]}, status_code=400)
 
+    docx_bytes = make_word_bytes(result)
     base = filename_base(filename)
     out_name = f"{base}_citation_report.docx"
 
