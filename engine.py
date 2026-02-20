@@ -35,19 +35,23 @@ REF_HEADINGS = [
     r"^\s*literature\s+cited\s*$",
 ]
 
-# Words that often appear before narrative citations
+DISCOURSE_PREFIXES = {
+    "similarly", "however", "moreover", "likewise", "further", "also",
+    "thus", "therefore", "in particular", "in response", "in addition",
+    "for example", "for instance", "recently", "specifically"
+}
+
 LEAD_WORDS = {
-    "see", "cf", "e.g", "i.e", "for example", "for instance",
-    "according to", "by", "from", "in", "as"
+    "see", "cf", "e.g", "i.e", "according to", "by", "from", "in", "as",
+    "for example", "for instance"
 }
 
-# Discourse markers that should NOT be treated as authors
-DISCOURSE_MARKERS = {
-    "however", "moreover", "similarly", "likewise", "in particular", "in response",
-    "for example", "for instance", "recently"
+# Geo/section labels that appear before a citation and must not become an author
+GEO_PREFIXES = {
+    "africa", "asia", "europe", "america", "latin america", "sub-saharan africa",
+    "ghana", "nigeria", "kenya", "south africa", "usa", "uk", "china", "india"
 }
 
-# Common nouns frequently mis-detected as single-author citations at sentence start
 COMMON_NONAUTHOR = {
     "war", "crisis", "revolution", "scandal", "attacks", "volatility", "model",
     "countries", "coefficients", "estimates", "computation", "instance"
@@ -59,10 +63,8 @@ ORG_ALIASES = {
     "oecd": ["oecd", "organisation for economic co-operation and development", "organization for economic cooperation and development"],
     "imf": ["imf", "international monetary fund"],
     "world bank": ["world bank", "international bank for reconstruction and development", "ibrd"],
-    "unesco": ["unesco", "united nations educational, scientific and cultural organization", "united nations educational scientific and cultural organization"],
-    "unicef": ["unicef", "united nations children's fund", "united nations childrens fund"],
 }
-ORG_ACRONYMS = {k.upper() for k in ["WHO", "UN", "OECD", "IMF", "UNESCO", "UNICEF", "WORLD BANK", "IBRD"]}
+ORG_ACRONYMS = {k.upper() for k in ["WHO", "UN", "OECD", "IMF", "WORLD BANK", "IBRD"]}
 
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
 
@@ -172,14 +174,6 @@ def extract_surnames_from_blob(auth_blob: str) -> List[str]:
 
 
 def _plausible_author_blob(blob: str) -> bool:
-    """
-    Reject junk like:
-      - "like the 2008 financial crisis"
-      - "Year on Year Growth Rate data ..."
-      - discourse markers as authors
-      - lone common nouns (War, Crisis, etc.)
-      - "al (2012)"
-    """
     b = norm_space(blob)
     if not b:
         return False
@@ -189,28 +183,56 @@ def _plausible_author_blob(blob: str) -> bool:
     if bn in {"al", "et", "et al"}:
         return False
 
-    # Too long to be an author list
-    if len(b) > 55:
+    if len(b) > 65:
         return False
 
-    # Discourse marker only
-    if bn in DISCOURSE_MARKERS:
-        return False
-
-    # Split tokens
     toks = [t for t in re.split(r"\s+", bn) if t]
     if not toks:
         return False
 
-    # Single-token: reject common non-author nouns
     if len(toks) == 1 and toks[0] in COMMON_NONAUTHOR:
         return False
 
-    # Must contain at least one alphabetic token of length >= 2
     if not any(re.fullmatch(r"[a-z][a-z\-']{1,}", t) for t in toks):
         return False
 
     return True
+
+
+def _scrub_leading_prefixes(author_blob: str) -> Tuple[str, List[str]]:
+    """
+    Fix cases like:
+      "Similarly, Ouma & Muriu"  -> "Ouma & Muriu"
+      "Africa, Ho"               -> "Ho"
+      "However, Mukherjee & Naka"-> "Mukherjee & Naka"
+    """
+    flags = []
+    s = norm_space(author_blob).strip(" ,")
+    if not s:
+        return "", flags
+
+    # Remove leading "word/phrase," patterns repeatedly if they are discourse/geo/common
+    # Example: "Similarly, Africa, Ho" -> remove similarly, then africa
+    while True:
+        m = re.match(r"^([A-Za-z][A-Za-z\s\-']+)\s*,\s*(.+)$", s)
+        if not m:
+            break
+        left = norm_token(m.group(1))
+        rest = m.group(2).strip()
+        if left in DISCOURSE_PREFIXES or left in GEO_PREFIXES or left in COMMON_NONAUTHOR:
+            flags.append(f"prefix_removed:{left}")
+            s = rest
+            continue
+        break
+
+    # Remove lead words like "by", "as", "according to" if stuck inside the blob
+    for lw in sorted(LEAD_WORDS, key=len, reverse=True):
+        if norm_token(s).startswith(lw + " "):
+            flags.append(f"lead_word_removed:{lw}")
+            s = s[len(lw):].strip(" ,")
+            break
+
+    return s, flags
 
 
 # -----------------------------
@@ -251,16 +273,12 @@ def _looks_like_new_apa_reference_start(line: str) -> bool:
     s = (line or "").strip()
     if not s:
         return False
-
     if not re.match(r"^[A-Z][A-Za-z\-']+(?:\s+(?:Jr|Sr|II|III|IV))?(?:,|\s)", s):
         return False
-
     if re.search(rf"\(\s*{YEAR}\s*\)", s):
         return True
-
-    if YEAR_RE.search(s[:80]):
+    if YEAR_RE.search(s[:90]):
         return True
-
     return False
 
 
@@ -325,6 +343,9 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
         year = m2.group(1)
         pre = r[: m2.start()].strip()
 
+    # Handle leading numbering
+    pre = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", pre).strip()
+
     if is_known_org(pre) or pre.upper() in ORG_ACRONYMS:
         k = f"org_{canon_org(pre)}_{year.lower()}"
         return ReferenceEntry(raw=r, key=k, year=year, surnames=(pre,), number=None)
@@ -332,7 +353,6 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
     first = pre.split(",")[0].strip() if "," in pre else (pre.split()[0].strip() if pre.split() else "")
     if not first:
         return None
-
     return ReferenceEntry(raw=r, key=key_author_year(first, year), year=year, surnames=(first,), number=None)
 
 
@@ -362,76 +382,107 @@ def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
 # -----------------------------
 # In-text extraction (APA/Harvard)
 # -----------------------------
+def _split_parenthetical_group(inside: str) -> List[str]:
+    """
+    Split "(A, 2001; B, 2015)" into ["A, 2001", "B, 2015"].
+    Keeps commas inside author lists.
+    """
+    parts = [p.strip() for p in (inside or "").split(";")]
+    return [p for p in parts if p and YEAR_RE.search(p)]
+
+
+def _parse_one_author_year_piece(piece: str) -> Optional[Tuple[str, str, Tuple[str, ...], str]]:
+    """
+    Returns (raw_piece, year, surnames, flags)
+    """
+    seg = norm_space(piece).strip()
+    if not seg:
+        return None
+
+    y_m = YEAR_RE.search(seg)
+    if not y_m:
+        return None
+    y = y_m.group(1)
+
+    left = seg[:y_m.start()].strip().rstrip(",").strip()
+    if not left:
+        return None
+
+    # remove internal leading phrases
+    lead_flag = ""
+    for w in sorted(LEAD_WORDS, key=len, reverse=True):
+        if norm_token(left).startswith(w + " "):
+            lead_flag = w
+            left = left[len(w):].strip(" ,")
+            break
+
+    # scrub discourse/geo prefixes that got glued by punctuation
+    left2, scrub_flags = _scrub_leading_prefixes(left)
+    left2 = left2.strip()
+
+    if not _plausible_author_blob(left2):
+        return None
+
+    flags = []
+    if lead_flag:
+        flags.append(f"lead_word:{lead_flag}")
+    flags.extend(scrub_flags)
+
+    if is_known_org(left2):
+        return (seg, y, (left2,), ";".join(flags))
+
+    if re.search(r"\bet\s+al\.?\b", left2, flags=re.I):
+        first = clean_surname(left2)
+        if not first:
+            return None
+        return (seg, y, (first,), ";".join(flags))
+
+    surnames = extract_surnames_from_blob(left2)
+    if not surnames:
+        return None
+
+    return (seg, y, tuple(surnames), ";".join(flags))
+
+
 def extract_author_year_citations(text: str) -> List[InTextCitation]:
     txt = text or ""
     out: List[InTextCitation] = []
     seen = set()
 
-    # Parenthetical: (Authors, YEAR)
+    # Parenthetical groups: ( ... )
     par_pat = re.compile(rf"\(([^()]*\b{YEAR}\b[^()]*)\)", flags=re.I)
 
     for m in par_pat.finditer(txt):
         inside = m.group(1).strip()
 
-        if re.fullmatch(rf"{YEAR}", norm_space(inside), flags=re.I):
-            continue
+        # split by semicolons into separate citations
+        pieces = _split_parenthetical_group(inside) or [inside]
 
-        y_m = YEAR_RE.search(inside)
-        if not y_m:
-            continue
-        y = y_m.group(1)
+        for piece in pieces:
+            parsed = _parse_one_author_year_piece(piece)
+            if not parsed:
+                continue
+            seg, y, surnames, flags = parsed
 
-        left = inside[:y_m.start()].strip().rstrip(",").strip()
+            if is_known_org(surnames[0]):
+                k = f"org_{canon_org(surnames[0])}_{y.lower()}"
+            else:
+                k = key_author_year(surnames[0], y)
 
-        # Reject obvious non-citation parentheticals
-        if not _plausible_author_blob(left):
-            continue
-
-        lead_flag = ""
-        for w in ["see", "according to", "by", "from", "in", "as", "cf", "for example", "for instance"]:
-            if norm_token(left).startswith(w + " "):
-                lead_flag = w
-                left = left[len(w):].strip(" ,")
-                break
-
-        if is_known_org(left):
-            k = f"org_{canon_org(left)}_{y.lower()}"
-            raw = f"({norm_space(inside)})"
-            if raw not in seen:
-                out.append(InTextCitation("author-year", raw, k, year=y, surnames=(left,), flags=(f"lead_word:{lead_flag}" if lead_flag else "")))
-                seen.add(raw)
-            continue
-
-        if re.search(r"\bet\s+al\.?\b", left, flags=re.I):
-            first = clean_surname(left)
-            if first:
-                k = key_author_year(first, y)
-                raw = f"({norm_space(inside)})"
-                if raw not in seen:
-                    out.append(InTextCitation("author-year", raw, k, year=y, surnames=(first,), flags=(f"lead_word:{lead_flag}" if lead_flag else "")))
-                    seen.add(raw)
-            continue
-
-        surnames = extract_surnames_from_blob(left)
-        if not surnames:
-            continue
-
-        first = surnames[0]
-        k = key_author_year(first, y)
-        raw = f"({norm_space(inside)})"
-        if raw not in seen:
-            out.append(InTextCitation("author-year", raw, k, year=y, surnames=tuple(surnames), flags=(f"lead_word:{lead_flag}" if lead_flag else "")))
+            raw = f"({seg})"
+            if raw in seen:
+                continue
+            out.append(InTextCitation("author-year", raw, k, year=y, surnames=surnames, flags=flags))
             seen.add(raw)
 
-    # Narrative: Authors (YEAR)
-    # Fix: allow Oxford comma before "&/and"
+    # Narrative: Authors (YEAR) with optional prefixes and commas
     narr_pat = re.compile(
         rf"""
-        (?P<prefix>\b(?:according\s+to|see|by|from|in|as)\b\s+)?      # lead word only
+        (?P<lead>\b(?:according\s+to|see|by|from|in|as|for\s+example|for\s+instance|cf)\b\s+)?   # lead word
         (?P<authors>
-            (?:[A-Z][A-Za-z\-']+(?:'s)?)                            # first surname token
-            (?:\s*,\s*[A-Z][A-Za-z\-']+(?:'s)?)*                    # optional comma-separated additional surnames
-            (?:\s*,?\s*(?:and|&)\s*[A-Z][A-Za-z\-']+(?:'s)?)*       # optional final and/& (with optional comma)
+            (?:[A-Z][A-Za-z\-']+(?:'s)?)                            # first token
+            (?:\s*,\s*[A-Z][A-Za-z\-']+(?:'s)?)*                    # more tokens via comma
+            (?:\s*,?\s*(?:and|&)\s*[A-Z][A-Za-z\-']+(?:'s)?)*       # final and/& (Oxford comma ok)
         )
         \s*\(\s*(?P<year>{YEAR})\s*\)
         """,
@@ -439,41 +490,42 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
     )
 
     for m in narr_pat.finditer(txt):
-        prefix = (m.group("prefix") or "").strip()
+        lead = (m.group("lead") or "").strip()
         authors_blob = (m.group("authors") or "").strip()
         y = m.group("year")
 
-        # strip possessive for parsing
+        # drop possessive for matching
         authors_blob_clean = re.sub(r"\'s\b", "", authors_blob, flags=re.I).strip()
 
-        # Reject discourse markers and junk blobs
-        if not _plausible_author_blob(authors_blob_clean):
+        # scrub prefixes like "Similarly," or "Africa,"
+        cleaned, scrub_flags = _scrub_leading_prefixes(authors_blob_clean)
+        if not cleaned:
             continue
 
-        lead_flag = norm_token(prefix).strip() if prefix else ""
-
-        if is_known_org(authors_blob_clean):
-            k = f"org_{canon_org(authors_blob_clean)}_{y.lower()}"
-            raw = norm_space(m.group(0))
-            if raw not in seen:
-                out.append(InTextCitation("author-year", raw, k, year=y, surnames=(authors_blob_clean,), flags=(f"lead_word:{lead_flag}" if lead_flag else "")))
-                seen.add(raw)
+        if not _plausible_author_blob(cleaned):
             continue
 
-        surnames = extract_surnames_from_blob(authors_blob_clean)
-        if not surnames:
-            continue
-
-        first = surnames[0]
-        k = key_author_year(first, y)
-
-        raw = norm_space(m.group(0))
         flags_out = []
-        if lead_flag:
-            flags_out.append(f"lead_word:{lead_flag}")
+        if lead:
+            flags_out.append(f"lead_word:{norm_token(lead).strip()}")
+        flags_out.extend(scrub_flags)
         if re.search(r"\'s\s*\(", authors_blob, flags=re.I):
             flags_out.append("possessive")
 
+        if is_known_org(cleaned):
+            k = f"org_{canon_org(cleaned)}_{y.lower()}"
+            raw = norm_space(m.group(0))
+            if raw not in seen:
+                out.append(InTextCitation("author-year", raw, k, year=y, surnames=(cleaned,), flags=";".join(flags_out)))
+                seen.add(raw)
+            continue
+
+        surnames = extract_surnames_from_blob(cleaned)
+        if not surnames:
+            continue
+
+        k = key_author_year(surnames[0], y)
+        raw = norm_space(m.group(0))
         if raw not in seen:
             out.append(InTextCitation("author-year", raw, k, year=y, surnames=tuple(surnames), flags=";".join(flags_out)))
             seen.add(raw)
@@ -635,7 +687,6 @@ def _online_verify_select_refs(refs: List[ReferenceEntry], uncited_raw: List[str
         work = [r for r in all_ref_texts if r in unc_set]
         return work if work else all_ref_texts
 
-    # missing_only is review mode, still verify all references (missing list is in-text)
     return all_ref_texts
 
 
