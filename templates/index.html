@@ -12,9 +12,9 @@
   <div class="topbar">
     <div class="brand">
       <div class="logo">CC</div>
-      <div>
-        <h1>Citation Crosschecker</h1>
-        <p>Upload a DOCX or PDF. Run the fast check first, then verify online only when needed.</p>
+      <div class="brandText">
+        <div class="title">Citation Crosschecker</div>
+        <div class="subtitle">Upload a DOCX or PDF. Run the check first, then verify online only when needed.</div>
       </div>
     </div>
   </div>
@@ -22,14 +22,14 @@
   <div class="container">
 
     <div class="card">
-      <h2>Run</h2>
+      <div class="cardTitle">Run</div>
 
       <div class="grid">
         <div>
           <div class="field">
             <label>Document</label>
             <input id="file" type="file" accept=".pdf,.docx" />
-            <div class="hint">DOCX works best for accurate text extraction. PDF extraction depends on the PDF type and layout.</div>
+            <div class="hint">DOCX works best. PDF extraction depends on layout.</div>
           </div>
 
           <div class="actions">
@@ -51,13 +51,11 @@
           </div>
 
           <div class="verifyBox">
-            <div class="hint" style="margin-top:0;">
-              Online verification uses Crossref and OpenAlex. If your host blocks outbound requests, results may show “offline”.
-            </div>
+            <div class="hint tight">Online verification uses Crossref and OpenAlex. If a host blocks outbound calls, items can show “offline”.</div>
 
-            <div class="verifyRow" style="margin-top:10px;">
-              <label class="check"><input type="checkbox" id="useCrossref" checked> Use Crossref</label>
-              <label class="check"><input type="checkbox" id="useOpenAlex" checked> Use OpenAlex</label>
+            <div class="verifyRow">
+              <label class="check"><input type="checkbox" id="useCrossref" checked> Crossref</label>
+              <label class="check"><input type="checkbox" id="useOpenAlex" checked> OpenAlex</label>
 
               <div class="mini">
                 <label>Throttle (s)</label>
@@ -86,22 +84,22 @@
 
     <div class="card" id="resultsCard" style="display:none;">
       <div class="cardHead">
-        <h2 style="margin:0;">Results</h2>
+        <div class="cardTitle">Results</div>
         <div class="exportBtns">
-          <button class="btn small" id="btnExportCsvTop" disabled>Download CSV</button>
-          <button class="btn small" id="btnExportWordTop" disabled>Export Word</button>
+          <button class="btn small" id="btnExportCsvTop" disabled>CSV</button>
+          <button class="btn small" id="btnExportWordTop" disabled>Word</button>
         </div>
       </div>
 
       <div class="dash" id="dash"></div>
 
-      <div class="tabs" id="tabs">
+      <div class="tabs">
         <button class="tab active" data-tab="summaryPane">Summary</button>
-        <button class="tab" data-tab="missingPane">Missing in References</button>
-        <button class="tab" data-tab="uncitedPane">Uncited References</button>
-        <button class="tab" data-tab="c2rPane">In-text → Reference</button>
-        <button class="tab" data-tab="r2cPane">Reference → In-text</button>
-        <button class="tab" data-tab="verifyPane">Online Verification</button>
+        <button class="tab" data-tab="missingPane">Missing</button>
+        <button class="tab" data-tab="uncitedPane">Uncited</button>
+        <button class="tab" data-tab="c2rPane">In-text → Ref</button>
+        <button class="tab" data-tab="r2cPane">Ref → In-text</button>
+        <button class="tab" data-tab="verifyPane">Verify</button>
         <button class="tab" data-tab="exportPane">Exports</button>
       </div>
 
@@ -111,7 +109,7 @@
             <tbody id="summaryTable"></tbody>
           </table>
         </div>
-        <div class="hint" id="refMsg" style="margin-top:10px;"></div>
+        <div class="hint" id="refMsg"></div>
       </div>
 
       <div class="tabPane" id="missingPane">
@@ -119,7 +117,7 @@
         <div class="tableWrap">
           <table>
             <thead>
-              <tr><th style="width:80px;">No.</th><th style="width:120px;">Count</th><th>Citation in text</th></tr>
+              <tr><th style="width:70px;">No.</th><th style="width:90px;">Count</th><th>Citation in text</th></tr>
             </thead>
             <tbody id="missingBody"></tbody>
           </table>
@@ -127,11 +125,11 @@
       </div>
 
       <div class="tabPane" id="uncitedPane">
-        <div class="hint">Reference entries that were not cited in the main text.</div>
+        <div class="hint">References that were not cited in the main text.</div>
         <div class="tableWrap">
           <table>
             <thead>
-              <tr><th style="width:80px;">No.</th><th>Reference</th></tr>
+              <tr><th style="width:70px;">No.</th><th>Reference</th></tr>
             </thead>
             <tbody id="uncitedBody"></tbody>
           </table>
@@ -139,16 +137,16 @@
       </div>
 
       <div class="tabPane" id="c2rPane">
-        <div class="hint">Each in-text citation and the matched reference entry. Flags highlight likely narrative or possessive cases for review.</div>
+        <div class="hint">Each in-text citation and the matched reference entry. Flags show prefix removals and lead-word handling.</div>
         <div class="tableWrap">
           <table>
             <thead>
               <tr>
-                <th style="width:90px;">No.</th>
-                <th style="width:130px;">Status</th>
-                <th style="width:320px;">In-text citation</th>
+                <th style="width:70px;">No.</th>
+                <th style="width:110px;">Status</th>
+                <th style="width:260px;">In-text</th>
                 <th>Matched reference</th>
-                <th style="width:160px;">Flags</th>
+                <th style="width:170px;">Flags</th>
               </tr>
             </thead>
             <tbody id="c2rBody"></tbody>
@@ -157,15 +155,15 @@
       </div>
 
       <div class="tabPane" id="r2cPane">
-        <div class="hint">Each reference and how often it appears in the text.</div>
+        <div class="hint">Each reference and how it appears in the text.</div>
         <div class="tableWrap">
           <table>
             <thead>
               <tr>
-                <th style="width:90px;">No.</th>
-                <th style="width:120px;">Times cited</th>
+                <th style="width:70px;">No.</th>
+                <th style="width:90px;">Times</th>
                 <th>Reference</th>
-                <th style="width:420px;">Cited by (samples)</th>
+                <th style="width:340px;">Cited by (samples)</th>
               </tr>
             </thead>
             <tbody id="r2cBody"></tbody>
@@ -174,23 +172,23 @@
       </div>
 
       <div class="tabPane" id="verifyPane">
-        <div class="hint">Online verification uses Crossref and OpenAlex. Matching is mainly title similarity, then author and year.</div>
+        <div class="hint">Online verification uses Crossref and OpenAlex. Crossref uses a two-pass search to improve recall.</div>
 
-        <div class="dash" id="verifyDash" style="grid-template-columns: repeat(5, 1fr);"></div>
+        <div class="dash" id="verifyDash"></div>
 
-        <div class="tableWrap" style="margin-top:12px;">
+        <div class="tableWrap">
           <table>
             <thead>
               <tr>
-                <th style="width:90px;">No.</th>
-                <th style="width:140px;">Status</th>
-                <th style="width:120px;">Source</th>
-                <th style="width:90px;">Score</th>
-                <th style="width:240px;">DOI</th>
-                <th style="width:90px;">Year</th>
-                <th style="width:160px;">Authors</th>
+                <th style="width:70px;">No.</th>
+                <th style="width:110px;">Status</th>
+                <th style="width:90px;">Source</th>
+                <th style="width:70px;">Score</th>
+                <th style="width:210px;">DOI</th>
+                <th style="width:70px;">Year</th>
+                <th style="width:120px;">Author</th>
                 <th>Matched title</th>
-                <th style="width:260px;">Query used</th>
+                <th style="width:210px;">Query</th>
               </tr>
             </thead>
             <tbody id="verifyBody"></tbody>
@@ -199,21 +197,18 @@
       </div>
 
       <div class="tabPane" id="exportPane">
-        <div class="hint">Exports regenerate the report from the uploaded file (fast). Use these for sharing.</div>
+        <div class="hint">Exports regenerate the report from the uploaded file.</div>
         <div class="actions">
           <button class="btn primary" id="btnExportCsv">Download CSV</button>
           <button class="btn" id="btnExportWord">Export Word</button>
-        </div>
-        <div class="hint muted" style="margin-top:10px;">
-          Tip: If downloads don’t start on some browsers, allow downloads for this site.
         </div>
       </div>
 
     </div>
 
     <div class="footer">
-      <div class="muted">© Prof Anokye M. Adam, University of Cape Coast</div>
-      <div class="muted">Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.</div>
+      <div>© Prof Anokye M. Adam, University of Cape Coast</div>
+      <div>Disclaimer: This checker may produce false positives or false negatives. Verify critical citations manually.</div>
     </div>
 
   </div>
