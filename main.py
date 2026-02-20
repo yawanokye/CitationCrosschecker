@@ -60,7 +60,6 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     missing = safe_get(result, "missing_in_references", []) or []
     uncited = safe_get(result, "uncited_references", []) or []
     recon = safe_get(result, "reconciliation_intext_to_reference", []) or []
-    r2c = safe_get(result, "reconciliation_reference_to_intext", []) or []
 
     missing_rows = []
     for x in missing:
@@ -97,31 +96,17 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "in_text": x.get("in_text", ""),
                     "status": x.get("status", ""),
                     "matched_reference": x.get("matched_reference", ""),
-                    "flags": x.get("flags", []) or [],
+                    "flags": x.get("flags", ""),
                 }
             )
         else:
-            recon_rows.append({"no": "", "in_text": str(x), "status": "", "matched_reference": "", "flags": []})
-
-    r2c_rows = []
-    for x in r2c:
-        if isinstance(x, dict):
-            r2c_rows.append(
-                {
-                    "no": "",
-                    "reference": x.get("reference", ""),
-                    "times_cited": x.get("times_cited", 0),
-                    "cited_by": x.get("cited_by", []),
-                }
-            )
+            recon_rows.append({"no": "", "in_text": str(x), "status": "", "matched_reference": "", "flags": ""})
 
     for i, r in enumerate(missing_rows, start=1):
         r["no"] = i
     for i, r in enumerate(uncited_rows, start=1):
         r["no"] = i
     for i, r in enumerate(recon_rows, start=1):
-        r["no"] = i
-    for i, r in enumerate(r2c_rows, start=1):
         r["no"] = i
 
     itc = int(summary.get("in_text_citations_found", 0) or 0)
@@ -157,8 +142,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "score": x.get("score", ""),
                     "doi": x.get("doi", ""),
                     "matched_year": x.get("matched_year", ""),
+                    "matched_authors": x.get("matched_authors", ""),
                     "matched_title": x.get("matched_title", ""),
-                    "matched_authors": x.get("matched_authors", x.get("matched_first_author", "")),
                     "reference": x.get("reference", ""),
                     "query_used": x.get("query_used", ""),
                     "error": x.get("error", ""),
@@ -173,8 +158,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "score": "",
                     "doi": "",
                     "matched_year": "",
-                    "matched_title": "",
                     "matched_authors": "",
+                    "matched_title": "",
                     "reference": str(x),
                     "query_used": "",
                     "error": "",
@@ -188,7 +173,6 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         "missing_rows": missing_rows,
         "uncited_rows": uncited_rows,
         "recon_rows": recon_rows,
-        "r2c_rows": r2c_rows,
         "dashboard": dashboard,
         "verify_summary": ov_summary,
         "verify_rows": verify_rows,
@@ -198,6 +182,7 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
 def make_csv_bytes(result: Dict[str, Any]) -> bytes:
     if pd is None:
         raise RuntimeError("pandas not installed. Add pandas to requirements.txt")
+
     t = extract_tables(result)
     df = pd.DataFrame(t["recon_rows"])
     return df.to_csv(index=False).encode("utf-8")
@@ -245,10 +230,7 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
         for r in rows:
             cells = tb.add_row().cells
             for i, (key, _) in enumerate(cols):
-                v = r.get(key, "")
-                if isinstance(v, list):
-                    v = " | ".join(str(x) for x in v[:10])
-                cells[i].text = str(v)
+                cells[i].text = str(r.get(key, ""))
 
     add_table(
         "Missing in References",
@@ -261,14 +243,14 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
         [("no", "No."), ("reference", "Reference"), ("note", "Note")],
     )
     add_table(
-        "In-text → Reference",
+        "Reconciliation",
         t["recon_rows"],
         [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference"), ("flags", "Flags")],
     )
 
     doc.add_heading("Online Verification", level=2)
     vs = t.get("verify_summary") or {}
-    if vs.get("enabled"):
+    if vs and any(vs.get(k, 0) for k in ["verified", "likely", "needs_review", "not_found", "offline"]):
         p = doc.add_paragraph()
         p.add_run(
             f"Verified: {vs.get('verified', 0)}, Likely: {vs.get('likely', 0)}, "
@@ -285,13 +267,13 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
                 ("score", "Score"),
                 ("doi", "DOI"),
                 ("matched_year", "Year"),
-                ("matched_authors", "Matched authors"),
-                ("matched_title", "Matched title"),
+                ("matched_authors", "Matched Authors"),
+                ("matched_title", "Matched Title"),
                 ("reference", "Reference"),
             ],
         )
     else:
-        doc.add_paragraph("Not run.")
+        doc.add_paragraph("Not run or no results.")
 
     doc.add_paragraph("")
     doc.add_paragraph("Copyright © Prof Anokye M. Adam, University of Cape Coast.")
@@ -356,9 +338,7 @@ def make_pdf_bytes(result: Dict[str, Any]) -> bytes:
     line("Reconciliation (first 60)", dy=16)
     c.setFont("Helvetica", 9)
     for r in t["recon_rows"][:60]:
-        flags = r.get("flags") or []
-        flags_txt = f" | flags: {', '.join(flags)}" if flags else ""
-        line(f"{r.get('no','')}. {r.get('status','')} | {(r.get('in_text','') or '')[:120]}{flags_txt}")
+        line(f"{r.get('no','')}. {r.get('status','')} | {(r.get('in_text','') or '')[:120]}")
         mr = (r.get("matched_reference", "") or "")[:150]
         if mr:
             line(f"   -> {mr}", dy=12)
@@ -412,14 +392,6 @@ async def check(
     result["style"] = style_norm
     result["elapsed_seconds"] = elapsed
 
-    tables = extract_tables(result)
-    result["_ui"] = {
-        "dashboard": tables["dashboard"],
-        "missing_rows": tables["missing_rows"],
-        "uncited_rows": tables["uncited_rows"],
-        "recon_rows": tables["recon_rows"],
-    }
-
     return JSONResponse(result)
 
 
@@ -428,12 +400,12 @@ async def verify(
     file: UploadFile = File(...),
     style: str = Form("apa"),
     verify_online: bool = Form(True),
-    verify_mode: str = Form("all"),
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
-    use_semantic_scholar: bool = Form(True),
+    use_semanticscholar: bool = Form(True),
     throttle_s: float = Form(0.12),
     max_verify: int = Form(0),
+    verify_mode: str = Form("all"),
 ):
     t0 = time.time()
     file_bytes = await file.read()
@@ -444,27 +416,18 @@ async def verify(
         file_bytes=file_bytes,
         filename=filename,
         style=style_norm,
-        verify_online=True,
-        verify_mode=verify_mode,
+        verify_online=bool(verify_online),
+        verify_mode=str(verify_mode or "all"),
         use_crossref=bool(use_crossref),
         use_openalex=bool(use_openalex),
-        use_semantic_scholar=bool(use_semantic_scholar),
+        use_semanticscholar=bool(use_semanticscholar),
         throttle_s=float(throttle_s or 0.0),
         max_verify=int(max_verify or 0),
     )
 
     elapsed = round(time.time() - t0, 3)
+    result["style"] = style_norm
     result["elapsed_seconds"] = elapsed
-
-    tables = extract_tables(result)
-    result["_ui"] = {
-        "dashboard": tables["dashboard"],
-        "missing_rows": tables["missing_rows"],
-        "uncited_rows": tables["uncited_rows"],
-        "recon_rows": tables["recon_rows"],
-        "verify_summary": tables.get("verify_summary", {}) or {},
-        "verify_rows": tables.get("verify_rows", []) or [],
-    }
 
     return JSONResponse(result)
 
