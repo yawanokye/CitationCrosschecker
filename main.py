@@ -54,6 +54,42 @@ def safe_get(d: Dict[str, Any], key: str, default=None):
     return d.get(key, default) if isinstance(d, dict) else default
 
 
+def ensure_online_block(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Force a stable online verification shape:
+      result["online_verification"] = {"summary": {...}, "rows": [...]}
+    Accepts older shapes where online_verification may be a list.
+    """
+    if not isinstance(result, dict):
+        return {"summary": {}, "rows": []}
+
+    # Preferred: engine provides online_verification_block
+    blk = result.get("online_verification_block")
+    if isinstance(blk, dict) and isinstance(blk.get("rows", []), list) and isinstance(blk.get("summary", {}), dict):
+        return {"summary": blk.get("summary", {}) or {}, "rows": blk.get("rows", []) or []}
+
+    ov = result.get("online_verification")
+    # If old engine: ov is already dict
+    if isinstance(ov, dict):
+        return {"summary": ov.get("summary", {}) or {}, "rows": ov.get("rows", []) or []}
+
+    # If old engine: ov is list of rows
+    if isinstance(ov, list):
+        # Try to rebuild summary from row statuses
+        counts = {"verified": 0, "likely": 0, "needs_review": 0, "not_found": 0, "offline": 0}
+        for r in ov:
+            if isinstance(r, dict):
+                st = (r.get("status") or "").strip().lower()
+                st = st.replace(" ", "_")
+                if st not in counts:
+                    st = "needs_review"
+                counts[st] += 1
+        counts["total"] = sum(counts.values())
+        return {"summary": counts, "rows": ov}
+
+    return {"summary": {}, "rows": []}
+
+
 def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
     summary = safe_get(result, "summary", {}) or {}
 
@@ -96,11 +132,10 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "in_text": x.get("in_text", ""),
                     "status": x.get("status", ""),
                     "matched_reference": x.get("matched_reference", ""),
-                    "flags": x.get("flags", ""),
                 }
             )
         else:
-            recon_rows.append({"no": "", "in_text": str(x), "status": "", "matched_reference": "", "flags": ""})
+            recon_rows.append({"no": "", "in_text": str(x), "status": "", "matched_reference": ""})
 
     for i, r in enumerate(missing_rows, start=1):
         r["no"] = i
@@ -110,8 +145,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         r["no"] = i
 
     itc = int(summary.get("in_text_citations_found", 0) or 0)
-    refn = int(summary.get("reference_entries_found", 0) or 0)
     miss = int(summary.get("missing_in_references", 0) or 0)
+    refn = int(summary.get("reference_entries_found", 0) or 0)
     unct = int(summary.get("uncited_references", 0) or 0)
 
     match_rate = 0.0
@@ -127,9 +162,10 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
-    ov = safe_get(result, "online_verification", {}) or {}
-    ov_summary = safe_get(ov, "summary", {}) or {}
-    ov_rows = safe_get(ov, "rows", []) or []
+    # ✅ Stable online verification block
+    ov = ensure_online_block(result)
+    ov_summary = ov.get("summary", {}) or {}
+    ov_rows = ov.get("rows", []) or []
 
     verify_rows = []
     for x in ov_rows:
@@ -142,8 +178,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "score": x.get("score", ""),
                     "doi": x.get("doi", ""),
                     "matched_year": x.get("matched_year", ""),
-                    "matched_authors": x.get("matched_authors", ""),
                     "matched_title": x.get("matched_title", ""),
+                    "matched_first_author": x.get("matched_first_author", ""),
                     "reference": x.get("reference", ""),
                     "query_used": x.get("query_used", ""),
                     "error": x.get("error", ""),
@@ -158,8 +194,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                     "score": "",
                     "doi": "",
                     "matched_year": "",
-                    "matched_authors": "",
                     "matched_title": "",
+                    "matched_first_author": "",
                     "reference": str(x),
                     "query_used": "",
                     "error": "",
@@ -176,6 +212,7 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         "dashboard": dashboard,
         "verify_summary": ov_summary,
         "verify_rows": verify_rows,
+        "online_verification": ov,  # handy for UI
     }
 
 
@@ -245,14 +282,13 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     add_table(
         "Reconciliation",
         t["recon_rows"],
-        [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference"), ("flags", "Flags")],
+        [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference")],
     )
 
     doc.add_heading("Online Verification", level=2)
     vs = t.get("verify_summary") or {}
-    if vs and any(vs.get(k, 0) for k in ["verified", "likely", "needs_review", "not_found", "offline"]):
-        p = doc.add_paragraph()
-        p.add_run(
+    if vs:
+        doc.add_paragraph(
             f"Verified: {vs.get('verified', 0)}, Likely: {vs.get('likely', 0)}, "
             f"Needs review: {vs.get('needs_review', 0)}, Not found: {vs.get('not_found', 0)}, "
             f"Offline: {vs.get('offline', 0)}"
@@ -267,13 +303,13 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
                 ("score", "Score"),
                 ("doi", "DOI"),
                 ("matched_year", "Year"),
-                ("matched_authors", "Matched Authors"),
+                ("matched_first_author", "Matched Author"),
                 ("matched_title", "Matched Title"),
                 ("reference", "Reference"),
             ],
         )
     else:
-        doc.add_paragraph("Not run or no results.")
+        doc.add_paragraph("Not run.")
 
     doc.add_paragraph("")
     doc.add_paragraph("Copyright © Prof Anokye M. Adam, University of Cape Coast.")
@@ -377,59 +413,96 @@ async def check(
     style: str = Form("apa"),
 ):
     t0 = time.time()
-    file_bytes = await file.read()
-    filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
+    try:
+        file_bytes = await file.read()
+        filename = file.filename or "uploaded"
+        style_norm = normalize_style(style)
 
-    result = run_crosscheck(
-        file_bytes=file_bytes,
-        filename=filename,
-        style=style_norm,
-        verify_online=False,
-    )
+        result = run_crosscheck(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style_norm,
+            verify_online=False,
+        )
 
-    elapsed = round(time.time() - t0, 3)
-    result["style"] = style_norm
-    result["elapsed_seconds"] = elapsed
+        elapsed = round(time.time() - t0, 3)
+        result["style"] = style_norm
+        result["elapsed_seconds"] = elapsed
 
-    return JSONResponse(result)
+        tables = extract_tables(result)
+
+        # ✅ expose stable online verification shape even on /check (empty)
+        result["online_verification"] = tables["online_verification"]
+
+        result["_ui"] = {
+            "dashboard": tables["dashboard"],
+            "missing_rows": tables["missing_rows"],
+            "uncited_rows": tables["uncited_rows"],
+            "recon_rows": tables["recon_rows"],
+            "verify_summary": tables["verify_summary"],
+            "verify_rows": tables["verify_rows"],
+        }
+
+        return JSONResponse(result)
+
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
 
 
 @app.post("/verify")
 async def verify(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: bool = Form(True),
+    verify_mode: str = Form("all"),
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
-    use_semanticscholar: bool = Form(True),
+    use_semantic: bool = Form(True),
     throttle_s: float = Form(0.12),
     max_verify: int = Form(0),
-    verify_mode: str = Form("all"),
 ):
     t0 = time.time()
-    file_bytes = await file.read()
-    filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
+    try:
+        file_bytes = await file.read()
+        filename = file.filename or "uploaded"
+        style_norm = normalize_style(style)
 
-    result = run_crosscheck(
-        file_bytes=file_bytes,
-        filename=filename,
-        style=style_norm,
-        verify_online=bool(verify_online),
-        verify_mode=str(verify_mode or "all"),
-        use_crossref=bool(use_crossref),
-        use_openalex=bool(use_openalex),
-        use_semanticscholar=bool(use_semanticscholar),
-        throttle_s=float(throttle_s or 0.0),
-        max_verify=int(max_verify or 0),
-    )
+        result = run_crosscheck(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style_norm,
+            verify_online=True,
+            verify_mode=verify_mode,
+            use_crossref=bool(use_crossref),
+            use_openalex=bool(use_openalex),
+            use_semantic=bool(use_semantic),
+            throttle_s=float(throttle_s or 0.0),
+            max_verify=int(max_verify or 0),
+        )
 
-    elapsed = round(time.time() - t0, 3)
-    result["style"] = style_norm
-    result["elapsed_seconds"] = elapsed
+        elapsed = round(time.time() - t0, 3)
+        tables = extract_tables(result)
 
-    return JSONResponse(result)
+        payload = {
+            "filename": filename,
+            "style": style_norm,
+            "elapsed_seconds": elapsed,
+
+            # ✅ always dict shape
+            "online_verification": tables["online_verification"],
+
+            "_ui": {
+                "dashboard": tables["dashboard"],
+                "missing_rows": tables["missing_rows"],
+                "uncited_rows": tables["uncited_rows"],
+                "recon_rows": tables["recon_rows"],
+                "verify_summary": tables["verify_summary"],
+                "verify_rows": tables["verify_rows"],
+            },
+        }
+        return JSONResponse(payload)
+
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
 
 
 @app.post("/export/csv")
@@ -437,21 +510,24 @@ async def export_csv(
     file: UploadFile = File(...),
     style: str = Form("apa"),
 ):
-    file_bytes = await file.read()
-    filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
+    try:
+        file_bytes = await file.read()
+        filename = file.filename or "uploaded"
+        style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-    csv_bytes = make_csv_bytes(result)
+        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+        csv_bytes = make_csv_bytes(result)
 
-    base = filename_base(filename)
-    out_name = f"{base}_citation_report.csv"
+        base = filename_base(filename)
+        out_name = f"{base}_citation_report.csv"
 
-    return StreamingResponse(
-        io.BytesIO(csv_bytes),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
-    )
+        return StreamingResponse(
+            io.BytesIO(csv_bytes),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
 
 
 @app.post("/export/word")
@@ -459,21 +535,24 @@ async def export_word(
     file: UploadFile = File(...),
     style: str = Form("apa"),
 ):
-    file_bytes = await file.read()
-    filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
+    try:
+        file_bytes = await file.read()
+        filename = file.filename or "uploaded"
+        style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-    docx_bytes = make_word_bytes(result)
+        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+        docx_bytes = make_word_bytes(result)
 
-    base = filename_base(filename)
-    out_name = f"{base}_citation_report.docx"
+        base = filename_base(filename)
+        out_name = f"{base}_citation_report.docx"
 
-    return StreamingResponse(
-        io.BytesIO(docx_bytes),
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
-    )
+        return StreamingResponse(
+            io.BytesIO(docx_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
 
 
 @app.post("/export/pdf")
@@ -481,18 +560,21 @@ async def export_pdf(
     file: UploadFile = File(...),
     style: str = Form("apa"),
 ):
-    file_bytes = await file.read()
-    filename = file.filename or "uploaded"
-    style_norm = normalize_style(style)
+    try:
+        file_bytes = await file.read()
+        filename = file.filename or "uploaded"
+        style_norm = normalize_style(style)
 
-    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-    pdf_bytes = make_pdf_bytes(result)
+        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+        pdf_bytes = make_pdf_bytes(result)
 
-    base = filename_base(filename)
-    out_name = f"{base}_citation_report.pdf"
+        base = filename_base(filename)
+        out_name = f"{base}_citation_report.pdf"
 
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
-    )
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
