@@ -2,7 +2,7 @@
 import io
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from engine import run_crosscheck
 
+# Optional export libs
 try:
     import pandas as pd
 except Exception:
@@ -21,12 +22,24 @@ try:
 except Exception:
     Document = None
 
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import cm
+    from reportlab.pdfgen import canvas
+except Exception:
+    canvas = None
+
+
 app = FastAPI(title="Citation Crosschecker", version="1.0.0")
 
+# IMPORTANT: keep these paths exactly
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
+# -----------------------------
+# Helpers
+# -----------------------------
 def normalize_style(s: str) -> str:
     s = (s or "").strip().lower()
     if s in ("apa", "apa7", "apa-7", "harvard", "apa/harvard", "author-year"):
@@ -43,101 +56,168 @@ def safe_get(d: Dict[str, Any], key: str, default=None):
 
 
 def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalise engine output into consistent tables for UI + exports.
+    Engine keys:
+      - summary
+      - missing_in_references
+      - uncited_references
+      - reconciliation_intext_to_reference
+      - reconciliation_reference_to_intext
+      - online_verification: {summary, rows}
+    """
     summary = safe_get(result, "summary", {}) or {}
 
     missing = safe_get(result, "missing_in_references", []) or []
     uncited = safe_get(result, "uncited_references", []) or []
-    recon = safe_get(result, "reconciliation_intext_to_reference", []) or []
+    c2r = safe_get(result, "reconciliation_intext_to_reference", []) or []
+    r2c = safe_get(result, "reconciliation_reference_to_intext", []) or []
 
-    missing_rows = []
-    for x in missing:
-        if isinstance(x, dict):
-            missing_rows.append({"no": "", "citation_in_text": x.get("citation_in_text", ""), "count_in_text": x.get("count_in_text", "")})
-        else:
-            missing_rows.append({"no": "", "citation_in_text": str(x), "count_in_text": ""})
+    def as_rows_missing(items):
+        rows = []
+        for x in items:
+            if isinstance(x, dict):
+                rows.append({
+                    "no": "",
+                    "citation_in_text": x.get("citation_in_text", ""),
+                    "count_in_text": x.get("count_in_text", ""),
+                })
+            else:
+                rows.append({"no": "", "citation_in_text": str(x), "count_in_text": ""})
+        for i, r in enumerate(rows, start=1):
+            r["no"] = i
+        return rows
 
-    uncited_rows = []
-    for x in uncited:
-        if isinstance(x, dict):
-            uncited_rows.append({"no": "", "reference": x.get("reference", x.get("text", str(x))), "note": x.get("note", "")})
-        else:
-            uncited_rows.append({"no": "", "reference": str(x), "note": ""})
+    def as_rows_uncited(items):
+        rows = []
+        for x in items:
+            if isinstance(x, dict):
+                rows.append({"no": "", "reference": x.get("reference", x.get("text", str(x))), "note": x.get("note", "")})
+            else:
+                rows.append({"no": "", "reference": str(x), "note": ""})
+        for i, r in enumerate(rows, start=1):
+            r["no"] = i
+        return rows
 
-    recon_rows = []
-    for x in recon:
-        if isinstance(x, dict):
-            recon_rows.append({
-                "no": "",
-                "status": x.get("status", ""),
-                "in_text": x.get("in_text", ""),
-                "matched_reference": x.get("matched_reference", ""),
-                "flags": x.get("flags", ""),
-            })
-        else:
-            recon_rows.append({"no": "", "status": "", "in_text": str(x), "matched_reference": "", "flags": ""})
+    def as_rows_c2r(items):
+        rows = []
+        for x in items:
+            if isinstance(x, dict):
+                rows.append({
+                    "no": "",
+                    "status": x.get("status", ""),
+                    "in_text": x.get("in_text", ""),
+                    "matched_reference": x.get("matched_reference", ""),
+                    "flags": x.get("flags", ""),
+                })
+            else:
+                rows.append({"no": "", "status": "", "in_text": str(x), "matched_reference": "", "flags": ""})
+        for i, r in enumerate(rows, start=1):
+            r["no"] = i
+        return rows
 
-    for i, r in enumerate(missing_rows, start=1):
-        r["no"] = i
-    for i, r in enumerate(uncited_rows, start=1):
-        r["no"] = i
-    for i, r in enumerate(recon_rows, start=1):
-        r["no"] = i
+    def as_rows_r2c(items):
+        rows = []
+        for x in items:
+            if isinstance(x, dict):
+                cited_by = x.get("cited_by", [])
+                if not isinstance(cited_by, list):
+                    cited_by = []
+                rows.append({
+                    "no": "",
+                    "times_cited": x.get("times_cited", 0),
+                    "reference": x.get("reference", ""),
+                    "cited_by": " | ".join(cited_by[:8]) + (" ..." if len(cited_by) > 8 else ""),
+                })
+            else:
+                rows.append({"no": "", "times_cited": "", "reference": str(x), "cited_by": ""})
+        for i, r in enumerate(rows, start=1):
+            r["no"] = i
+        return rows
+
+    missing_rows = as_rows_missing(missing)
+    uncited_rows = as_rows_uncited(uncited)
+    c2r_rows = as_rows_c2r(c2r)
+    r2c_rows = as_rows_r2c(r2c)
 
     itc = int(summary.get("in_text_citations_found", 0) or 0)
     refn = int(summary.get("reference_entries_found", 0) or 0)
     miss = int(summary.get("missing_in_references", 0) or 0)
     unct = int(summary.get("uncited_references", 0) or 0)
-    match_rate = round(((itc - miss) / itc) * 100.0, 1) if itc else 0.0
+
+    match_rate = 0.0
+    if itc > 0:
+        match_rate = max(0.0, (itc - miss) / itc) * 100.0
 
     dashboard = {
         "in_text_citations_found": itc,
         "reference_entries_found": refn,
         "missing_in_references": miss,
         "uncited_references": unct,
-        "match_rate_pct": match_rate,
+        "match_rate_pct": round(match_rate, 1),
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
-    ov = result.get("online_verification") or {"summary": {}, "rows": []}
-    if isinstance(ov, list):
-        ov = {"summary": {}, "rows": ov}
-
-    vs = ov.get("summary", {}) or {}
-    vr = ov.get("rows", []) or []
+    ov = safe_get(result, "online_verification", {}) or {}
+    ov_summary = safe_get(ov, "summary", {}) or {}
+    ov_rows = safe_get(ov, "rows", []) or []
 
     verify_rows = []
-    for i, x in enumerate(vr, start=1):
+    for x in ov_rows:
         if isinstance(x, dict):
             verify_rows.append({
-                "no": i,
+                "no": "",
                 "status": x.get("status", ""),
                 "source": x.get("source", ""),
                 "score": x.get("score", ""),
                 "doi": x.get("doi", ""),
                 "matched_year": x.get("matched_year", ""),
-                "matched_first_author": x.get("matched_first_author", ""),
+                "matched_authors": x.get("matched_authors", x.get("matched_first_author", "")),
                 "matched_title": x.get("matched_title", ""),
                 "reference": x.get("reference", ""),
                 "query_used": x.get("query_used", ""),
                 "error": x.get("error", ""),
             })
+        else:
+            verify_rows.append({
+                "no": "",
+                "status": "",
+                "source": "",
+                "score": "",
+                "doi": "",
+                "matched_year": "",
+                "matched_authors": "",
+                "matched_title": "",
+                "reference": str(x),
+                "query_used": "",
+                "error": "",
+            })
+    for i, r in enumerate(verify_rows, start=1):
+        r["no"] = i
 
     return {
         "dashboard": dashboard,
         "missing_rows": missing_rows,
         "uncited_rows": uncited_rows,
-        "recon_rows": recon_rows,
-        "verify_summary": vs,
+        "c2r_rows": c2r_rows,
+        "r2c_rows": r2c_rows,
+        "verify_summary": ov_summary,
         "verify_rows": verify_rows,
-        "online_verification": {"summary": vs, "rows": vr},
     }
+
+
+def filename_base(upload_name: str) -> str:
+    name = (upload_name or "document").rsplit(".", 1)[0]
+    safe = "".join(ch for ch in name if ch.isalnum() or ch in (" ", "_", "-")).strip()
+    return safe or "document"
 
 
 def make_csv_bytes(result: Dict[str, Any]) -> bytes:
     if pd is None:
         raise RuntimeError("pandas not installed. Add pandas to requirements.txt")
     t = extract_tables(result)
-    df = pd.DataFrame(t["recon_rows"])
+    # export reconciliation table by default
+    df = pd.DataFrame(t["c2r_rows"])
     return df.to_csv(index=False).encode("utf-8")
 
 
@@ -153,12 +233,13 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
 
     doc.add_heading("Dashboard", level=2)
     dash = t["dashboard"]
-    tb = doc.add_table(rows=1, cols=2)
-    tb.style = "Table Grid"
-    tb.rows[0].cells[0].text = "Metric"
-    tb.rows[0].cells[1].text = "Value"
+    table = doc.add_table(rows=1, cols=2)
+    table.style = "Table Grid"
+    hdr = table.rows[0].cells
+    hdr[0].text = "Metric"
+    hdr[1].text = "Value"
     for k in ["in_text_citations_found", "reference_entries_found", "missing_in_references", "uncited_references", "match_rate_pct"]:
-        row = tb.add_row().cells
+        row = table.add_row().cells
         row[0].text = k
         row[1].text = str(dash.get(k, ""))
 
@@ -167,47 +248,66 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
         if not rows:
             doc.add_paragraph("None.")
             return
-        tbb = doc.add_table(rows=1, cols=len(cols))
-        tbb.style = "Table Grid"
+        tb = doc.add_table(rows=1, cols=len(cols))
+        tb.style = "Table Grid"
+        h = tb.rows[0].cells
         for i, (_, label) in enumerate(cols):
-            tbb.rows[0].cells[i].text = label
+            h[i].text = label
         for r in rows:
-            rr = tbb.add_row().cells
+            cells = tb.add_row().cells
             for i, (key, _) in enumerate(cols):
-                rr[i].text = str(r.get(key, ""))
+                cells[i].text = str(r.get(key, ""))
 
-    add_table("Missing in References", t["missing_rows"], [("no", "No."), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")])
-    add_table("Uncited References", t["uncited_rows"], [("no", "No."), ("reference", "Reference"), ("note", "Note")])
-    add_table("Reconciliation", t["recon_rows"], [("no", "No."), ("status", "Status"), ("in_text", "In-text"), ("matched_reference", "Matched Reference"), ("flags", "Flags")])
+    add_table(
+        "Missing in References",
+        t["missing_rows"],
+        [("no", "No."), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")],
+    )
+    add_table(
+        "Uncited References",
+        t["uncited_rows"],
+        [("no", "No."), ("reference", "Reference"), ("note", "Note")],
+    )
+    add_table(
+        "In-text → Reference",
+        t["c2r_rows"],
+        [("no", "No."), ("status", "Status"), ("in_text", "In-text citation"), ("matched_reference", "Matched reference"), ("flags", "Flags")],
+    )
+    add_table(
+        "Reference → In-text",
+        t["r2c_rows"],
+        [("no", "No."), ("times_cited", "Times cited"), ("reference", "Reference"), ("cited_by", "Cited by (samples)")],
+    )
 
     doc.add_heading("Online Verification", level=2)
     vs = t.get("verify_summary") or {}
-    doc.add_paragraph(
-        f"Verified: {vs.get('verified', 0)}, Likely: {vs.get('likely', 0)}, "
-        f"Needs review: {vs.get('needs_review', 0)}, Not found: {vs.get('not_found', 0)}, Offline: {vs.get('offline', 0)}"
-    )
-    add_table(
-        "Verification Results",
-        t["verify_rows"],
-        [("no", "No."), ("status", "Status"), ("source", "Source"), ("score", "Score"), ("doi", "DOI"), ("matched_year", "Year"),
-         ("matched_first_author", "Author"), ("matched_title", "Matched Title"), ("reference", "Reference")],
-    )
+    if vs.get("total", 0) > 0:
+        doc.add_paragraph(
+            f"Verified: {vs.get('verified', 0)}, Likely: {vs.get('likely', 0)}, "
+            f"Needs review: {vs.get('needs_review', 0)}, Not found: {vs.get('not_found', 0)}, "
+            f"Offline: {vs.get('offline', 0)}"
+        )
+        add_table(
+            "Verification Results",
+            t["verify_rows"],
+            [("no", "No."), ("status", "Status"), ("source", "Source"), ("score", "Score"), ("doi", "DOI"), ("matched_year", "Year"),
+             ("matched_authors", "Matched authors"), ("matched_title", "Matched title"), ("reference", "Reference"), ("error", "Error")],
+        )
+    else:
+        doc.add_paragraph("Not run or no results returned.")
 
     doc.add_paragraph("")
-    doc.add_paragraph("Copyright © Prof Anokye M. Adam, University of Cape Coast.")
-    doc.add_paragraph("Disclaimer: This checker can make mistakes. Always cross-check results before final decisions.")
+    doc.add_paragraph("© Prof Anokye M. Adam, University of Cape Coast.")
+    doc.add_paragraph("Disclaimer: This checker can make mistakes. Always cross-check critical citations manually.")
 
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
 
 
-def filename_base(upload_name: str) -> str:
-    name = (upload_name or "document").rsplit(".", 1)[0]
-    safe = "".join(ch for ch in name if ch.isalnum() or ch in (" ", "_", "-")).strip()
-    return safe or "document"
-
-
+# -----------------------------
+# Routes
+# -----------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -219,30 +319,30 @@ async def health():
 
 
 @app.post("/check")
-async def check(file: UploadFile = File(...), style: str = Form("apa")):
+async def check(
+    file: UploadFile = File(...),
+    style: str = Form("apa"),
+):
     t0 = time.time()
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
+    file_bytes = await file.read()
+    filename = file.filename or "uploaded"
+    style_norm = normalize_style(style)
 
-        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-        result["elapsed_seconds"] = round(time.time() - t0, 3)
-        result["style"] = style_norm
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=False,
+    )
 
-        t = extract_tables(result)
-        result["_ui"] = {
-            "dashboard": t["dashboard"],
-            "missing_rows": t["missing_rows"],
-            "uncited_rows": t["uncited_rows"],
-            "recon_rows": t["recon_rows"],
-            "verify_summary": t["verify_summary"],
-            "verify_rows": t["verify_rows"],
-        }
-        return JSONResponse(result)
+    result["elapsed_seconds"] = round(time.time() - t0, 3)
+    result["style"] = style_norm
 
-    except Exception as e:
-        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
+    # attach UI tables to make frontend rendering stable
+    tables = extract_tables(result)
+    result["_ui"] = tables
+
+    return JSONResponse(result)
 
 
 @app.post("/verify")
@@ -252,82 +352,76 @@ async def verify(
     verify_mode: str = Form("all"),
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
-    use_semantic: bool = Form(True),
-    throttle_s: float = Form(0.08),
+    use_semantic_scholar: bool = Form(True),
+    throttle_s: float = Form(0.12),
     max_verify: int = Form(0),
 ):
     t0 = time.time()
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
+    file_bytes = await file.read()
+    filename = file.filename or "uploaded"
+    style_norm = normalize_style(style)
 
-        result = run_crosscheck(
-            file_bytes=file_bytes,
-            filename=filename,
-            style=style_norm,
-            verify_online=True,
-            verify_mode=verify_mode,
-            throttle_s=float(throttle_s or 0.0),
-            max_verify=int(max_verify or 0),
-            use_crossref=bool(use_crossref),
-            use_openalex=bool(use_openalex),
-            use_semantic=bool(use_semantic),
-        )
-        result["elapsed_seconds"] = round(time.time() - t0, 3)
-        result["style"] = style_norm
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=True,
+        verify_mode=verify_mode,
+        use_crossref=bool(use_crossref),
+        use_openalex=bool(use_openalex),
+        use_semantic_scholar=bool(use_semantic_scholar),
+        throttle_s=float(throttle_s or 0.0),
+        max_verify=int(max_verify or 0),
+    )
 
-        t = extract_tables(result)
-        payload = {
-            "filename": filename,
-            "style": style_norm,
-            "elapsed_seconds": result["elapsed_seconds"],
-            "online_verification": t["online_verification"],
-            "_ui": {
-                "dashboard": t["dashboard"],
-                "missing_rows": t["missing_rows"],
-                "uncited_rows": t["uncited_rows"],
-                "recon_rows": t["recon_rows"],
-                "verify_summary": t["verify_summary"],
-                "verify_rows": t["verify_rows"],
-            },
-        }
-        return JSONResponse(payload)
+    result["elapsed_seconds"] = round(time.time() - t0, 3)
+    result["style"] = style_norm
 
-    except Exception as e:
-        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
+    tables = extract_tables(result)
+    result["_ui"] = tables
+
+    return JSONResponse(result)
 
 
 @app.post("/export/csv")
-async def export_csv(file: UploadFile = File(...), style: str = Form("apa")):
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
+async def export_csv(
+    file: UploadFile = File(...),
+    style: str = Form("apa"),
+):
+    file_bytes = await file.read()
+    filename = file.filename or "uploaded"
+    style_norm = normalize_style(style)
 
-        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-        csv_bytes = make_csv_bytes(result)
+    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+    csv_bytes = make_csv_bytes(result)
 
-        out_name = f"{filename_base(filename)}_citation_report.csv"
-        return StreamingResponse(io.BytesIO(csv_bytes), media_type="text/csv",
-                                headers={"Content-Disposition": f'attachment; filename="{out_name}"'})
-    except Exception as e:
-        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
+    base = filename_base(filename)
+    out_name = f"{base}_citation_report.csv"
+
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
 
 
 @app.post("/export/word")
-async def export_word(file: UploadFile = File(...), style: str = Form("apa")):
-    try:
-        file_bytes = await file.read()
-        filename = file.filename or "uploaded"
-        style_norm = normalize_style(style)
+async def export_word(
+    file: UploadFile = File(...),
+    style: str = Form("apa"),
+):
+    file_bytes = await file.read()
+    filename = file.filename or "uploaded"
+    style_norm = normalize_style(style)
 
-        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-        docx_bytes = make_word_bytes(result)
+    result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
+    docx_bytes = make_word_bytes(result)
 
-        out_name = f"{filename_base(filename)}_citation_report.docx"
-        return StreamingResponse(io.BytesIO(docx_bytes),
-                                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                headers={"Content-Disposition": f'attachment; filename="{out_name}"'})
-    except Exception as e:
-        return JSONResponse({"error": f"{type(e).__name__}: {str(e)}"}, status_code=500)
+    base = filename_base(filename)
+    out_name = f"{base}_citation_report.docx"
+
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
+    )
