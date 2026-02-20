@@ -5,296 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Citation Crosschecker</title>
 
-<style>
-  :root{
-    --bg:#f4f6f9;
-    --card:#ffffff;
-    --text:#0f172a;
-    --muted:#64748b;
-    --border:#e5e7eb;
-    --accent:#5b5bd6;
-    --accent2:#4a4ac2;
-    --good:#16a34a;
-    --warn:#d97706;
-    --bad:#dc2626;
-    --chip:#f1f5f9;
-  }
-
-  *{ box-sizing:border-box; }
-  body{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-    background: var(--bg);
-    margin: 0;
-    color: var(--text);
-  }
-
-  .header{
-    background: var(--card);
-    padding: 18px 24px;
-    border-bottom: 1px solid var(--border);
-  }
-  .header-inner{
-    max-width: 1100px;
-    margin: 0 auto;
-    display:flex;
-    justify-content:space-between;
-    align-items:flex-start;
-    gap:16px;
-  }
-  .brand{
-    display:flex;
-    align-items:flex-start;
-    gap:12px;
-  }
-  .logo{
-    width:38px;height:38px;border-radius:10px;
-    display:grid;place-items:center;
-    background: linear-gradient(135deg, var(--accent), #8b5cf6);
-    color:#fff;
-    font-weight:800;
-  }
-  .title{
-    font-size: 28px;
-    font-weight: 800;
-    margin: 0;
-    letter-spacing: 0.2px;
-  }
-  .sub{
-    margin: 6px 0 0;
-    color: var(--muted);
-    font-size: 14px;
-  }
-
-  .container{
-    max-width: 1100px;
-    margin: 18px auto 40px;
-    padding: 0 16px;
-  }
-
-  .card{
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-    padding: 18px;
-    margin-top: 14px;
-  }
-
-  .section-title{
-    font-weight: 800;
-    margin: 0 0 10px;
-    font-size: 14px;
-    color: #111827;
-  }
-
-  .upload-strip{
-    display:flex;
-    gap:12px;
-    align-items:center;
-    flex-wrap:wrap;
-  }
-  .file-wrap{
-    flex: 1 1 420px;
-    display:flex;
-    gap:10px;
-    align-items:center;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: #fafafa;
-  }
-  input[type="file"]{ width: 100%; }
-
-  select, input[type="number"], input[type="text"]{
-    padding: 10px 12px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: #fff;
-    color: var(--text);
-    outline:none;
-  }
-  select{ min-width: 170px; }
-
-  button{
-    padding: 10px 16px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: #fff;
-    font-weight: 800;
-    cursor:pointer;
-  }
-  button:hover{ border-color: rgba(91,91,214,0.45); }
-  .btn-primary{
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-  }
-  .btn-primary:hover{
-    background: var(--accent2);
-    border-color: var(--accent2);
-  }
-
-  .btn-ghost{
-    background:#fff;
-  }
-
-  .settings{
-    display:flex;
-    gap:14px;
-    flex-wrap:wrap;
-    align-items:center;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: #fafafa;
-    margin-top: 12px;
-  }
-  .settings label{
-    display:flex;
-    align-items:center;
-    gap:8px;
-    color: var(--text);
-    font-size: 14px;
-    font-weight: 700;
-  }
-  .settings .field{
-    display:flex;
-    align-items:center;
-    gap:8px;
-    color: var(--muted);
-    font-size: 14px;
-    font-weight: 700;
-  }
-
-  .tabs{
-    display:flex;
-    gap:8px;
-    flex-wrap:wrap;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 10px;
-    margin-bottom: 14px;
-  }
-  .tab{
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 8px 12px;
-    font-weight: 800;
-    color: #111827;
-    cursor:pointer;
-    user-select:none;
-  }
-  .tab.active{
-    background: rgba(91,91,214,0.10);
-    border-color: rgba(91,91,214,0.40);
-    color: #1f2a9e;
-  }
-
-  .tab-panel{ display:none; }
-  .tab-panel.active{ display:block; }
-
-  .kpis{
-    display:grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 12px;
-  }
-  .kpi{
-    border:1px solid var(--border);
-    border-radius: 12px;
-    padding: 12px;
-    background:#fff;
-  }
-  .kpi .k-title{ color: var(--muted); font-size: 12px; font-weight: 800; }
-  .kpi .k-val{ font-size: 24px; font-weight: 900; margin-top: 6px; }
-  .kpi.good .k-val{ color: var(--good); }
-  .kpi.warn .k-val{ color: var(--warn); }
-  .kpi.bad  .k-val{ color: var(--bad); }
-
-  .table-wrap{
-    overflow:auto;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background:#fff;
-  }
-  table{
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 820px;
-  }
-  thead th{
-    position: sticky;
-    top: 0;
-    background: #f8fafc;
-    color: var(--muted);
-    text-align:left;
-    font-size: 12px;
-    border-bottom: 1px solid var(--border);
-    padding: 10px 12px;
-    white-space:nowrap;
-    font-weight: 900;
-  }
-  tbody td{
-    padding: 10px 12px;
-    border-bottom: 1px solid #eef2f7;
-    vertical-align: top;
-    font-size: 13px;
-  }
-  tbody tr:hover{ background:#fafafa; }
-
-  .pill{
-    display:inline-block;
-    padding: 4px 8px;
-    border-radius: 999px;
-    font-size: 12px;
-    border: 1px solid var(--border);
-    background: var(--chip);
-    color: #111827;
-    white-space:nowrap;
-    font-weight: 800;
-  }
-  .pill.good{ border-color: rgba(22,163,74,0.35); background: rgba(22,163,74,0.10); color: var(--good); }
-  .pill.warn{ border-color: rgba(217,119,6,0.35); background: rgba(217,119,6,0.10); color: var(--warn); }
-  .pill.bad { border-color: rgba(220,38,38,0.35); background: rgba(220,38,38,0.10); color: var(--bad); }
-
-  .muted{ color: var(--muted); font-weight: 700; }
-
-  .status{
-    margin-top: 12px;
-    font-weight: 900;
-    color: var(--muted);
-  }
-  .status.ok{ color: var(--good); }
-  .status.busy{ color: var(--warn); }
-  .status.err{ color: var(--bad); }
-
-  .exportBox{
-    display:flex;
-    gap:12px;
-    flex-wrap:wrap;
-    align-items:center;
-    padding: 14px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: #fafafa;
-  }
-
-  .footer{
-    text-align:center;
-    color: var(--muted);
-    font-size: 13px;
-    padding: 20px 12px;
-    margin-top: 22px;
-  }
-
-  @media (max-width: 900px){
-    .kpis{ grid-template-columns: 1fr 1fr; }
-    table{ min-width: 720px; }
-  }
-  @media (max-width: 560px){
-    .kpis{ grid-template-columns: 1fr; }
-    table{ min-width: 680px; }
-  }
-</style>
+<link rel="stylesheet" href="/static/app.css" />
 </head>
 
 <body>
@@ -336,23 +47,25 @@
       </div>
 
       <div class="settings">
-        <label><input type="checkbox" id="useCrossref" checked /> Crossref</label>
-        <label><input type="checkbox" id="useOpenAlex" checked /> OpenAlex</label>
+        <label><input type="checkbox" id="useCrossref" checked /> Use Crossref</label>
+        <label><input type="checkbox" id="useOpenAlex" checked /> Use OpenAlex</label>
+        <label><input type="checkbox" id="useSemanticScholar" checked /> Use Semantic Scholar</label>
 
         <div class="field">
-          Throttle (s)
+          Throttle (seconds)
           <input id="throttle" type="number" value="0.12" step="0.02" min="0" style="width:90px;" />
         </div>
 
         <div class="field">
-          Max (0 = all)
+          Max verify (0 = all)
           <input id="maxVerify" type="number" value="0" step="1" min="0" style="width:90px;" />
         </div>
 
         <div class="field">
-          Mode
+          Verify mode
           <select id="verifyMode" aria-label="verify mode">
             <option value="all" selected>All references</option>
+            <option value="missing_only">Only missing in references</option>
             <option value="uncited_only">Only uncited references</option>
           </select>
         </div>
@@ -363,7 +76,15 @@
 
     <!-- Results -->
     <div class="card" id="resultsCard" style="display:none;">
-      <div class="section-title">Results</div>
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="section-title" style="margin:0;">Results</div>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn-ghost" id="btnCsv" onclick="exportCSV()" disabled>Export CSV</button>
+          <button class="btn-ghost" id="btnWord" onclick="exportWord()" disabled>Export Word</button>
+        </div>
+      </div>
 
       <div class="tabs" role="tablist" aria-label="Results tabs">
         <div class="tab active" data-tab="tabSummary" role="tab" tabindex="0">Summary</div>
@@ -372,7 +93,6 @@
         <div class="tab" data-tab="tabC2R" role="tab" tabindex="0">In-text → Reference</div>
         <div class="tab" data-tab="tabR2C" role="tab" tabindex="0">Reference → In-text</div>
         <div class="tab" data-tab="tabVerify" role="tab" tabindex="0">Online Verification</div>
-        <div class="tab" data-tab="tabExport" role="tab" tabindex="0">Export</div>
       </div>
 
       <!-- Summary -->
@@ -436,10 +156,10 @@
           <table>
             <thead>
               <tr>
-                <th style="width:160px;">Status</th>
-                <th style="width:320px;">In-text citation</th>
+                <th style="width:180px;">Status</th>
+                <th style="width:300px;">In-text citation</th>
                 <th>Matched reference</th>
-                <th style="width:220px;">Flags</th>
+                <th style="width:240px;">Flags</th>
               </tr>
             </thead>
             <tbody id="c2rBody"></tbody>
@@ -466,7 +186,7 @@
 
       <!-- Online verification -->
       <div class="tab-panel" id="tabVerify">
-        <div class="muted" style="margin-bottom:10px;">Online verification results (Crossref/OpenAlex). DOI-first, better query building.</div>
+        <div class="muted" style="margin-bottom:10px;">Online verification results (Crossref/OpenAlex/Semantic Scholar).</div>
 
         <div class="kpis" id="verifyKpis"></div>
 
@@ -481,9 +201,8 @@
                 <th style="width:220px;">DOI</th>
                 <th style="width:120px;">Source</th>
                 <th style="width:120px;">Year</th>
-                <th style="width:160px;">Author</th>
+                <th style="width:220px;">Matched authors</th>
                 <th>Matched title</th>
-                <th style="width:320px;">Query used</th>
               </tr>
             </thead>
             <tbody id="verifyBody"></tbody>
@@ -491,26 +210,7 @@
         </div>
 
         <div style="height:10px;"></div>
-        <div class="muted">Tip: Use Max if you want it much faster on Render.</div>
-      </div>
-
-      <!-- Export -->
-      <div class="tab-panel" id="tabExport">
-        <div class="muted" style="margin-bottom:10px;">Export results as CSV or Word. You can include online verification.</div>
-
-        <div class="exportBox">
-          <button class="btn-primary" onclick="exportCSVServer()">Download CSV</button>
-          <button class="btn-primary" onclick="exportWordServer()">Download Word</button>
-
-          <label style="display:flex;align-items:center;gap:8px;font-weight:800;">
-            <input type="checkbox" id="exportIncludeOnline" checked />
-            Include online verification
-          </label>
-        </div>
-
-        <div class="muted" style="margin-top:10px;">
-          If the file is large, the export can take longer. Use Max to limit verification rows.
-        </div>
+        <div class="muted">Tip: Run online verification only when needed, it can take time on Render.</div>
       </div>
 
     </div>
@@ -525,8 +225,10 @@
   </div>
 
 <script>
+  // --- State ---
   let lastPayload = null;
 
+  // --- Tabs ---
   function setActiveTab(tabId){
     document.querySelectorAll(".tab").forEach(t => {
       t.classList.toggle("active", t.dataset.tab === tabId);
@@ -550,10 +252,19 @@
     setActiveTab(t.dataset.tab);
   });
 
+  // --- Helpers ---
   function setStatus(text, kind=""){
     const el = document.getElementById("status");
     el.className = "status" + (kind ? " " + kind : "");
     el.textContent = text;
+  }
+
+  function pill(status){
+    const s = (status || "").toLowerCase();
+    if(s.includes("matched") || s === "verified") return `<span class="pill good">${escapeHtml(status)}</span>`;
+    if(s.includes("ambiguous") || s === "likely" || s === "needs_review") return `<span class="pill warn">${escapeHtml(status)}</span>`;
+    if(s.includes("not_found") || s === "offline") return `<span class="pill bad">${escapeHtml(status)}</span>`;
+    return `<span class="pill">${escapeHtml(status || "")}</span>`;
   }
 
   function escapeHtml(str){
@@ -563,14 +274,6 @@
       .replaceAll(">","&gt;")
       .replaceAll('"',"&quot;")
       .replaceAll("'","&#039;");
-  }
-
-  function pill(status){
-    const s = (status || "").toLowerCase();
-    if(s.includes("matched") || s === "verified") return `<span class="pill good">${escapeHtml(status)}</span>`;
-    if(s.includes("ambiguous") || s === "likely" || s === "needs_review") return `<span class="pill warn">${escapeHtml(status)}</span>`;
-    if(s.includes("not_found") || s === "offline") return `<span class="pill bad">${escapeHtml(status)}</span>`;
-    return `<span class="pill">${escapeHtml(status || "")}</span>`;
   }
 
   function renderKpis(summary){
@@ -585,7 +288,6 @@
       <div class="kpi"><div class="k-title">Reference entries</div><div class="k-val">${b}</div></div>
       <div class="kpi ${c ? "bad" : "good"}"><div class="k-title">Missing in references</div><div class="k-val">${c}</div></div>
       <div class="kpi ${d ? "warn" : "good"}"><div class="k-title">Uncited references</div><div class="k-val">${d}</div></div>
-      <div class="kpi"><div class="k-title">Match rate</div><div class="k-val">${(a ? (((a - c)/a)*100).toFixed(1) : "0.0")}%</div></div>
     `;
   }
 
@@ -602,7 +304,7 @@
       ["Reference entries found", s?.reference_entries_found ?? 0],
       ["Missing in references", s?.missing_in_references ?? 0],
       ["Uncited references", s?.uncited_references ?? 0],
-      ["Elapsed seconds", payload?.elapsed_seconds ?? ""],
+      ["Elapsed (seconds)", payload?.elapsed_seconds ?? ""],
     ];
     tbody.innerHTML = items.map(([k,v]) => `
       <tr>
@@ -655,7 +357,7 @@
         <td>${pill(r.status)}</td>
         <td>${escapeHtml(r.in_text || "")}</td>
         <td>${escapeHtml(r.matched_reference || "")}</td>
-        <td class="muted">${escapeHtml((r.flags || []).join(", ") || "")}</td>
+        <td class="muted">${escapeHtml(r.flags || "")}</td>
       </tr>
     `).join("");
   }
@@ -695,7 +397,7 @@
     `;
 
     if(!rows.length){
-      tbody.innerHTML = `<tr><td colspan="8" class="muted">No online verification results yet.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">No online verification results yet.</td></tr>`;
       return;
     }
 
@@ -706,16 +408,22 @@
         <td class="muted">${escapeHtml(r.doi || "")}</td>
         <td class="muted">${escapeHtml(r.source || "")}</td>
         <td class="muted">${escapeHtml(r.matched_year || "")}</td>
-        <td class="muted">${escapeHtml(r.matched_first_author || "")}</td>
+        <td class="muted">${escapeHtml(r.matched_authors || "")}</td>
         <td>${escapeHtml(r.matched_title || "")}</td>
-        <td class="muted">${escapeHtml(r.query_used || "")}</td>
       </tr>
     `).join("");
   }
 
+  function enableExportButtons(){
+    document.getElementById("btnCsv").disabled = !lastPayload;
+    document.getElementById("btnWord").disabled = !lastPayload;
+  }
+
   function renderAll(payload){
     lastPayload = payload;
+
     document.getElementById("resultsCard").style.display = "block";
+    enableExportButtons();
 
     renderKpis(payload?.summary);
     renderSummaryTable(payload);
@@ -747,6 +455,7 @@
     return { ok:true, data };
   }
 
+  // --- Actions ---
   async function runCheck(){
     const file = document.getElementById("file").files[0];
     if(!file){
@@ -788,11 +497,13 @@
     form.append("file", file);
     form.append("style", document.getElementById("style").value);
 
-    form.append("verify_mode", document.getElementById("verifyMode").value);
+    form.append("verify_online", "true");
     form.append("use_crossref", document.getElementById("useCrossref").checked ? "true" : "false");
     form.append("use_openalex", document.getElementById("useOpenAlex").checked ? "true" : "false");
+    form.append("use_semanticscholar", document.getElementById("useSemanticScholar").checked ? "true" : "false");
     form.append("throttle_s", String(parseFloat(document.getElementById("throttle").value || "0")));
     form.append("max_verify", String(parseInt(document.getElementById("maxVerify").value || "0", 10)));
+    form.append("verify_mode", document.getElementById("verifyMode").value);
 
     setStatus("Running online verification...", "busy");
     document.getElementById("btnVerify").disabled = true;
@@ -814,6 +525,89 @@
     setActiveTab("tabVerify");
   }
 
+  // --- Export: CSV ---
+  function exportCSV(){
+    if(!lastPayload){ return; }
+
+    const rows = [];
+    const pushRow = (section, obj) => rows.push({ section, ...obj });
+
+    const s = lastPayload.summary || {};
+    pushRow("summary", { metric:"filename", value:lastPayload.filename || "" });
+    pushRow("summary", { metric:"style", value:lastPayload.style || "" });
+    pushRow("summary", { metric:"in_text_citations_found", value:s.in_text_citations_found ?? 0 });
+    pushRow("summary", { metric:"reference_entries_found", value:s.reference_entries_found ?? 0 });
+    pushRow("summary", { metric:"missing_in_references", value:s.missing_in_references ?? 0 });
+    pushRow("summary", { metric:"uncited_references", value:s.uncited_references ?? 0 });
+
+    (lastPayload.missing_in_references || []).forEach(r => {
+      pushRow("missing_in_references", {
+        count_in_text: r.count_in_text ?? "",
+        citation_in_text: r.citation_in_text ?? ""
+      });
+    });
+
+    (lastPayload.uncited_references || []).forEach(ref => {
+      pushRow("uncited_references", { reference: ref });
+    });
+
+    (lastPayload.reconciliation_intext_to_reference || []).forEach(r => {
+      pushRow("intext_to_reference", {
+        status: r.status ?? "",
+        in_text: r.in_text ?? "",
+        matched_reference: r.matched_reference ?? "",
+        flags: r.flags ?? ""
+      });
+    });
+
+    (lastPayload.reconciliation_reference_to_intext || []).forEach(r => {
+      pushRow("reference_to_intext", {
+        times_cited: r.times_cited ?? 0,
+        reference: r.reference ?? "",
+        cited_by: Array.isArray(r.cited_by) ? r.cited_by.join(" | ") : ""
+      });
+    });
+
+    const ov = lastPayload.online_verification || {};
+    (ov.rows || []).forEach(r => {
+      pushRow("online_verification", {
+        status: r.status ?? "",
+        source: r.source ?? "",
+        score: r.score ?? "",
+        doi: r.doi ?? "",
+        matched_year: r.matched_year ?? "",
+        matched_authors: r.matched_authors ?? "",
+        matched_title: r.matched_title ?? "",
+        query_used: r.query_used ?? "",
+        error: r.error || ""
+      });
+    });
+
+    const csv = toCSV(rows);
+    downloadBlob(csv, `citation_crosschecker_results_${dateStamp()}.csv`, "text/csv;charset=utf-8");
+  }
+
+  function toCSV(rows){
+    if(!rows.length) return "";
+    const headers = Array.from(rows.reduce((set, r) => {
+      Object.keys(r).forEach(k => set.add(k));
+      return set;
+    }, new Set()));
+
+    const esc = (v) => {
+      const s = String(v ?? "");
+      if(/[",\n]/.test(s)) return `"${s.replaceAll('"','""')}"`;
+      return s;
+    };
+
+    const lines = [];
+    lines.push(headers.map(esc).join(","));
+    rows.forEach(r => {
+      lines.push(headers.map(h => esc(r[h])).join(","));
+    });
+    return lines.join("\n");
+  }
+
   function downloadBlob(content, filename, mime){
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -826,66 +620,111 @@
     URL.revokeObjectURL(url);
   }
 
-  function exportCSVServer(){
-    const file = document.getElementById("file").files[0];
-    if(!file){ alert("Select a DOCX or PDF first."); return; }
-
-    const form = new FormData();
-    form.append("file", file);
-    form.append("style", document.getElementById("style").value);
-
-    const inc = document.getElementById("exportIncludeOnline").checked;
-    form.append("include_online", inc ? "true" : "false");
-
-    form.append("verify_mode", document.getElementById("verifyMode").value);
-    form.append("use_crossref", document.getElementById("useCrossref").checked ? "true" : "false");
-    form.append("use_openalex", document.getElementById("useOpenAlex").checked ? "true" : "false");
-    form.append("throttle_s", String(parseFloat(document.getElementById("throttle").value || "0")));
-    form.append("max_verify", String(parseInt(document.getElementById("maxVerify").value || "0", 10)));
-
-    fetch("/export/csv", { method:"POST", body: form })
-      .then(r => r.blob())
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "citation_report.csv";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      });
+  function dateStamp(){
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2,"0");
+    return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
   }
 
-  function exportWordServer(){
-    const file = document.getElementById("file").files[0];
-    if(!file){ alert("Select a DOCX or PDF first."); return; }
+  // --- Export: Word (.doc HTML) ---
+  function exportWord(){
+    if(!lastPayload){ return; }
 
-    const form = new FormData();
-    form.append("file", file);
-    form.append("style", document.getElementById("style").value);
+    const s = lastPayload.summary || {};
+    const ov = lastPayload.online_verification || {};
+    const html = `
+      <html><head><meta charset="utf-8"></head><body>
+      <h1>Citation Crosschecker Results</h1>
+      <p><strong>Filename:</strong> ${escapeHtml(lastPayload.filename || "")}<br/>
+      <strong>Style:</strong> ${escapeHtml(lastPayload.style || "")}</p>
 
-    const inc = document.getElementById("exportIncludeOnline").checked;
-    form.append("include_online", inc ? "true" : "false");
+      <h2>Summary</h2>
+      <ul>
+        <li>In-text citations found: ${s.in_text_citations_found ?? 0}</li>
+        <li>Reference entries found: ${s.reference_entries_found ?? 0}</li>
+        <li>Missing in references: ${s.missing_in_references ?? 0}</li>
+        <li>Uncited references: ${s.uncited_references ?? 0}</li>
+      </ul>
 
-    form.append("verify_mode", document.getElementById("verifyMode").value);
-    form.append("use_crossref", document.getElementById("useCrossref").checked ? "true" : "false");
-    form.append("use_openalex", document.getElementById("useOpenAlex").checked ? "true" : "false");
-    form.append("throttle_s", String(parseFloat(document.getElementById("throttle").value || "0")));
-    form.append("max_verify", String(parseInt(document.getElementById("maxVerify").value || "0", 10)));
+      <h2>Missing in References</h2>
+      ${listTable(
+        ["Count", "Citation in text"],
+        (lastPayload.missing_in_references || []).map(r => [r.count_in_text ?? "", r.citation_in_text ?? ""])
+      )}
 
-    fetch("/export/word", { method:"POST", body: form })
-      .then(r => r.blob())
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "citation_report.docx";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      });
+      <h2>Uncited References</h2>
+      ${listTable(
+        ["Reference"],
+        (lastPayload.uncited_references || []).map(r => [r])
+      )}
+
+      <h2>In-text → Reference</h2>
+      ${listTable(
+        ["Status", "In-text citation", "Matched reference", "Flags"],
+        (lastPayload.reconciliation_intext_to_reference || []).map(r => [r.status ?? "", r.in_text ?? "", r.matched_reference ?? "", r.flags ?? ""])
+      )}
+
+      <h2>Reference → In-text</h2>
+      ${listTable(
+        ["Times cited", "Reference", "Cited by"],
+        (lastPayload.reconciliation_reference_to_intext || []).map(r => [
+          r.times_cited ?? 0,
+          r.reference ?? "",
+          Array.isArray(r.cited_by) ? r.cited_by.join(" | ") : ""
+        ])
+      )}
+
+      <h2>Online Verification</h2>
+      <p>
+        Verified: ${ov.summary?.verified ?? 0},
+        Likely: ${ov.summary?.likely ?? 0},
+        Needs review: ${ov.summary?.needs_review ?? 0},
+        Not found: ${ov.summary?.not_found ?? 0},
+        Offline: ${ov.summary?.offline ?? 0}
+      </p>
+      ${listTable(
+        ["Status", "Source", "Score", "DOI", "Year", "Matched authors", "Matched title"],
+        (ov.rows || []).map(r => [
+          r.status ?? "",
+          r.source ?? "",
+          r.score ?? "",
+          r.doi ?? "",
+          r.matched_year ?? "",
+          r.matched_authors ?? "",
+          r.matched_title ?? ""
+        ])
+      )}
+
+      <hr/>
+      <p>© Prof Anokye M. Adam, University of Cape Coast</p>
+      <p><em>Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.</em></p>
+      </body></html>
+    `;
+
+    const doc = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office"
+            xmlns:w="urn:schemas-microsoft-com:office:word"
+            xmlns="http://www.w3.org/TR/REC-html40">
+        <head><meta charset="utf-8"><title>Citation Crosschecker Results</title></head>
+        <body>${html}</body>
+      </html>
+    `;
+
+    downloadBlob(doc, `citation_crosschecker_results_${dateStamp()}.doc`, "application/msword");
+  }
+
+  function listTable(headers, rows){
+    const th = headers.map(h => `<th style="border:1px solid #ddd;padding:6px;background:#f3f4f6;text-align:left;">${escapeHtml(h)}</th>`).join("");
+    const tr = (rows || []).map(r => {
+      const tds = r.map(c => `<td style="border:1px solid #ddd;padding:6px;vertical-align:top;">${escapeHtml(String(c ?? ""))}</td>`).join("");
+      return `<tr>${tds}</tr>`;
+    }).join("");
+    return `
+      <table style="border-collapse:collapse;width:100%;margin-bottom:14px;">
+        <thead><tr>${th}</tr></thead>
+        <tbody>${tr || `<tr><td colspan="${headers.length}" style="border:1px solid #ddd;padding:6px;color:#6b7280;">No rows.</td></tr>`}</tbody>
+      </table>
+    `;
   }
 </script>
 
