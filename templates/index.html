@@ -1,13 +1,16 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Citation Crosschecker</title>
-  <link rel="stylesheet" href="/static/app.css" />
+
+  <!-- IMPORTANT: use url_for so CSS ALWAYS loads on Render -->
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
 </head>
 <body>
-  <header class="topbar">
+
+  <div class="topbar">
     <div class="brand">
       <div class="logo">CC</div>
       <div>
@@ -15,94 +18,205 @@
         <p>Upload a DOCX or PDF. Run the fast check first, then verify online only when needed.</p>
       </div>
     </div>
-  </header>
+  </div>
 
-  <main class="container">
-    <section class="card">
+  <div class="container">
+
+    <div class="card">
       <h2>Run</h2>
 
       <div class="grid">
-        <div class="field">
-          <label>File</label>
-          <input id="file" type="file" accept=".docx,.pdf" />
-          <div class="hint">DOCX or PDF only</div>
-        </div>
-
-        <div class="field">
-          <label>Style</label>
-          <select id="style">
-            <option value="apa">APA/Harvard</option>
-            <option value="vancouver">Vancouver</option>
-            <option value="ieee">IEEE</option>
-          </select>
-          <div class="hint">Choose the citation style used in the document</div>
-        </div>
-      </div>
-
-      <div class="actions">
-        <button id="btnCheck" class="btn primary">Run Check</button>
-        <button id="btnVerify" class="btn">Run Online Verification</button>
-      </div>
-
-      <div class="verifyBox">
-        <div class="verifyRow">
-          <label class="check"><input id="useCrossref" type="checkbox" checked /> Use Crossref</label>
-          <label class="check"><input id="useOpenalex" type="checkbox" checked /> Use OpenAlex</label>
-          <label class="check"><input id="useSemantic" type="checkbox" checked /> Use Semantic Scholar</label>
-
-          <div class="mini">
-            <label>Throttle (seconds)</label>
-            <input id="throttle" type="number" step="0.01" value="0.08" />
+        <div>
+          <div class="field">
+            <label>Document</label>
+            <input id="file" type="file" accept=".pdf,.docx" />
+            <div class="hint">DOCX works best for accurate text extraction. PDF extraction depends on the PDF type.</div>
           </div>
 
-          <div class="mini">
-            <label>Max verify (0 = all)</label>
-            <input id="maxVerify" type="number" step="1" value="0" />
+          <div class="actions">
+            <button class="btn primary" id="btnCheck">Run Check</button>
+            <button class="btn" id="btnVerify">Run Online Verification</button>
           </div>
 
-          <div class="mini">
-            <label>Verify mode</label>
-            <select id="verifyMode">
-              <option value="all">All references</option>
-              <option value="missing">Uncited first</option>
+          <div class="status" id="status">Ready.</div>
+        </div>
+
+        <div>
+          <div class="field">
+            <label>Style</label>
+            <select id="style">
+              <option value="apa">APA/Harvard</option>
+              <option value="ieee">IEEE</option>
+              <option value="vancouver">Vancouver</option>
             </select>
           </div>
+
+          <div class="verifyBox">
+            <div class="verifyRow">
+              <label class="check"><input type="checkbox" id="useCrossref" checked> Use Crossref</label>
+              <label class="check"><input type="checkbox" id="useOpenAlex" checked> Use OpenAlex</label>
+              <label class="check"><input type="checkbox" id="useSemanticScholar" checked> Use Semantic Scholar</label>
+
+              <div class="mini">
+                <label>Throttle (s)</label>
+                <input id="throttle" type="number" value="0.12" step="0.05" min="0">
+              </div>
+
+              <div class="mini">
+                <label>Max (0 = all)</label>
+                <input id="maxVerify" type="number" value="0" step="1" min="0">
+              </div>
+
+              <div class="mini">
+                <label>Mode</label>
+                <select id="verifyMode">
+                  <option value="all" selected>All references</option>
+                  <option value="uncited_only">Only uncited references</option>
+                  <option value="missing_only">Missing only (review mode)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
+    </div>
 
-      <div id="status" class="status"></div>
-    </section>
-
-    <section class="card">
+    <div class="card" id="resultsCard" style="display:none;">
       <div class="cardHead">
-        <h2>Results</h2>
+        <h2 style="margin:0;">Results</h2>
         <div class="exportBtns">
-          <button id="btnCsv" class="btn small">Export CSV</button>
-          <button id="btnWord" class="btn small">Export Word</button>
+          <button class="btn small" id="btnExportCsvTop" disabled>Download CSV</button>
+          <button class="btn small" id="btnExportWordTop" disabled>Export Word</button>
         </div>
       </div>
 
-      <div id="dash" class="dash"></div>
+      <div class="dash" id="dash"></div>
 
-      <div class="tabs">
-        <button class="tab active" data-tab="tabRecon">In-text → Reference</button>
-        <button class="tab" data-tab="tabMissing">Missing in References</button>
-        <button class="tab" data-tab="tabUncited">Uncited References</button>
-        <button class="tab" data-tab="tabVerify">Online Verification</button>
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-tab="summaryPane">Summary</button>
+        <button class="tab" data-tab="missingPane">Missing in References</button>
+        <button class="tab" data-tab="uncitedPane">Uncited References</button>
+        <button class="tab" data-tab="c2rPane">In-text → Reference</button>
+        <button class="tab" data-tab="r2cPane">Reference → In-text</button>
+        <button class="tab" data-tab="verifyPane">Online Verification</button>
+        <button class="tab" data-tab="exportPane">Exports</button>
       </div>
 
-      <div id="tabRecon" class="tabPane active"></div>
-      <div id="tabMissing" class="tabPane"></div>
-      <div id="tabUncited" class="tabPane"></div>
-      <div id="tabVerify" class="tabPane"></div>
-    </section>
+      <div class="tabPane active" id="summaryPane">
+        <div class="tableWrap">
+          <table>
+            <tbody id="summaryTable"></tbody>
+          </table>
+        </div>
+        <div class="hint" id="refMsg" style="margin-top:10px;"></div>
+      </div>
 
-    <footer class="footer">
-      <div>© Prof Anokye M. Adam, University of Cape Coast</div>
+      <div class="tabPane" id="missingPane">
+        <div class="hint">Citations found in text that have no matching reference entry.</div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr><th style="width:80px;">No.</th><th style="width:120px;">Count</th><th>Citation in text</th></tr>
+            </thead>
+            <tbody id="missingBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tabPane" id="uncitedPane">
+        <div class="hint">Reference entries that were not cited in the main text.</div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr><th style="width:80px;">No.</th><th>Reference</th></tr>
+            </thead>
+            <tbody id="uncitedBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tabPane" id="c2rPane">
+        <div class="hint">Each in-text citation and the matched reference entry. “lead_word” and “possessive” are flagged for review.</div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:90px;">No.</th>
+                <th style="width:130px;">Status</th>
+                <th style="width:320px;">In-text citation</th>
+                <th>Matched reference</th>
+                <th style="width:160px;">Flags</th>
+              </tr>
+            </thead>
+            <tbody id="c2rBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tabPane" id="r2cPane">
+        <div class="hint">Each reference and how often it appears in the text.</div>
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:90px;">No.</th>
+                <th style="width:120px;">Times cited</th>
+                <th>Reference</th>
+                <th style="width:420px;">Cited by (samples)</th>
+              </tr>
+            </thead>
+            <tbody id="r2cBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tabPane" id="verifyPane">
+        <div class="hint">Online verification uses Crossref, OpenAlex, and Semantic Scholar. Matching is based mainly on title similarity, then author and year.</div>
+
+        <div class="dash" id="verifyDash" style="grid-template-columns: repeat(5, 1fr);"></div>
+
+        <div class="tableWrap" style="margin-top:12px;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:90px;">No.</th>
+                <th style="width:140px;">Status</th>
+                <th style="width:120px;">Source</th>
+                <th style="width:90px;">Score</th>
+                <th style="width:240px;">DOI</th>
+                <th style="width:90px;">Year</th>
+                <th style="width:160px;">Authors</th>
+                <th>Matched title</th>
+                <th style="width:260px;">Query used</th>
+                <th style="width:220px;">Error</th>
+              </tr>
+            </thead>
+            <tbody id="verifyBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tabPane" id="exportPane">
+        <div class="hint">Exports regenerate the report from the uploaded file (fast). Use these if you need a clean output for sharing.</div>
+        <div class="actions">
+          <button class="btn primary" id="btnExportCsv">Download CSV</button>
+          <button class="btn" id="btnExportWord">Export Word</button>
+        </div>
+        <div class="hint muted" style="margin-top:10px;">
+          Tip: If downloads don’t start on some browsers, allow popups/downloads for this site.
+        </div>
+      </div>
+
+    </div>
+
+    <div class="footer">
+      <div class="muted">© Prof Anokye M. Adam, University of Cape Coast</div>
       <div class="muted">Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.</div>
-    </footer>
-  </main>
+    </div>
 
-  <script src="/static/app.js"></script>
+  </div>
+
+  <script src="{{ url_for('static', path='app.js') }}"></script>
 </body>
 </html>
