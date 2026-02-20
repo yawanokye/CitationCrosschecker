@@ -4,8 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Citation Crosschecker</title>
-
-  <!-- IMPORTANT: use url_for so CSS ALWAYS loads on Render -->
   <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
 </head>
 <body>
@@ -23,14 +21,17 @@
   <div class="container">
 
     <div class="card">
-      <h2>Run</h2>
+      <div class="cardTitleRow">
+        <h2>Run</h2>
+        <div class="pill">Crossref + OpenAlex</div>
+      </div>
 
       <div class="grid">
         <div>
           <div class="field">
             <label>Document</label>
             <input id="file" type="file" accept=".pdf,.docx" />
-            <div class="hint">DOCX works best for accurate text extraction. PDF extraction depends on the PDF type.</div>
+            <div class="hint">DOCX works best. PDF extraction depends on the PDF type and layout.</div>
           </div>
 
           <div class="actions">
@@ -38,7 +39,10 @@
             <button class="btn" id="btnVerify">Run Online Verification</button>
           </div>
 
-          <div class="status" id="status">Ready.</div>
+          <div class="statusRow">
+            <div class="spinner" id="spinner" style="display:none;"></div>
+            <div class="status" id="status">Ready.</div>
+          </div>
         </div>
 
         <div>
@@ -55,7 +59,6 @@
             <div class="verifyRow">
               <label class="check"><input type="checkbox" id="useCrossref" checked> Use Crossref</label>
               <label class="check"><input type="checkbox" id="useOpenAlex" checked> Use OpenAlex</label>
-              <label class="check"><input type="checkbox" id="useSemanticScholar" checked> Use Semantic Scholar</label>
 
               <div class="mini">
                 <label>Throttle (s)</label>
@@ -74,6 +77,10 @@
                   <option value="uncited_only">Only uncited references</option>
                   <option value="missing_only">Missing only (review mode)</option>
                 </select>
+              </div>
+
+              <div class="hintTiny">
+                If your host blocks outbound requests, online verification may show “offline”.
               </div>
             </div>
           </div>
@@ -172,8 +179,7 @@
       </div>
 
       <div class="tabPane" id="verifyPane">
-        <div class="hint">Online verification uses Crossref, OpenAlex, and Semantic Scholar. Matching is based mainly on title similarity, then author and year.</div>
-
+        <div class="hint">Online verification uses Crossref and OpenAlex. Matching is based mainly on title similarity, then author and year, DOI gets priority.</div>
         <div class="dash" id="verifyDash" style="grid-template-columns: repeat(5, 1fr);"></div>
 
         <div class="tableWrap" style="margin-top:12px;">
@@ -198,13 +204,13 @@
       </div>
 
       <div class="tabPane" id="exportPane">
-        <div class="hint">Exports regenerate the report from the uploaded file (fast). Use these if you need a clean output for sharing.</div>
+        <div class="hint">Exports regenerate the report from the uploaded file (fast). Use these for sharing.</div>
         <div class="actions">
           <button class="btn primary" id="btnExportCsv">Download CSV</button>
           <button class="btn" id="btnExportWord">Export Word</button>
         </div>
         <div class="hint muted" style="margin-top:10px;">
-          Tip: If downloads don’t start on some browsers, allow popups/downloads for this site.
+          Tip: If downloads don’t start, allow popups/downloads for this site.
         </div>
       </div>
 
@@ -212,7 +218,7 @@
 
     <div class="footer">
       <div class="muted">© Prof Anokye M. Adam, University of Cape Coast</div>
-      <div class="muted">Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.</div>
+      <div class="muted">Disclaimer: This checker may produce false positives or false negatives. Verify critical citations manually.</div>
     </div>
 
   </div>
