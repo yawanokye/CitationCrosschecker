@@ -1,22 +1,13 @@
+// static/app.js
+
 let lastResult = null;
 
 function $(id){ return document.getElementById(id); }
 
-function setStatus(text){
-  $("status").textContent = text || "";
-}
-
-function showSpinner(on){
-  $("spinner").style.display = on ? "inline-block" : "none";
-}
-
-function badge(status){
-  const s = (status || "").toLowerCase();
-  let cls = "";
-  if (s.includes("matched") || s === "verified") cls = "good";
-  else if (s.includes("ambiguous") || s === "likely" || s === "needs_review") cls = "warn";
-  else if (s.includes("not_found") || s.includes("offline")) cls = "bad";
-  return `<span class="badge ${cls}">${escapeHtml(status || "")}</span>`;
+function setStatus(text, kind="muted"){
+  const el = $("status");
+  el.textContent = text || "";
+  el.className = `status ${kind}`;
 }
 
 function escapeHtml(str){
@@ -26,6 +17,15 @@ function escapeHtml(str){
     .replaceAll(">","&gt;")
     .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
+}
+
+function badge(status){
+  const s = (status || "").toLowerCase();
+  let cls = "chip";
+  if (s.includes("matched") || s === "verified") cls = "chip good";
+  else if (s.includes("ambiguous") || s === "likely" || s === "needs_review") cls = "chip warn";
+  else if (s.includes("not_found") || s.includes("offline")) cls = "chip bad";
+  return `<span class="${cls}">${escapeHtml(status || "")}</span>`;
 }
 
 function showResults(){
@@ -61,7 +61,7 @@ function renderSummary(result, ui){
   ];
   $("summaryTable").innerHTML = items.map(([k,v]) => `
     <tr>
-      <td style="width:260px;color:var(--muted)">${escapeHtml(k)}</td>
+      <td class="kcol">${escapeHtml(k)}</td>
       <td>${escapeHtml(String(v ?? ""))}</td>
     </tr>
   `).join("");
@@ -145,7 +145,7 @@ function renderVerify(result, ui){
   `;
 
   if (!rows.length){
-    $("verifyBody").innerHTML = `<tr><td colspan="10" class="muted">No online verification results yet.</td></tr>`;
+    $("verifyBody").innerHTML = `<tr><td colspan="9" class="muted">No online verification results yet.</td></tr>`;
     return;
   }
 
@@ -160,7 +160,6 @@ function renderVerify(result, ui){
       <td class="muted">${escapeHtml(r.matched_authors ?? "")}</td>
       <td>${escapeHtml(r.matched_title ?? "")}</td>
       <td class="muted">${escapeHtml(r.query_used ?? "")}</td>
-      <td class="muted">${escapeHtml(r.error ?? "")}</td>
     </tr>
   `).join("");
 }
@@ -202,6 +201,13 @@ function requireFile(){
   return f;
 }
 
+function lockButtons(lock){
+  $("btnCheck").disabled = lock;
+  $("btnVerify").disabled = lock;
+  $("btnExportCsvTop").disabled = lock || !lastResult;
+  $("btnExportWordTop").disabled = lock || !lastResult;
+}
+
 async function runCheck(){
   const f = requireFile();
   if (!f) return;
@@ -210,19 +216,15 @@ async function runCheck(){
   form.append("file", f);
   form.append("style", $("style").value);
 
-  $("btnCheck").disabled = true;
-  $("btnVerify").disabled = true;
-  showSpinner(true);
-  setStatus("Running check...");
+  lockButtons(true);
+  setStatus("Running check…", "muted");
 
   const { ok, data } = await postForm("/check", form);
 
-  $("btnCheck").disabled = false;
-  $("btnVerify").disabled = false;
-  showSpinner(false);
+  lockButtons(false);
 
   if (!ok){
-    setStatus("Error.");
+    setStatus("Check failed.", "bad");
     alert(data?.error || "Server error");
     return;
   }
@@ -240,7 +242,7 @@ async function runCheck(){
   renderVerify(data, ui);
 
   setActiveTab("summaryPane");
-  setStatus("Check complete.");
+  setStatus("Check complete.", "good");
 }
 
 async function runVerify(){
@@ -257,20 +259,16 @@ async function runVerify(){
   form.append("throttle_s", String(parseFloat($("throttle").value || "0")));
   form.append("max_verify", String(parseInt($("maxVerify").value || "0", 10)));
 
-  $("btnCheck").disabled = true;
-  $("btnVerify").disabled = true;
-  showSpinner(true);
-  setStatus("Running online verification...");
+  lockButtons(true);
+  setStatus("Running online verification…", "muted");
 
   const { ok, data } = await postForm("/verify", form);
 
-  $("btnCheck").disabled = false;
-  $("btnVerify").disabled = false;
-  showSpinner(false);
+  lockButtons(false);
 
   if (!ok){
-    setStatus("Error.");
-    alert((data?.error || "Server error") + (data?.detail ? "\n\n" + data.detail : ""));
+    setStatus("Online verification failed.", "bad");
+    alert(data?.error || "Server error");
     return;
   }
 
@@ -287,7 +285,7 @@ async function runVerify(){
   renderVerify(data, ui);
 
   setActiveTab("verifyPane");
-  setStatus("Online verification complete.");
+  setStatus("Online verification complete.", "good");
 }
 
 async function downloadFromEndpoint(endpoint){
