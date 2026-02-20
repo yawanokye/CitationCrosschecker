@@ -1,5 +1,4 @@
 // static/app.js
-
 let lastResult = null;
 
 function $(id){ return document.getElementById(id); }
@@ -37,10 +36,10 @@ function showResults(){
 function renderDashboard(ui){
   const d = ui.dashboard || {};
   $("dash").innerHTML = `
-    <div class="metric"><div class="k">In-text citations</div><div class="v">${d.in_text_citations_found ?? 0}</div></div>
-    <div class="metric"><div class="k">Reference entries</div><div class="v">${d.reference_entries_found ?? 0}</div></div>
-    <div class="metric"><div class="k">Missing in references</div><div class="v">${d.missing_in_references ?? 0}</div></div>
-    <div class="metric"><div class="k">Uncited references</div><div class="v">${d.uncited_references ?? 0}</div></div>
+    <div class="metric"><div class="k">In-text</div><div class="v">${d.in_text_citations_found ?? 0}</div></div>
+    <div class="metric"><div class="k">References</div><div class="v">${d.reference_entries_found ?? 0}</div></div>
+    <div class="metric"><div class="k">Missing</div><div class="v">${d.missing_in_references ?? 0}</div></div>
+    <div class="metric"><div class="k">Uncited</div><div class="v">${d.uncited_references ?? 0}</div></div>
     <div class="metric"><div class="k">Match rate</div><div class="v">${d.match_rate_pct ?? 0}%</div></div>
   `;
 }
@@ -60,10 +59,7 @@ function renderSummary(result, ui){
     ["Elapsed (s)", result.elapsed_seconds ?? ""],
   ];
   $("summaryTable").innerHTML = items.map(([k,v]) => `
-    <tr>
-      <td class="kcol">${escapeHtml(k)}</td>
-      <td>${escapeHtml(String(v ?? ""))}</td>
-    </tr>
+    <tr><td class="kcol">${escapeHtml(k)}</td><td>${escapeHtml(String(v ?? ""))}</td></tr>
   `).join("");
 
   $("refMsg").textContent = result.reference_detection_message || "";
@@ -71,64 +67,45 @@ function renderSummary(result, ui){
 
 function renderMissing(ui){
   const rows = ui.missing_rows || [];
-  if (!rows.length){
-    $("missingBody").innerHTML = `<tr><td colspan="3" class="muted">No missing items.</td></tr>`;
-    return;
-  }
-  $("missingBody").innerHTML = rows.map(r => `
-    <tr>
-      <td>${escapeHtml(r.no)}</td>
-      <td>${escapeHtml(r.count_in_text)}</td>
-      <td>${escapeHtml(r.citation_in_text)}</td>
-    </tr>
-  `).join("");
+  $("missingBody").innerHTML = rows.length
+    ? rows.map(r => `<tr><td>${escapeHtml(r.no)}</td><td>${escapeHtml(r.count_in_text)}</td><td>${escapeHtml(r.citation_in_text)}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">No missing items.</td></tr>`;
 }
 
 function renderUncited(ui){
   const rows = ui.uncited_rows || [];
-  if (!rows.length){
-    $("uncitedBody").innerHTML = `<tr><td colspan="2" class="muted">No uncited references.</td></tr>`;
-    return;
-  }
-  $("uncitedBody").innerHTML = rows.map(r => `
-    <tr>
-      <td>${escapeHtml(r.no)}</td>
-      <td>${escapeHtml(r.reference)}</td>
-    </tr>
-  `).join("");
+  $("uncitedBody").innerHTML = rows.length
+    ? rows.map(r => `<tr><td>${escapeHtml(r.no)}</td><td>${escapeHtml(r.reference)}</td></tr>`).join("")
+    : `<tr><td colspan="2" class="muted">No uncited references.</td></tr>`;
 }
 
 function renderC2R(ui){
   const rows = ui.c2r_rows || [];
-  if (!rows.length){
-    $("c2rBody").innerHTML = `<tr><td colspan="5" class="muted">No rows.</td></tr>`;
-    return;
-  }
-  $("c2rBody").innerHTML = rows.map(r => `
-    <tr>
-      <td>${escapeHtml(r.no)}</td>
-      <td>${badge(r.status)}</td>
-      <td>${escapeHtml(r.in_text)}</td>
-      <td>${escapeHtml(r.matched_reference)}</td>
-      <td class="muted">${escapeHtml(r.flags || "")}</td>
-    </tr>
-  `).join("");
+  $("c2rBody").innerHTML = rows.length
+    ? rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.no)}</td>
+        <td>${badge(r.status)}</td>
+        <td>${escapeHtml(r.in_text)}</td>
+        <td>${escapeHtml(r.matched_reference)}</td>
+        <td>${escapeHtml(r.flags || "")}</td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="5" class="muted">No rows.</td></tr>`;
 }
 
 function renderR2C(ui){
   const rows = ui.r2c_rows || [];
-  if (!rows.length){
-    $("r2cBody").innerHTML = `<tr><td colspan="4" class="muted">No rows.</td></tr>`;
-    return;
-  }
-  $("r2cBody").innerHTML = rows.map(r => `
-    <tr>
-      <td>${escapeHtml(r.no)}</td>
-      <td>${escapeHtml(String(r.times_cited ?? 0))}</td>
-      <td>${escapeHtml(r.reference)}</td>
-      <td class="muted">${escapeHtml(r.cited_by || "")}</td>
-    </tr>
-  `).join("");
+  $("r2cBody").innerHTML = rows.length
+    ? rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.no)}</td>
+        <td>${escapeHtml(String(r.times_cited ?? 0))}</td>
+        <td>${escapeHtml(r.reference)}</td>
+        <td>${escapeHtml(r.cited_by || "")}</td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="4" class="muted">No rows.</td></tr>`;
 }
 
 function renderVerify(result, ui){
@@ -139,38 +116,31 @@ function renderVerify(result, ui){
   $("verifyDash").innerHTML = `
     <div class="metric"><div class="k">Verified</div><div class="v">${sum.verified ?? 0}</div></div>
     <div class="metric"><div class="k">Likely</div><div class="v">${sum.likely ?? 0}</div></div>
-    <div class="metric"><div class="k">Needs review</div><div class="v">${sum.needs_review ?? 0}</div></div>
+    <div class="metric"><div class="k">Review</div><div class="v">${sum.needs_review ?? 0}</div></div>
     <div class="metric"><div class="k">Not found</div><div class="v">${sum.not_found ?? 0}</div></div>
     <div class="metric"><div class="k">Offline</div><div class="v">${sum.offline ?? 0}</div></div>
   `;
 
-  if (!rows.length){
-    $("verifyBody").innerHTML = `<tr><td colspan="9" class="muted">No online verification results yet.</td></tr>`;
-    return;
-  }
-
-  $("verifyBody").innerHTML = rows.map(r => `
-    <tr>
-      <td>${escapeHtml(r.no)}</td>
-      <td>${badge(r.status)}</td>
-      <td class="muted">${escapeHtml(r.source)}</td>
-      <td>${escapeHtml(String(r.score ?? ""))}</td>
-      <td class="muted">${escapeHtml(r.doi)}</td>
-      <td class="muted">${escapeHtml(String(r.matched_year ?? ""))}</td>
-      <td class="muted">${escapeHtml(r.matched_authors ?? "")}</td>
-      <td>${escapeHtml(r.matched_title ?? "")}</td>
-      <td class="muted">${escapeHtml(r.query_used ?? "")}</td>
-    </tr>
-  `).join("");
+  $("verifyBody").innerHTML = rows.length
+    ? rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.no)}</td>
+        <td>${badge(r.status)}</td>
+        <td>${escapeHtml(r.source)}</td>
+        <td>${escapeHtml(String(r.score ?? ""))}</td>
+        <td>${escapeHtml(r.doi)}</td>
+        <td>${escapeHtml(String(r.matched_year ?? ""))}</td>
+        <td>${escapeHtml(r.matched_authors ?? "")}</td>
+        <td>${escapeHtml(r.matched_title ?? "")}</td>
+        <td>${escapeHtml(r.query_used ?? "")}</td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="9" class="muted">No online verification results yet.</td></tr>`;
 }
 
 function setActiveTab(tabId){
-  document.querySelectorAll(".tab").forEach(b => {
-    b.classList.toggle("active", b.dataset.tab === tabId);
-  });
-  document.querySelectorAll(".tabPane").forEach(p => {
-    p.classList.toggle("active", p.id === tabId);
-  });
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
+  document.querySelectorAll(".tabPane").forEach(p => p.classList.toggle("active", p.id === tabId));
 }
 
 document.addEventListener("click", (e) => {
@@ -324,9 +294,7 @@ async function downloadFromEndpoint(endpoint){
 
 $("btnCheck").addEventListener("click", runCheck);
 $("btnVerify").addEventListener("click", runVerify);
-
 $("btnExportCsvTop").addEventListener("click", () => downloadFromEndpoint("/export/csv"));
 $("btnExportWordTop").addEventListener("click", () => downloadFromEndpoint("/export/word"));
-
 $("btnExportCsv").addEventListener("click", () => downloadFromEndpoint("/export/csv"));
 $("btnExportWord").addEventListener("click", () => downloadFromEndpoint("/export/word"));
