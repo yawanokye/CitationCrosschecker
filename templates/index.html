@@ -1,4 +1,3 @@
-<!-- templates/index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -51,7 +50,7 @@
           </div>
 
           <div class="verifyBox">
-            <div class="hint tight">Online verification uses Crossref and OpenAlex. If a host blocks outbound calls, items can show “offline”.</div>
+            <div class="hint tight">Online verification uses Crossref and OpenAlex. For best results, set CITATION_CROSSCHECKER_MAILTO in your host environment.</div>
 
             <div class="verifyRow">
               <label class="check"><input type="checkbox" id="useCrossref" checked> Crossref</label>
@@ -137,7 +136,7 @@
       </div>
 
       <div class="tabPane" id="c2rPane">
-        <div class="hint">Each in-text citation and the matched reference entry. Flags show prefix removals and lead-word handling.</div>
+        <div class="hint">Each in-text citation and the matched reference entry. Flags show prefix removals, lead-word handling, and et-al detection.</div>
         <div class="tableWrap">
           <table>
             <thead>
@@ -172,10 +171,8 @@
       </div>
 
       <div class="tabPane" id="verifyPane">
-        <div class="hint">Online verification uses Crossref and OpenAlex. Crossref uses a two-pass search to improve recall.</div>
-
+        <div class="hint">Crossref uses query.bibliographic plus field queries, then validates matches by similarity, year, and Crossref score-gap when available.</div>
         <div class="dash" id="verifyDash"></div>
-
         <div class="tableWrap">
           <table>
             <thead>
