@@ -41,7 +41,6 @@ def _normalize_verify_status(s: str) -> str:
 # SAFE HTTP
 # -------------------------
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 15) -> Optional[dict]:
-    """Handles API requests with explicit timeouts for Render stability."""
     try:
         headers = {
             "User-Agent": "CitationCrosschecker/1.0 (mailto:" + MAILTO + ")",
@@ -63,6 +62,7 @@ def _extract_year(text: str) -> str:
 def _extract_first_author_surname(text: str) -> str:
     t = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", _safe_strip(text))
     if not t: return ""
+    # Look for common delimiters after the first word
     first = t.split(",", 1)[0] if "," in t else re.split(r"\s+", t)[0]
     return re.sub(r"[^A-Za-z\-']", "", _safe_str(first)).lower()
 
@@ -71,15 +71,14 @@ def _extract_doi(text: str) -> str:
     return m.group(1).rstrip(").,;") if m else ""
 
 def _extract_title_guess(ref: str) -> str:
-    """Robust title extraction that handles missing parentheses and various styles."""
+    """Robust extraction: attempts year-split, fallbacks to middle-chunk."""
     t = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", _safe_strip(ref)).strip()
-    # Try original year-split
     parts = re.split(r"\(\s*(1[6-9]\d{2}|20\d{2})([a-z])?\s*\)\.?", t, maxsplit=1, flags=re.I)
     
     if len(parts) >= 3 and len(_safe_strip(parts[2])) > 12:
         after = parts[2]
     else:
-        # Fallback: if split fails, take a middle chunk to avoid leading author names
+        # Fallback to avoid author initials at start
         after = t[15:160] if len(t) > 40 else t
 
     title = after.split(".", 1)[0] if "." in after else after
@@ -90,7 +89,7 @@ def _extract_title_guess(ref: str) -> str:
 # OPTIMAL QUERIES
 # -------------------------
 def _query_crossref_gold(title, author, year, raw_ref, margin=0):
-    url = "https://api.crossref.org/works"
+    url = "https://api.crossref.org"
     q = title if len(title) >= 12 else raw_ref
     params = {"query.bibliographic": q, "rows": 5}
     if author: params["query.author"] = author
@@ -105,7 +104,7 @@ def _query_crossref_gold(title, author, year, raw_ref, margin=0):
     return [{"source": "crossref", "item": i, "query_used": q} for i in (data.get("message", {}).get("items", []) if data else [])]
 
 def _query_openalex(title, author, year, raw_ref, margin=0):
-    url = "https://api.openalex.org/works"
+    url = "https://api.openalex.org"
     q = title if len(title) >= 12 else raw_ref
     params = {"search": q, "per-page": 5}
     if MAILTO: params["mailto"] = MAILTO
@@ -120,7 +119,7 @@ def _query_openalex(title, author, year, raw_ref, margin=0):
 
 
 # -------------------------
-# CANDIDATE PROCESSING
+# CANDIDATE PROCESSING (FIELDS MAPPING)
 # -------------------------
 def _candidate_fields(cand) -> Tuple[str, str, str, str]:
     src = _safe_strip(cand.get("source"))
@@ -129,15 +128,20 @@ def _candidate_fields(cand) -> Tuple[str, str, str, str]:
 
     if src == "crossref":
         doi = _safe_strip(item.get("DOI"))
-        title = _safe_strip((item.get("title") or [""])[0])
-        date = item.get("published-print", {}).get("date-parts", [[None]])[0][0] or \
-               item.get("published-online", {}).get("date-parts", [[None]])[0][0]
-        year = _safe_str(date)
+        titles = item.get("title") or []
+        title = _safe_strip(titles[0] if titles else "")
+        # Date extraction logic
+        d_parts = item.get("published-print", {}).get("date-parts", [[None]])
+        if not d_parts[0][0]:
+            d_parts = item.get("published-online", {}).get("date-parts", [[None]])
+        year = _safe_str(d_parts[0][0])
+        
         authors = item.get("author") or []
-        if authors: first_author = _safe_strip(authors[0].get("family")).lower()
+        if authors:
+            first_author = _safe_strip(authors[0].get("family")).lower()
 
     elif src == "openalex":
-        doi = _safe_strip(item.get("doi")).replace("https://doi.org", "")
+        doi = _safe_strip(item.get("doi", "")).replace("https://doi.org", "")
         title = _safe_strip(item.get("title"))
         year = _safe_str(item.get("publication_year"))
         auths = item.get("authorships") or []
@@ -147,17 +151,19 @@ def _candidate_fields(cand) -> Tuple[str, str, str, str]:
 
     return doi, title, year, first_author
 
+
+# -------------------------
+# SCORING & CLASSIFY
+# -------------------------
 def _score(rt, ra, ry, ct, ca, cy):
-    # token_set_ratio is optimal for titles with slight ordering differences
     ts = fuzz.token_set_ratio(rt, ct) if rt and ct else 0
     am = 1 if ra and ca and ra == ca else 0
     ym = 1 if ry and cy and ry[:4] == cy[:4] else 0
-    # Final truth weight
+    # Final weight for thresholding
     score = (ts * 1.3) + (20 * am) + (15 * ym)
     return {"score": int(score), "ts": ts, "am": am, "ym": ym}
 
 def _classify(score, am, ym, ts):
-    # Optimized thresholds for academic matching
     if ts >= 88 and (am or ym) and score >= 128: return "verified"
     if ts >= 82 and score >= 110: return "likely"
     if ts >= 72: return "needs_review"
@@ -165,7 +171,7 @@ def _classify(score, am, ym, ts):
 
 
 # -------------------------
-# MAIN ENTRY POINT
+# MAIN BATCH LOGIC
 # -------------------------
 def verify_references_batch(
     references: List[str],
@@ -174,7 +180,7 @@ def verify_references_batch(
     use_crossref: bool = True,
     use_openalex: bool = True,
 ):
-    # CRITICAL: Fix 'refs' definition to prevent NameError
+    # Initialize 'refs' list from input
     refs = [_safe_strip(r) for r in references if _safe_strip(r)]
     if max_to_check:
         refs = refs[:max_to_check]
@@ -185,15 +191,26 @@ def verify_references_batch(
         ref_author = _extract_first_author_surname(ref)
         ref_title = _extract_title_guess(ref)
 
-        row = {"reference": ref, "status": "not_found", "doi": "", "score": 0}
-        candidates = []
+        # Initialize the row with all required headings as keys
+        row = {
+            "no": len(rows) + 1,
+            "status": "not_found",
+            "source": "",
+            "score": 0,
+            "doi": "",
+            "year": "",
+            "author": "",
+            "matched_title": "",
+            "reference": ref
+        }
 
         try:
-            # PHASE 1: Strict Search
+            candidates = []
+            # Phase 1: Search
             if use_crossref: candidates += _query_crossref_gold(ref_title, ref_author, ref_year, ref, 0)
             if use_openalex: candidates += _query_openalex(ref_title, ref_author, ref_year, ref, 0)
 
-            # PHASE 2: ±1 Year Retry if no results found
+            # Phase 2: ±1 Year Retry
             if not candidates and ref_year:
                 if use_crossref: candidates += _query_crossref_gold(ref_title, ref_author, ref_year, ref, 1)
                 if use_openalex: candidates += _query_openalex(ref_title, ref_author, ref_year, ref, 1)
@@ -206,12 +223,25 @@ def verify_references_batch(
                 s_data = _score(ref_title, ref_author, ref_year, title, author, year)
                 if s_data["score"] > max_s:
                     max_s = s_data["score"]
-                    best_cand = {**cand, **s_data, "doi": doi, "title": title, "year": year}
+                    best_cand = {
+                        "source": cand["source"],
+                        "doi": doi,
+                        "title": title,
+                        "year": year,
+                        "author": author,
+                        **s_data
+                    }
 
             if best_cand:
-                row["status"] = _classify(best_cand["score"], best_cand["am"], best_cand["ym"], best_cand["ts"])
-                row["doi"] = best_cand["doi"]
-                row["score"] = best_cand["score"]
+                row.update({
+                    "status": _classify(best_cand["score"], best_cand["am"], best_cand["ym"], best_cand["ts"]),
+                    "source": best_cand["source"],
+                    "score": best_cand["score"],
+                    "doi": best_cand["doi"],
+                    "year": best_cand["year"],
+                    "author": best_cand["author"],
+                    "matched_title": best_cand["title"]
+                })
 
         except Exception as e:
             row["error"] = str(e)
