@@ -1,11 +1,13 @@
-// static/app.js
-
 let lastResult = null;
 
 function $(id){ return document.getElementById(id); }
 
 function setStatus(text){
   $("status").textContent = text || "";
+}
+
+function showSpinner(on){
+  $("spinner").style.display = on ? "inline-block" : "none";
 }
 
 function badge(status){
@@ -210,15 +212,17 @@ async function runCheck(){
 
   $("btnCheck").disabled = true;
   $("btnVerify").disabled = true;
+  showSpinner(true);
   setStatus("Running check...");
 
   const { ok, data } = await postForm("/check", form);
 
   $("btnCheck").disabled = false;
   $("btnVerify").disabled = false;
+  showSpinner(false);
 
   if (!ok){
-    setStatus("Server error.");
+    setStatus("Error.");
     alert(data?.error || "Server error");
     return;
   }
@@ -250,22 +254,23 @@ async function runVerify(){
   form.append("verify_mode", $("verifyMode").value);
   form.append("use_crossref", $("useCrossref").checked ? "true" : "false");
   form.append("use_openalex", $("useOpenAlex").checked ? "true" : "false");
-  form.append("use_semantic_scholar", $("useSemanticScholar").checked ? "true" : "false");
   form.append("throttle_s", String(parseFloat($("throttle").value || "0")));
   form.append("max_verify", String(parseInt($("maxVerify").value || "0", 10)));
 
   $("btnCheck").disabled = true;
   $("btnVerify").disabled = true;
+  showSpinner(true);
   setStatus("Running online verification...");
 
   const { ok, data } = await postForm("/verify", form);
 
   $("btnCheck").disabled = false;
   $("btnVerify").disabled = false;
+  showSpinner(false);
 
   if (!ok){
-    setStatus("Server error.");
-    alert(data?.error || "Server error");
+    setStatus("Error.");
+    alert((data?.error || "Server error") + (data?.detail ? "\n\n" + data.detail : ""));
     return;
   }
 
