@@ -41,24 +41,17 @@ REF_HEADINGS = [
     r"^\s*literature\s+cited\s*$",
 ]
 
-# Lead words that often precede narrative citations.
-# We DO NOT drop these citations anymore. We flag them.
-LEAD_WORDS = [
-    "see", "cf", "e.g", "i.e",
-    "by", "from", "in", "as",
-    "according to", "according",
-    "and",
-]
-LEAD_WORDS_RE = re.compile(
-    r"^\s*(?P<lead>according\s+to|according|see|cf|e\.g|i\.e|by|from|in|as|and)\b[\s,]+",
-    flags=re.I
-)
+# leads we will FLAG, not skip
+FLAG_LEADS = {
+    "e.g", "i.e", "see", "cf", "for example", "for instance", "as",
+    "chapter", "section", "table", "figure", "eq", "equation", "appendix",
+    "according to", "by", "from", "in",
+}
 
 BAD_NARRATIVE_PREFIX_WORDS = {
     "similarly", "however", "nonetheless", "therefore", "thus", "hence",
     "moreover", "furthermore", "consequently", "instead", "meanwhile",
     "overall", "generally", "typically", "notably", "specifically",
-    "for", "from", "in", "on", "at", "by", "of", "to", "with", "without",
     "methods", "method", "approach", "approaches",
     "sample", "size", "power", "results", "discussion", "model", "framework",
     "journal", "research", "study", "analysis", "evidence", "theory", "review",
@@ -86,8 +79,7 @@ _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "
 
 
 def _normalize_verify_status(s: str) -> str:
-    st = (s or "").strip().lower()
-    st = st.replace(" ", "_")
+    st = (s or "").strip().lower().replace(" ", "_")
     if st not in _ALLOWED_VERIFY_STATUSES:
         st = "needs_review"
     return st
@@ -104,7 +96,7 @@ class InTextCitation:
     year: Optional[str] = None
     surnames: Optional[Tuple[str, ...]] = None
     number: Optional[int] = None
-    flags: List[str] = field(default_factory=list)
+    flags: Tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -160,7 +152,7 @@ def looks_like_surname(tok: str) -> bool:
     t = tok.strip()
     if len(t) < 2:
         return False
-    if not re.fullmatch(r"[A-Z][A-Za-z\-']{1,40}", t):
+    if not re.fullmatch(r"[A-Z][A-Za-z\-']{1,60}", t):
         return False
     if norm_token(t) in BAD_NARRATIVE_PREFIX_WORDS:
         return False
@@ -197,28 +189,18 @@ def split_semicolons(block: str) -> List[str]:
     return parts if parts else [block.strip()]
 
 
-def strip_lead_prefix(s: str) -> Tuple[str, List[str]]:
+def _extract_lead_flag(text_before: str) -> Tuple[str, ...]:
     """
-    Remove leading 'see', 'by', 'from', 'and', 'according to', etc.
-    Return cleaned string + flags.
+    Detect whether the citation is preceded by a lead like "see", "cf", "according to", "by", "from", "in".
+    We flag it but still keep the citation.
     """
-    flags: List[str] = []
-    txt = (s or "").strip()
-
-    m = LEAD_WORDS_RE.match(txt)
-    if m:
-        lead = (m.group("lead") or "").strip().lower().replace(" ", "_").replace(".", "")
-        flags.append(f"lead_{lead}")
-        txt = txt[m.end():].strip()
-
-    # Sometimes "(and Author, 2020)" => still starts with 'and'
-    m2 = LEAD_WORDS_RE.match(txt)
-    if m2:
-        lead = (m2.group("lead") or "").strip().lower().replace(" ", "_").replace(".", "")
-        flags.append(f"lead_{lead}")
-        txt = txt[m2.end():].strip()
-
-    return txt, flags
+    left = norm_space(text_before)[-40:].lower()
+    flags = []
+    for k in sorted(FLAG_LEADS, key=len, reverse=True):
+        if re.search(rf"\b{k}\b\s*$", left):
+            flags.append(f"lead:{k}")
+            break
+    return tuple(flags)
 
 
 # -----------------------------
@@ -255,94 +237,77 @@ def _find_reference_heading(lines: List[str]) -> int:
     return -1
 
 
+def _looks_like_apa_start(line: str) -> bool:
+    """
+    Robust APA start detection:
+    - Surname could be hyphenated or multi-part (Kyereboah-Coleman)
+    - Allows suffix Jr.
+    - Allows multiple initials: "Price, A. D. F."
+    """
+    s = (line or "").strip()
+    if not s:
+        return False
+
+    # numeric styles (handled too)
+    if re.match(r"^\s*(\[\d+\]|\d{1,4}[\.\)]|\d{1,4}\s+)\s+", s):
+        return True
+
+    # APA-ish author start: "Surname, A." or "Surname Jr., A."
+    # Accept: "Afful Jr, M., & Addo, A."
+    return bool(re.match(
+        r"""^
+        [A-Z][A-Za-z'’\-]+                      # surname
+        (?:\-[A-Z][A-Za-z'’\-]+)*               # hyphen continuation
+        (?:\s+[A-Z][A-Za-z'’\-]+(?:\-[A-Z][A-Za-z'’\-]+)*)*   # optional multi-part surname
+        (?:\s+Jr\.?|,\s*Jr\.?)?                 # optional Jr
+        ,\s*
+        (?:[A-Z]\.\s*){1,6}                     # initials
+        """,
+        s,
+        flags=re.VERBOSE
+    ))
+
+
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     """
-    Robust merger that prevents two consecutive APA refs being combined.
-    Handles:
-    - multi-initial authors
-    - suffixes Jr/Sr/II/III/IV
-    - hyphenated surnames
-    - DOI lines appended to current ref
-    - PDF extraction where two refs get glued: "...307-324. Afful Jr, M., & Addo, A. (2024)..."
+    FIXED: prevents merging two consecutive APA references into one.
+    Strategy:
+    - Start a new reference when a line looks like a reference start (APA or numeric).
+    - DOI-only lines are appended to current reference.
     """
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
         return []
 
-    apa_start = re.compile(
-        r"^[A-Z][A-Za-z\-']+(?:\s+(?:Jr|Sr|II|III|IV))?,\s*(?:[A-Z]\.\s*)+",
-        flags=re.I
-    )
-
-    numeric_start = re.compile(
-        r"^\s*(\[\d+\]|\d{1,4}[\.\)]|\d{1,4}\s)\s+",
-        flags=re.I
-    )
-
-    doi_line = re.compile(
-        r"^\s*(doi\s*:\s*)?10\.\d{4,9}/\S+",
-        flags=re.I
-    )
-    doi_url = re.compile(
-        r"^\s*https?://doi\.org/10\.\d{4,9}/\S+",
-        flags=re.I
-    )
-
-    # When a PDF glues refs: ") . <NextAuthor, A. A.>"
-    split_on_glued = re.compile(
-        r"\)\.\s+(?=[A-Z][A-Za-z\-']+(?:\s+(?:Jr|Sr|II|III|IV))?,\s*(?:[A-Z]\.))"
-    )
-
     merged: List[str] = []
     buf = ""
-
-    def flush():
-        nonlocal buf
-        if buf and len(buf.strip()) >= 10:
-            merged.append(buf.strip())
-        buf = ""
 
     for ln in raw_lines:
         s = ln.strip()
 
-        # If a line contains two refs glued together, split it first
-        if split_on_glued.search(s):
-            parts = split_on_glued.split(s)
-            for p in parts:
-                p = p.strip()
-                if not p:
-                    continue
-                # handle each part as its own "line"
-                # recursion avoided: run same logic inline
-                is_doi = bool(doi_line.match(p)) or bool(doi_url.match(p))
-                starts_new = bool(apa_start.match(p)) or bool(numeric_start.match(p))
-                if is_doi:
-                    buf = (buf + " " + p).strip() if buf else p
-                    continue
-                if starts_new:
-                    flush()
-                    buf = p
-                else:
-                    buf = (buf + " " + p).strip() if buf else p
-            continue
+        is_doi_line = bool(re.match(r"^\s*(doi\s*:\s*)?10\.\d{4,9}/", s, flags=re.I)) or \
+                      bool(re.match(r"^\s*https?://doi\.org/10\.\d{4,9}/", s, flags=re.I)) or \
+                      bool(re.match(r"^\s*10\.\d{4,9}/", s, flags=re.I))
 
-        is_doi = bool(doi_line.match(s)) or bool(doi_url.match(s))
-        starts_new = bool(apa_start.match(s)) or bool(numeric_start.match(s))
-
-        if is_doi:
+        if is_doi_line:
             buf = (buf + " " + s).strip() if buf else s
             continue
+
+        starts_new = _looks_like_apa_start(s)
 
         if starts_new:
-            flush()
+            if buf:
+                merged.append(buf.strip())
             buf = s
         else:
+            # continuation
             buf = (buf + " " + s).strip() if buf else s
 
-    flush()
+    if buf:
+        merged.append(buf.strip())
 
-    # Final cleanup: remove double spaces
-    merged = [norm_space(m) for m in merged if m and len(m) >= 10]
+    # drop tiny junk
+    merged = [m for m in merged if len(m) >= 12]
     return merged
 
 
@@ -365,12 +330,11 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
         year = m2.group(1)
         pre = r[: m2.start()].strip()
 
-    # Organisations
     if is_known_org(pre) or pre.upper() in ORG_ACRONYMS:
         k = f"org_{canon_org(pre)}_{year.lower()}"
         return ReferenceEntry(raw=r, key=k, year=year, surnames=(pre,), number=None)
 
-    # APA ref typically begins with "Surname, Initial."
+    # first surname in reference
     if "," in pre:
         first = pre.split(",")[0].strip()
     else:
@@ -417,6 +381,7 @@ def _is_probably_title_context(txt: str, start: int) -> bool:
         return False
     prev = tokens[-1]
     prev2 = tokens[-2]
+    # two consecutive Capitalised tokens often means title-like text
     if prev and prev2 and prev[0].isupper() and prev2[0].isupper():
         return True
     if norm_token(prev) in ("journal", "research", "study", "analysis", "methods", "method", "results", "discussion"):
@@ -424,82 +389,53 @@ def _is_probably_title_context(txt: str, start: int) -> bool:
     return False
 
 
-def _authors_from_blob(blob: str) -> List[str]:
+def _split_authors_blob(blob: str) -> List[str]:
     """
-    From "Adam, Kofi, & Yaw" or "Krejcie and Morgan" extract surname-like tokens.
-    We keep only proper surnames.
+    Turn "Adam, Kofi, & Yaw" or "Adam, Kofi and Yaw" into surname candidates.
+    We keep only plausible surnames.
     """
     b = (blob or "").strip().replace("&", " and ")
-    # Remove possessive trailing "'s" safely for things like "Adam's"
-    b = re.sub(r"([A-Za-z\-']+)'s\b", r"\1", b)
-    # Split on commas and 'and'
+    b = re.sub(r"\s+", " ", b)
+    # split on commas and "and"
     parts = [p.strip() for p in re.split(r"\s+and\s+|,", b) if p.strip()]
-    # Keep the last token per part as surname candidate
+    # clean each to last token if needed
     cand = []
     for p in parts:
-        sur = clean_surname(p)
-        if looks_like_surname(sur):
-            cand.append(sur)
+        # remove initials if present
+        p2 = re.sub(r"\b[A-Z]\.\b", "", p).strip()
+        p2 = re.sub(r"\s+", " ", p2).strip()
+        last = p2.split()[-1] if p2.split() else ""
+        if looks_like_surname(last):
+            cand.append(last)
+        elif looks_like_surname(p2):
+            cand.append(p2)
     return cand
 
 
 def extract_author_year_citations(text: str) -> List[InTextCitation]:
-    """
-    Detects APA/Harvard in-text citations:
-      - Parenthetical: (Author, 2020), (Author & Author, 2020), (see Author, 2020)
-      - Narrative: Author (2020), Author & Author (2020), Author and Author (2020)
-      - Comma-list narrative: Author, Author, & Author (2020)
-      - Possessive: Author's (2020)
-      - With lead words: according to/by/as/from/in Author (2020)
-    Also avoids false positives like "Year on Year Growth Rate ..." by stronger surname checks.
-    """
     out: List[InTextCitation] = []
     txt = text or ""
     taken_spans: List[Tuple[int, int]] = []
 
-    # Lead words we allow BEFORE narrative citations (we still capture the citation)
-    LEAD_WORDS = {"according to", "according", "by", "as", "from", "in"}
-
-    # Words that should never be treated as surnames (expand to kill "Year", "Growth", etc.)
-    EXTRA_BAD = {
-        "year", "growth", "rate", "data", "index", "share", "all", "selected",
-        "countries", "country", "june", "july", "august", "september", "october",
-        "november", "december", "january", "february", "march", "april", "may",
-        "table", "figure", "appendix", "chapter", "section",
-        "according", "likewise", "instance", "for", "example",
-    }
-
-    def _overlaps(span: Tuple[int, int], spans: List[Tuple[int, int]]) -> bool:
+    def _overlaps(span: Tuple[int, int]) -> bool:
         a, b = span
-        for s, e in spans:
+        for s, e in taken_spans:
             if a < e and b > s:
                 return True
         return False
 
-    def _left_context_words(pos: int, n_chars: int = 60) -> str:
-        left = txt[max(0, pos - n_chars):pos]
-        left = norm_space(left)
-        return left.lower()
-
-    def _is_bad_surname(tok: str) -> bool:
-        t = norm_token(tok)
-        return (t in BAD_NARRATIVE_PREFIX_WORDS) or (t in COMMON_TITLE_TOKENS) or (t in EXTRA_BAD)
-
-    def _looks_like_surname_strict(tok: str) -> bool:
-        if not looks_like_surname(tok):
-            return False
-        if _is_bad_surname(tok):
-            return False
-        return True
-
-    # -----------------------------
-    # 1) Parenthetical citations: ( ... YEAR ... )
-    #    We still skip bare years and skip "see"/"cf" leads like you already do.
-    # -----------------------------
+    # 1) Parenthetical citations: (Author, 2020) or (Author & Author, 2020)
     for m in re.finditer(rf"\(([^()]*\b{YEAR}\b[^()]*)\)", txt, flags=re.I):
+        span = (m.start(), m.end())
+        if _overlaps(span):
+            continue
+
         inside = m.group(1).strip()
         if is_bare_year_parenthetical(inside):
             continue
+
+        # lead flag: look a bit left of "(" in main text
+        flags = _extract_lead_flag(txt[max(0, m.start() - 60):m.start()])
 
         for chunk in split_semicolons(inside):
             c = chunk.strip()
@@ -509,158 +445,113 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             y = y_m.group(1)
 
             left = c[: y_m.start()].strip().rstrip(",").strip()
-            left_norm = norm_token(left)
-            if left_norm in NONCITE_LEADS:
-                continue
 
-            # orgs
             if is_known_org(left):
                 k = f"org_{canon_org(left)}_{y.lower()}"
-                out.append(InTextCitation("author-year", f"({norm_space(c)})", k, year=y, surnames=(left,)))
+                out.append(InTextCitation("author-year", f"({norm_space(c)})", k, year=y, surnames=(left,), flags=flags))
                 continue
 
-            # et al.
+            # et al
             if re.search(r"\bet\s+al\.?\b", left, flags=re.I):
                 first = clean_surname(left)
-                if _looks_like_surname_strict(first):
-                    out.append(InTextCitation("author-year", f"({norm_space(c)})",
-                                              key_author_year(first, y), year=y, surnames=(first,)))
+                if looks_like_surname(first):
+                    out.append(InTextCitation("author-year", f"({norm_space(c)})", key_author_year(first, y), year=y, surnames=(first,), flags=flags))
                 continue
 
-            # multi author parenthetical, take first surname for key
-            left2 = left.replace("&", " and ")
-            toks = [t.strip() for t in re.split(r"\s+and\s+|,", left2) if t.strip()]
-            cand = [t for t in toks if _looks_like_surname_strict(t)]
+            cand = _split_authors_blob(left)
             if not cand:
                 continue
-
             first = cand[0]
-            out.append(InTextCitation("author-year", f"({norm_space(c)})",
-                                      key_author_year(first, y), year=y, surnames=tuple(cand)))
+            out.append(InTextCitation("author-year", f"({norm_space(c)})", key_author_year(first, y), year=y, surnames=tuple(cand), flags=flags))
 
-    # -----------------------------
-    # 2) Narrative citations with optional lead word + comma-separated author lists:
-    #    e.g. "by Adam, Kofi, & Yaw (2020)" or "Adam, Kofi & Yaw (2020)"
-    # -----------------------------
-    narr_commalist = re.finditer(
-        rf"""
-        (?P<lead>\b(?:According\s+to|according\s+to|By|by|As|as|From|from|In|in)\b\s+)?   # lead word optional
-        (?P<authors>
-            [A-Z][A-Za-z\-']{{1,40}}
-            (?:\s*,\s*[A-Z][A-Za-z\-']{{1,40}})+
-            \s*(?:,\s*)?(?:and|&)\s*[A-Z][A-Za-z\-']{{1,40}}
-        )
-        \s*\(\s*(?P<year>{YEAR})\s*\)
-        """,
-        txt,
-        flags=re.VERBOSE | re.I,
-    )
-
-    for m in narr_commalist:
-        span = (m.start(), m.end())
-        if _overlaps(span, taken_spans):
-            continue
-
-        authors_blob = m.group("authors").strip().replace("&", " and ")
-        y = m.group("year")
-
-        parts = [p.strip() for p in re.split(r"\s+and\s+|,", authors_blob) if p.strip()]
-        cand = [p for p in parts if _looks_like_surname_strict(p)]
-        if not cand:
-            continue
-
-        first = cand[0]
-        raw_display = norm_space(m.group(0))   # keep lead word in display, but key uses first surname
-        out.append(InTextCitation("author-year", raw_display, key_author_year(first, y), year=y, surnames=tuple(cand)))
         taken_spans.append(span)
 
-    # -----------------------------
-    # 3) Narrative citations with 2+ authors (no commas required):
-    #    "Krejcie and Morgan (1970)" / "Johanson & Juselius (1990)"
-    #    plus optional lead word.
-    # -----------------------------
-    narr_multi = re.finditer(
+    # 2) Narrative multi-author: Adam, Kofi & Yaw (2020)  |  Krejcie and Morgan (1970)
+    narr_multi_pat = re.compile(
         rf"""
-        (?P<lead>\b(?:According\s+to|according\s+to|By|by|As|as|From|from|In|in)\b\s+)?   # lead word optional
+        (?P<prefix>\b(?:according\s+to|by|from|in|as)\b\s+)?   # optional prefix
         (?P<authors>
-            [A-Z][A-Za-z\-']{{1,40}}
-            (?:\s*,\s*[A-Z][A-Za-z\-']{{1,40}})*      # optional commas
-            \s*(?:,\s*)?(?:and|&)\s*[A-Z][A-Za-z\-']{{1,40}}
+            [A-Z][A-Za-z\-']{{1,60}}
+            (?:\s*,\s*[A-Z][A-Za-z\-']{{1,60}})*              # optional comma authors
+            (?:\s*,\s*)?
+            (?:and|&)\s*[A-Z][A-Za-z\-']{{1,60}}              # last author
         )
         \s*\(\s*(?P<year>{YEAR})\s*\)
         """,
-        txt,
-        flags=re.VERBOSE | re.I,
+        flags=re.VERBOSE | re.I
     )
 
-    for m in narr_multi:
+    for m in narr_multi_pat.finditer(txt):
         span = (m.start(), m.end())
-        if _overlaps(span, taken_spans):
+        if _overlaps(span):
+            continue
+        if _is_probably_title_context(txt, m.start()):
             continue
 
         authors_blob = m.group("authors").strip()
         y = m.group("year")
+        prefix = (m.group("prefix") or "").strip().lower()
+        flags = tuple(["lead:" + prefix.strip()] if prefix else [])
 
-        # prevent false positives like "Year on Year ..." (Year treated as surname)
-        first_word = authors_blob.split()[0] if authors_blob.split() else ""
-        if _is_bad_surname(first_word):
-            continue
-
-        blob = authors_blob.replace("&", " and ")
-        parts = [p.strip() for p in re.split(r"\s+and\s+|,", blob) if p.strip()]
-        cand = [p for p in parts if _looks_like_surname_strict(p)]
+        cand = _split_authors_blob(authors_blob)
         if not cand:
             continue
 
         first = cand[0]
-        raw_display = norm_space(m.group(0))
-        out.append(InTextCitation("author-year", raw_display, key_author_year(first, y), year=y, surnames=tuple(cand)))
+        out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=tuple(cand), flags=flags))
         taken_spans.append(span)
 
-    # -----------------------------
-    # 4) Possessive narrative: "Adam's (2020)"
-    # -----------------------------
-    poss = re.finditer(rf"\b(?P<a>[A-Z][A-Za-z\-']{{1,40}})(?:'s|’s)\s*\(\s*(?P<y>{YEAR})\s*\)", txt, flags=re.I)
-    for m in poss:
+    # 3) Narrative et al: Adam et al. (2020)
+    for m in re.finditer(rf"\b(?P<a>[A-Z][A-Za-z\-']{{1,60}})\s+et\s+al\.\s*\(\s*(?P<y>{YEAR})\s*\)", txt, flags=re.I):
         span = (m.start(), m.end())
-        if _overlaps(span, taken_spans):
+        if _overlaps(span):
             continue
-        a = m.group("a").strip()
+        if _is_probably_title_context(txt, m.start()):
+            continue
+        first = m.group("a").strip()
         y = m.group("y")
-        if _looks_like_surname_strict(a):
-            out.append(InTextCitation("author-year", norm_space(m.group(0)), key_author_year(a, y), year=y, surnames=(a,)))
+        if looks_like_surname(first):
+            out.append(InTextCitation("author-year", m.group(0), key_author_year(first, y), year=y, surnames=(first,)))
             taken_spans.append(span)
 
-    # -----------------------------
-    # 5) Single-author narrative: "Baybogan (2013)" (also allows lead word)
-    # -----------------------------
-    single = re.finditer(
-        rf"""
-        (?P<lead>\b(?:According\s+to|according\s+to|By|by|As|as|From|from|In|in)\b\s+)?   # lead word optional
-        \b(?P<a>[A-Z][A-Za-z\-']{{1,40}})\s*\(\s*(?P<y>{YEAR})\s*\)
-        """,
-        txt,
-        flags=re.VERBOSE | re.I,
-    )
-    for m in single:
+    # 4) Possessive: Adam's (2020)
+    poss_pat = re.compile(rf"\b(?P<a>[A-Z][A-Za-z\-']{{1,60}})('s|’s)\s*\(\s*(?P<y>{YEAR})\s*\)", flags=re.I)
+    for m in poss_pat.finditer(txt):
         span = (m.start(), m.end())
-        if _overlaps(span, taken_spans):
+        if _overlaps(span):
             continue
-        a = m.group("a").strip()
+        if _is_probably_title_context(txt, m.start()):
+            continue
+        au = m.group("a").strip()
         y = m.group("y")
+        if looks_like_surname(au):
+            out.append(InTextCitation("author-year", m.group(0), key_author_year(au, y), year=y, surnames=(au,), flags=("possessive",)))
+            taken_spans.append(span)
 
-        if _is_bad_surname(a):
+    # 5) Single author narrative: Author (2020) but avoid capturing inside longer already-taken spans
+    single_pat = re.compile(rf"\b(?P<author>[A-Z][A-Za-z\-']{{1,60}})\s*\(\s*(?P<year>{YEAR})\s*\)", flags=re.I)
+    for m in single_pat.finditer(txt):
+        span = (m.start(), m.end())
+        if _overlaps(span):
             continue
-
-        # extra safety: avoid matching inside titles
         if _is_probably_title_context(txt, m.start()):
             continue
 
-        if _looks_like_surname_strict(a):
-            out.append(InTextCitation("author-year", norm_space(m.group(0)), key_author_year(a, y), year=y, surnames=(a,)))
-            taken_spans.append(span)
+        au = m.group("author").strip()
+        y = m.group("year")
 
-    # Deduplicate by exact raw
+        if norm_token(au) in BAD_NARRATIVE_PREFIX_WORDS:
+            continue
+
+        if is_known_org(au):
+            k = f"org_{canon_org(au)}_{y.lower()}"
+            out.append(InTextCitation("author-year", m.group(0), k, year=y, surnames=(au,)))
+        else:
+            if looks_like_surname(au):
+                out.append(InTextCitation("author-year", m.group(0), key_author_year(au, y), year=y, surnames=(au,)))
+        taken_spans.append(span)
+
+    # de-dup by raw string
     uniq: List[InTextCitation] = []
     seen = set()
     for c in out:
@@ -738,17 +629,17 @@ def reconcile_author_year(cites: List[InTextCitation], refs: List[ReferenceEntry
     c2r = []
     for c in cites:
         hits = ref_by_key.get(c.key, [])
-        flags = c.flags or []
+        flags = ", ".join(c.flags) if c.flags else ""
         if not hits:
-            c2r.append({"in_text": c.raw, "status": "not_found", "matched_reference": "", "flags": " | ".join(flags)})
+            c2r.append({"in_text": c.raw, "status": "not_found", "matched_reference": "", "flags": flags})
         elif len(hits) == 1:
-            c2r.append({"in_text": c.raw, "status": "matched", "matched_reference": hits[0].raw, "flags": " | ".join(flags)})
+            c2r.append({"in_text": c.raw, "status": "matched", "matched_reference": hits[0].raw, "flags": flags})
         else:
             c2r.append({
                 "in_text": c.raw,
                 "status": f"ambiguous ({len(hits)})",
                 "matched_reference": " || ".join(h.raw[:220] for h in hits),
-                "flags": " | ".join(flags),
+                "flags": flags,
             })
 
     cite_group = defaultdict(list)
@@ -769,10 +660,11 @@ def reconcile_numeric(cites: List[InTextCitation], refs: List[ReferenceEntry]) -
     c2r = []
     for c in cites:
         r = ref_by_key.get(c.key)
+        flags = ", ".join(c.flags) if c.flags else ""
         if not r:
-            c2r.append({"in_text": c.raw, "status": "not_found", "matched_reference": "", "flags": ""})
+            c2r.append({"in_text": c.raw, "status": "not_found", "matched_reference": "", "flags": flags})
         else:
-            c2r.append({"in_text": c.raw, "status": "matched", "matched_reference": r.raw, "flags": ""})
+            c2r.append({"in_text": c.raw, "status": "matched", "matched_reference": r.raw, "flags": flags})
 
     cite_group = defaultdict(list)
     for c in cites:
@@ -821,23 +713,16 @@ def _online_verify_select_refs(
     uncited_raw: List[str],
     verify_mode: str,
 ) -> List[str]:
-    mode = (verify_mode or "all").strip().lower()
+    mode = (verify_mode or "missing").strip().lower()
     all_ref_texts = [r.raw for r in refs]
 
-    if mode == "all":
+    if mode in ("all", "all_references", "all references"):
         return all_ref_texts
 
-    if mode == "uncited_only":
-        uncited_set = set(uncited_raw or [])
-        selected = [r for r in all_ref_texts if r in uncited_set]
-        return selected if selected else all_ref_texts
-
-    # missing_only has no perfect meaning for verification (missing items are in-text citations without refs).
-    # We keep it useful by verifying ALL refs (fallback).
-    if mode == "missing_only":
-        return all_ref_texts
-
-    return all_ref_texts
+    # missing mode: verify uncited first
+    uncited_set = set(uncited_raw or [])
+    work = [r for r in all_ref_texts if r in uncited_set]
+    return work if work else all_ref_texts
 
 
 # -----------------------------
@@ -848,12 +733,12 @@ def run_crosscheck(
     filename: str,
     style: str = "apa",
     verify_online: bool = False,
-    verify_mode: str = "all",
+    verify_mode: str = "missing",
     max_verify: int = 0,
-    throttle_s: float = 0.12,
+    throttle_s: float = 0.08,
     use_crossref: bool = True,
     use_openalex: bool = True,
-    use_semanticscholar: bool = True,
+    use_semantic: bool = True,
 ) -> Dict[str, Any]:
     name = (filename or "").lower().strip()
 
@@ -915,7 +800,7 @@ def run_crosscheck(
                 "score": 0,
                 "doi": "",
                 "matched_year": "",
-                "matched_authors": "",
+                "matched_first_author": "",
                 "matched_title": "",
                 "query_used": "",
                 "error": "verify.py not available or import failed",
@@ -934,16 +819,22 @@ def run_crosscheck(
                 throttle_s=float(throttle_s or 0.0),
                 use_crossref=bool(use_crossref),
                 use_openalex=bool(use_openalex),
-                use_semanticscholar=bool(use_semanticscholar),
+                use_semantic=bool(use_semantic),
             )
 
             for row in verify_rows:
                 row["status"] = _normalize_verify_status(row.get("status"))
                 verify_counts[row["status"]] += 1
 
-    verify_summary_out = {**verify_counts, "total": int(sum(verify_counts.values()))}
+    verify_summary_out = {
+        **verify_counts,
+        "total": int(sum(verify_counts.values())),
+    }
 
-    online_verification = {"summary": verify_summary_out, "rows": verify_rows}
+    online_verification_block = {
+        "summary": verify_summary_out,
+        "rows": verify_rows,
+    }
 
     return {
         "filename": filename,
@@ -960,8 +851,8 @@ def run_crosscheck(
         "reconciliation_intext_to_reference": c2r[:5000],
         "reconciliation_reference_to_intext": r2c[:5000],
 
-        # NEW stable structure (UI should use this)
-        "online_verification": online_verification,
-        "verify_mode_used": (verify_mode or "all"),
+        # ✅ stable shape
+        "online_verification": online_verification_block,
+        "online_verification_block": online_verification_block,
+        "verify_mode_used": (verify_mode or "missing"),
     }
-
