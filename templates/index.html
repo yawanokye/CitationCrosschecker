@@ -1,3 +1,4 @@
+<!-- templates/index.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -21,17 +22,14 @@
   <div class="container">
 
     <div class="card">
-      <div class="cardTitleRow">
-        <h2>Run</h2>
-        <div class="pill">Crossref + OpenAlex</div>
-      </div>
+      <h2>Run</h2>
 
       <div class="grid">
         <div>
           <div class="field">
             <label>Document</label>
             <input id="file" type="file" accept=".pdf,.docx" />
-            <div class="hint">DOCX works best. PDF extraction depends on the PDF type and layout.</div>
+            <div class="hint">DOCX works best for accurate text extraction. PDF extraction depends on the PDF type and layout.</div>
           </div>
 
           <div class="actions">
@@ -39,10 +37,7 @@
             <button class="btn" id="btnVerify">Run Online Verification</button>
           </div>
 
-          <div class="statusRow">
-            <div class="spinner" id="spinner" style="display:none;"></div>
-            <div class="status" id="status">Ready.</div>
-          </div>
+          <div class="status muted" id="status">Ready.</div>
         </div>
 
         <div>
@@ -56,7 +51,11 @@
           </div>
 
           <div class="verifyBox">
-            <div class="verifyRow">
+            <div class="hint" style="margin-top:0;">
+              Online verification uses Crossref and OpenAlex. If your host blocks outbound requests, results may show “offline”.
+            </div>
+
+            <div class="verifyRow" style="margin-top:10px;">
               <label class="check"><input type="checkbox" id="useCrossref" checked> Use Crossref</label>
               <label class="check"><input type="checkbox" id="useOpenAlex" checked> Use OpenAlex</label>
 
@@ -77,10 +76,6 @@
                   <option value="uncited_only">Only uncited references</option>
                   <option value="missing_only">Missing only (review mode)</option>
                 </select>
-              </div>
-
-              <div class="hintTiny">
-                If your host blocks outbound requests, online verification may show “offline”.
               </div>
             </div>
           </div>
@@ -144,7 +139,7 @@
       </div>
 
       <div class="tabPane" id="c2rPane">
-        <div class="hint">Each in-text citation and the matched reference entry. “lead_word” and “possessive” are flagged for review.</div>
+        <div class="hint">Each in-text citation and the matched reference entry. Flags highlight likely narrative or possessive cases for review.</div>
         <div class="tableWrap">
           <table>
             <thead>
@@ -179,7 +174,8 @@
       </div>
 
       <div class="tabPane" id="verifyPane">
-        <div class="hint">Online verification uses Crossref and OpenAlex. Matching is based mainly on title similarity, then author and year, DOI gets priority.</div>
+        <div class="hint">Online verification uses Crossref and OpenAlex. Matching is mainly title similarity, then author and year.</div>
+
         <div class="dash" id="verifyDash" style="grid-template-columns: repeat(5, 1fr);"></div>
 
         <div class="tableWrap" style="margin-top:12px;">
@@ -195,7 +191,6 @@
                 <th style="width:160px;">Authors</th>
                 <th>Matched title</th>
                 <th style="width:260px;">Query used</th>
-                <th style="width:220px;">Error</th>
               </tr>
             </thead>
             <tbody id="verifyBody"></tbody>
@@ -210,7 +205,7 @@
           <button class="btn" id="btnExportWord">Export Word</button>
         </div>
         <div class="hint muted" style="margin-top:10px;">
-          Tip: If downloads don’t start, allow popups/downloads for this site.
+          Tip: If downloads don’t start on some browsers, allow downloads for this site.
         </div>
       </div>
 
@@ -218,7 +213,7 @@
 
     <div class="footer">
       <div class="muted">© Prof Anokye M. Adam, University of Cape Coast</div>
-      <div class="muted">Disclaimer: This checker may produce false positives or false negatives. Verify critical citations manually.</div>
+      <div class="muted">Disclaimer: This checker may produce false positives or false negatives. Always verify critical citations manually before publication.</div>
     </div>
 
   </div>
