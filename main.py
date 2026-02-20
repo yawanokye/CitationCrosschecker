@@ -22,7 +22,7 @@ except Exception:
     Document = None
 
 
-app = FastAPI(title="Citation Crosschecker", version="1.2.0")
+app = FastAPI(title="Citation Crosschecker", version="1.2.1")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -204,7 +204,7 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
         row[0].text = k
         row[1].text = str(dash.get(k, ""))
 
-    def add_table(title: str, rows: List[Dict[str, Any]], cols: List[Tuple[str, str]]):
+    def add_table(title: str, rows: List[Dict[str, Any]], cols: List[tuple]):
         doc.add_heading(title, level=2)
         if not rows:
             doc.add_paragraph("None.")
