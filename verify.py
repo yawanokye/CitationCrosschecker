@@ -17,7 +17,6 @@ def _normalize_verify_status(s: str) -> str:
 
 
 def _s(x: Any) -> str:
-    """Safe string conversion."""
     if x is None:
         return ""
     try:
@@ -28,7 +27,7 @@ def _s(x: Any) -> str:
 
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 18) -> Optional[dict]:
     try:
-        r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": "CitationCrosschecker/1.1"})
+        r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": "CitationCrosschecker/1.2"})
         if r.status_code != 200:
             return None
         return r.json()
@@ -63,8 +62,7 @@ def _extract_doi(text: str) -> str:
     m = re.search(r"(10\.\d{4,9}/[^\s]+)", t, flags=re.I)
     if not m:
         return ""
-    doi = m.group(1).strip().rstrip(").,;")
-    return doi
+    return m.group(1).strip().rstrip(").,;")
 
 
 def _extract_title_guess(ref: str) -> str:
@@ -88,29 +86,39 @@ def _extract_title_guess(ref: str) -> str:
     return title
 
 
-def _query_crossref(title: str, year: str, raw_ref: str) -> List[Dict[str, Any]]:
+def _query_crossref(title: str, author: str, year: str, raw_ref: str) -> List[Dict[str, Any]]:
     url = "https://api.crossref.org/works"
     q = title if len(title) >= 12 else raw_ref
-    params: Dict[str, Any] = {"query.bibliographic": q, "rows": 7}
-    if year[:4].isdigit():
-        params["filter"] = f"from-pub-date:{year[:4]}-01-01,until-pub-date:{year[:4]}-12-31"
 
-    data = _safe_get_json(url, params=params, timeout=18)
-    if not data:
-        return []
-    items = (data.get("message") or {}).get("items") or []
-    return [{"source": "crossref", "item": it, "query_used": q} for it in items]
+    base_params: Dict[str, Any] = {
+        "query.bibliographic": q,
+        "rows": 12,
+    }
+    if author:
+        base_params["query.author"] = author
+
+    # Pass 1: with year filter (if available)
+    params1 = dict(base_params)
+    if year[:4].isdigit():
+        params1["filter"] = f"from-pub-date:{year[:4]}-01-01,until-pub-date:{year[:4]}-12-31"
+    data1 = _safe_get_json(url, params=params1, timeout=18)
+    items1 = ((data1 or {}).get("message") or {}).get("items") or []
+    if items1:
+        return [{"source": "crossref", "item": it, "query_used": q} for it in items1]
+
+    # Pass 2: without year filter (better recall)
+    data2 = _safe_get_json(url, params=base_params, timeout=18)
+    items2 = ((data2 or {}).get("message") or {}).get("items") or []
+    return [{"source": "crossref", "item": it, "query_used": q} for it in items2]
 
 
 def _query_openalex(title: str, raw_ref: str) -> List[Dict[str, Any]]:
     url = "https://api.openalex.org/works"
     q = title if len(title) >= 12 else raw_ref
-    params: Dict[str, Any] = {"search": q, "per-page": 7}
+    params: Dict[str, Any] = {"search": q, "per-page": 12}
 
     data = _safe_get_json(url, params=params, timeout=18)
-    if not data:
-        return []
-    results = data.get("results") or []
+    results = (data or {}).get("results") or []
     return [{"source": "openalex", "item": it, "query_used": q} for it in results]
 
 
@@ -157,7 +165,7 @@ def _score(ref_title: str, ref_author: str, ref_year: str, cand_title: str, cand
     title_score = fuzz.token_set_ratio(ref_title, cand_title) if (ref_title and cand_title) else 0
     author_match = 1 if (ref_author and cand_author and ref_author == cand_author) else 0
     year_match = 1 if (ref_year and cand_year and ref_year[:4] == str(cand_year)[:4]) else 0
-    score = (title_score * 1.2) + (25 * author_match) + (12 * year_match)
+    score = (title_score * 1.25) + (28 * author_match) + (10 * year_match)
     return {
         "score": int(score),
         "title_score": int(title_score),
@@ -167,11 +175,11 @@ def _score(ref_title: str, ref_author: str, ref_year: str, cand_title: str, cand
 
 
 def _classify(score: int, author_match: int, year_match: int, title_score: int) -> str:
-    if title_score >= 92 and (author_match or year_match) and score >= 130:
+    if title_score >= 92 and (author_match or year_match) and score >= 132:
         return "verified"
-    if title_score >= 86 and score >= 118:
+    if title_score >= 85 and score >= 118:
         return "likely"
-    if title_score >= 75 and score >= 95:
+    if title_score >= 74 and score >= 95:
         return "needs_review"
     return "not_found"
 
@@ -216,7 +224,7 @@ def verify_references_batch(
             candidates: List[Dict[str, Any]] = []
 
             if use_crossref:
-                candidates.extend(_query_crossref(ref_title, ref_year, ref_raw))
+                candidates.extend(_query_crossref(ref_title, ref_author, ref_year, ref_raw))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
 
             if use_openalex:
@@ -237,7 +245,7 @@ def verify_references_batch(
 
                 doi_bonus = 0
                 if ref_doi and cand_doi and ref_doi.lower() == cand_doi.lower():
-                    doi_bonus = 40
+                    doi_bonus = 50
 
                 meta = _score(ref_title, ref_author, ref_year, cand_title, cand_author, cand_year)
                 meta["score"] = int(meta["score"] + doi_bonus)
