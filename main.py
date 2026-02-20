@@ -22,7 +22,7 @@ except Exception:
     Document = None
 
 
-app = FastAPI(title="Citation Crosschecker", version="1.1.0")
+app = FastAPI(title="Citation Crosschecker", version="1.2.0")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -32,24 +32,20 @@ def normalize_style(s: Optional[str]) -> str:
     s = (s or "").strip().lower()
     if s in ("apa", "apa7", "apa-7", "harvard", "apa/harvard", "author-year"):
         return "apa"
-    if s in ("ieee",):
+    if s == "ieee":
         return "ieee"
     if s in ("vancouver", "van", "numeric"):
         return "vancouver"
     return "apa"
 
 
-def safe_get(d: Dict[str, Any], key: str, default=None):
-    return d.get(key, default) if isinstance(d, dict) else default
-
-
 def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
-    summary = safe_get(result, "summary", {}) or {}
+    summary = (result.get("summary") or {}) if isinstance(result, dict) else {}
 
-    missing = safe_get(result, "missing_in_references", []) or []
-    uncited = safe_get(result, "uncited_references", []) or []
-    c2r = safe_get(result, "reconciliation_intext_to_reference", []) or []
-    r2c = safe_get(result, "reconciliation_reference_to_intext", []) or []
+    missing = result.get("missing_in_references") or []
+    uncited = result.get("uncited_references") or []
+    c2r = result.get("reconciliation_intext_to_reference") or []
+    r2c = result.get("reconciliation_reference_to_intext") or []
 
     def as_rows_missing(items):
         rows = []
@@ -136,9 +132,9 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
-    ov = safe_get(result, "online_verification", {}) or {}
-    ov_summary = safe_get(ov, "summary", {}) or {}
-    ov_rows = safe_get(ov, "rows", []) or []
+    ov = result.get("online_verification") or {}
+    ov_summary = ov.get("summary") or {}
+    ov_rows = ov.get("rows") or []
 
     verify_rows = []
     for x in ov_rows:
@@ -156,18 +152,8 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                 "query_used": x.get("query_used", ""),
             })
         else:
-            verify_rows.append({
-                "no": "",
-                "status": "",
-                "source": "",
-                "score": "",
-                "doi": "",
-                "matched_year": "",
-                "matched_authors": "",
-                "matched_title": "",
-                "reference": str(x),
-                "query_used": "",
-            })
+            verify_rows.append({"no": "", "status": "", "source": "", "score": "", "doi": "", "matched_year": "",
+                                "matched_authors": "", "matched_title": "", "reference": str(x), "query_used": ""})
     for i, r in enumerate(verify_rows, start=1):
         r["no"] = i
 
@@ -294,10 +280,7 @@ async def check(file: UploadFile = File(...), style: str = Form("apa")):
 
     result["elapsed_seconds"] = round(time.time() - t0, 3)
     result["style"] = style_norm
-
-    tables = extract_tables(result)
-    result["_ui"] = tables
-
+    result["_ui"] = extract_tables(result)
     return JSONResponse(result)
 
 
@@ -333,10 +316,7 @@ async def verify(
 
     result["elapsed_seconds"] = round(time.time() - t0, 3)
     result["style"] = style_norm
-
-    tables = extract_tables(result)
-    result["_ui"] = tables
-
+    result["_ui"] = extract_tables(result)
     return JSONResponse(result)
 
 
