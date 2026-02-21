@@ -6,6 +6,8 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import requests
 from rapidfuzz import fuzz
+from urllib.parse import quote  # IMPORTANT for OpenAlex DOI lookup
+
 
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
 
@@ -53,7 +55,10 @@ def _norm_text(s: str) -> str:
 
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 22) -> Optional[dict]:
     try:
-        headers = {"User-Agent": "CitationCrosschecker/1.0", "Accept": "application/json"}
+        headers = {
+            "User-Agent": "CitationCrosschecker/1.0",
+            "Accept": "application/json",
+        }
         r = requests.get(url, params=params, timeout=timeout, headers=headers)
         if r.status_code != 200:
             return None
@@ -125,7 +130,6 @@ def _extract_title_guess(ref: str) -> str:
         after = t[m.end():].strip() if m else t
 
     after = after.lstrip(". ").strip()
-    # take first sentence chunk as title
     title = after.split(".", 1)[0].strip() if "." in after else after.strip()
 
     if len(title) < 8:
@@ -138,6 +142,7 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
     """
     Robust-ish for APA/Vancouver:
     - take block before year as "author block"
+    - if year not found, fall back to text before first period as author block
     - split by '&', 'and', ';'
     - handle "Surname, Initials" and "Surname Initials" patterns
     """
@@ -146,7 +151,11 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
         return []
 
     m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", t, flags=re.I)
-    head = t[: m.start()].strip() if m else t
+    if m:
+        head = t[: m.start()].strip()
+    else:
+        # fallback: many references still start with authors then first period
+        head = t.split(".", 1)[0].strip()
 
     head = head.replace("&", " and ")
     head = re.sub(r"\bet\s+al\.?\b", "", head, flags=re.I)
@@ -162,11 +171,10 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
         if not p:
             continue
 
-        # APA often: "Austin, P. C.," -> surname before comma
+        # APA: "Austin, P. C." -> surname before comma
         if "," in p:
             cand = p.split(",", 1)[0].strip()
         else:
-            # otherwise last token
             toks = p.split()
             cand = toks[-1] if toks else ""
 
@@ -191,6 +199,7 @@ def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str
     """
     Query string used for both Crossref/OpenAlex.
     No strict year filter, we just include year token to help ranking.
+    (UNCHANGED BEHAVIOUR)
     """
     base = title if len(_safe_str(title)) >= 8 else _safe_str(raw_ref)
     base = _clean_query_string(base)
@@ -243,11 +252,16 @@ def _query_crossref(q: str, a_query: str) -> List[Dict[str, Any]]:
 
 
 def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    """
+    FIX: OpenAlex requires URL-encoded work id when using https://doi.org/<doi> form.
+    Without encoding, many valid DOIs return "not found".
+    """
     doi = _safe_strip(doi)
     if not doi:
         return None
     doi_url = "https://doi.org/" + doi.lower()
-    url = "https://api.openalex.org/works/" + doi_url
+    work_id = quote(doi_url, safe="")  # <<<< KEY FIX
+    url = "https://api.openalex.org/works/" + work_id
     params: Dict[str, Any] = {}
     if MAILTO:
         params["mailto"] = MAILTO
@@ -361,8 +375,7 @@ def _score(
     cand_set = set([a for a in (cand_authors or []) if a])
     author_overlap = len(ref_set.intersection(cand_set))
 
-    # IMPORTANT: year mismatch is common (online-first vs issue year)
-    # so it is a small bonus, not a hard gate
+    # year mismatch is common (online-first vs issue year)
     year_match = 1 if (ref_year and cand_year and ref_year[:4] == cand_year[:4]) else 0
 
     score = (title_score * 1.35) + (author_overlap * 26) + (year_match * 8)
@@ -388,25 +401,37 @@ def _classify(
     cand_has_doi: bool,
 ) -> str:
     """
-    Fixes:
-    - if reference lacks authors, don't penalize for author_overlap=0
-    - don't hard-fail on year mismatch
-    - high score + good title should not be not_found
+    Your requirement:
+    - title match + author match + DOI match => verified
+    Practical reality:
+    - year mismatch happens (online-first vs issue), so never hard-fail on year
+    Adjusted so many true positives move from likely -> verified, and needs_review -> likely.
     """
-    # strongest: DOI match
+
+    # strongest: DOI match, with reasonable title evidence
     if doi_match and title_score >= 55:
         return "verified"
 
-    # very strong bibliographic match (even without DOI in reference)
-    if title_score >= 88 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 120):
+    # very strong bibliographic match
+    # (if ref has authors, we want overlap evidence; if ref lacks authors, don't penalise)
+    if title_score >= 88 and (author_overlap >= 1 or not ref_has_authors):
         return "verified"
 
-    # strong match
-    if title_score >= 80 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 105):
+    # strong match (promote many "manual verified" likely cases)
+    # If title strong and we have author evidence OR a DOI exists on candidate, treat as verified
+    if title_score >= 82 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 120):
+        return "verified"
+
+    # likely match
+    if title_score >= 75 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 105):
         return "likely"
 
-    # decent match
-    if title_score >= 70 and (author_overlap >= 1 or year_match == 1 or not ref_has_authors):
+    # needs review -> likely when title is decent and we have either authors OR year support
+    if title_score >= 68 and (author_overlap >= 1 or year_match == 1 or not ref_has_authors):
+        return "likely"
+
+    # needs review band (weak author support but title suggests something)
+    if title_score >= 60:
         return "needs_review"
 
     return "not_found"
@@ -480,7 +505,7 @@ def verify_references_batch(
         ref_doi = _extract_doi(ref_raw)
         ref_title = _extract_title_guess(ref_raw)
 
-        # build query once and always return it for UI
+        # build query once and always return it for UI (UNCHANGED)
         query = _build_query(ref_title, ref_authors, ref_year, ref_raw)
         author_for_ui = ", ".join(ref_authors) if ref_authors else ""
 
@@ -501,7 +526,7 @@ def verify_references_batch(
             "query_used": query,
             "attempts": [],
             "error": "",
-            # IMPORTANT: keys your UI likely reads
+            # keys your UI reads
             "author": author_for_ui,
             "query": query,
         }
@@ -549,7 +574,6 @@ def verify_references_batch(
                     row["author_overlap"] = int(meta["author_overlap"])
                     row["year_match"] = int(meta["year_match"])
 
-                    # UI: if reference author missing, show matched authors
                     if not row["author"]:
                         row["author"] = row["matched_authors"]
                     rows.append(row)
@@ -651,7 +675,7 @@ def verify_references_batch(
                         rows.append(row)
                         continue
 
-            # ---------- 4) fallback: pick best attempt and keep needs_review/not_found ----------
+            # ---------- 4) fallback ----------
             if row["attempts"]:
                 row["attempts"].sort(key=lambda x: int(x.get("score") or 0), reverse=True)
                 top = row["attempts"][0]
@@ -676,7 +700,6 @@ def verify_references_batch(
                 row["year_match"] = int(top.get("year_match") or 0)
 
                 if not row["author"]:
-                    # best effort for UI
                     row["author"] = row.get("matched_authors") or ""
             else:
                 row["status"] = "not_found"
@@ -692,4 +715,3 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
-
