@@ -390,21 +390,26 @@ def _classify(
     year_match: int,
     score: int,
 ) -> str:
-    # Primary strict rule
-    if doi_match and year_match == 1 and title_score >= VERIFY_TITLE_MIN and author_overlap >= 1:
+    # 1) If DOI matches, you’ve essentially got the record.
+    # Make it VERIFIED with modest title support and correct year.
+    if doi_match and year_match == 1 and title_score >= 60:
         return "verified"
 
-    # Override for known false negatives: high score + doi + year + title
-    if doi_match and year_match == 1 and title_score >= VERIFY_TITLE_MIN and score >= VERIFY_SCORE_OVERRIDE:
-        return "verified"
-
-    if doi_match and (title_score >= 65 or author_overlap >= 1):
+    # If DOI matches and year is missing or off, keep as LIKELY.
+    if doi_match and title_score >= 60:
         return "likely"
 
-    if title_score >= 86 and author_overlap >= 1 and year_match == 1:
+    # 2) Strong bibliographic match without DOI
+    if title_score >= 85 and author_overlap >= 1 and year_match == 1:
         return "likely"
 
+    # 3) What used to be NEEDS_REVIEW becomes LIKELY
+    # (moderate title + either author overlap or year match)
     if title_score >= 70 and (author_overlap >= 1 or year_match == 1):
+        return "likely"
+
+    # 4) Keep a small review band for borderline cases
+    if title_score >= 60 and (author_overlap >= 1 or year_match == 1):
         return "needs_review"
 
     return "not_found"
@@ -551,3 +556,4 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
