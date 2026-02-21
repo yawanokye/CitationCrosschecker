@@ -388,20 +388,15 @@ async def verify(
 ):
     t0 = time.time()
     file_bytes = await file.read()
-
-    too_big = _enforce_upload_limit(file, file_bytes)
-    if too_big is not None:
-        return too_big
-
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
-    # IMPORTANT: if user passes 0, cap it for safety
-    max_verify_int = int(max_verify or 0)
-    if max_verify_int <= 0:
-        max_verify_int = VERIFY_DEFAULT_CAP
-
     try:
+        # Optional safety cap (prevents huge runs)
+        max_verify_int = int(max_verify or 0)
+        if max_verify_int <= 0:
+            max_verify_int = 120  # tune as you like
+
         result = run_crosscheck(
             file_bytes=file_bytes,
             filename=filename,
@@ -413,20 +408,33 @@ async def verify(
             throttle_s=float(throttle_s or 0.0),
             max_verify=max_verify_int,
         )
+
+        result["elapsed_seconds"] = round(time.time() - t0, 3)
+        result["style"] = style_norm
+        result["max_verify_used"] = max_verify_int
+
+        # IMPORTANT: extract_tables can crash, so protect it
+        try:
+            result["_ui"] = extract_tables(result)
+        except Exception as e:
+            result["_ui"] = {
+                "dashboard": {
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "error": f"UI extraction failed: {type(e).__name__}: {e}",
+                }
+            }
+
+        return JSONResponse(result)
+
     except Exception as e:
-        return JSONResponse({"error": f"Online verification failed: {type(e).__name__}: {e}"}, status_code=400)
+        # Always JSON, never HTML
+        return JSONResponse(
+            {"error": f"Online verification failed: {type(e).__name__}: {e}"},
+            status_code=400,
+        )
     finally:
+        # free memory
         file_bytes = b""
-
-    result["elapsed_seconds"] = round(time.time() - t0, 3)
-    result["style"] = style_norm
-    result["max_verify_used"] = max_verify_int
-
-    # Build UI, then drop big arrays
-    result["_ui"] = extract_tables(result)
-    result = _slim_result_for_json(result)
-
-    return JSONResponse(result)
 
 
 @app.post("/export/csv")
@@ -475,3 +483,4 @@ async def export_word(file: UploadFile = File(...), style: str = Form("apa")):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{out_name}"'},
     )
+
