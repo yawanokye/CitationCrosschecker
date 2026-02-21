@@ -269,11 +269,11 @@ def _score(
 
 def _classify(score: int, author_match: int, year_match: int, title_score: int, score_gap_ok: bool) -> str:
     # verified requires strong title + anchor + score gap when we have it
-    if title_score >= 92 and (author_match or year_match) and score >= 132 and score_gap_ok:
+    if title_score >= 80 and (author_match or year_match) and score >= 100 and score_gap_ok:
         return "verified"
-    if title_score >= 86 and score >= 120:
+    if title_score >= 75 and score >= 95:
         return "likely"
-    if title_score >= 75 and score >= 96:
+    if title_score >= 70 and score >= 80:
         return "needs_review"
     return "not_found"
 
@@ -392,3 +392,4 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
