@@ -328,13 +328,13 @@ def _score(rt, ra, ry, ct, ca, cy):
 # -------------------------
 def _classify(score, am, ym, ts):
 
-    if ts >= 88 and (am or ym) and score >= 120:
+    if ts >= 80 and (am or ym) and score >= 100:
         return "verified"
 
-    if ts >= 80 and score >= 110:
+    if ts >= 75 and score >= 90:
         return "likely"
 
-    if ts >= 72 and score >= 80:
+    if ts >= 70 and score >= 80:
         return "needs_review"
 
     return "not_found"
@@ -469,3 +469,4 @@ def verify_references_batch(
         rows.append(row)
 
     return rows
+
