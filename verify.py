@@ -40,6 +40,21 @@ def _safe_strip(x: Any) -> str:
     return _safe_str(x).strip()
 
 
+def _norm_text(s: str) -> str:
+    """
+    Normalise for matching:
+    - lower
+    - remove extra whitespace
+    - strip punctuation-ish noise
+    """
+    s = _safe_strip(s).lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    # keep letters, numbers, spaces, basic separators
+    s = re.sub(r"[^\w\s\-:/]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 22) -> Optional[dict]:
     try:
         headers = {
@@ -75,14 +90,16 @@ def _extract_doi(text: str) -> str:
 
 def _extract_title_guess(ref: str) -> str:
     """
-    Title guess:
+    Title guess from a reference string:
     - remove numbering
-    - remove DOI/doi.org
-    - take first sentence after (YEAR) when possible
+    - remove DOI and doi.org
+    - attempt to grab first sentence after (YEAR)
+    - normalise to lower for matching
     """
     t = _strip_leading_numbering(ref)
     t = re.sub(r"\s+", " ", t).strip()
 
+    # remove DOI forms
     t = re.sub(r"(doi\s*:\s*)?10\.\d{4,9}/\S+", "", t, flags=re.I)
     t = re.sub(r"https?://doi\.org/10\.\d{4,9}/\S+", "", t, flags=re.I)
 
@@ -99,7 +116,7 @@ def _extract_title_guess(ref: str) -> str:
     if len(title) < 12:
         title = t.strip()
 
-    return title
+    return _norm_text(title)
 
 
 def _clean_query_string(s: str) -> str:
@@ -119,13 +136,14 @@ def _doi_equal(a: str, b: str) -> bool:
 
 
 # -----------------------------
-# Multi-author extraction
+# Author extraction for multi-author precision
 # -----------------------------
 def _extract_author_surnames(ref: str, max_authors: int = 3) -> List[str]:
     t = _strip_leading_numbering(ref)
     if not t:
         return []
 
+    # Cut at year if present
     m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", t, flags=re.I)
     head = t[: m.start()].strip() if m else t
 
@@ -186,7 +204,7 @@ def _build_biblio_query(title: str, authors: List[str], year: str, raw_ref: str)
 
 
 # -----------------------------
-# Crossref
+# Crossref queries
 # -----------------------------
 def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
@@ -225,7 +243,10 @@ def _query_crossref_biblio(title: str, authors_list: List[str], year: str, raw_r
     if y4.isdigit():
         filters.append(f"from-pub-date:{y4}-01-01")
         filters.append(f"until-pub-date:{y4}-12-31")
+
+    # default: journals (can remove if you want books/chapters too)
     filters.append("type:journal-article")
+
     params["filter"] = ",".join(filters)
 
     data = _safe_get_json(url, params=params, timeout=22)
@@ -237,7 +258,7 @@ def _query_crossref_biblio(title: str, authors_list: List[str], year: str, raw_r
 
 
 # -----------------------------
-# OpenAlex
+# OpenAlex queries
 # -----------------------------
 def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
@@ -274,7 +295,7 @@ def _query_openalex_biblio(title: str, authors_list: List[str], year: str, raw_r
 
 def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], int]:
     """
-    Returns (doi, title, year, author_surnames[], api_score_if_any)
+    Returns (doi, title_norm, year, author_surnames[], api_score_if_any)
     """
     src = _safe_strip((cand or {}).get("source"))
     item = (cand or {}).get("item") or {}
@@ -287,8 +308,10 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
 
     if src == "crossref":
         doi = _safe_strip(item.get("DOI"))
+
         titles = item.get("title") or []
-        title = _safe_str(titles[0]).strip() if titles else ""
+        title_raw = _safe_str(titles[0]).strip() if titles else ""
+        title = _norm_text(title_raw)
 
         try:
             api_score = int(item.get("score") or 0)
@@ -311,7 +334,10 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
     elif src == "openalex":
         doi_raw = item.get("doi")
         doi = _safe_str(doi_raw).replace("https://doi.org/", "").strip()
-        title = _safe_strip(item.get("title"))
+
+        title_raw = _safe_strip(item.get("title"))
+        title = _norm_text(title_raw)
+
         year = _safe_strip(item.get("publication_year"))
 
         auths = item.get("authorships") or []
@@ -329,20 +355,18 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
 
 
 def _score(
-    ref_title: str,
+    ref_title_norm: str,
     ref_authors: List[str],
     ref_year: str,
-    cand_title: str,
+    cand_title_norm: str,
     cand_authors: List[str],
     cand_year: str,
     crossref_api_score: int = 0,
 ) -> Dict[str, Any]:
-    ref_title = _safe_strip(ref_title)
-    ref_year = _safe_strip(ref_year)
-    cand_title = _safe_strip(cand_title)
-    cand_year = _safe_strip(cand_year)
+    ref_title_norm = _norm_text(ref_title_norm)
+    cand_title_norm = _norm_text(cand_title_norm)
 
-    title_score = fuzz.token_set_ratio(ref_title, cand_title) if (ref_title and cand_title) else 0
+    title_score = fuzz.token_set_ratio(ref_title_norm, cand_title_norm) if (ref_title_norm and cand_title_norm) else 0
 
     ref_set = set([a for a in (ref_authors or []) if a])
     cand_set = set([a for a in (cand_authors or []) if a])
@@ -370,25 +394,23 @@ def _classify_strict_threeway(
     author_overlap: int,
     year_match: int,
     score: int,
-    strict_title_min: int = 80,
+    strict_title_min: int = 75,
     strict_author_min: int = 1,
 ) -> str:
-    # VERIFIED requires DOI + Title + Author
-    if doi_match and title_score >= strict_title_min and author_overlap >= strict_author_min:
+    # VERIFIED requires DOI + strong title + author + year
+    if doi_match and year_match and title_score >= strict_title_min and author_overlap >= strict_author_min:
         return "verified"
 
-    # DOI matches but title/author don’t, likely wrong DOI in the reference
-    if doi_match:
-        return "needs_review"
+    # DOI matches but title/author slightly weak -> LIKELY
+    if doi_match and title_score >= 65 and author_overlap >= 1:
+        return "likely"
 
-    # No DOI match, but bibliographic match looks strong
+    # Strong bibliographic match even if DOI missing/mismatch
     if title_score >= 86 and author_overlap >= 1 and year_match:
         return "likely"
 
-    if title_score >= 78 and author_overlap >= 1:
-        return "needs_review"
-
-    if title_score >= 70 and year_match:
+    # Partial match
+    if title_score >= 70 and (author_overlap >= 1 or year_match):
         return "needs_review"
 
     return "not_found"
@@ -413,10 +435,11 @@ def verify_references_batch(
 
     for ref in refs:
         ref_raw = _safe_strip(ref)
+
         ref_year = _extract_year(ref_raw)
         ref_authors = _extract_author_surnames(ref_raw, max_authors=3)
         ref_doi = _extract_doi(ref_raw)
-        ref_title = _extract_title_guess(ref_raw)
+        ref_title = _extract_title_guess(ref_raw)  # already normalised
 
         row: Dict[str, Any] = {
             "reference": ref_raw,
@@ -440,33 +463,27 @@ def verify_references_batch(
         try:
             candidates: List[Dict[str, Any]] = []
 
-            # Always do DOI lookup AND bibliographic search (when DOI exists)
-            doi_candidates: List[Dict[str, Any]] = []
-            biblio_candidates: List[Dict[str, Any]] = []
-
+            # Always do DOI lookup AND biblio search
             if ref_doi:
                 if use_crossref:
                     hit = _query_crossref_by_doi(ref_doi)
                     if hit:
-                        doi_candidates.append(hit)
+                        candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
 
                 if use_openalex:
                     hit = _query_openalex_by_doi(ref_doi)
                     if hit:
-                        doi_candidates.append(hit)
+                        candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
 
             if use_crossref:
-                biblio_candidates.extend(_query_crossref_biblio(ref_title, ref_authors, ref_year, ref_raw))
+                candidates.extend(_query_crossref_biblio(ref_title, ref_authors, ref_year, ref_raw))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
 
             if use_openalex:
-                biblio_candidates.extend(_query_openalex_biblio(ref_title, ref_authors, ref_year, ref_raw))
+                candidates.extend(_query_openalex_biblio(ref_title, ref_authors, ref_year, ref_raw))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
-
-            # Merge with DOI candidates first so they are evaluated too
-            candidates = doi_candidates + biblio_candidates
 
             if not candidates:
                 row["status"] = "not_found"
@@ -477,19 +494,15 @@ def verify_references_batch(
             best_meta = None
             best_score = -1
             best_doi_match = False
-            best_src = ""
             best_query = ""
 
-            # Evaluate all candidates and pick the best overall score,
-            # but classification stays strict (DOI+Title+Author required for VERIFIED).
             for cand in candidates:
                 cand_doi, cand_title, cand_year, cand_authors, api_score = _candidate_fields(cand)
                 meta = _score(ref_title, ref_authors, ref_year, cand_title, cand_authors, cand_year, api_score)
 
                 doi_match = _doi_equal(ref_doi, cand_doi) if ref_doi else False
 
-                # Mild preference for DOI-match so it’s not accidentally ignored,
-                # but not enough to override title/author mismatch.
+                # Mild preference for DOI match, not enough to override title/author
                 score = int(meta["score"] + (12 if doi_match else 0))
 
                 if score > best_score:
@@ -497,21 +510,23 @@ def verify_references_batch(
                     best = cand
                     best_meta = meta
                     best_doi_match = doi_match
-                    best_src = _safe_strip((cand or {}).get("source"))
                     best_query = _safe_strip((cand or {}).get("query_used"))
 
+            src = _safe_strip((best or {}).get("source"))
             cand_doi, cand_title, cand_year, cand_authors, _api_score = _candidate_fields(best or {})
-            row["source"] = best_src
+
+            row["source"] = src
             row["score"] = int(best_score if best_score >= 0 else 0)
             row["doi"] = _safe_strip(cand_doi)
             row["doi_match"] = bool(best_doi_match)
             row["matched_year"] = _safe_strip(cand_year)
             row["matched_authors"] = ", ".join([a for a in cand_authors if a])
+            # For display: keep readable title, but we only stored normalised text.
             row["matched_title"] = _safe_strip(cand_title)
             row["title_score"] = int((best_meta or {}).get("title_score") or 0)
             row["author_overlap"] = int((best_meta or {}).get("author_overlap") or 0)
             row["year_match"] = int((best_meta or {}).get("year_match") or 0)
-            row["query_used"] = best_query or ref_title or ref_raw
+            row["query_used"] = best_query or ref_raw
 
             status = _classify_strict_threeway(
                 doi_match=bool(row["doi_match"]),
@@ -519,19 +534,16 @@ def verify_references_batch(
                 author_overlap=int(row["author_overlap"]),
                 year_match=int(row["year_match"]),
                 score=int(row["score"]),
-                strict_title_min=80,
+                strict_title_min=75,
                 strict_author_min=1,
             )
             row["status"] = _normalize_verify_status(status)
 
-            # Flag likely wrong DOI in the reference (your example)
+            # Flags
             if ref_doi and row["doi_match"] and row["status"] != "verified":
-                row["flag"] = "possible_wrong_doi"
-
-            # Also flag when best match is NOT DOI match but strong bibliographic match exists,
-            # suggesting DOI in reference may be wrong or missing.
+                row["flag"] = "doi_matches_but_title_or_author_weak"
             if ref_doi and (not row["doi_match"]) and row["status"] in {"likely", "needs_review"}:
-                row["flag"] = row["flag"] or "doi_mismatch_strong_biblio"
+                row["flag"] = row["flag"] or "strong_biblio_but_doi_mismatch"
 
             rows.append(row)
 
