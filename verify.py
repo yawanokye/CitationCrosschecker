@@ -267,16 +267,24 @@ def _score(
     }
 
 
-def _classify(score: int, author_match: int, year_match: int, title_score: int, score_gap_ok: bool) -> str:
-    # verified requires strong title + anchor + score gap when we have it
-    if title_score >= 80 and (author_match or year_match) and score >= 100 and score_gap_ok:
+def _classify(score: int, author_match: int, year_match: int, title_score: int, score_gap_ok: bool, has_doi: bool) -> str:
+    # Strong match
+    if title_score >= 84 and (author_match or year_match) and score >= 100 and score_gap_ok:
         return "verified"
-    if title_score >= 75 and score >= 95:
-        return "likely"
-    if title_score >= 70 and score >= 80:
-        return "needs_review"
-    return "not_found"
 
+    # Good match
+    if title_score >= 80 and score >= 95 and (author_match or year_match or has_doi):
+        return "likely"
+
+    # Plausible match (don’t call it not_found if DOI exists and title is close)
+    if title_score >= 72 and (author_match or year_match or has_doi) and score >= 90:
+        return "needs_review"
+
+    # DOI but weak title, still needs human check
+    if has_doi and title_score >= 60:
+        return "needs_review"
+
+    return "not_found"
 
 def verify_references_batch(
     references: List[str],
@@ -392,4 +400,5 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
 
