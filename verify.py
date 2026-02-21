@@ -17,6 +17,10 @@ MAILTO = (
 )
 MAILTO = (MAILTO or "").strip()
 
+# High-confidence override
+VERIFY_SCORE_OVERRIDE = 120
+VERIFY_TITLE_MIN = 70
+
 
 def _normalize_verify_status(s: str) -> str:
     st = (s or "").strip().lower().replace(" ", "_")
@@ -41,15 +45,8 @@ def _safe_strip(x: Any) -> str:
 
 
 def _norm_text(s: str) -> str:
-    """
-    Normalise for matching:
-    - lower
-    - remove extra whitespace
-    - strip punctuation-ish noise
-    """
     s = _safe_strip(s).lower()
     s = re.sub(r"\s+", " ", s).strip()
-    # keep letters, numbers, spaces, basic separators
     s = re.sub(r"[^\w\s\-:/]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -57,10 +54,7 @@ def _norm_text(s: str) -> str:
 
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 22) -> Optional[dict]:
     try:
-        headers = {
-            "User-Agent": "CitationCrosschecker/1.0",
-            "Accept": "application/json",
-        }
+        headers = {"User-Agent": "CitationCrosschecker/1.0", "Accept": "application/json"}
         r = requests.get(url, params=params, timeout=timeout, headers=headers)
         if r.status_code != 200:
             return None
@@ -89,17 +83,9 @@ def _extract_doi(text: str) -> str:
 
 
 def _extract_title_guess(ref: str) -> str:
-    """
-    Title guess from a reference string:
-    - remove numbering
-    - remove DOI and doi.org
-    - attempt to grab first sentence after (YEAR)
-    - normalise to lower for matching
-    """
     t = _strip_leading_numbering(ref)
     t = re.sub(r"\s+", " ", t).strip()
 
-    # remove DOI forms
     t = re.sub(r"(doi\s*:\s*)?10\.\d{4,9}/\S+", "", t, flags=re.I)
     t = re.sub(r"https?://doi\.org/10\.\d{4,9}/\S+", "", t, flags=re.I)
 
@@ -136,14 +122,20 @@ def _doi_equal(a: str, b: str) -> bool:
 
 
 # -----------------------------
-# Author extraction for multi-author precision
+# Better author extraction
 # -----------------------------
-def _extract_author_surnames(ref: str, max_authors: int = 3) -> List[str]:
+def _extract_author_surnames(ref: str, max_authors: int = 6) -> List[str]:
+    """
+    Extract up to max_authors surnames from the reference string.
+    More robust than the earlier version:
+    - splits on commas, 'and', '&', ';'
+    - removes initials
+    - avoids pulling title words by cutting at year
+    """
     t = _strip_leading_numbering(ref)
     if not t:
         return []
 
-    # Cut at year if present
     m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", t, flags=re.I)
     head = t[: m.start()].strip() if m else t
 
@@ -151,36 +143,42 @@ def _extract_author_surnames(ref: str, max_authors: int = 3) -> List[str]:
     head = re.sub(r"\bet\s+al\.?\b", "", head, flags=re.I)
     head = re.sub(r"\s+", " ", head).strip()
 
-    chunks = re.split(r"\band\b|;", head, flags=re.I)
-
-    parts: List[str] = []
-    for ch in chunks:
-        ch = ch.strip()
-        if not ch:
+    # split on separators
+    pieces = re.split(r";|\band\b", head, flags=re.I)
+    tokens: List[str] = []
+    for p in pieces:
+        p = p.strip()
+        if not p:
             continue
-        parts.extend([p.strip() for p in ch.split(",") if p.strip()])
+        tokens.extend([x.strip() for x in p.split(",") if x.strip()])
 
     surnames: List[str] = []
     comma_style = ("," in head)
 
-    for p in parts:
-        p2 = re.sub(r"[^A-Za-z\-'\s]", " ", p).strip()
-        toks = [x for x in p2.split() if x]
-        if not toks:
+    for tok in tokens:
+        # remove dots/initials and extra symbols
+        tok2 = re.sub(r"[^A-Za-z\-'\s]", " ", tok)
+        tok2 = re.sub(r"\s+", " ", tok2).strip()
+        if not tok2:
+            continue
+        parts = tok2.split()
+
+        # skip pure initials chunks
+        if all(len(x) <= 2 for x in parts):
             continue
 
-        surname = toks[0] if comma_style else toks[-1]
+        surname = parts[0] if comma_style else parts[-1]
         surname = re.sub(r"[^A-Za-z\-']", "", surname).lower().strip()
-
         if surname and len(surname) >= 2 and surname not in surnames:
             surnames.append(surname)
+
         if len(surnames) >= max_authors:
             break
 
     return surnames
 
 
-def _authors_to_query(authors: List[str], max_join: int = 2) -> str:
+def _authors_to_query(authors: List[str], max_join: int = 3) -> str:
     authors = [a for a in (authors or []) if _safe_strip(a)]
     if not authors:
         return ""
@@ -192,7 +190,7 @@ def _build_biblio_query(title: str, authors: List[str], year: str, raw_ref: str)
     base = _clean_query_string(base)
 
     y4 = _safe_str(year)[:4] if _safe_str(year)[:4].isdigit() else ""
-    a_str = _authors_to_query(authors, max_join=2)
+    a_str = _authors_to_query(authors, max_join=3)
 
     bits = [base]
     if a_str:
@@ -204,7 +202,7 @@ def _build_biblio_query(title: str, authors: List[str], year: str, raw_ref: str)
 
 
 # -----------------------------
-# Crossref queries
+# Crossref
 # -----------------------------
 def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
@@ -226,11 +224,11 @@ def _query_crossref_biblio(title: str, authors_list: List[str], year: str, raw_r
     q = _build_biblio_query(title, authors_list, year, raw_ref)
 
     y4 = _safe_str(year)[:4]
-    a_str = _authors_to_query(authors_list, max_join=2)
+    a_str = _authors_to_query(authors_list, max_join=3)
 
     params: Dict[str, Any] = {
         "query.bibliographic": q,
-        "rows": 3,
+        "rows": 5,
         "sort": "score",
         "order": "desc",
     }
@@ -243,10 +241,7 @@ def _query_crossref_biblio(title: str, authors_list: List[str], year: str, raw_r
     if y4.isdigit():
         filters.append(f"from-pub-date:{y4}-01-01")
         filters.append(f"until-pub-date:{y4}-12-31")
-
-    # default: journals (can remove if you want books/chapters too)
     filters.append("type:journal-article")
-
     params["filter"] = ",".join(filters)
 
     data = _safe_get_json(url, params=params, timeout=22)
@@ -258,7 +253,7 @@ def _query_crossref_biblio(title: str, authors_list: List[str], year: str, raw_r
 
 
 # -----------------------------
-# OpenAlex queries
+# OpenAlex
 # -----------------------------
 def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
@@ -280,7 +275,7 @@ def _query_openalex_biblio(title: str, authors_list: List[str], year: str, raw_r
     q = _build_biblio_query(title, authors_list, year, raw_ref)
     y4 = _safe_str(year)[:4]
 
-    params: Dict[str, Any] = {"search": q, "per-page": 7}
+    params: Dict[str, Any] = {"search": q, "per-page": 10}
     if MAILTO:
         params["mailto"] = MAILTO
     if y4.isdigit():
@@ -325,7 +320,7 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
 
         authors = item.get("author") or []
         if isinstance(authors, list) and authors:
-            for au in authors[:3]:
+            for au in authors[:8]:
                 fam = _safe_strip((au or {}).get("family")).lower()
                 fam = re.sub(r"[^a-z\-']", "", fam)
                 if fam:
@@ -342,7 +337,7 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
 
         auths = item.get("authorships") or []
         if isinstance(auths, list) and auths:
-            for a in auths[:3]:
+            for a in auths[:8]:
                 au = (a or {}).get("author") or {}
                 nm = _safe_strip(au.get("display_name"))
                 if nm:
@@ -371,14 +366,14 @@ def _score(
     ref_set = set([a for a in (ref_authors or []) if a])
     cand_set = set([a for a in (cand_authors or []) if a])
     overlap = len(ref_set.intersection(cand_set))
-    author_score = min(100, overlap * 45)
 
+    author_score = min(100, overlap * 40)
     year_match = 1 if (ref_year and cand_year and ref_year[:4] == cand_year[:4]) else 0
 
-    score = (title_score * 1.25) + (author_score * 0.55) + (14 * year_match)
+    score = (title_score * 1.25) + (author_score * 0.70) + (18 * year_match)
 
     if crossref_api_score and crossref_api_score > 0:
-        score += min(18, int(crossref_api_score / 10))
+        score += min(20, int(crossref_api_score / 10))
 
     return {
         "score": int(score),
@@ -388,32 +383,39 @@ def _score(
     }
 
 
-def _classify_strict_threeway(
+def _classify(
     doi_match: bool,
     title_score: int,
     author_overlap: int,
     year_match: int,
     score: int,
-    strict_title_min: int = 75,
-    strict_author_min: int = 1,
 ) -> str:
-    # VERIFIED requires DOI + strong title + author + year
-    if doi_match and year_match and title_score >= strict_title_min and author_overlap >= strict_author_min:
+    # Primary strict rule
+    if doi_match and year_match == 1 and title_score >= VERIFY_TITLE_MIN and author_overlap >= 1:
         return "verified"
 
-    # DOI matches but title/author slightly weak -> LIKELY
-    if doi_match and title_score >= 65 and author_overlap >= 1:
+    # Override for known false negatives: high score + doi + year + title
+    if doi_match and year_match == 1 and title_score >= VERIFY_TITLE_MIN and score >= VERIFY_SCORE_OVERRIDE:
+        return "verified"
+
+    if doi_match and (title_score >= 65 or author_overlap >= 1):
         return "likely"
 
-    # Strong bibliographic match even if DOI missing/mismatch
-    if title_score >= 86 and author_overlap >= 1 and year_match:
+    if title_score >= 86 and author_overlap >= 1 and year_match == 1:
         return "likely"
 
-    # Partial match
-    if title_score >= 70 and (author_overlap >= 1 or year_match):
+    if title_score >= 70 and (author_overlap >= 1 or year_match == 1):
         return "needs_review"
 
     return "not_found"
+
+
+def _diff_authors(ref_authors: List[str], cand_authors: List[str]) -> Tuple[str, str]:
+    rset = set(ref_authors or [])
+    cset = set(cand_authors or [])
+    missing_ref = sorted(list(rset - cset))
+    missing_cand = sorted(list(cset - rset))
+    return ", ".join(missing_ref), ", ".join(missing_cand)
 
 
 def verify_references_batch(
@@ -435,11 +437,10 @@ def verify_references_batch(
 
     for ref in refs:
         ref_raw = _safe_strip(ref)
-
         ref_year = _extract_year(ref_raw)
-        ref_authors = _extract_author_surnames(ref_raw, max_authors=3)
+        ref_authors = _extract_author_surnames(ref_raw, max_authors=6)
         ref_doi = _extract_doi(ref_raw)
-        ref_title = _extract_title_guess(ref_raw)  # already normalised
+        ref_title = _extract_title_guess(ref_raw)
 
         row: Dict[str, Any] = {
             "reference": ref_raw,
@@ -455,32 +456,32 @@ def verify_references_batch(
             "title_score": 0,
             "author_overlap": 0,
             "year_match": 0,
+            "missing_ref_authors": "",
+            "missing_matched_authors": "",
             "query_used": "",
-            "flag": "",
             "error": "",
         }
 
         try:
             candidates: List[Dict[str, Any]] = []
 
-            # Always do DOI lookup AND biblio search
+            # DOI lookup first
             if ref_doi:
                 if use_crossref:
                     hit = _query_crossref_by_doi(ref_doi)
                     if hit:
                         candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
-
                 if use_openalex:
                     hit = _query_openalex_by_doi(ref_doi)
                     if hit:
                         candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
 
+            # Biblio search
             if use_crossref:
                 candidates.extend(_query_crossref_biblio(ref_title, ref_authors, ref_year, ref_raw))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
-
             if use_openalex:
                 candidates.extend(_query_openalex_biblio(ref_title, ref_authors, ref_year, ref_raw))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
@@ -502,8 +503,8 @@ def verify_references_batch(
 
                 doi_match = _doi_equal(ref_doi, cand_doi) if ref_doi else False
 
-                # Mild preference for DOI match, not enough to override title/author
-                score = int(meta["score"] + (12 if doi_match else 0))
+                # Prefer DOI matches, but still title-led
+                score = int(meta["score"] + (25 if doi_match else 0))
 
                 if score > best_score:
                     best_score = score
@@ -521,30 +522,24 @@ def verify_references_batch(
             row["doi_match"] = bool(best_doi_match)
             row["matched_year"] = _safe_strip(cand_year)
             row["matched_authors"] = ", ".join([a for a in cand_authors if a])
-            # For display: keep readable title, but we only stored normalised text.
             row["matched_title"] = _safe_strip(cand_title)
             row["title_score"] = int((best_meta or {}).get("title_score") or 0)
             row["author_overlap"] = int((best_meta or {}).get("author_overlap") or 0)
             row["year_match"] = int((best_meta or {}).get("year_match") or 0)
             row["query_used"] = best_query or ref_raw
 
-            status = _classify_strict_threeway(
+            miss_ref, miss_cand = _diff_authors(ref_authors, cand_authors)
+            row["missing_ref_authors"] = miss_ref
+            row["missing_matched_authors"] = miss_cand
+
+            status = _classify(
                 doi_match=bool(row["doi_match"]),
                 title_score=int(row["title_score"]),
                 author_overlap=int(row["author_overlap"]),
                 year_match=int(row["year_match"]),
                 score=int(row["score"]),
-                strict_title_min=75,
-                strict_author_min=1,
             )
             row["status"] = _normalize_verify_status(status)
-
-            # Flags
-            if ref_doi and row["doi_match"] and row["status"] != "verified":
-                row["flag"] = "doi_matches_but_title_or_author_weak"
-            if ref_doi and (not row["doi_match"]) and row["status"] in {"likely", "needs_review"}:
-                row["flag"] = row["flag"] or "strong_biblio_but_doi_mismatch"
-
             rows.append(row)
 
         except Exception as e:
