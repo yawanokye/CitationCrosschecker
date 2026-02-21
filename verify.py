@@ -382,12 +382,13 @@ def verify_references_batch(
             row["query_used"] = _safe_strip((best or {}).get("query_used")) or ref_title or ref_raw
 
             status = _classify(
-                score=int(row["score"]),
-                author_match=int((best_meta or {}).get("author_match") or 0),
-                year_match=int((best_meta or {}).get("year_match") or 0),
-                title_score=int((best_meta or {}).get("title_score") or 0),
-                score_gap_ok=bool(score_gap_ok),
-            )
+    score=int(row["score"]),
+    author_match=int((best_meta or {}).get("author_match") or 0),
+    year_match=int((best_meta or {}).get("year_match") or 0),
+    title_score=int((best_meta or {}).get("title_score") or 0),
+    score_gap_ok=bool(score_gap_ok),
+    has_doi=bool((row.get("doi") or "").strip()),
+)
             row["status"] = _normalize_verify_status(status)
             rows.append(row)
 
@@ -400,5 +401,6 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
 
 
