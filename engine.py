@@ -276,7 +276,15 @@ def _looks_like_new_numeric_reference_start(line: str) -> bool:
     s = (line or "").strip()
     if not s:
         return False
-    return bool(re.match(r"^\s*\[\d+\]\s+", s)) or bool(re.match(r"^\s*\d{1,4}[\.\)]\s+", s))
+    if re.match(r"^\s*\[\d+\]\s+", s):
+        return True
+    if re.match(r"^\s*\d{1,4}[\.\)]\s+", s):
+        return True
+    # Guard: avoid treating a year like "2019 ..." as a numeric reference number
+    m = re.match(r"^\s*(\d{4})\s+", s)
+    if m and YEAR_RE.fullmatch(m.group(1)):
+        return False
+    return False
 
 
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
@@ -345,6 +353,31 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
     return ReferenceEntry(raw=r, key=key_author_year(first, year), year=year, surnames=(first,), number=None)
 
 
+def _numeric_ref_guard(n: int, remainder: str) -> bool:
+    # Typical reference lists are not in the thousands
+    if n < 1 or n > 5000:
+        return False
+
+    rem = (remainder or "").strip()
+    if len(rem) < 4:
+        return False
+
+    # Avoid capturing years like "2019 ..." as reference numbers
+    if YEAR_RE.fullmatch(str(n)):
+        return False
+
+    # Avoid capturing DOI prefixes or decimals as "10 ..."
+    if rem.startswith(".") or rem.lower().startswith("0."):
+        return False
+
+    # Must have some letters early on, otherwise it's probably a table/page/numbering artifact
+    head = rem[:40]
+    if not re.search(r"[A-Za-z]", head):
+        return False
+
+    return True
+
+
 def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
     r = (ref_raw or "").strip()
     if not r:
@@ -353,18 +386,21 @@ def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
     m = re.match(r"^\s*\[\s*(\d+)\s*\]\s*(.+)$", r)
     if m:
         n = int(m.group(1))
-        return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        rem = m.group(2)
+        if _numeric_ref_guard(n, rem):
+            return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        return None
 
     m = re.match(r"^\s*(\d+)\s*[\.\)]\s*(.+)$", r)
     if m:
         n = int(m.group(1))
-        return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        rem = m.group(2)
+        if _numeric_ref_guard(n, rem):
+            return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
+        return None
 
-    m = re.match(r"^\s*(\d+)\s+(.+)$", r)
-    if m:
-        n = int(m.group(1))
-        return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
-
+    # Removed the overly-broad pattern: r"^\s*(\d+)\s+(.+)$"
+    # It caused false positives on lines starting with years, page numbers, etc.
     return None
 
 
@@ -452,7 +488,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             out.append(InTextCitation("author-year", raw, k, year=y, surnames=surnames, flags=flags))
             seen.add(raw)
 
-    # UPDATED: narrative pattern now includes "Surname et al. (2020)" variants
     narr_pat = re.compile(
         rf"""
         (?P<lead>\b(?:according\s+to|see|by|from|in|as|for\s+example|for\s+instance|cf)\b\s+)?   # lead word
@@ -488,7 +523,6 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
         if re.search(r"\'s\s*\(", authors_blob, flags=re.I):
             flags_out.append("possessive")
 
-        # If "et al", reduce to first surname only
         if re.search(r"\bet\s+al\.?\b", cleaned, flags=re.I):
             first = clean_surname(cleaned)
             if not first:
@@ -641,24 +675,27 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     cite_keys = [c.key for c in cites]
     ref_keys = [r.key for r in refs]
 
-    cite_count_by_raw = Counter([c.raw for c in cites])
-    cite_key_by_raw: Dict[str, str] = {}
+    # Count by key (fixes [1-3] inflating and same-raw issues)
+    cite_count_by_key = Counter(cite_keys)
+    example_raw_by_key: Dict[str, str] = {}
     for c in cites:
-        cite_key_by_raw.setdefault(c.raw, c.key)
+        example_raw_by_key.setdefault(c.key, c.raw)
 
     ref_key_set = set(ref_keys)
     missing = []
-    for raw, cnt in cite_count_by_raw.items():
-        k = cite_key_by_raw.get(raw, "")
+    for k, cnt in cite_count_by_key.items():
         if k and (k not in ref_key_set):
-            missing.append({"citation_in_text": raw, "count_in_text": int(cnt)})
+            missing.append({
+                "citation_in_text": example_raw_by_key.get(k, ""),
+                "count_in_text": int(cnt),
+            })
     missing.sort(key=lambda x: (-x["count_in_text"], x["citation_in_text"]))
 
     cite_key_set = set(cite_keys)
     uncited = [r.raw for r in refs if r.key not in cite_key_set]
 
     summary = {
-        "in_text_citations_found": int(len(cites)),
+        "in_text_citations_found": int(len(cites)),     # occurrences (expanded ranges count as multiple)
         "reference_entries_found": int(len(refs)),
         "missing_in_references": int(len(missing)),
         "uncited_references": int(len(uncited)),
