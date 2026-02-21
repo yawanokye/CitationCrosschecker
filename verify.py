@@ -397,11 +397,11 @@ def _classify(
 
     # If DOI matches and year is missing or off, keep as LIKELY.
     if doi_match and title_score >= 60:
-        return "likely"
+        return "verified"
 
     # 2) Strong bibliographic match without DOI
     if title_score >= 85 and author_overlap >= 1 and year_match == 1:
-        return "likely"
+        return "verified"
 
     # 3) What used to be NEEDS_REVIEW becomes LIKELY
     # (moderate title + either author overlap or year match)
@@ -556,4 +556,5 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
 
