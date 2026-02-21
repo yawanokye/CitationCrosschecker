@@ -17,9 +17,10 @@ MAILTO = (
 )
 MAILTO = (MAILTO or "").strip()
 
-# High-confidence override
-VERIFY_SCORE_OVERRIDE = 120
+UNPAYWALL_EMAIL = (os.getenv("UNPAYWALL_EMAIL") or MAILTO or "").strip()
+
 VERIFY_TITLE_MIN = 70
+VERIFY_SCORE_OVERRIDE = 120
 
 
 def _normalize_verify_status(s: str) -> str:
@@ -86,6 +87,7 @@ def _extract_title_guess(ref: str) -> str:
     t = _strip_leading_numbering(ref)
     t = re.sub(r"\s+", " ", t).strip()
 
+    # remove DOI forms and doi.org links
     t = re.sub(r"(doi\s*:\s*)?10\.\d{4,9}/\S+", "", t, flags=re.I)
     t = re.sub(r"https?://doi\.org/10\.\d{4,9}/\S+", "", t, flags=re.I)
 
@@ -122,16 +124,9 @@ def _doi_equal(a: str, b: str) -> bool:
 
 
 # -----------------------------
-# Better author extraction
+# Author extraction (stronger)
 # -----------------------------
 def _extract_author_surnames(ref: str, max_authors: int = 6) -> List[str]:
-    """
-    Extract up to max_authors surnames from the reference string.
-    More robust than the earlier version:
-    - splits on commas, 'and', '&', ';'
-    - removes initials
-    - avoids pulling title words by cutting at year
-    """
     t = _strip_leading_numbering(ref)
     if not t:
         return []
@@ -143,8 +138,8 @@ def _extract_author_surnames(ref: str, max_authors: int = 6) -> List[str]:
     head = re.sub(r"\bet\s+al\.?\b", "", head, flags=re.I)
     head = re.sub(r"\s+", " ", head).strip()
 
-    # split on separators
     pieces = re.split(r";|\band\b", head, flags=re.I)
+
     tokens: List[str] = []
     for p in pieces:
         p = p.strip()
@@ -156,22 +151,20 @@ def _extract_author_surnames(ref: str, max_authors: int = 6) -> List[str]:
     comma_style = ("," in head)
 
     for tok in tokens:
-        # remove dots/initials and extra symbols
         tok2 = re.sub(r"[^A-Za-z\-'\s]", " ", tok)
         tok2 = re.sub(r"\s+", " ", tok2).strip()
         if not tok2:
             continue
         parts = tok2.split()
 
-        # skip pure initials chunks
         if all(len(x) <= 2 for x in parts):
             continue
 
         surname = parts[0] if comma_style else parts[-1]
         surname = re.sub(r"[^A-Za-z\-']", "", surname).lower().strip()
+
         if surname and len(surname) >= 2 and surname not in surnames:
             surnames.append(surname)
-
         if len(surnames) >= max_authors:
             break
 
@@ -228,7 +221,7 @@ def _query_crossref_biblio(title: str, authors_list: List[str], year: str, raw_r
 
     params: Dict[str, Any] = {
         "query.bibliographic": q,
-        "rows": 5,
+        "rows": 10,
         "sort": "score",
         "order": "desc",
     }
@@ -237,12 +230,13 @@ def _query_crossref_biblio(title: str, authors_list: List[str], year: str, raw_r
     if MAILTO:
         params["mailto"] = MAILTO
 
+    # Keep year filter if available, but DO NOT restrict to journal-article only
     filters: List[str] = []
     if y4.isdigit():
         filters.append(f"from-pub-date:{y4}-01-01")
         filters.append(f"until-pub-date:{y4}-12-31")
-    filters.append("type:journal-article")
-    params["filter"] = ",".join(filters)
+    if filters:
+        params["filter"] = ",".join(filters)
 
     data = _safe_get_json(url, params=params, timeout=22)
     if not data:
@@ -275,7 +269,7 @@ def _query_openalex_biblio(title: str, authors_list: List[str], year: str, raw_r
     q = _build_biblio_query(title, authors_list, year, raw_ref)
     y4 = _safe_str(year)[:4]
 
-    params: Dict[str, Any] = {"search": q, "per-page": 10}
+    params: Dict[str, Any] = {"search": q, "per-page": 15}
     if MAILTO:
         params["mailto"] = MAILTO
     if y4.isdigit():
@@ -286,6 +280,21 @@ def _query_openalex_biblio(title: str, authors_list: List[str], year: str, raw_r
         return []
     results = data.get("results") or []
     return [{"source": "openalex", "item": it or {}, "query_used": q} for it in results]
+
+
+# -----------------------------
+# Unpaywall (best for DOI validation/enrichment)
+# -----------------------------
+def _query_unpaywall_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    doi = _safe_strip(doi)
+    if not doi or not UNPAYWALL_EMAIL:
+        return None
+    url = f"https://api.unpaywall.org/v2/{doi}"
+    params = {"email": UNPAYWALL_EMAIL}
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return None
+    return {"source": "unpaywall", "item": data or {}, "query_used": f"doi:{doi}"}
 
 
 def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], int]:
@@ -303,7 +312,6 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
 
     if src == "crossref":
         doi = _safe_strip(item.get("DOI"))
-
         titles = item.get("title") or []
         title_raw = _safe_str(titles[0]).strip() if titles else ""
         title = _norm_text(title_raw)
@@ -329,10 +337,8 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
     elif src == "openalex":
         doi_raw = item.get("doi")
         doi = _safe_str(doi_raw).replace("https://doi.org/", "").strip()
-
         title_raw = _safe_strip(item.get("title"))
         title = _norm_text(title_raw)
-
         year = _safe_strip(item.get("publication_year"))
 
         auths = item.get("authorships") or []
@@ -346,6 +352,17 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
                     if last:
                         author_surnames.append(last)
 
+    elif src == "unpaywall":
+        # Unpaywall returns DOI + title + (sometimes) year, but authors are not always present
+        doi = _safe_strip(item.get("doi"))
+        title_raw = _safe_strip(item.get("title"))
+        title = _norm_text(title_raw)
+
+        # best effort year
+        year = _safe_strip(item.get("year")) or ""
+        # authors often missing in Unpaywall response
+        author_surnames = []
+
     return doi, title, year, author_surnames, api_score
 
 
@@ -356,7 +373,7 @@ def _score(
     cand_title_norm: str,
     cand_authors: List[str],
     cand_year: str,
-    crossref_api_score: int = 0,
+    api_score: int = 0,
 ) -> Dict[str, Any]:
     ref_title_norm = _norm_text(ref_title_norm)
     cand_title_norm = _norm_text(cand_title_norm)
@@ -367,13 +384,13 @@ def _score(
     cand_set = set([a for a in (cand_authors or []) if a])
     overlap = len(ref_set.intersection(cand_set))
 
-    author_score = min(100, overlap * 40)
     year_match = 1 if (ref_year and cand_year and ref_year[:4] == cand_year[:4]) else 0
 
-    score = (title_score * 1.25) + (author_score * 0.70) + (18 * year_match)
+    # title-led, author/year anchors
+    score = (title_score * 1.25) + (overlap * 30) + (18 * year_match)
 
-    if crossref_api_score and crossref_api_score > 0:
-        score += min(20, int(crossref_api_score / 10))
+    if api_score and api_score > 0:
+        score += min(20, int(api_score / 10))
 
     return {
         "score": int(score),
@@ -390,37 +407,64 @@ def _classify(
     year_match: int,
     score: int,
 ) -> str:
-    # 1) If DOI matches, you’ve essentially got the record.
-    # Make it VERIFIED with modest title support and correct year.
-    if doi_match and year_match == 1 and title_score >= 60:
-        return "verified"
-
-    # If DOI matches and year is missing or off, keep as LIKELY.
-    if doi_match and title_score >= 60:
-        return "verified"
-
-    # 2) Strong bibliographic match without DOI
-    if title_score >= 85 and author_overlap >= 1 and year_match == 1:
-        return "verified"
-
-    # 3) What used to be NEEDS_REVIEW becomes LIKELY
-    # (moderate title + either author overlap or year match)
-    if title_score >= 70 and (author_overlap >= 1 or year_match == 1):
+    # Verified if DOI matches and title/year are decent
+    if doi_match and year_match == 1 and title_score >= VERIFY_TITLE_MIN:
+        # If author overlap is missing due to extraction issues, use score override
+        if author_overlap >= 1 or score >= VERIFY_SCORE_OVERRIDE:
+            return "verified"
         return "likely"
 
-    # 4) Keep a small review band for borderline cases
-    if title_score >= 60 and (author_overlap >= 1 or year_match == 1):
+    if doi_match and title_score >= 60:
+        return "likely"
+
+    if title_score >= 86 and author_overlap >= 1 and year_match == 1:
+        return "likely"
+
+    if title_score >= 70 and (author_overlap >= 1 or year_match == 1):
         return "needs_review"
 
     return "not_found"
 
 
-def _diff_authors(ref_authors: List[str], cand_authors: List[str]) -> Tuple[str, str]:
-    rset = set(ref_authors or [])
-    cset = set(cand_authors or [])
-    missing_ref = sorted(list(rset - cset))
-    missing_cand = sorted(list(cset - rset))
-    return ", ".join(missing_ref), ", ".join(missing_cand)
+def _attempt_summary(source: str, doi: str, title: str, year: str, score_meta: Dict[str, Any], doi_match: bool) -> Dict[str, Any]:
+    return {
+        "source": source,
+        "doi": doi,
+        "title": title,
+        "year": year,
+        "doi_match": bool(doi_match),
+        "score": int(score_meta.get("score") or 0),
+        "title_score": int(score_meta.get("title_score") or 0),
+        "author_overlap": int(score_meta.get("author_overlap") or 0),
+        "year_match": int(score_meta.get("year_match") or 0),
+    }
+
+
+def _pick_best_candidate(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    ref_doi: str,
+    candidates: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any], bool]:
+    best = None
+    best_meta: Dict[str, Any] = {"score": -1, "title_score": 0, "author_overlap": 0, "year_match": 0}
+    best_doi_match = False
+
+    for cand in candidates:
+        cand_doi, cand_title, cand_year, cand_authors, api_score = _candidate_fields(cand)
+        meta = _score(ref_title, ref_authors, ref_year, cand_title, cand_authors, cand_year, api_score)
+
+        doi_match = _doi_equal(ref_doi, cand_doi) if ref_doi else False
+        meta_score = int(meta["score"] + (25 if doi_match else 0))
+
+        if meta_score > int(best_meta.get("score") or -1):
+            best = cand
+            best_meta = dict(meta)
+            best_meta["score"] = meta_score
+            best_doi_match = doi_match
+
+    return best, best_meta, best_doi_match
 
 
 def verify_references_batch(
@@ -429,7 +473,8 @@ def verify_references_batch(
     throttle_s: float = 0.12,
     use_crossref: bool = True,
     use_openalex: bool = True,
-    use_semantic_scholar: bool = False,  # ignored, kept for compatibility
+    use_unpaywall: bool = True,
+    use_semantic_scholar: bool = False,  # kept for compatibility
 ) -> List[Dict[str, Any]]:
     refs = [r for r in (references or []) if _safe_strip(r)]
     if not refs:
@@ -461,90 +506,164 @@ def verify_references_batch(
             "title_score": 0,
             "author_overlap": 0,
             "year_match": 0,
-            "missing_ref_authors": "",
-            "missing_matched_authors": "",
             "query_used": "",
+            "attempts": [],  # audit trail of successes from each provider
             "error": "",
         }
 
         try:
-            candidates: List[Dict[str, Any]] = []
-
-            # DOI lookup first
-            if ref_doi:
-                if use_crossref:
+            # ---------------------------
+            # 1) CROSSREF FIRST
+            # ---------------------------
+            crossref_candidates: List[Dict[str, Any]] = []
+            if use_crossref:
+                if ref_doi:
                     hit = _query_crossref_by_doi(ref_doi)
                     if hit:
-                        candidates.append(hit)
-                    time.sleep(max(0.0, float(throttle_s or 0.0)))
-                if use_openalex:
-                    hit = _query_openalex_by_doi(ref_doi)
-                    if hit:
-                        candidates.append(hit)
+                        crossref_candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-            # Biblio search
-            if use_crossref:
-                candidates.extend(_query_crossref_biblio(ref_title, ref_authors, ref_year, ref_raw))
+                crossref_candidates.extend(_query_crossref_biblio(ref_title, ref_authors, ref_year, ref_raw))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
+
+            best, meta, doi_match = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, crossref_candidates)
+
+            if best is not None:
+                cand_doi, cand_title, cand_year, cand_authors, _ = _candidate_fields(best)
+                row["attempts"].append(_attempt_summary("crossref", cand_doi, cand_title, cand_year, meta, doi_match))
+                status = _classify(doi_match, meta["title_score"], meta["author_overlap"], meta["year_match"], meta["score"])
+                status = _normalize_verify_status(status)
+
+                # Accept Crossref immediately if verified/likely
+                if status in {"verified", "likely"}:
+                    row["status"] = status
+                    row["source"] = "crossref"
+                    row["score"] = int(meta["score"])
+                    row["doi"] = _safe_strip(cand_doi)
+                    row["doi_match"] = bool(doi_match)
+                    row["matched_year"] = _safe_strip(cand_year)
+                    row["matched_authors"] = ", ".join([a for a in cand_authors if a])
+                    row["matched_title"] = _safe_strip(cand_title)
+                    row["title_score"] = int(meta["title_score"])
+                    row["author_overlap"] = int(meta["author_overlap"])
+                    row["year_match"] = int(meta["year_match"])
+                    row["query_used"] = _safe_strip((best or {}).get("query_used")) or ref_raw
+                    rows.append(row)
+                    continue
+
+            # ---------------------------
+            # 2) IF NOT VERIFIED/LIKELY, TRY OPENALEX
+            # ---------------------------
+            openalex_candidates: List[Dict[str, Any]] = []
             if use_openalex:
-                candidates.extend(_query_openalex_biblio(ref_title, ref_authors, ref_year, ref_raw))
+                # If we already got a DOI from crossref best, use it to fetch OpenAlex exact record
+                crossref_best_doi = ""
+                if best is not None:
+                    crossref_best_doi = _safe_strip(_candidate_fields(best)[0])
+
+                if crossref_best_doi:
+                    hit = _query_openalex_by_doi(crossref_best_doi)
+                    if hit:
+                        openalex_candidates.append(hit)
+                    time.sleep(max(0.0, float(throttle_s or 0.0)))
+
+                # Always do biblio search
+                openalex_candidates.extend(_query_openalex_biblio(ref_title, ref_authors, ref_year, ref_raw))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-            if not candidates:
+            best2, meta2, doi_match2 = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, openalex_candidates)
+
+            if best2 is not None:
+                cand_doi2, cand_title2, cand_year2, cand_authors2, _ = _candidate_fields(best2)
+                row["attempts"].append(_attempt_summary("openalex", cand_doi2, cand_title2, cand_year2, meta2, doi_match2))
+                status2 = _classify(doi_match2, meta2["title_score"], meta2["author_overlap"], meta2["year_match"], meta2["score"])
+                status2 = _normalize_verify_status(status2)
+
+                if status2 in {"verified", "likely"}:
+                    row["status"] = status2
+                    row["source"] = "openalex"
+                    row["score"] = int(meta2["score"])
+                    row["doi"] = _safe_strip(cand_doi2)
+                    row["doi_match"] = bool(doi_match2)
+                    row["matched_year"] = _safe_strip(cand_year2)
+                    row["matched_authors"] = ", ".join([a for a in cand_authors2 if a])
+                    row["matched_title"] = _safe_strip(cand_title2)
+                    row["title_score"] = int(meta2["title_score"])
+                    row["author_overlap"] = int(meta2["author_overlap"])
+                    row["year_match"] = int(meta2["year_match"])
+                    row["query_used"] = _safe_strip((best2 or {}).get("query_used")) or ref_raw
+                    rows.append(row)
+                    continue
+
+            # ---------------------------
+            # 3) IF STILL NOT VERIFIED/LIKELY, TRY UNPAYWALL
+            #     Use best DOI we found from any earlier step if available
+            # ---------------------------
+            best_doi_any = ""
+            if best2 is not None:
+                best_doi_any = _safe_strip(_candidate_fields(best2)[0])
+            if not best_doi_any and best is not None:
+                best_doi_any = _safe_strip(_candidate_fields(best)[0])
+            if not best_doi_any:
+                best_doi_any = _safe_strip(ref_doi)
+
+            if use_unpaywall and best_doi_any:
+                up = _query_unpaywall_by_doi(best_doi_any)
+                if up is not None:
+                    cand_du, cand_tu, cand_yu, cand_au, _ = _candidate_fields(up)
+                    meta_u = _score(ref_title, ref_authors, ref_year, cand_tu, cand_au, cand_yu, 0)
+                    doi_match_u = _doi_equal(ref_doi, cand_du) if ref_doi else False
+                    meta_u["score"] = int(meta_u["score"] + (25 if doi_match_u else 0))
+
+                    row["attempts"].append(_attempt_summary("unpaywall", cand_du, cand_tu, cand_yu, meta_u, doi_match_u))
+
+                    status_u = _classify(doi_match_u, meta_u["title_score"], meta_u["author_overlap"], meta_u["year_match"], meta_u["score"])
+                    status_u = _normalize_verify_status(status_u)
+
+                    if status_u in {"verified", "likely"}:
+                        row["status"] = status_u
+                        row["source"] = "unpaywall"
+                        row["score"] = int(meta_u["score"])
+                        row["doi"] = _safe_strip(cand_du)
+                        row["doi_match"] = bool(doi_match_u)
+                        row["matched_year"] = _safe_strip(cand_yu)
+                        row["matched_authors"] = ""  # Unpaywall often lacks authors
+                        row["matched_title"] = _safe_strip(cand_tu)
+                        row["title_score"] = int(meta_u["title_score"])
+                        row["author_overlap"] = int(meta_u["author_overlap"])
+                        row["year_match"] = int(meta_u["year_match"])
+                        row["query_used"] = f"doi:{best_doi_any}"
+                        rows.append(row)
+                        continue
+
+            # ---------------------------
+            # 4) NOTHING REACHED VERIFIED/LIKELY
+            #     Choose best among crossref/openalex attempts and return needs_review/not_found
+            # ---------------------------
+            # Pick the highest "score" among attempts
+            if row["attempts"]:
+                row["attempts"].sort(key=lambda x: int(x.get("score") or 0), reverse=True)
+                top = row["attempts"][0]
+                # Map status from the top attempt using the same classifier (without recomputing)
+                fallback_status = _classify(
+                    bool(top.get("doi_match")),
+                    int(top.get("title_score") or 0),
+                    int(top.get("author_overlap") or 0),
+                    int(top.get("year_match") or 0),
+                    int(top.get("score") or 0),
+                )
+                row["status"] = _normalize_verify_status(fallback_status)
+                row["source"] = _safe_strip(top.get("source"))
+                row["score"] = int(top.get("score") or 0)
+                row["doi"] = _safe_strip(top.get("doi"))
+                row["matched_year"] = _safe_strip(top.get("year"))
+                row["matched_title"] = _safe_strip(top.get("title"))
+                row["title_score"] = int(top.get("title_score") or 0)
+                row["author_overlap"] = int(top.get("author_overlap") or 0)
+                row["year_match"] = int(top.get("year_match") or 0)
+            else:
                 row["status"] = "not_found"
-                rows.append(row)
-                continue
 
-            best = None
-            best_meta = None
-            best_score = -1
-            best_doi_match = False
-            best_query = ""
-
-            for cand in candidates:
-                cand_doi, cand_title, cand_year, cand_authors, api_score = _candidate_fields(cand)
-                meta = _score(ref_title, ref_authors, ref_year, cand_title, cand_authors, cand_year, api_score)
-
-                doi_match = _doi_equal(ref_doi, cand_doi) if ref_doi else False
-
-                # Prefer DOI matches, but still title-led
-                score = int(meta["score"] + (25 if doi_match else 0))
-
-                if score > best_score:
-                    best_score = score
-                    best = cand
-                    best_meta = meta
-                    best_doi_match = doi_match
-                    best_query = _safe_strip((cand or {}).get("query_used"))
-
-            src = _safe_strip((best or {}).get("source"))
-            cand_doi, cand_title, cand_year, cand_authors, _api_score = _candidate_fields(best or {})
-
-            row["source"] = src
-            row["score"] = int(best_score if best_score >= 0 else 0)
-            row["doi"] = _safe_strip(cand_doi)
-            row["doi_match"] = bool(best_doi_match)
-            row["matched_year"] = _safe_strip(cand_year)
-            row["matched_authors"] = ", ".join([a for a in cand_authors if a])
-            row["matched_title"] = _safe_strip(cand_title)
-            row["title_score"] = int((best_meta or {}).get("title_score") or 0)
-            row["author_overlap"] = int((best_meta or {}).get("author_overlap") or 0)
-            row["year_match"] = int((best_meta or {}).get("year_match") or 0)
-            row["query_used"] = best_query or ref_raw
-
-            miss_ref, miss_cand = _diff_authors(ref_authors, cand_authors)
-            row["missing_ref_authors"] = miss_ref
-            row["missing_matched_authors"] = miss_cand
-
-            status = _classify(
-                doi_match=bool(row["doi_match"]),
-                title_score=int(row["title_score"]),
-                author_overlap=int(row["author_overlap"]),
-                year_match=int(row["year_match"]),
-                score=int(row["score"]),
-            )
-            row["status"] = _normalize_verify_status(status)
             rows.append(row)
 
         except Exception as e:
@@ -556,5 +675,3 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
-
-
