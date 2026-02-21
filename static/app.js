@@ -149,17 +149,47 @@ document.addEventListener("click", (e) => {
   setActiveTab(tab.dataset.tab);
 });
 
+// ✅ Safer POST: never alert raw HTML pages from Render (502/500)
 async function postForm(endpoint, formData){
-  const res = await fetch(endpoint, { method:"POST", body: formData });
-  const ct = res.headers.get("content-type") || "";
-  let data = null;
+  let res;
+  try{
+    res = await fetch(endpoint, { method:"POST", body: formData });
+  }catch(err){
+    return { ok:false, data:{ error: "Network error. Check your internet or the server is restarting." } };
+  }
 
-  if (ct.includes("application/json")) data = await res.json();
-  else data = { error: await res.text() };
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
 
-  if (!res.ok) return { ok:false, data };
-  if (data && data.error) return { ok:false, data };
-  return { ok:true, data };
+  // JSON
+  if (ct.includes("application/json")){
+    let data = null;
+    try{
+      data = await res.json();
+    }catch(e){
+      data = { error: "Server returned invalid JSON." };
+    }
+    if (!res.ok) return { ok:false, data };
+    if (data && data.error) return { ok:false, data };
+    return { ok:true, data };
+  }
+
+  // HTML / text (Render 502 pages)
+  const text = await res.text();
+
+  let msg = "Server error.";
+  if (res.status === 502) msg = "Server timeout (502). Reduce Max Verify and try again.";
+  else if (res.status === 503) msg = "Server unavailable (503). The app may be restarting.";
+  else if (res.status === 504) msg = "Gateway timeout (504). Reduce Max Verify and try again.";
+  else if (res.status === 413) msg = "File too large (413). Upload a smaller file.";
+  else if (res.status === 429) msg = "Too many requests (429). Increase throttle and retry.";
+  else if (res.status >= 500) msg = `Server error (${res.status}). Check Render logs.`;
+
+  const short = (text || "").replace(/\s+/g, " ").trim();
+  if (short && short.length < 220 && !short.toLowerCase().includes("<html")){
+    msg = short;
+  }
+
+  return { ok:false, data:{ error: msg } };
 }
 
 function requireFile(){
@@ -227,7 +257,11 @@ async function runVerify(){
   form.append("use_crossref", $("useCrossref").checked ? "true" : "false");
   form.append("use_openalex", $("useOpenAlex").checked ? "true" : "false");
   form.append("throttle_s", String(parseFloat($("throttle").value || "0")));
-  form.append("max_verify", String(parseInt($("maxVerify").value || "0", 10)));
+
+  // ✅ If user leaves 0 (all), cap it to prevent 502/timeouts
+  let mv = parseInt($("maxVerify").value || "0", 10);
+  if (!mv || mv <= 0) mv = 80;
+  form.append("max_verify", String(mv));
 
   lockButtons(true);
   setStatus("Running online verification…", "muted");
@@ -269,7 +303,7 @@ async function downloadFromEndpoint(endpoint){
   const res = await fetch(endpoint, { method:"POST", body: form });
   if (!res.ok){
     const t = await res.text();
-    alert(t || "Download failed");
+    alert((t || "").slice(0, 250) || "Download failed");
     return;
   }
 
