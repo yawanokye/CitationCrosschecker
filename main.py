@@ -2,7 +2,7 @@
 import io
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -22,10 +22,18 @@ except Exception:
     Document = None
 
 
-app = FastAPI(title="Citation Crosschecker", version="1.2.1")
+app = FastAPI(title="Citation Crosschecker", version="1.2.2")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+# -------------------------
+# Memory safety caps
+# -------------------------
+MAX_UPLOAD_MB = 20            # reject very large files
+UI_MAX_ROWS = 250             # how many rows to send to UI per table
+VERIFY_DEFAULT_CAP = 120      # if user sends max_verify=0, we cap for safety
 
 
 def normalize_style(s: Optional[str]) -> str:
@@ -39,7 +47,16 @@ def normalize_style(s: Optional[str]) -> str:
     return "apa"
 
 
-def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
+def _truncate_rows(rows: List[Dict[str, Any]], limit: int) -> Dict[str, Any]:
+    rows = rows or []
+    if limit <= 0:
+        return {"rows": [], "truncated": False, "total": len(rows)}
+    if len(rows) <= limit:
+        return {"rows": rows, "truncated": False, "total": len(rows)}
+    return {"rows": rows[:limit], "truncated": True, "total": len(rows)}
+
+
+def extract_tables(result: Dict[str, Any], ui_max_rows: int = UI_MAX_ROWS) -> Dict[str, Any]:
     summary = (result.get("summary") or {}) if isinstance(result, dict) else {}
 
     missing = result.get("missing_in_references") or []
@@ -149,23 +166,59 @@ def extract_tables(result: Dict[str, Any]) -> Dict[str, Any]:
                 "matched_authors": x.get("matched_authors", ""),
                 "matched_title": x.get("matched_title", ""),
                 "reference": x.get("reference", ""),
-                "query_used": x.get("query_used", ""),
+                "query_used": x.get("query_used", x.get("query", "")),
+                # support UI mappings if your frontend expects these
+                "author": x.get("author", x.get("matched_authors", "")),
+                "query": x.get("query", x.get("query_used", "")),
             })
         else:
             verify_rows.append({"no": "", "status": "", "source": "", "score": "", "doi": "", "matched_year": "",
-                                "matched_authors": "", "matched_title": "", "reference": str(x), "query_used": ""})
+                                "matched_authors": "", "matched_title": "", "reference": str(x), "query_used": "", "author": "", "query": ""})
     for i, r in enumerate(verify_rows, start=1):
         r["no"] = i
 
+    # Truncate tables for UI to reduce memory + response size
+    miss_pack = _truncate_rows(missing_rows, ui_max_rows)
+    unc_pack = _truncate_rows(uncited_rows, ui_max_rows)
+    c2r_pack = _truncate_rows(c2r_rows, ui_max_rows)
+    r2c_pack = _truncate_rows(r2c_rows, ui_max_rows)
+    ver_pack = _truncate_rows(verify_rows, ui_max_rows)
+
     return {
         "dashboard": dashboard,
-        "missing_rows": missing_rows,
-        "uncited_rows": uncited_rows,
-        "c2r_rows": c2r_rows,
-        "r2c_rows": r2c_rows,
+
+        "missing_rows": miss_pack["rows"],
+        "missing_total": miss_pack["total"],
+        "missing_truncated": miss_pack["truncated"],
+
+        "uncited_rows": unc_pack["rows"],
+        "uncited_total": unc_pack["total"],
+        "uncited_truncated": unc_pack["truncated"],
+
+        "c2r_rows": c2r_pack["rows"],
+        "c2r_total": c2r_pack["total"],
+        "c2r_truncated": c2r_pack["truncated"],
+
+        "r2c_rows": r2c_pack["rows"],
+        "r2c_total": r2c_pack["total"],
+        "r2c_truncated": r2c_pack["truncated"],
+
         "verify_summary": ov_summary,
-        "verify_rows": verify_rows,
+        "verify_rows": ver_pack["rows"],
+        "verify_total": ver_pack["total"],
+        "verify_truncated": ver_pack["truncated"],
     }
+
+
+def _enforce_upload_limit(file: UploadFile, file_bytes: bytes) -> Optional[JSONResponse]:
+    size_mb = len(file_bytes) / (1024 * 1024)
+    if size_mb > MAX_UPLOAD_MB:
+        name = file.filename or "uploaded"
+        return JSONResponse(
+            {"error": f"File too large ({size_mb:.1f} MB). Limit is {MAX_UPLOAD_MB} MB. Please upload a smaller file."},
+            status_code=413,
+        )
+    return None
 
 
 def filename_base(upload_name: str) -> str:
@@ -233,12 +286,14 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
             f"Offline: {vs.get('offline', 0)}"
         )
         add_table(
-            "Verification Results",
+            "Verification Results (truncated for report if huge)",
             t["verify_rows"],
             [("no","No."),("status","Status"),("source","Source"),("score","Score"),("doi","DOI"),
              ("matched_year","Year"),("matched_authors","Authors"),("matched_title","Matched title"),
              ("reference","Reference"),("query_used","Query used")],
         )
+        if t.get("verify_truncated"):
+            doc.add_paragraph(f"Note: Verification table truncated to first {UI_MAX_ROWS} rows for report size.")
     else:
         doc.add_paragraph("Not run or no results returned.")
 
@@ -249,6 +304,31 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue()
+
+
+def _slim_result_for_json(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reduce memory + response size by removing huge arrays after building _ui.
+    Keeps summaries and the truncated UI tables.
+    """
+    # Remove heavy fields that duplicate what _ui already provides
+    heavy_keys = [
+        "missing_in_references",
+        "uncited_references",
+        "reconciliation_intext_to_reference",
+        "reconciliation_reference_to_intext",
+    ]
+    for k in heavy_keys:
+        if k in result:
+            result.pop(k, None)
+
+    # Online verification can be huge, keep summary only
+    ov = result.get("online_verification")
+    if isinstance(ov, dict):
+        ov.pop("rows", None)  # _ui already contains truncated verify_rows
+        result["online_verification"] = ov
+
+    return result
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -265,6 +345,11 @@ async def health():
 async def check(file: UploadFile = File(...), style: str = Form("apa")):
     t0 = time.time()
     file_bytes = await file.read()
+
+    too_big = _enforce_upload_limit(file, file_bytes)
+    if too_big is not None:
+        return too_big
+
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
@@ -277,10 +362,17 @@ async def check(file: UploadFile = File(...), style: str = Form("apa")):
         )
     except Exception as e:
         return JSONResponse({"error": f"Check failed: {type(e).__name__}: {e}"}, status_code=400)
+    finally:
+        # free ASAP
+        file_bytes = b""
 
     result["elapsed_seconds"] = round(time.time() - t0, 3)
     result["style"] = style_norm
+
+    # Build UI once, then slim result before returning
     result["_ui"] = extract_tables(result)
+    result = _slim_result_for_json(result)
+
     return JSONResponse(result)
 
 
@@ -296,8 +388,18 @@ async def verify(
 ):
     t0 = time.time()
     file_bytes = await file.read()
+
+    too_big = _enforce_upload_limit(file, file_bytes)
+    if too_big is not None:
+        return too_big
+
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
+
+    # IMPORTANT: if user passes 0, cap it for safety
+    max_verify_int = int(max_verify or 0)
+    if max_verify_int <= 0:
+        max_verify_int = VERIFY_DEFAULT_CAP
 
     try:
         result = run_crosscheck(
@@ -309,26 +411,38 @@ async def verify(
             use_crossref=bool(use_crossref),
             use_openalex=bool(use_openalex),
             throttle_s=float(throttle_s or 0.0),
-            max_verify=int(max_verify or 0),
+            max_verify=max_verify_int,
         )
     except Exception as e:
         return JSONResponse({"error": f"Online verification failed: {type(e).__name__}: {e}"}, status_code=400)
+    finally:
+        file_bytes = b""
 
     result["elapsed_seconds"] = round(time.time() - t0, 3)
     result["style"] = style_norm
+    result["max_verify_used"] = max_verify_int
+
+    # Build UI, then drop big arrays
     result["_ui"] = extract_tables(result)
+    result = _slim_result_for_json(result)
+
     return JSONResponse(result)
 
 
 @app.post("/export/csv")
 async def export_csv(file: UploadFile = File(...), style: str = Form("apa")):
     file_bytes = await file.read()
+    too_big = _enforce_upload_limit(file, file_bytes)
+    if too_big is not None:
+        return too_big
+
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
     result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-    csv_bytes = make_csv_bytes(result)
+    file_bytes = b""
 
+    csv_bytes = make_csv_bytes(result)
     base = filename_base(filename)
     out_name = f"{base}_citation_report.csv"
 
@@ -342,12 +456,17 @@ async def export_csv(file: UploadFile = File(...), style: str = Form("apa")):
 @app.post("/export/word")
 async def export_word(file: UploadFile = File(...), style: str = Form("apa")):
     file_bytes = await file.read()
+    too_big = _enforce_upload_limit(file, file_bytes)
+    if too_big is not None:
+        return too_big
+
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
     result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-    docx_bytes = make_word_bytes(result)
+    file_bytes = b""
 
+    docx_bytes = make_word_bytes(result)
     base = filename_base(filename)
     out_name = f"{base}_citation_report.docx"
 
