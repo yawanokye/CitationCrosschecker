@@ -226,7 +226,7 @@ def _query_crossref(q: str, a_query: str) -> List[Dict[str, Any]]:
     url = "https://api.crossref.org/works"
     params: Dict[str, Any] = {
         "query.bibliographic": q,
-        "rows": 12,
+        "rows": 5,
         "sort": "score",
         "order": "desc",
     }
@@ -259,7 +259,7 @@ def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
 
 def _query_openalex(q: str) -> List[Dict[str, Any]]:
     url = "https://api.openalex.org/works"
-    params: Dict[str, Any] = {"search": q, "per-page": 15}
+    params: Dict[str, Any] = {"search": q, "per-page": 5}
     if MAILTO:
         params["mailto"] = MAILTO
 
@@ -692,3 +692,4 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
