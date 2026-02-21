@@ -122,28 +122,83 @@ def _clean_query_string(s: str) -> str:
     return s
 
 
+def _build_biblio_query(title: str, author: str, year: str, raw_ref: str) -> str:
+    """
+    Build a stronger query string than title-only:
+    title + first author surname + year (when available).
+    This improves precision for Crossref/OpenAlex searches.
+    """
+    base = title if len(_safe_str(title)) >= 12 else _safe_str(raw_ref)
+    base = _clean_query_string(base)
+
+    a = _safe_strip(author)
+    y4 = _safe_str(year)[:4] if _safe_str(year)[:4].isdigit() else ""
+
+    bits = [base]
+    if a:
+        bits.append(a)
+    if y4:
+        bits.append(y4)
+
+    return _clean_query_string(" ".join(bits))
+
+
 # -----------------------------
-# Crossref: stronger "golden" query
+# Crossref queries
 # -----------------------------
+def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    doi = _safe_strip(doi)
+    if not doi:
+        return None
+    url = f"https://api.crossref.org/works/{doi}"
+    params: Dict[str, Any] = {}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return None
+    item = (data.get("message") or {})
+    return {"source": "crossref", "item": item or {}, "query_used": f"doi:{doi}"}
+
+
 def _query_crossref_gold(title: str, author: str, year: str, raw_ref: str) -> List[Dict[str, Any]]:
+    """
+    Crossref "golden" search:
+    - query.bibliographic with title+author+year anchors
+    - query.author (when available)
+    - year filter (when available)
+    - sort by score desc
+    - restrict to journal-article to reduce false positives (you can loosen if you need books)
+    """
     url = "https://api.crossref.org/works"
 
-    q = title if len(_safe_str(title)) >= 12 else _safe_str(raw_ref)
-    q = _clean_query_string(q)
+    q = _build_biblio_query(title, author, year, raw_ref)
 
     a = _safe_strip(author)
     y4 = _safe_str(year)[:4]
 
     params: Dict[str, Any] = {
         "query.bibliographic": q,
-        "rows": 2,  # we want top-2 for score-gap check
+        "rows": 2,  # top-2 for score-gap check
+        "sort": "score",
+        "order": "desc",
     }
     if a:
         params["query.author"] = a
     if MAILTO:
         params["mailto"] = MAILTO
+
+    filters: List[str] = []
     if y4.isdigit():
-        params["filter"] = f"from-pub-date:{y4}-01-01,until-pub-date:{y4}-12-31"
+        filters.append(f"from-pub-date:{y4}-01-01")
+        filters.append(f"until-pub-date:{y4}-12-31")
+
+    # Good default for journal-heavy reference lists.
+    # If you want broader coverage (books/chapters), remove this line or make it conditional.
+    filters.append("type:journal-article")
+
+    if filters:
+        params["filter"] = ",".join(filters)
 
     data = _safe_get_json(url, params=params, timeout=22)
     if not data:
@@ -156,12 +211,28 @@ def _query_crossref_gold(title: str, author: str, year: str, raw_ref: str) -> Li
     return out
 
 
+# -----------------------------
+# OpenAlex queries
+# -----------------------------
+def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    doi = _safe_strip(doi)
+    if not doi:
+        return None
+    doi_url = "https://doi.org/" + doi.lower()
+    url = "https://api.openalex.org/works/" + doi_url
+    params: Dict[str, Any] = {}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return None
+    return {"source": "openalex", "item": data or {}, "query_used": f"doi:{doi}"}
+
+
 def _query_openalex(title: str, author: str, year: str, raw_ref: str) -> List[Dict[str, Any]]:
     url = "https://api.openalex.org/works"
 
-    q = title if len(_safe_str(title)) >= 12 else _safe_str(raw_ref)
-    q = _clean_query_string(q)
-
+    q = _build_biblio_query(title, author, year, raw_ref)
     y4 = _safe_str(year)[:4]
 
     params: Dict[str, Any] = {
@@ -201,6 +272,7 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, str, int]:
         doi = _safe_strip(item.get("DOI"))
         titles = item.get("title") or []
         title = _safe_str(titles[0]).strip() if titles else ""
+
         # Crossref often includes a numeric "score"
         try:
             api_score = int(item.get("score") or 0)
@@ -249,7 +321,12 @@ def _score(
     cand_year = _safe_strip(cand_year)
 
     title_score = fuzz.token_set_ratio(ref_title, cand_title) if (ref_title and cand_title) else 0
+
+    # Author anchor: exact surname match, then a cautious fuzzy fallback.
     author_match = 1 if (ref_author and cand_author and ref_author == cand_author) else 0
+    if not author_match and ref_author and cand_author:
+        author_match = 1 if fuzz.ratio(ref_author, cand_author) >= 90 else 0
+
     year_match = 1 if (ref_year and cand_year and ref_year[:4] == cand_year[:4]) else 0
 
     # Strong emphasis on title match, author/year anchor
@@ -276,7 +353,7 @@ def _classify(score: int, author_match: int, year_match: int, title_score: int, 
     if title_score >= 80 and score >= 95 and (author_match or year_match or has_doi):
         return "likely"
 
-    # Plausible match (don’t call it not_found if DOI exists and title is close)
+    # Plausible match
     if title_score >= 72 and (author_match or year_match or has_doi) and score >= 90:
         return "needs_review"
 
@@ -285,6 +362,7 @@ def _classify(score: int, author_match: int, year_match: int, title_score: int, 
         return "needs_review"
 
     return "not_found"
+
 
 def verify_references_batch(
     references: List[str],
@@ -328,14 +406,30 @@ def verify_references_batch(
             candidates: List[Dict[str, Any]] = []
             crossref_candidates: List[Dict[str, Any]] = []
 
-            if use_crossref:
-                crossref_candidates = _query_crossref_gold(ref_title, ref_author, ref_year, ref_raw)
-                candidates.extend(crossref_candidates)
-                time.sleep(max(0.0, float(throttle_s or 0.0)))
+            # 1) DOI-first exact retrieval (biggest win)
+            if ref_doi:
+                if use_crossref:
+                    hit = _query_crossref_by_doi(ref_doi)
+                    if hit:
+                        candidates.append(hit)
+                    time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-            if use_openalex:
-                candidates.extend(_query_openalex(ref_title, ref_author, ref_year, ref_raw))
-                time.sleep(max(0.0, float(throttle_s or 0.0)))
+                if use_openalex:
+                    hit = _query_openalex_by_doi(ref_doi)
+                    if hit:
+                        candidates.append(hit)
+                    time.sleep(max(0.0, float(throttle_s or 0.0)))
+
+            # 2) Fallback to search only if DOI lookup didn't yield anything
+            if not candidates:
+                if use_crossref:
+                    crossref_candidates = _query_crossref_gold(ref_title, ref_author, ref_year, ref_raw)
+                    candidates.extend(crossref_candidates)
+                    time.sleep(max(0.0, float(throttle_s or 0.0)))
+
+                if use_openalex:
+                    candidates.extend(_query_openalex(ref_title, ref_author, ref_year, ref_raw))
+                    time.sleep(max(0.0, float(throttle_s or 0.0)))
 
             if not candidates:
                 row["status"] = "not_found"
@@ -349,10 +443,8 @@ def verify_references_batch(
             # score-gap check from Crossref top-2 when available
             score_gap_ok = True
             if crossref_candidates and len(crossref_candidates) >= 2:
-                # Use Crossref API score difference as a heuristic
                 d0 = _candidate_fields(crossref_candidates[0])[4]
                 d1 = _candidate_fields(crossref_candidates[1])[4]
-                # if Crossref thinks #1 is clearly better than #2, safer
                 score_gap_ok = (d0 - d1) >= 10
 
             for cand in candidates:
@@ -382,13 +474,13 @@ def verify_references_batch(
             row["query_used"] = _safe_strip((best or {}).get("query_used")) or ref_title or ref_raw
 
             status = _classify(
-    score=int(row["score"]),
-    author_match=int((best_meta or {}).get("author_match") or 0),
-    year_match=int((best_meta or {}).get("year_match") or 0),
-    title_score=int((best_meta or {}).get("title_score") or 0),
-    score_gap_ok=bool(score_gap_ok),
-    has_doi=bool((row.get("doi") or "").strip()),
-)
+                score=int(row["score"]),
+                author_match=int((best_meta or {}).get("author_match") or 0),
+                year_match=int((best_meta or {}).get("year_match") or 0),
+                title_score=int((best_meta or {}).get("title_score") or 0),
+                score_gap_ok=bool(score_gap_ok),
+                has_doi=bool((row.get("doi") or "").strip()),
+            )
             row["status"] = _normalize_verify_status(status)
             rows.append(row)
 
@@ -401,6 +493,3 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
-
-
-
