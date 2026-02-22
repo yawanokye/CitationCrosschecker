@@ -1,8 +1,14 @@
-# main.py (FULL) - add background online verification batching
+# main.py (FULL FILE) — Citation Crosschecker (Render-safe)
+# - /verify runs parsing + reconciliation fast and returns job_id
+# - If verify_online=true, starts background online verification in batches (default 60)
+# - /online/status lets UI poll progress + partial rows (dashboard updates live)
+# - /export/csv and /export/word export the stored results using job_id
+
 import io
 import os
 import time
 import uuid
+import json
 import threading
 from datetime import datetime
 from typing import Any, Dict, Optional, List
@@ -13,6 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
+
+# -----------------------------
+# Imports from your project
+# -----------------------------
 try:
     from engine import run_crosscheck
     ENGINE_OK = True
@@ -42,13 +52,25 @@ except Exception:
     DocxDocument = None
 
 
+# -----------------------------
+# Config
+# -----------------------------
 APP_TITLE = "CitationCrosschecker"
+
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "40"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
 RESULT_TTL_SECONDS = int(os.getenv("RESULT_TTL_SECONDS", "3600"))
 
+# How many references to verify per background batch
 BATCH_SIZE_DEFAULT = int(os.getenv("VERIFY_BATCH_SIZE", "60"))
 
+# Optional: throttle between batches to reduce burst pressure
+BATCH_PAUSE_S = float(os.getenv("VERIFY_BATCH_PAUSE_S", "0.05"))
+
+# -----------------------------
+# In-memory store (simple + Render-friendly)
+# -----------------------------
 _result_store: Dict[str, Dict[str, Any]] = {}
 _store_lock = threading.Lock()
 
@@ -75,7 +97,7 @@ def _store_result(result: Dict[str, Any]) -> str:
             "_stored_at": time.time(),
             "result": result,
             "online": {
-                "state": "idle",    # idle|running|done|error
+                "state": "idle",       # idle|running|done|error
                 "progress": 0,
                 "total": 0,
                 "message": "",
@@ -111,17 +133,46 @@ def _read_upload_bytes(up: UploadFile) -> bytes:
     return data
 
 
+_ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
+
+
 def _normalize_verify_status(s: str) -> str:
     st = (s or "").strip().lower().replace(" ", "_")
-    allowed = {"verified", "likely", "needs_review", "not_found", "offline"}
-    return st if st in allowed else "needs_review"
+    return st if st in _ALLOWED_VERIFY_STATUSES else "needs_review"
 
 
+def _get_result_from_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid JSON payload.")
+    job_id = (payload.get("job_id") or "").strip()
+    if not job_id:
+        raise HTTPException(400, "Provide job_id.")
+    job = _get_job(job_id)
+    if not job:
+        raise HTTPException(404, "job_id not found or expired.")
+    return job.get("result") or {}
+
+
+# -----------------------------
+# Export helpers
+# -----------------------------
 def _export_csv_bytes(result: Dict[str, Any]) -> bytes:
     if not PANDAS_OK:
         raise HTTPException(500, "pandas not installed (CSV export unavailable).")
-    rows = result.get("reconciliation_intext_to_reference") or []
-    df = pd.DataFrame(rows) if rows else pd.DataFrame([{"note": "No rows to export"}])
+
+    # Export the main reconciliation + online verification as separate sections
+    c2r = result.get("reconciliation_intext_to_reference") or []
+    ov = (result.get("online_verification") or {})
+    ov_rows = ov.get("rows") or []
+
+    # Put into one CSV by stacking with a marker column
+    df1 = pd.DataFrame(c2r) if c2r else pd.DataFrame([{"note": "No in-text->reference rows"}])
+    df1.insert(0, "section", "intext_to_reference")
+
+    df2 = pd.DataFrame(ov_rows) if ov_rows else pd.DataFrame([{"note": "No online verification rows"}])
+    df2.insert(0, "section", "online_verification")
+
+    df = pd.concat([df1, df2], ignore_index=True, sort=False)
     return df.to_csv(index=False).encode("utf-8")
 
 
@@ -138,47 +189,55 @@ def _export_word_bytes(result: Dict[str, Any]) -> bytes:
 
     doc.add_heading("Summary", level=2)
     summ = data.get("summary", {}) or {}
-    for k, v in summ.items():
-        doc.add_paragraph(f"{k}: {v}")
+    if summ:
+        for k, v in summ.items():
+            doc.add_paragraph(f"{k}: {v}")
+    else:
+        doc.add_paragraph("No summary available.")
 
+    doc.add_heading("Reference detection", level=2)
+    doc.add_paragraph(data.get("reference_detection_message", ""))
+
+    # Online verification summary
     doc.add_heading("Online Verification Summary", level=2)
     ov = data.get("online_verification") or {}
     ovs = ov.get("summary") or {}
     if not ovs:
-        doc.add_paragraph("Not run")
+        doc.add_paragraph("Not run or no results.")
     else:
         for k, v in ovs.items():
             doc.add_paragraph(f"{k}: {v}")
 
-    doc.add_heading("Online Verification Rows (sample)", level=2)
-    rows = (ov.get("rows") or [])[:200]
+    # Online verification rows (full rows can be long; include all, but keep text concise)
+    doc.add_heading("Online Verification Rows", level=2)
+    rows = ov.get("rows") or []
     if not rows:
-        doc.add_paragraph("No rows")
+        doc.add_paragraph("No rows.")
     else:
+        # Add a small table (first N columns)
+        cols = ["status", "source", "score", "doi", "matched_year", "matched_authors", "matched_title"]
+        table = doc.add_table(rows=1, cols=len(cols))
+        hdr = table.rows[0].cells
+        for i, c in enumerate(cols):
+            hdr[i].text = c
+
         for r in rows:
-            doc.add_paragraph(f"- {r.get('status','')} | {r.get('source','')} | {r.get('doi','')} | {r.get('matched_title','')}")
+            row = table.add_row().cells
+            for i, c in enumerate(cols):
+                row[i].text = str(r.get(c, "") or "")
 
     bio = io.BytesIO()
     doc.save(bio)
     return bio.getvalue()
 
 
-def _get_result_from_request(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise HTTPException(400, "Invalid JSON payload.")
-    job_id = (payload.get("job_id") or "").strip()
-    if not job_id:
-        raise HTTPException(400, "Provide job_id.")
-    job = _get_job(job_id)
-    if not job:
-        raise HTTPException(404, "job_id not found or expired.")
-    return job.get("result") or {}
-
-
+# -----------------------------
+# Online verification selection
+# -----------------------------
 def _online_select_refs(result: Dict[str, Any], verify_mode: str) -> List[str]:
-    refs = result.get("reconciliation_reference_to_intext") or []
-    # refs in r2c are dicts, raw reference is in key 'reference'
-    all_refs = [r.get("reference", "") for r in refs if (r.get("reference") or "").strip()]
+    # We verified against the raw reference strings
+    r2c = result.get("reconciliation_reference_to_intext") or []
+    all_refs = [r.get("reference", "") for r in r2c if (r.get("reference") or "").strip()]
 
     if (verify_mode or "all").strip().lower() == "uncited_only":
         uncited = set(result.get("uncited_references") or [])
@@ -188,7 +247,14 @@ def _online_select_refs(result: Dict[str, Any], verify_mode: str) -> List[str]:
     return all_refs
 
 
-def _run_online_batches(job_id: str, verify_mode: str, throttle_s: float, use_crossref: bool, use_openalex: bool, batch_size: int):
+def _run_online_batches(
+    job_id: str,
+    verify_mode: str,
+    throttle_s: float,
+    use_crossref: bool,
+    use_openalex: bool,
+    batch_size: int,
+):
     job = _get_job(job_id)
     if not job:
         return
@@ -207,6 +273,8 @@ def _run_online_batches(job_id: str, verify_mode: str, throttle_s: float, use_cr
 
     with _store_lock:
         job["online"]["state"] = "running"
+        job["online"]["progress"] = 0
+        job["online"]["total"] = 0
         job["online"]["message"] = "Preparing references"
         job["online"]["started_at"] = _now_iso()
         job["online"]["finished_at"] = ""
@@ -220,55 +288,66 @@ def _run_online_batches(job_id: str, verify_mode: str, throttle_s: float, use_cr
         job["online"]["progress"] = 0
         job["online"]["message"] = f"Running {total} checks in batches of {batch_size}"
 
-        # reset online_verification in stored result
-        result["online_verification"] = {"summary": {}, "rows": []}
+        # initialize non-empty summary so dashboard isn't stuck at zeros
+        result["online_verification"] = {
+            "summary": {
+                "verified": 0,
+                "likely": 0,
+                "needs_review": 0,
+                "not_found": 0,
+                "offline": 0,
+                "total": 0,
+            },
+            "rows": [],
+        }
         result["verify_mode_used"] = verify_mode or "all"
 
     all_rows: List[Dict[str, Any]] = []
     counts = {"verified": 0, "likely": 0, "needs_review": 0, "not_found": 0, "offline": 0}
 
     try:
-      for start in range(0, total, batch_size):
-        chunk = refs[start:start + batch_size]
+        for start in range(0, total, batch_size):
+            chunk = refs[start : start + batch_size]
 
-        rows = verify_references_batch(
-            references=chunk,
-            max_to_check=len(chunk),
-            throttle_s=float(throttle_s or 0.0),
-            use_crossref=bool(use_crossref),
-            use_openalex=bool(use_openalex),
-        ) or []
+            rows = verify_references_batch(
+                references=chunk,
+                max_to_check=len(chunk),
+                throttle_s=float(throttle_s or 0.0),
+                use_crossref=bool(use_crossref),
+                use_openalex=bool(use_openalex),
+            ) or []
 
-        for r in rows:
-            r["status"] = _normalize_verify_status(r.get("status"))
-            st = r["status"]
-            if st not in counts:
-                st = "needs_review"
-                r["status"] = st
-            counts[st] += 1
-        all_rows.extend(rows)
+            for r in rows:
+                r["status"] = _normalize_verify_status(r.get("status"))
+                st = r["status"]
+                if st not in counts:
+                    st = "needs_review"
+                    r["status"] = st
+                counts[st] += 1
+
+            all_rows.extend(rows)
+
+            # Persist partial summary + rows after each batch (fixes 0-0-0-0-0)
+            with _store_lock:
+                result["online_verification"] = {
+                    "summary": {**counts, "total": int(sum(counts.values()))},
+                    "rows": all_rows,
+                }
+                job["online"]["progress"] = min(start + len(chunk), total)
+                job["online"]["message"] = f"Processed {job['online']['progress']} / {total}"
+
+            time.sleep(BATCH_PAUSE_S)
 
         with _store_lock:
-            job["online"]["progress"] = min(start + len(chunk), total)
-            job["online"]["message"] = f"Processed {job['online']['progress']} / {total}"
-
-        # small pause between batches to reduce burst load
-        time.sleep(0.05)
-
-      with _store_lock:
-        result["online_verification"] = {
-            "summary": {**counts, "total": int(sum(counts.values()))},
-            "rows": all_rows,
-        }
-        job["online"]["state"] = "done"
-        job["online"]["message"] = "Online verification completed"
-        job["online"]["finished_at"] = _now_iso()
+            job["online"]["state"] = "done"
+            job["online"]["message"] = "Online verification completed"
+            job["online"]["finished_at"] = _now_iso()
 
     except Exception as e:
-      with _store_lock:
-        job["online"]["state"] = "error"
-        job["online"]["message"] = f"Online verification failed: {e}"
-        job["online"]["finished_at"] = _now_iso()
+        with _store_lock:
+            job["online"]["state"] = "error"
+            job["online"]["message"] = f"Online verification failed: {e}"
+            job["online"]["finished_at"] = _now_iso()
 
 
 # -----------------------------
@@ -295,7 +374,7 @@ async def verify(
     style: str = Form("apa"),
     verify_online: str = Form("false"),  # if true: we start background job, not inline
     verify_mode: str = Form("all"),
-    max_verify: str = Form("0"),         # ignored for background, kept for UI compatibility
+    max_verify: str = Form("0"),         # kept for UI compatibility
     throttle_s: str = Form("0.12"),
     use_crossref: str = Form("true"),
     use_openalex: str = Form("true"),
@@ -319,7 +398,7 @@ async def verify(
         throttle_f = 0.12
 
     def _do_crosscheck() -> Dict[str, Any]:
-        # IMPORTANT: verify_online is forced OFF here so /verify returns fast and never 502
+        # Always run offline here so /verify returns fast and avoids Render router timeouts.
         return run_crosscheck(
             file_bytes=file_bytes,
             filename=filename,
@@ -335,7 +414,7 @@ async def verify(
     result = await run_in_threadpool(_do_crosscheck)
     job_id = _store_result(result)
 
-    # Start online verification in background if requested
+    # Start background online verification if requested
     if verify_online_b:
         t = threading.Thread(
             target=_run_online_batches,
