@@ -32,7 +32,7 @@ except Exception:
 # ------------------------------------------------------------
 # App
 # ------------------------------------------------------------
-app = FastAPI(title="Citation Crosschecker", version="1.2.4")
+app = FastAPI(title="Citation Crosschecker", version="1.2.5")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -44,10 +44,7 @@ templates = Jinja2Templates(directory="templates")
 MAX_UPLOAD_MB = 20
 UI_MAX_ROWS = 250
 
-# Default verification count if user leaves max_verify = 0.
-VERIFY_DEFAULT_CAP = 120
-
-# Hard ceiling to protect the server.
+# If you still want a safety ceiling, keep this
 VERIFY_HARD_CAP = 400
 
 
@@ -100,7 +97,7 @@ def extract_tables(result: Dict[str, Any], ui_max_rows: int = UI_MAX_ROWS) -> Di
         rows = []
         for x in items:
             if isinstance(x, dict):
-                rows.append({"no": "", "reference": x.get("reference", x.get("text", str(x)))})
+                rows.append({"no": "", "reference": x.get("reference", x.get("text", str(x)))} )
             else:
                 rows.append({"no": "", "reference": str(x)})
         for i, r in enumerate(rows, start=1):
@@ -189,7 +186,6 @@ def extract_tables(result: Dict[str, Any], ui_max_rows: int = UI_MAX_ROWS) -> Di
                     "matched_title": x.get("matched_title", ""),
                     "reference": x.get("reference", ""),
                     "query_used": x.get("query_used", x.get("query", "")),
-                    # UI convenience
                     "author": x.get("author", x.get("matched_authors", "")),
                     "query": x.get("query", x.get("query_used", "")),
                 }
@@ -258,17 +254,10 @@ def filename_base(upload_name: str) -> str:
 
 
 def make_csv_bytes(result: Dict[str, Any]) -> bytes:
-    """
-    Export includes:
-    - In-text → Reference rows
-    - Online verification rows (if present)
-    Stored in one CSV with SECTION markers.
-    """
     if pd is None:
         raise RuntimeError("pandas not installed. Add pandas to requirements.txt")
 
     t = extract_tables(result)
-
     c2r_df = pd.DataFrame(t["c2r_rows"])
     ver_df = pd.DataFrame(t["verify_rows"])
 
@@ -322,14 +311,14 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
             for i, (key, _) in enumerate(cols):
                 cells[i].text = str(r.get(key, ""))
 
-    add_table("Missing in References", t["missing_rows"], [("no", "No."), ("citation_in_text", "Citation in Text"), ("count_in_text", "Count")])
-    add_table("Uncited References", t["uncited_rows"], [("no", "No."), ("reference", "Reference")])
-    add_table("In-text → Reference", t["c2r_rows"], [("no", "No."), ("status", "Status"), ("in_text", "In-text citation"), ("matched_reference", "Matched reference"), ("flags", "Flags")])
-    add_table("Reference → In-text", t["r2c_rows"], [("no", "No."), ("times_cited", "Times cited"), ("reference", "Reference"), ("cited_by", "Cited by (samples)")])
+    add_table("Missing in References", t["missing_rows"], [("no","No."),("citation_in_text","Citation in Text"),("count_in_text","Count")])
+    add_table("Uncited References", t["uncited_rows"], [("no","No."),("reference","Reference")])
+    add_table("In-text → Reference", t["c2r_rows"], [("no","No."),("status","Status"),("in_text","In-text citation"),("matched_reference","Matched reference"),("flags","Flags")])
+    add_table("Reference → In-text", t["r2c_rows"], [("no","No."),("times_cited","Times cited"),("reference","Reference"),("cited_by","Cited by (samples)")])
 
     doc.add_heading("Online Verification", level=2)
     vs = t.get("verify_summary") or {}
-    if vs.get("total", 0) > 0:
+    if int(vs.get("total", 0) or 0) > 0:
         doc.add_paragraph(
             f"Verified: {vs.get('verified', 0)}, Likely: {vs.get('likely', 0)}, Needs review: {vs.get('needs_review', 0)}, "
             f"Not found: {vs.get('not_found', 0)}, Offline: {vs.get('offline', 0)}"
@@ -338,16 +327,16 @@ def make_word_bytes(result: Dict[str, Any]) -> bytes:
             "Verification Results (truncated if huge)",
             t["verify_rows"],
             [
-                ("no", "No."),
-                ("status", "Status"),
-                ("source", "Source"),
-                ("score", "Score"),
-                ("doi", "DOI"),
-                ("matched_year", "Year"),
-                ("matched_authors", "Authors"),
-                ("matched_title", "Matched title"),
-                ("reference", "Reference"),
-                ("query_used", "Query used"),
+                ("no","No."),
+                ("status","Status"),
+                ("source","Source"),
+                ("score","Score"),
+                ("doi","DOI"),
+                ("matched_year","Year"),
+                ("matched_authors","Authors"),
+                ("matched_title","Matched title"),
+                ("reference","Reference"),
+                ("query_used","Query used"),
             ],
         )
         if t.get("verify_truncated"):
@@ -416,7 +405,6 @@ async def check(file: UploadFile = File(...), style: str = Form("apa")):
 
     result["elapsed_seconds"] = round(time.time() - t0, 3)
     result["style"] = style_norm
-
     result["_ui"] = extract_tables(result)
     result = _slim_result_for_json(result)
     return JSONResponse(result)
@@ -432,6 +420,12 @@ async def verify(
     throttle_s: float = Form(0.12),
     max_verify: int = Form(0),
 ):
+    """
+    IMPORTANT FIX:
+    - max_verify = 0 should mean "verify all" (your UI says batches)
+    - do NOT silently force it to 120
+    - keep a hard safety cap if user sets a huge number
+    """
     t0 = time.time()
     file_bytes = await file.read()
 
@@ -444,9 +438,9 @@ async def verify(
 
     try:
         mv = int(max_verify or 0)
-        if mv <= 0:
-            mv = VERIFY_DEFAULT_CAP
-        mv = max(1, min(mv, VERIFY_HARD_CAP))
+        # mv=0 means "all" (engine should batch internally)
+        if mv > 0:
+            mv = max(1, min(mv, VERIFY_HARD_CAP))
 
         result = run_crosscheck(
             file_bytes=file_bytes,
@@ -457,15 +451,15 @@ async def verify(
             use_crossref=bool(use_crossref),
             use_openalex=bool(use_openalex),
             throttle_s=float(throttle_s or 0.0),
-            max_verify=mv,
+            max_verify=mv,  # 0 = verify all (batched inside engine)
         )
 
         result["elapsed_seconds"] = round(time.time() - t0, 3)
         result["style"] = style_norm
         result["max_verify_used"] = mv
         result["max_verify_note"] = (
-            "Tip: set max_verify to a higher value to check more references. "
-            f"This server clamps at {VERIFY_HARD_CAP} to stay stable."
+            "max_verify=0 means verify all references in batches. "
+            f"If you set a number, this server clamps it at {VERIFY_HARD_CAP}."
         )
 
         result["_ui"] = extract_tables(result)
@@ -482,7 +476,7 @@ async def verify(
 async def export_csv(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: bool = Form(False),
+    verify_online: bool = Form(True),   # default True so exports include verification if possible
     verify_mode: str = Form("all"),
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
@@ -497,27 +491,21 @@ async def export_csv(
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
-    if verify_online:
-        mv = int(max_verify or 0)
-        if mv <= 0:
-            mv = VERIFY_DEFAULT_CAP
+    mv = int(max_verify or 0)
+    if mv > 0:
         mv = max(1, min(mv, VERIFY_HARD_CAP))
 
-        result = run_crosscheck(
-            file_bytes=file_bytes,
-            filename=filename,
-            style=style_norm,
-            verify_online=True,
-            verify_mode=(verify_mode or "all"),
-            use_crossref=bool(use_crossref),
-            use_openalex=bool(use_openalex),
-            throttle_s=float(throttle_s or 0.0),
-            max_verify=mv,
-        )
-    else:
-        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-
-    file_bytes = b""
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=bool(verify_online),
+        verify_mode=(verify_mode or "all"),
+        use_crossref=bool(use_crossref),
+        use_openalex=bool(use_openalex),
+        throttle_s=float(throttle_s or 0.0),
+        max_verify=mv,
+    )
 
     csv_bytes = make_csv_bytes(result)
     out_name = f"{filename_base(filename)}_citation_report.csv"
@@ -532,7 +520,7 @@ async def export_csv(
 async def export_word(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: bool = Form(False),
+    verify_online: bool = Form(True),   # default True so exports include verification if possible
     verify_mode: str = Form("all"),
     use_crossref: bool = Form(True),
     use_openalex: bool = Form(True),
@@ -547,27 +535,21 @@ async def export_word(
     filename = file.filename or "uploaded"
     style_norm = normalize_style(style)
 
-    if verify_online:
-        mv = int(max_verify or 0)
-        if mv <= 0:
-            mv = VERIFY_DEFAULT_CAP
+    mv = int(max_verify or 0)
+    if mv > 0:
         mv = max(1, min(mv, VERIFY_HARD_CAP))
 
-        result = run_crosscheck(
-            file_bytes=file_bytes,
-            filename=filename,
-            style=style_norm,
-            verify_online=True,
-            verify_mode=(verify_mode or "all"),
-            use_crossref=bool(use_crossref),
-            use_openalex=bool(use_openalex),
-            throttle_s=float(throttle_s or 0.0),
-            max_verify=mv,
-        )
-    else:
-        result = run_crosscheck(file_bytes=file_bytes, filename=filename, style=style_norm, verify_online=False)
-
-    file_bytes = b""
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style_norm,
+        verify_online=bool(verify_online),
+        verify_mode=(verify_mode or "all"),
+        use_crossref=bool(use_crossref),
+        use_openalex=bool(use_openalex),
+        throttle_s=float(throttle_s or 0.0),
+        max_verify=mv,
+    )
 
     docx_bytes = make_word_bytes(result)
     out_name = f"{filename_base(filename)}_citation_report.docx"
