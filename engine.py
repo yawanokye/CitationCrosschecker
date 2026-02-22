@@ -38,17 +38,17 @@ REF_HEADINGS = [
 DISCOURSE_PREFIXES = {
     "similarly", "however", "moreover", "likewise", "further", "also",
     "thus", "therefore", "in particular", "in response", "in addition",
-    "for example", "for instance", "recently", "specifically"
+    "for example", "for instance", "recently", "specifically", "crunches"
 }
 
 LEAD_WORDS = {
-    "see", "cf", "e.g", "i.e", "according to", "by", "from", "in", "as",
+    "see", "cf", "e.g", "i.e", "according to", "by ", "from", "in", "as",
     "for example", "for instance"
 }
 
 GEO_PREFIXES = {
     "africa", "asia", "europe", "america", "latin america", "sub-saharan africa",
-    "ghana", "nigeria", "kenya", "south africa", "usa", "uk", "china", "india"
+    "ghana", "nigeria", "kenya", "south africa", "usa", "uk", "china", "india", "USA"
 }
 
 COMMON_NONAUTHOR = {
@@ -850,3 +850,4 @@ def run_crosscheck(
         "online_verification": online_verification,
         "verify_mode_used": (verify_mode or "all"),
     }
+
