@@ -1,16 +1,8 @@
-/* static/app.js - FULL FILE
-   Matches your index.html IDs exactly.
-   Fixes:
-   - Run buttons not working (wrong selectors)
-   - Export empty (export now sends job_id)
-*/
+/* static/app.js - FULL FILE (polling online verification until complete) */
 
 (() => {
   "use strict";
 
-  // -----------------------------
-  // DOM
-  // -----------------------------
   const el = {
     file: document.getElementById("file"),
     style: document.getElementById("style"),
@@ -29,7 +21,6 @@
     resultsCard: document.getElementById("resultsCard"),
     dash: document.getElementById("dash"),
     verifyDash: document.getElementById("verifyDash"),
-    summary: document.getElementById("summary"),
     summaryTable: document.getElementById("summaryTable"),
     refMsg: document.getElementById("refMsg"),
 
@@ -46,20 +37,11 @@
     panes: Array.from(document.querySelectorAll(".tabPane")),
   };
 
-  // -----------------------------
-  // State
-  // -----------------------------
   let LAST_JOB_ID = null;
   let LAST_RESULT = null;
   let RUNNING = false;
+  let POLL_TIMER = null;
 
-  // Safety defaults for online verification (prevents 502 on big lists)
-  const SAFE_ONLINE_THROTTLE = 0.20;
-  const SAFE_ONLINE_MAX_VERIFY = 120;
-
-  // -----------------------------
-  // Utils
-  // -----------------------------
   function setStatus(msg, tone = "muted") {
     if (!el.status) return;
     el.status.className = `status ${tone}`;
@@ -68,10 +50,10 @@
 
   function setRunning(on) {
     RUNNING = !!on;
-    if (el.btnCheck) el.btnCheck.disabled = on;
-    if (el.btnVerify) el.btnVerify.disabled = on;
-    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = on || !LAST_JOB_ID;
-    if (el.btnExportWordTop) el.btnExportWordTop.disabled = on || !LAST_JOB_ID;
+    el.btnCheck.disabled = on;
+    el.btnVerify.disabled = on;
+    el.btnExportCsvTop.disabled = on || !LAST_JOB_ID;
+    el.btnExportWordTop.disabled = on || !LAST_JOB_ID;
   }
 
   function esc(s) {
@@ -96,71 +78,34 @@
     return `${n.toFixed(1)}%`;
   }
 
-  function downloadBlob(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename || "download";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function parseFilenameFromCD(cd) {
-    if (!cd) return "";
-    const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
-    return m ? decodeURIComponent(m[1].replace(/\"/g, "").trim()) : "";
-  }
-
-  // -----------------------------
-  // Tabs
-  // -----------------------------
   function activateTab(paneId) {
-    el.tabs.forEach((t) => {
-      const active = t.dataset.tab === paneId;
-      t.classList.toggle("active", active);
-    });
-    el.panes.forEach((p) => {
-      const active = p.id === paneId;
-      p.classList.toggle("active", active);
-    });
+    el.tabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === paneId));
+    el.panes.forEach((p) => p.classList.toggle("active", p.id === paneId));
   }
 
   function bindTabs() {
-    el.tabs.forEach((t) => {
-      t.addEventListener("click", () => {
-        activateTab(t.dataset.tab);
-      });
-    });
+    el.tabs.forEach((t) => t.addEventListener("click", () => activateTab(t.dataset.tab)));
   }
 
-  // -----------------------------
-  // Rendering
-  // -----------------------------
   function showResults() {
-    if (el.resultsCard) el.resultsCard.style.display = "";
+    el.resultsCard.style.display = "";
   }
 
   function renderDashboard(data) {
     const s = data?.summary || {};
-
     const inText = Number(s.in_text_citations_found || 0);
     const refs = Number(s.reference_entries_found || 0);
     const missing = Number(s.missing_in_references || 0);
     const uncited = Number(s.uncited_references || 0);
-
     const matchRate = inText > 0 ? ((inText - missing) / inText) * 100 : 0;
 
-    if (el.dash) {
-      el.dash.innerHTML = `
-        <div class="kpi"><div class="k">In-text</div><div class="v">${fmtNum(inText)}</div></div>
-        <div class="kpi"><div class="k">References</div><div class="v">${fmtNum(refs)}</div></div>
-        <div class="kpi"><div class="k">Missing</div><div class="v">${fmtNum(missing)}</div></div>
-        <div class="kpi"><div class="k">Uncited</div><div class="v">${fmtNum(uncited)}</div></div>
-        <div class="kpi"><div class="k">Match rate</div><div class="v">${pct(matchRate)}</div></div>
-      `;
-    }
+    el.dash.innerHTML = `
+      <div class="kpi"><div class="k">In-text</div><div class="v">${fmtNum(inText)}</div></div>
+      <div class="kpi"><div class="k">References</div><div class="v">${fmtNum(refs)}</div></div>
+      <div class="kpi"><div class="k">Missing</div><div class="v">${fmtNum(missing)}</div></div>
+      <div class="kpi"><div class="k">Uncited</div><div class="v">${fmtNum(uncited)}</div></div>
+      <div class="kpi"><div class="k">Match rate</div><div class="v">${pct(matchRate)}</div></div>
+    `;
   }
 
   function renderSummaryTable(data) {
@@ -171,127 +116,48 @@
       ["Missing in references", s.missing_in_references],
       ["Uncited references", s.uncited_references],
       ["Style", data?.style || ""],
-      ["Main text length", data?.main_text_length ?? ""],
-      ["Total text length", data?.text_length ?? ""],
-      ["References detected (raw)", data?.references_detected ?? ""],
       ["Verify mode used", data?.verify_mode_used ?? ""],
     ];
+    el.summaryTable.innerHTML = rows
+      .map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1] ?? "")}</td></tr>`)
+      .join("");
 
-    if (el.summaryTable) {
-      el.summaryTable.innerHTML = rows
-        .map(
-          (r) => `
-            <tr>
-              <td>${esc(r[0])}</td>
-              <td>${esc(r[1] ?? "")}</td>
-            </tr>
-          `
-        )
-        .join("");
-    }
-
-    if (el.refMsg) {
-      el.refMsg.textContent = data?.reference_detection_message || "";
-    }
+    el.refMsg.textContent = data?.reference_detection_message || "";
   }
 
   function renderMissing(data) {
     const missing = Array.isArray(data?.missing_in_references) ? data.missing_in_references : [];
-    if (!el.missingBody) return;
-
-    if (!missing.length) {
-      el.missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
-      return;
-    }
-
-    el.missingBody.innerHTML = missing
-      .slice(0, 5000)
-      .map(
-        (m, i) => `
-          <tr>
-            <td>${i + 1}</td>
-            <td>${esc(m.citation_in_text || "")}</td>
-            <td>${esc(m.count_in_text ?? 0)}</td>
-          </tr>
-        `
-      )
-      .join("");
+    el.missingBody.innerHTML = missing.length
+      ? missing.slice(0, 5000).map((m, i) =>
+          `<tr><td>${i + 1}</td><td>${esc(m.citation_in_text || "")}</td><td>${esc(m.count_in_text ?? 0)}</td></tr>`
+        ).join("")
+      : `<tr><td colspan="3" class="muted">None</td></tr>`;
   }
 
   function renderUncited(data) {
     const uncited = Array.isArray(data?.uncited_references) ? data.uncited_references : [];
-    if (!el.uncitedBody) return;
-
-    if (!uncited.length) {
-      el.uncitedBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
-      return;
-    }
-
-    el.uncitedBody.innerHTML = uncited
-      .slice(0, 5000)
-      .map(
-        (r, i) => `
-          <tr>
-            <td>${i + 1}</td>
-            <td>${esc(r)}</td>
-          </tr>
-        `
-      )
-      .join("");
+    el.uncitedBody.innerHTML = uncited.length
+      ? uncited.slice(0, 5000).map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r)}</td></tr>`).join("")
+      : `<tr><td colspan="2" class="muted">None</td></tr>`;
   }
 
   function renderC2R(data) {
-    const rows = Array.isArray(data?.reconciliation_intext_to_reference)
-      ? data.reconciliation_intext_to_reference
-      : [];
-    if (!el.c2rBody) return;
-
-    if (!rows.length) {
-      el.c2rBody.innerHTML = `<tr><td colspan="5" class="muted">No rows</td></tr>`;
-      return;
-    }
-
-    el.c2rBody.innerHTML = rows
-      .slice(0, 5000)
-      .map(
-        (r, i) => `
-          <tr>
-            <td>${i + 1}</td>
-            <td>${esc(r.status || "")}</td>
-            <td>${esc(r.in_text || "")}</td>
-            <td>${esc(r.matched_reference || "")}</td>
-            <td>${esc(r.flags || "")}</td>
-          </tr>
-        `
-      )
-      .join("");
+    const rows = Array.isArray(data?.reconciliation_intext_to_reference) ? data.reconciliation_intext_to_reference : [];
+    el.c2rBody.innerHTML = rows.length
+      ? rows.slice(0, 5000).map((r, i) =>
+          `<tr><td>${i + 1}</td><td>${esc(r.status || "")}</td><td>${esc(r.in_text || "")}</td><td>${esc(r.matched_reference || "")}</td><td>${esc(r.flags || "")}</td></tr>`
+        ).join("")
+      : `<tr><td colspan="5" class="muted">No rows</td></tr>`;
   }
 
   function renderR2C(data) {
-    const rows = Array.isArray(data?.reconciliation_reference_to_intext)
-      ? data.reconciliation_reference_to_intext
-      : [];
-    if (!el.r2cBody) return;
-
-    if (!rows.length) {
-      el.r2cBody.innerHTML = `<tr><td colspan="4" class="muted">No rows</td></tr>`;
-      return;
-    }
-
-    el.r2cBody.innerHTML = rows
-      .slice(0, 3000)
-      .map((r, i) => {
-        const citedBy = Array.isArray(r.cited_by) ? r.cited_by.slice(0, 6).join(" | ") : "";
-        return `
-          <tr>
-            <td>${i + 1}</td>
-            <td>${esc(r.times_cited ?? 0)}</td>
-            <td>${esc(r.reference || "")}</td>
-            <td>${esc(citedBy)}</td>
-          </tr>
-        `;
-      })
-      .join("");
+    const rows = Array.isArray(data?.reconciliation_reference_to_intext) ? data.reconciliation_reference_to_intext : [];
+    el.r2cBody.innerHTML = rows.length
+      ? rows.slice(0, 3000).map((r, i) => {
+          const citedBy = Array.isArray(r.cited_by) ? r.cited_by.slice(0, 6).join(" | ") : "";
+          return `<tr><td>${i + 1}</td><td>${esc(r.times_cited ?? 0)}</td><td>${esc(r.reference || "")}</td><td>${esc(citedBy)}</td></tr>`;
+        }).join("")
+      : `<tr><td colspan="4" class="muted">No rows</td></tr>`;
   }
 
   function renderVerify(data) {
@@ -299,32 +165,18 @@
     const summary = ov.summary || {};
     const rows = Array.isArray(ov.rows) ? ov.rows : [];
 
-    if (el.verifyDash) {
-      const parts = [
-        ["Verified", summary.verified ?? 0],
-        ["Likely", summary.likely ?? 0],
-        ["Needs review", summary.needs_review ?? 0],
-        ["Not found", summary.not_found ?? 0],
-        ["Offline", summary.offline ?? 0],
-        ["Total", summary.total ?? 0],
-      ];
-      el.verifyDash.innerHTML = parts
-        .map((p) => `<div class="kpi"><div class="k">${esc(p[0])}</div><div class="v">${fmtNum(p[1])}</div></div>`)
-        .join("");
-    }
+    el.verifyDash.innerHTML = `
+      <div class="kpi"><div class="k">Verified</div><div class="v">${fmtNum(summary.verified ?? 0)}</div></div>
+      <div class="kpi"><div class="k">Likely</div><div class="v">${fmtNum(summary.likely ?? 0)}</div></div>
+      <div class="kpi"><div class="k">Needs review</div><div class="v">${fmtNum(summary.needs_review ?? 0)}</div></div>
+      <div class="kpi"><div class="k">Not found</div><div class="v">${fmtNum(summary.not_found ?? 0)}</div></div>
+      <div class="kpi"><div class="k">Offline</div><div class="v">${fmtNum(summary.offline ?? 0)}</div></div>
+      <div class="kpi"><div class="k">Total</div><div class="v">${fmtNum(summary.total ?? 0)}</div></div>
+    `;
 
-    if (!el.verifyBody) return;
-
-    if (!rows.length) {
-      el.verifyBody.innerHTML = `<tr><td colspan="9" class="muted">No online verification rows (not run or timed out).</td></tr>`;
-      return;
-    }
-
-    el.verifyBody.innerHTML = rows
-      .slice(0, 5000)
-      .map(
-        (r, i) => `
-          <tr>
+    el.verifyBody.innerHTML = rows.length
+      ? rows.slice(0, 5000).map((r, i) =>
+          `<tr>
             <td>${i + 1}</td>
             <td>${esc(r.status || "")}</td>
             <td>${esc(r.source || "")}</td>
@@ -334,10 +186,9 @@
             <td>${esc(r.matched_authors || "")}</td>
             <td>${esc(r.matched_title || "")}</td>
             <td>${esc(r.query_used || "")}</td>
-          </tr>
-        `
-      )
-      .join("");
+          </tr>`
+        ).join("")
+      : `<tr><td colspan="9" class="muted">No rows yet.</td></tr>`;
   }
 
   function renderAll(data) {
@@ -351,15 +202,11 @@
     renderR2C(data);
     renderVerify(data);
 
-    // Enable exports once we have a job id
-    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = !LAST_JOB_ID;
-    if (el.btnExportWordTop) el.btnExportWordTop.disabled = !LAST_JOB_ID;
+    el.btnExportCsvTop.disabled = !LAST_JOB_ID;
+    el.btnExportWordTop.disabled = !LAST_JOB_ID;
   }
 
-  // -----------------------------
-  // Requests
-  // -----------------------------
-  async function postVerify({ verifyOnline }) {
+  async function postVerify(verifyOnline) {
     if (RUNNING) return;
 
     const f = el.file?.files?.[0];
@@ -374,59 +221,91 @@
       const fd = new FormData();
       fd.append("file", f);
       fd.append("style", el.style?.value || "apa");
-
       fd.append("verify_online", verifyOnline ? "true" : "false");
       fd.append("verify_mode", el.verifyMode?.value || "all");
 
-      let throttleVal = Number(el.throttle?.value || 0.12);
-      if (!Number.isFinite(throttleVal) || throttleVal < 0) throttleVal = 0.12;
-
-      let maxVerifyVal = Number(el.maxVerify?.value || 0);
-      if (!Number.isFinite(maxVerifyVal) || maxVerifyVal < 0) maxVerifyVal = 0;
-
-      // Safety for online: avoid router 502
-      if (verifyOnline) {
-        if (!throttleVal || throttleVal < 0.12) throttleVal = SAFE_ONLINE_THROTTLE;
-        if (!maxVerifyVal || maxVerifyVal === 0) maxVerifyVal = SAFE_ONLINE_MAX_VERIFY;
-      }
-
+      const throttleVal = Number(el.throttle?.value || 0.12);
       fd.append("throttle_s", String(throttleVal));
-      fd.append("max_verify", String(maxVerifyVal));
+      fd.append("max_verify", String(Number(el.maxVerify?.value || 0))); // kept for compatibility
 
       fd.append("use_crossref", el.useCrossref?.checked ? "true" : "false");
       fd.append("use_openalex", el.useOpenAlex?.checked ? "true" : "false");
 
-      setStatus(verifyOnline ? "Running online verification..." : "Running check...", "muted");
+      setStatus(verifyOnline ? "Running check and starting online verification..." : "Running check...", "muted");
 
       const res = await fetch("/verify", { method: "POST", body: fd });
-
       if (!res.ok) {
         const txt = await res.text();
-        if (res.status === 502) {
-          setStatus("Server timeout (502). Reduce Max verify or increase Throttle.", "warn");
-        } else {
-          setStatus(`Error (${res.status}). ${txt.slice(0, 200)}`, "warn");
-        }
+        setStatus(`Error (${res.status}). ${txt.slice(0, 200)}`, "warn");
         return;
       }
 
       const js = await res.json();
       if (!js || js.ok !== true) {
-        const msg = js?.data?.error || "Unexpected server response.";
-        setStatus(msg, "warn");
+        setStatus(js?.data?.error || "Unexpected server response.", "warn");
         return;
       }
 
       LAST_JOB_ID = js.job_id || null;
       renderAll(js.data);
 
-      setStatus("Done.", "success");
+      if (verifyOnline) {
+        setStatus("Check done. Online verification running in background, progress will update.", "muted");
+        startPollingOnline();
+      } else {
+        setStatus("Done.", "success");
+      }
     } catch (e) {
       console.error(e);
       setStatus(`Error: ${e?.message || String(e)}`, "warn");
     } finally {
       setRunning(false);
     }
+  }
+
+  function stopPollingOnline() {
+    if (POLL_TIMER) {
+      clearInterval(POLL_TIMER);
+      POLL_TIMER = null;
+    }
+  }
+
+  function startPollingOnline() {
+    stopPollingOnline();
+    if (!LAST_JOB_ID) return;
+
+    POLL_TIMER = setInterval(async () => {
+      try {
+        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
+        if (!res.ok) return;
+        const js = await res.json();
+        const online = js?.online || {};
+        const ov = js?.online_verification || {};
+
+        // update UI from stored result if server has it
+        if (LAST_RESULT) {
+          LAST_RESULT.online_verification = ov;
+          renderVerify(LAST_RESULT);
+        }
+
+        const state = online.state || "idle";
+        const prog = Number(online.progress || 0);
+        const total = Number(online.total || 0);
+        const msg = online.message || "";
+
+        if (state === "running") {
+          setStatus(`Online verification: ${prog}/${total}. ${msg}`, "muted");
+        } else if (state === "done") {
+          setStatus("Online verification completed.", "success");
+          stopPollingOnline();
+        } else if (state === "error") {
+          setStatus(`Online verification error: ${msg}`, "warn");
+          stopPollingOnline();
+        }
+      } catch (e) {
+        // ignore occasional poll errors
+      }
+    }, 1200);
   }
 
   async function exportKind(kind) {
@@ -438,9 +317,8 @@
 
     setRunning(true);
     try {
-      const url = kind === "csv" ? "/export/csv" : kind === "word" ? "/export/word" : "/export/pdf";
-      const fallback =
-        kind === "csv" ? "citation_crosscheck.csv" : kind === "word" ? "citation_crosscheck.docx" : "citation_crosscheck.pdf";
+      const url = kind === "csv" ? "/export/csv" : "/export/word";
+      const fallback = kind === "csv" ? "citation_crosscheck.csv" : "citation_crosscheck.docx";
 
       setStatus(`Exporting ${kind.toUpperCase()}...`, "muted");
 
@@ -460,13 +338,8 @@
       const fn = parseFilenameFromCD(cd) || fallback;
 
       const blob = await res.blob();
-      // Basic empty-file protection
-      if (blob.size < 20) {
-        setStatus("Export returned an empty file. This usually means the server did not receive job_id or job expired.", "warn");
-        return;
-      }
-
       downloadBlob(blob, fn);
+
       setStatus("Export ready.", "success");
     } catch (e) {
       console.error(e);
@@ -476,56 +349,42 @@
     }
   }
 
-  // -----------------------------
-  // Bind events
-  // -----------------------------
   function bind() {
-    if (!el.btnCheck || !el.btnVerify) {
-      console.error("Buttons not found. Check IDs in HTML.");
-      return;
-    }
-
     bindTabs();
 
     el.btnCheck.addEventListener("click", (ev) => {
       ev.preventDefault();
-      postVerify({ verifyOnline: false });
+      stopPollingOnline();
+      postVerify(false);
     });
 
     el.btnVerify.addEventListener("click", (ev) => {
       ev.preventDefault();
-      postVerify({ verifyOnline: true });
+      stopPollingOnline();
+      postVerify(true);
     });
 
-    if (el.btnExportCsvTop) {
-      el.btnExportCsvTop.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        exportKind("csv");
-      });
-    }
+    el.btnExportCsvTop.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      exportKind("csv");
+    });
 
-    if (el.btnExportWordTop) {
-      el.btnExportWordTop.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        exportKind("word");
-      });
-    }
+    el.btnExportWordTop.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      exportKind("word");
+    });
 
-    // Exports disabled until first successful run
-    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = true;
-    if (el.btnExportWordTop) el.btnExportWordTop.disabled = true;
+    el.btnExportCsvTop.disabled = true;
+    el.btnExportWordTop.disabled = true;
 
     setStatus("Ready.", "muted");
-    console.log("app.js bound OK");
   }
 
-  // -----------------------------
-  // Init
-  // -----------------------------
-  window.addEventListener("error", (e) => {
-    console.error("Global error:", e?.error || e);
-    setStatus("A page script error occurred. Open console for details.", "warn");
-  });
+  function parseFilenameFromCD(cd) {
+    if (!cd) return "";
+    const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
+    return m ? decodeURIComponent(m[1].replace(/\"/g, "").trim()) : "";
+  }
 
   document.addEventListener("DOMContentLoaded", bind);
 })();
