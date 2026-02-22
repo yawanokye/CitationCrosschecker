@@ -28,7 +28,6 @@ except Exception:
 YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
 YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
 
-# Strict match (line is only the heading)
 REF_HEADINGS = [
     r"^\s*references?\s*(?:list)?\s*$",
     r"^\s*bibliograph(?:y|ies)\s*$",
@@ -36,32 +35,31 @@ REF_HEADINGS = [
     r"^\s*literature\s+cited\s*$",
 ]
 
-# Relaxed match (PDF extract often merges columns so "REFERENCES [1]" appears on one line)
+# Relaxed match: PDF/DOCX extraction can merge "REFERENCES" with first entry like "REFERENCES [1] ..."
 REF_HEADING_RELAXED = re.compile(
     r"\b(references?|bibliograph(?:y|ies)|works\s+cited|literature\s+cited)\b",
     flags=re.I,
 )
 
-
 DISCOURSE_PREFIXES = {
     "similarly", "however", "moreover", "likewise", "further", "also",
     "thus", "therefore", "in particular", "in response", "in addition",
-    "for example", "for instance", "recently", "specifically",
+    "for example", "for instance", "recently", "specifically"
 }
 
 LEAD_WORDS = {
     "see", "cf", "e.g", "i.e", "according to", "by", "from", "in", "as",
-    "for example", "for instance",
+    "for example", "for instance"
 }
 
 GEO_PREFIXES = {
     "africa", "asia", "europe", "america", "latin america", "sub-saharan africa",
-    "ghana", "nigeria", "kenya", "south africa", "usa", "uk", "china", "india",
+    "ghana", "nigeria", "kenya", "south africa", "usa", "uk", "china", "india"
 }
 
 COMMON_NONAUTHOR = {
     "war", "crisis", "revolution", "scandal", "attacks", "volatility", "model",
-    "countries", "coefficients", "estimates", "computation", "instance",
+    "countries", "coefficients", "estimates", "computation", "instance"
 }
 
 ORG_ALIASES = {
@@ -186,18 +184,23 @@ def _plausible_author_blob(blob: str) -> bool:
         return False
 
     bn = norm_token(b)
+
     if bn in {"al", "et", "et al"}:
         return False
+
     if len(b) > 65:
         return False
 
     toks = [t for t in re.split(r"\s+", bn) if t]
     if not toks:
         return False
+
     if len(toks) == 1 and toks[0] in COMMON_NONAUTHOR:
         return False
+
     if not any(re.fullmatch(r"[a-z][a-z\-']{1,}", t) for t in toks):
         return False
+
     return True
 
 
@@ -246,6 +249,50 @@ def read_pdf_text(file_bytes: bytes) -> str:
         for p in pdf.pages:
             out.append(p.extract_text() or "")
     return "\n".join(out)
+def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
+    """Fast DOCX strategy: iterate paragraphs once and split at References heading."""
+    if not DOCX_OK:
+        raise RuntimeError("python-docx not installed")
+
+    doc = Document(io.BytesIO(file_bytes))
+
+    main_lines: List[str] = []
+    ref_lines: List[str] = []
+    in_refs = False
+    heading_line = ""
+
+    for p in doc.paragraphs:
+        t = norm_space(p.text)
+        if not t:
+            continue
+
+        if not in_refs:
+            # strict match
+            for pat in REF_HEADINGS:
+                if re.search(pat, t, flags=re.I):
+                    in_refs = True
+                    heading_line = t
+                    break
+
+            # relaxed match: "REFERENCES [1] ..."
+            if not in_refs:
+                m = REF_HEADING_RELAXED.search(t)
+                if m and m.start() <= 4 and len(t) <= 160:
+                    in_refs = True
+                    heading_line = t
+                    tail = t[m.end():].strip(" :-\t")
+                    if tail:
+                        ref_lines.append(tail)
+                    continue
+
+        if in_refs:
+            ref_lines.append(t)
+        else:
+            main_lines.append(t)
+
+    msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
+    return "\n".join(main_lines).strip(), ref_lines, msg
+
 
 
 # -----------------------------
@@ -261,17 +308,21 @@ def _find_reference_heading(lines: List[str]) -> Tuple[int, str]:
         if not s:
             continue
 
+        # Strict heading match (line is only heading)
         for pat in REF_HEADINGS:
             if re.search(pat, s, flags=re.I):
                 return i, ""
 
+        # Relaxed heading match (heading plus first entry on same line)
         m = REF_HEADING_RELAXED.search(s)
         if m:
-            if m.start() <= 4 and len(s) <= 120:
+            # Heading should be near the start, and the line shouldn't be extremely long
+            if m.start() <= 4 and len(s) <= 160:
                 tail = s[m.end():].strip(" :-\t")
                 return i, tail
 
     return -1, ""
+
 
 
 def _looks_like_new_apa_reference_start(line: str) -> bool:
@@ -295,6 +346,7 @@ def _looks_like_new_numeric_reference_start(line: str) -> bool:
         return True
     if re.match(r"^\s*\d{1,4}[\.\)]\s+", s):
         return True
+    # Guard: avoid treating a year like "2019 ..." as a numeric reference number
     m = re.match(r"^\s*(\d{4})\s+", s)
     if m and YEAR_RE.fullmatch(m.group(1)):
         return False
@@ -368,17 +420,27 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
 
 
 def _numeric_ref_guard(n: int, remainder: str) -> bool:
+    # Typical reference lists are not in the thousands
     if n < 1 or n > 5000:
         return False
+
     rem = (remainder or "").strip()
     if len(rem) < 4:
         return False
+
+    # Avoid capturing years like "2019 ..." as reference numbers
     if YEAR_RE.fullmatch(str(n)):
         return False
+
+    # Avoid capturing DOI prefixes or decimals as "10 ..."
     if rem.startswith(".") or rem.lower().startswith("0."):
         return False
-    if not re.search(r"[A-Za-z]", rem[:40]):
+
+    # Must have some letters early on, otherwise it's probably a table/page/numbering artifact
+    head = rem[:40]
+    if not re.search(r"[A-Za-z]", head):
         return False
+
     return True
 
 
@@ -403,6 +465,8 @@ def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
             return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
         return None
 
+    # Removed the overly-broad pattern: r"^\s*(\d+)\s+(.+)$"
+    # It caused false positives on lines starting with years, page numbers, etc.
     return None
 
 
@@ -437,6 +501,7 @@ def _parse_one_author_year_piece(piece: str) -> Optional[Tuple[str, str, Tuple[s
 
     left2, scrub_flags = _scrub_leading_prefixes(left)
     left2 = left2.strip()
+
     if not _plausible_author_blob(left2):
         return None
 
@@ -467,9 +532,11 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
     seen = set()
 
     par_pat = re.compile(rf"\(([^()]*\b{YEAR}\b[^()]*)\)", flags=re.I)
+
     for m in par_pat.finditer(txt):
         inside = m.group(1).strip()
         pieces = _split_parenthetical_group(inside) or [inside]
+
         for piece in pieces:
             parsed = _parse_one_author_year_piece(piece)
             if not parsed:
@@ -485,6 +552,70 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
             if raw in seen:
                 continue
             out.append(InTextCitation("author-year", raw, k, year=y, surnames=surnames, flags=flags))
+            seen.add(raw)
+
+    narr_pat = re.compile(
+        rf"""
+        (?P<lead>\b(?:according\s+to|see|by|from|in|as|for\s+example|for\s+instance|cf)\b\s+)?   # lead word
+        (?P<authors>
+            (?:[A-Z][A-Za-z\-']+(?:'s)?\s+et\.?\s+al\.?)                                         # Surname et al.
+            |
+            (?:[A-Z][A-Za-z\-']+(?:'s)?)                                                         # first token
+            (?:\s*,\s*[A-Z][A-Za-z\-']+(?:'s)?)*                                                 # more tokens via comma
+            (?:\s*,?\s*(?:and|&)\s*[A-Z][A-Za-z\-']+(?:'s)?)*                                    # final and/&
+        )
+        \s*\(\s*(?P<year>{YEAR})\s*\)
+        """,
+        flags=re.VERBOSE | re.I,
+    )
+
+    for m in narr_pat.finditer(txt):
+        lead = (m.group("lead") or "").strip()
+        authors_blob = (m.group("authors") or "").strip()
+        y = m.group("year")
+
+        authors_blob_clean = re.sub(r"\'s\b", "", authors_blob, flags=re.I).strip()
+        cleaned, scrub_flags = _scrub_leading_prefixes(authors_blob_clean)
+        if not cleaned:
+            continue
+
+        if not _plausible_author_blob(cleaned):
+            continue
+
+        flags_out = []
+        if lead:
+            flags_out.append(f"lead_word:{norm_token(lead).strip()}")
+        flags_out.extend(scrub_flags)
+        if re.search(r"\'s\s*\(", authors_blob, flags=re.I):
+            flags_out.append("possessive")
+
+        if re.search(r"\bet\s+al\.?\b", cleaned, flags=re.I):
+            first = clean_surname(cleaned)
+            if not first:
+                continue
+            k = key_author_year(first, y)
+            raw = norm_space(m.group(0))
+            if raw not in seen:
+                out.append(InTextCitation("author-year", raw, k, year=y, surnames=(first,), flags=";".join(flags_out + ["etal"])))
+                seen.add(raw)
+            continue
+
+        if is_known_org(cleaned):
+            k = f"org_{canon_org(cleaned)}_{y.lower()}"
+            raw = norm_space(m.group(0))
+            if raw not in seen:
+                out.append(InTextCitation("author-year", raw, k, year=y, surnames=(cleaned,), flags=";".join(flags_out)))
+                seen.add(raw)
+            continue
+
+        surnames = extract_surnames_from_blob(cleaned)
+        if not surnames:
+            continue
+
+        k = key_author_year(surnames[0], y)
+        raw = norm_space(m.group(0))
+        if raw not in seen:
+            out.append(InTextCitation("author-year", raw, k, year=y, surnames=tuple(surnames), flags=";".join(flags_out)))
             seen.add(raw)
 
     return out
@@ -610,6 +741,7 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     cite_keys = [c.key for c in cites]
     ref_keys = [r.key for r in refs]
 
+    # Count by key (fixes [1-3] inflating and same-raw issues)
     cite_count_by_key = Counter(cite_keys)
     example_raw_by_key: Dict[str, str] = {}
     for c in cites:
@@ -619,14 +751,17 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     missing = []
     for k, cnt in cite_count_by_key.items():
         if k and (k not in ref_key_set):
-            missing.append({"citation_in_text": example_raw_by_key.get(k, ""), "count_in_text": int(cnt)})
+            missing.append({
+                "citation_in_text": example_raw_by_key.get(k, ""),
+                "count_in_text": int(cnt),
+            })
     missing.sort(key=lambda x: (-x["count_in_text"], x["citation_in_text"]))
 
     cite_key_set = set(cite_keys)
     uncited = [r.raw for r in refs if r.key not in cite_key_set]
 
     summary = {
-        "in_text_citations_found": int(len(cites)),
+        "in_text_citations_found": int(len(cites)),     # occurrences (expanded ranges count as multiple)
         "reference_entries_found": int(len(refs)),
         "missing_in_references": int(len(missing)),
         "uncited_references": int(len(uncited)),
@@ -637,10 +772,12 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
 def _online_verify_select_refs(refs: List[ReferenceEntry], uncited_raw: List[str], verify_mode: str) -> List[str]:
     mode = (verify_mode or "all").strip().lower()
     all_ref_texts = [r.raw for r in refs]
+
     if mode == "uncited_only":
         unc_set = set(uncited_raw or [])
         work = [r for r in all_ref_texts if r in unc_set]
         return work if work else all_ref_texts
+
     return all_ref_texts
 
 
@@ -656,38 +793,45 @@ def run_crosscheck(
     use_openalex: bool = True,
 ) -> Dict[str, Any]:
     name = (filename or "").lower().strip()
-
     if name.endswith(".docx"):
-        paras = read_docx_paragraphs(file_bytes)
-        full_text = "\n".join(paras)
+        # Fast split for DOCX (avoids building a huge blob then re-scanning)
+        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
+        references_raw = _merge_reference_lines(ref_block_lines)
+        full_text = main_text + "\n" + "\n".join(ref_block_lines)
+
     elif name.endswith(".pdf"):
         full_text = read_pdf_text(file_bytes)
+        lines = full_text.splitlines()
+        idx, tail = _find_reference_heading(lines)
+
+        if idx == -1:
+            main_text = full_text
+            references_raw = []
+            ref_msg = "No References heading found."
+        else:
+            main_text = "\n".join(lines[:idx]).strip()
+            ref_msg = f"Found References heading: {lines[idx].strip()}"
+            ref_block_lines = []
+            if tail:
+                ref_block_lines.append(tail)
+            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
+            references_raw = _merge_reference_lines(ref_block_lines)
+
+        # Rebuild full_text consistently (lightweight)
+        full_text = main_text + "\n" + "\n".join(references_raw)
+
     else:
         return {"error": "Upload a DOCX or PDF"}
 
-    lines = full_text.splitlines()
-    idx, tail = _find_reference_heading(lines)
-
-    if idx == -1:
-        main_text = full_text
-        references_raw: List[str] = []
-        ref_msg = "No References heading found."
-    else:
-        main_text = "\n".join(lines[:idx]).strip()
-        heading_line = (lines[idx] or "").strip()
-        ref_msg = f"Found References heading: {heading_line}"
-
-        ref_block_lines = []
-        if tail:
-            ref_block_lines.append(tail)
-        ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
-        references_raw = _merge_reference_lines(ref_block_lines)
 
     style_norm = (style or "apa").strip().lower()
     if style_norm in ("apa/harvard", "harvard", "author-year"):
         style_norm = "apa"
 
     if style_norm == "apa":
+        # Trim very long texts to keep regex fast (still enough for most theses)
+        if len(main_text) > 250_000:
+            main_text = main_text[:250_000]
         cites = extract_author_year_citations(main_text)
         refs = [parse_reference_author_year(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
@@ -752,11 +896,14 @@ def run_crosscheck(
         "text_length": len(full_text),
         "main_text_length": len(main_text),
         "references_detected": len(references_raw),
+
         "summary": summary,
         "missing_in_references": missing,
         "uncited_references": uncited,
+
         "reconciliation_intext_to_reference": c2r[:5000],
         "reconciliation_reference_to_intext": r2c[:5000],
+
         "online_verification": online_verification,
         "verify_mode_used": (verify_mode or "all"),
     }
