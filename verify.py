@@ -8,7 +8,6 @@ from urllib.parse import quote
 import requests
 from rapidfuzz import fuzz
 
-
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
 
 MAILTO = (
@@ -22,6 +21,7 @@ MAILTO = (MAILTO or "").strip()
 UNPAYWALL_EMAIL = (os.getenv("UNPAYWALL_EMAIL") or MAILTO or "").strip()
 
 
+# ---------- helpers ----------
 def _normalize_verify_status(s: str) -> str:
     st = (s or "").strip().lower().replace(" ", "_")
     if st not in _ALLOWED_VERIFY_STATUSES:
@@ -52,45 +52,56 @@ def _norm_text(s: str) -> str:
     return s
 
 
-def _safe_get_json(session: requests.Session, url: str, params: Optional[dict] = None, timeout: int = 22) -> Optional[dict]:
-    headers = {
-        "User-Agent": "CitationCrosschecker/1.0",
-        "Accept": "application/json",
-    }
-    # Simple retry on 429 and transient 5xx
-    for attempt in range(1, 4):
-        try:
-            r = session.get(url, params=params, timeout=timeout, headers=headers)
-            if r.status_code == 200:
-                return r.json()
-            if r.status_code in (429, 500, 502, 503, 504):
-                time.sleep(0.6 * attempt)
-                continue
+def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 22) -> Optional[dict]:
+    try:
+        headers = {"User-Agent": "CitationCrosschecker/1.0", "Accept": "application/json"}
+        r = requests.get(url, params=params, timeout=timeout, headers=headers)
+        if r.status_code != 200:
             return None
-        except Exception:
-            time.sleep(0.4 * attempt)
-            continue
-    return None
+        return r.json()
+    except Exception:
+        return None
 
 
 def _extract_year(text: str) -> str:
     m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", text or "", flags=re.I)
-    return (_safe_str(m.group(1)) + (_safe_str(m.group(2)) if m and m.group(2) else "")).lower() if m else ""
+    if not m:
+        return ""
+    y = _safe_str(m.group(1))
+    suf = _safe_str(m.group(2)) if m.group(2) else ""
+    return (y + suf).lower()
 
 
 def _strip_leading_numbering(text: str) -> str:
     t = _safe_strip(text)
+    # [12]  or  12.  or  12)
     t = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", t)
     return t.strip()
 
 
 def _extract_doi(text: str) -> str:
+    """
+    More robust DOI extraction:
+    - avoids trailing ']' ')' ',' '.' ';'
+    - tolerates 'doi:' and doi.org links
+    """
     t = _safe_str(text)
-    m = re.search(r"(10\.\d{4,9}/[^\s]+)", t, flags=re.I)
+
+    # doi.org/<doi>
+    m = re.search(r"https?://doi\.org/(10\.\d{4,9}/[^\s<>\]]+)", t, flags=re.I)
+    if m:
+        return _safe_strip(m.group(1)).rstrip(").,;]}>")
+
+    # doi:10.xxxx/....
+    m = re.search(r"\bdoi\s*:\s*(10\.\d{4,9}/[^\s<>\]]+)", t, flags=re.I)
+    if m:
+        return _safe_strip(m.group(1)).rstrip(").,;]}>")
+
+    # bare DOI
+    m = re.search(r"\b(10\.\d{4,9}/[^\s<>\]]+)", t, flags=re.I)
     if not m:
         return ""
-    return _safe_strip(m.group(1)).rstrip(").,;")
-
+    return _safe_strip(m.group(1)).rstrip(").,;]}>")
 
 def _clean_query_string(s: str) -> str:
     s = _safe_strip(s)
@@ -108,13 +119,24 @@ def _doi_equal(a: str, b: str) -> bool:
     return a == b
 
 
+# ---------- parsing: title + authors ----------
 def _extract_title_guess(ref: str) -> str:
+    """
+    Best-effort title guess:
+    - remove leading numbering
+    - remove DOI + doi.org link
+    - remove URLs/noisy tails
+    - prefer the first sentence after (YEAR)
+    Works OK for APA, Vancouver, IEEE.
+    """
     t = _strip_leading_numbering(ref)
     t = re.sub(r"\s+", " ", t).strip()
 
+    # remove DOI forms and doi.org links
     t = re.sub(r"(doi\s*:\s*)?10\.\d{4,9}/\S+", "", t, flags=re.I)
     t = re.sub(r"https?://doi\.org/10\.\d{4,9}/\S+", "", t, flags=re.I)
 
+    # remove urls and noisy tails
     t = re.sub(r"https?://\S+", "", t, flags=re.I)
     t = re.sub(r"\b(retrieved\s+from|link\s+via)\b.*$", "", t, flags=re.I)
 
@@ -126,7 +148,10 @@ def _extract_title_guess(ref: str) -> str:
         after = t[m.end():].strip() if m else t
 
     after = after.lstrip(". ").strip()
+
+    # IEEE often uses quoted title or title after authors; take first chunk
     title = after.split(".", 1)[0].strip() if "." in after else after.strip()
+    title = title.strip(' "“”')
 
     if len(title) < 8:
         title = t.strip()
@@ -135,6 +160,12 @@ def _extract_title_guess(ref: str) -> str:
 
 
 def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
+    """
+    Robust-ish for APA/Vancouver/IEEE:
+    - take block before year if present, else before first period
+    - split by '&', 'and', ';'
+    - handle "Surname, Initials" and "Surname Initials"
+    """
     t = _strip_leading_numbering(ref)
     if not t:
         return []
@@ -197,7 +228,8 @@ def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str
     return _clean_query_string(" ".join(bits))
 
 
-def _query_crossref_by_doi(session: requests.Session, doi: str) -> Optional[Dict[str, Any]]:
+# ---------- queries ----------
+def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
     if not doi:
         return None
@@ -205,14 +237,14 @@ def _query_crossref_by_doi(session: requests.Session, doi: str) -> Optional[Dict
     params: Dict[str, Any] = {}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(session, url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=22)
     if not data:
         return None
     item = (data.get("message") or {})
     return {"source": "crossref", "item": item or {}, "query_used": f"doi:{doi}"}
 
 
-def _query_crossref(session: requests.Session, q: str, a_query: str) -> List[Dict[str, Any]]:
+def _query_crossref(q: str, a_query: str) -> List[Dict[str, Any]]:
     url = "https://api.crossref.org/works"
     params: Dict[str, Any] = {
         "query.bibliographic": q,
@@ -225,14 +257,17 @@ def _query_crossref(session: requests.Session, q: str, a_query: str) -> List[Dic
     if MAILTO:
         params["mailto"] = MAILTO
 
-    data = _safe_get_json(session, url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=22)
     if not data:
         return []
     items = ((data.get("message") or {}).get("items") or [])
     return [{"source": "crossref", "item": it or {}, "query_used": q} for it in items]
 
 
-def _query_openalex_by_doi(session: requests.Session, doi: str) -> Optional[Dict[str, Any]]:
+def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    """
+    OpenAlex requires URL-encoded work id for the https://doi.org/<doi> form.
+    """
     doi = _safe_strip(doi)
     if not doi:
         return None
@@ -242,38 +277,42 @@ def _query_openalex_by_doi(session: requests.Session, doi: str) -> Optional[Dict
     params: Dict[str, Any] = {}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(session, url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=22)
     if not data:
         return None
     return {"source": "openalex", "item": data or {}, "query_used": f"doi:{doi}"}
 
 
-def _query_openalex(session: requests.Session, q: str) -> List[Dict[str, Any]]:
+def _query_openalex(q: str) -> List[Dict[str, Any]]:
     url = "https://api.openalex.org/works"
     params: Dict[str, Any] = {"search": q, "per-page": 5}
     if MAILTO:
         params["mailto"] = MAILTO
 
-    data = _safe_get_json(session, url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=22)
     if not data:
         return []
     results = data.get("results") or []
     return [{"source": "openalex", "item": it or {}, "query_used": q} for it in results]
 
 
-def _query_unpaywall_by_doi(session: requests.Session, doi: str) -> Optional[Dict[str, Any]]:
+def _query_unpaywall_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
     if not doi or not UNPAYWALL_EMAIL:
         return None
     url = f"https://api.unpaywall.org/v2/{doi}"
     params = {"email": UNPAYWALL_EMAIL}
-    data = _safe_get_json(session, url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=22)
     if not data:
         return None
     return {"source": "unpaywall", "item": data or {}, "query_used": f"doi:{doi}"}
 
 
+# ---------- candidate extraction ----------
 def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], int]:
+    """
+    Returns (doi, title_norm, year, author_surnames[], api_score_if_any)
+    """
     src = _safe_strip((cand or {}).get("source"))
     item = (cand or {}).get("item") or {}
 
@@ -329,6 +368,7 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
     return doi, title, year, authors, api_score
 
 
+# ---------- scoring + classification ----------
 def _score(
     ref_title: str,
     ref_authors: List[str],
@@ -371,22 +411,20 @@ def _classify(
     score: int,
     cand_has_doi: bool,
 ) -> str:
+    # DOI match is strongest
     if doi_match and title_score >= 55:
         return "verified"
 
-    if title_score >= 88 and (author_overlap >= 1 or not ref_has_authors):
+    # very strong bibliographic match
+    if title_score >= 88 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 120):
         return "verified"
 
-    if title_score >= 82 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 120):
-        return "verified"
-
-    if title_score >= 75 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 105):
+    # strong match
+    if title_score >= 80 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 105):
         return "likely"
 
-    if title_score >= 68 and (author_overlap >= 1 or year_match == 1 or not ref_has_authors):
-        return "likely"
-
-    if title_score >= 60:
+    # decent match
+    if title_score >= 70 and (author_overlap >= 1 or year_match == 1 or not ref_has_authors):
         return "needs_review"
 
     return "not_found"
@@ -433,6 +471,7 @@ def _pick_best_candidate(
     return best, best_meta, best_doi_match
 
 
+# ---------- public functions ----------
 def verify_references_batch(
     references: List[str],
     max_to_check: int = 0,
@@ -440,8 +479,12 @@ def verify_references_batch(
     use_crossref: bool = True,
     use_openalex: bool = True,
     use_unpaywall: bool = True,
-    use_semantic_scholar: bool = False,
+    use_semantic_scholar: bool = False,  # kept for compatibility
 ) -> List[Dict[str, Any]]:
+    """
+    Verifies up to max_to_check references and returns ONLY rows (no summary).
+    Kept for backward compatibility.
+    """
     refs = [r for r in (references or []) if _safe_strip(r)]
     if not refs:
         return []
@@ -450,8 +493,6 @@ def verify_references_batch(
         refs = refs[: max_to_check]
 
     rows: List[Dict[str, Any]] = []
-
-    session = requests.Session()
 
     for ref in refs:
         ref_raw = _safe_strip(ref)
@@ -486,16 +527,17 @@ def verify_references_batch(
         }
 
         try:
+            # 1) Crossref
             crossref_candidates: List[Dict[str, Any]] = []
             if use_crossref:
                 if ref_doi:
-                    hit = _query_crossref_by_doi(session, ref_doi)
+                    hit = _query_crossref_by_doi(ref_doi)
                     if hit:
                         crossref_candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
 
                 a_query = _authors_to_query(ref_authors, max_join=3)
-                crossref_candidates.extend(_query_crossref(session, query, a_query))
+                crossref_candidates.extend(_query_crossref(query, a_query))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
 
             best, meta, doi_match = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, crossref_candidates)
@@ -503,44 +545,50 @@ def verify_references_batch(
                 cand_doi, cand_title, cand_year, cand_auths, _ = _candidate_fields(best)
                 row["attempts"].append(_attempt_summary("crossref", cand_doi, cand_title, cand_year, meta, doi_match))
 
-                status = _classify(
-                    ref_has_authors=ref_has_authors,
-                    doi_match=doi_match,
-                    title_score=int(meta["title_score"]),
-                    author_overlap=int(meta["author_overlap"]),
-                    year_match=int(meta["year_match"]),
-                    score=int(meta["score"]),
-                    cand_has_doi=bool(_safe_strip(cand_doi)),
+                status = _normalize_verify_status(
+                    _classify(
+                        ref_has_authors=ref_has_authors,
+                        doi_match=doi_match,
+                        title_score=int(meta["title_score"]),
+                        author_overlap=int(meta["author_overlap"]),
+                        year_match=int(meta["year_match"]),
+                        score=int(meta["score"]),
+                        cand_has_doi=bool(_safe_strip(cand_doi)),
+                    )
                 )
-                status = _normalize_verify_status(status)
 
                 if status in {"verified", "likely"}:
-                    row["status"] = status
-                    row["source"] = "crossref"
-                    row["score"] = int(meta["score"])
-                    row["doi"] = _safe_strip(cand_doi)
-                    row["doi_match"] = bool(doi_match)
-                    row["matched_year"] = _safe_strip(cand_year)
-                    row["matched_authors"] = ", ".join([a for a in cand_auths if a])
-                    row["matched_title"] = _safe_strip(cand_title)
-                    row["title_score"] = int(meta["title_score"])
-                    row["author_overlap"] = int(meta["author_overlap"])
-                    row["year_match"] = int(meta["year_match"])
+                    row.update(
+                        {
+                            "status": status,
+                            "source": "crossref",
+                            "score": int(meta["score"]),
+                            "doi": _safe_strip(cand_doi),
+                            "doi_match": bool(doi_match),
+                            "matched_year": _safe_strip(cand_year),
+                            "matched_authors": ", ".join([a for a in cand_auths if a]),
+                            "matched_title": _safe_strip(cand_title),
+                            "title_score": int(meta["title_score"]),
+                            "author_overlap": int(meta["author_overlap"]),
+                            "year_match": int(meta["year_match"]),
+                        }
+                    )
                     if not row["author"]:
                         row["author"] = row["matched_authors"]
                     rows.append(row)
                     continue
 
+            # 2) OpenAlex
             openalex_candidates: List[Dict[str, Any]] = []
             if use_openalex:
                 crossref_best_doi = _safe_strip(_candidate_fields(best)[0]) if best is not None else ""
                 if crossref_best_doi:
-                    hit = _query_openalex_by_doi(session, crossref_best_doi)
+                    hit = _query_openalex_by_doi(crossref_best_doi)
                     if hit:
                         openalex_candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-                openalex_candidates.extend(_query_openalex(session, query))
+                openalex_candidates.extend(_query_openalex(query))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
 
             best2, meta2, doi_match2 = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, openalex_candidates)
@@ -548,34 +596,40 @@ def verify_references_batch(
                 cand_doi2, cand_title2, cand_year2, cand_auths2, _ = _candidate_fields(best2)
                 row["attempts"].append(_attempt_summary("openalex", cand_doi2, cand_title2, cand_year2, meta2, doi_match2))
 
-                status2 = _classify(
-                    ref_has_authors=ref_has_authors,
-                    doi_match=doi_match2,
-                    title_score=int(meta2["title_score"]),
-                    author_overlap=int(meta2["author_overlap"]),
-                    year_match=int(meta2["year_match"]),
-                    score=int(meta2["score"]),
-                    cand_has_doi=bool(_safe_strip(cand_doi2)),
+                status2 = _normalize_verify_status(
+                    _classify(
+                        ref_has_authors=ref_has_authors,
+                        doi_match=doi_match2,
+                        title_score=int(meta2["title_score"]),
+                        author_overlap=int(meta2["author_overlap"]),
+                        year_match=int(meta2["year_match"]),
+                        score=int(meta2["score"]),
+                        cand_has_doi=bool(_safe_strip(cand_doi2)),
+                    )
                 )
-                status2 = _normalize_verify_status(status2)
 
                 if status2 in {"verified", "likely"}:
-                    row["status"] = status2
-                    row["source"] = "openalex"
-                    row["score"] = int(meta2["score"])
-                    row["doi"] = _safe_strip(cand_doi2)
-                    row["doi_match"] = bool(doi_match2)
-                    row["matched_year"] = _safe_strip(cand_year2)
-                    row["matched_authors"] = ", ".join([a for a in cand_auths2 if a])
-                    row["matched_title"] = _safe_strip(cand_title2)
-                    row["title_score"] = int(meta2["title_score"])
-                    row["author_overlap"] = int(meta2["author_overlap"])
-                    row["year_match"] = int(meta2["year_match"])
+                    row.update(
+                        {
+                            "status": status2,
+                            "source": "openalex",
+                            "score": int(meta2["score"]),
+                            "doi": _safe_strip(cand_doi2),
+                            "doi_match": bool(doi_match2),
+                            "matched_year": _safe_strip(cand_year2),
+                            "matched_authors": ", ".join([a for a in cand_auths2 if a]),
+                            "matched_title": _safe_strip(cand_title2),
+                            "title_score": int(meta2["title_score"]),
+                            "author_overlap": int(meta2["author_overlap"]),
+                            "year_match": int(meta2["year_match"]),
+                        }
+                    )
                     if not row["author"]:
                         row["author"] = row["matched_authors"]
                     rows.append(row)
                     continue
 
+            # 3) Unpaywall as DOI validation if we have a DOI
             best_doi_any = ""
             if best2 is not None:
                 best_doi_any = _safe_strip(_candidate_fields(best2)[0])
@@ -585,57 +639,61 @@ def verify_references_batch(
                 best_doi_any = _safe_strip(ref_doi)
 
             if use_unpaywall and best_doi_any:
-                up = _query_unpaywall_by_doi(session, best_doi_any)
+                up = _query_unpaywall_by_doi(best_doi_any)
                 if up is not None:
                     cand_du, cand_tu, cand_yu, cand_au, _ = _candidate_fields(up)
                     meta_u = _score(ref_title, ref_authors, ref_year, cand_tu, cand_au, cand_yu, 0)
                     doi_match_u = _doi_equal(ref_doi, cand_du) if ref_doi else False
                     meta_u["score"] = int(meta_u["score"] + (35 if doi_match_u else 0))
-
                     row["attempts"].append(_attempt_summary("unpaywall", cand_du, cand_tu, cand_yu, meta_u, doi_match_u))
 
-                    status_u = _classify(
-                        ref_has_authors=ref_has_authors,
-                        doi_match=doi_match_u,
-                        title_score=int(meta_u["title_score"]),
-                        author_overlap=int(meta_u["author_overlap"]),
-                        year_match=int(meta_u["year_match"]),
-                        score=int(meta_u["score"]),
-                        cand_has_doi=bool(_safe_strip(cand_du)),
+                    status_u = _normalize_verify_status(
+                        _classify(
+                            ref_has_authors=ref_has_authors,
+                            doi_match=doi_match_u,
+                            title_score=int(meta_u["title_score"]),
+                            author_overlap=int(meta_u["author_overlap"]),
+                            year_match=int(meta_u["year_match"]),
+                            score=int(meta_u["score"]),
+                            cand_has_doi=bool(_safe_strip(cand_du)),
+                        )
                     )
-                    status_u = _normalize_verify_status(status_u)
-
                     if status_u in {"verified", "likely"}:
-                        row["status"] = status_u
-                        row["source"] = "unpaywall"
-                        row["score"] = int(meta_u["score"])
-                        row["doi"] = _safe_strip(cand_du)
-                        row["doi_match"] = bool(doi_match_u)
-                        row["matched_year"] = _safe_strip(cand_yu)
-                        row["matched_authors"] = ""
-                        row["matched_title"] = _safe_strip(cand_tu)
-                        row["title_score"] = int(meta_u["title_score"])
-                        row["author_overlap"] = int(meta_u["author_overlap"])
-                        row["year_match"] = int(meta_u["year_match"])
-                        if not row["author"]:
-                            row["author"] = row["matched_authors"]
+                        row.update(
+                            {
+                                "status": status_u,
+                                "source": "unpaywall",
+                                "score": int(meta_u["score"]),
+                                "doi": _safe_strip(cand_du),
+                                "doi_match": bool(doi_match_u),
+                                "matched_year": _safe_strip(cand_yu),
+                                "matched_authors": "",
+                                "matched_title": _safe_strip(cand_tu),
+                                "title_score": int(meta_u["title_score"]),
+                                "author_overlap": int(meta_u["author_overlap"]),
+                                "year_match": int(meta_u["year_match"]),
+                            }
+                        )
                         rows.append(row)
                         continue
 
+            # 4) fallback to best attempt
             if row["attempts"]:
                 row["attempts"].sort(key=lambda x: int(x.get("score") or 0), reverse=True)
                 top = row["attempts"][0]
 
-                fallback = _classify(
-                    ref_has_authors=ref_has_authors,
-                    doi_match=bool(top.get("doi_match")),
-                    title_score=int(top.get("title_score") or 0),
-                    author_overlap=int(top.get("author_overlap") or 0),
-                    year_match=int(top.get("year_match") or 0),
-                    score=int(top.get("score") or 0),
-                    cand_has_doi=bool(_safe_strip(top.get("doi"))),
+                fallback = _normalize_verify_status(
+                    _classify(
+                        ref_has_authors=ref_has_authors,
+                        doi_match=bool(top.get("doi_match")),
+                        title_score=int(top.get("title_score") or 0),
+                        author_overlap=int(top.get("author_overlap") or 0),
+                        year_match=int(top.get("year_match") or 0),
+                        score=int(top.get("score") or 0),
+                        cand_has_doi=bool(_safe_strip(top.get("doi"))),
+                    )
                 )
-                row["status"] = _normalize_verify_status(fallback)
+                row["status"] = fallback
                 row["source"] = _safe_strip(top.get("source"))
                 row["score"] = int(top.get("score") or 0)
                 row["doi"] = _safe_strip(top.get("doi"))
@@ -658,3 +716,53 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
+
+def verify_references_batched(
+    references: List[str],
+    batch_size: int = 120,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    use_unpaywall: bool = True,
+    use_semantic_scholar: bool = False,
+) -> Dict[str, Any]:
+    """
+    Verifies ALL references by batching, then returns:
+      {"summary": {...}, "rows": [...]}
+
+    This is what your UI + main.py extract_tables already expects.
+    """
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    if not refs:
+        return {"summary": {"total": 0, "verified": 0, "likely": 0, "needs_review": 0, "not_found": 0, "offline": 0}, "rows": []}
+
+    try:
+        bs = int(batch_size or 0)
+    except Exception:
+        bs = 120
+    bs = max(1, min(bs, 400))
+
+    all_rows: List[Dict[str, Any]] = []
+
+    for i in range(0, len(refs), bs):
+        chunk = refs[i : i + bs]
+        chunk_rows = verify_references_batch(
+            chunk,
+            max_to_check=0,
+            throttle_s=throttle_s,
+            use_crossref=use_crossref,
+            use_openalex=use_openalex,
+            use_unpaywall=use_unpaywall,
+            use_semantic_scholar=use_semantic_scholar,
+        )
+        all_rows.extend(chunk_rows)
+
+    # summary
+    counts = {"verified": 0, "likely": 0, "needs_review": 0, "not_found": 0, "offline": 0}
+    for r in all_rows:
+        st = _normalize_verify_status(r.get("status"))
+        counts[st] = counts.get(st, 0) + 1
+
+    summary = {"total": len(all_rows), **counts}
+    return {"summary": summary, "rows": all_rows}
