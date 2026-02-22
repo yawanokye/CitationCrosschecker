@@ -1,79 +1,26 @@
-# engine.py
+# verify.py
+import os
 import re
-import io
-import unicodedata
-from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict, Any
-from collections import defaultdict, Counter
+import time
+from typing import List, Dict, Any, Optional, Tuple
 
-try:
-    from docx import Document
-    DOCX_OK = True
-except Exception:
-    DOCX_OK = False
-
-try:
-    import pdfplumber
-    PDF_OK = True
-except Exception:
-    PDF_OK = False
-
-try:
-    from verify import verify_references_batch
-    VERIFY_OK = True
-except Exception:
-    VERIFY_OK = False
-
-
-YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
-YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
-
-REF_HEADINGS = [
-    r"^\s*references?\s*(?:list)?\s*$",
-    r"^\s*bibliograph(?:y|ies)\s*$",
-    r"^\s*works\s+cited\s*$",
-    r"^\s*literature\s+cited\s*$",
-]
-
-# Relaxed match: PDF/DOCX extraction can merge "REFERENCES" with first entry like "REFERENCES [1] ..."
-REF_HEADING_RELAXED = re.compile(
-    r"\b(references?|bibliograph(?:y|ies)|works\s+cited|literature\s+cited)\b",
-    flags=re.I,
-)
-
-DISCOURSE_PREFIXES = {
-    "similarly", "however", "moreover", "likewise", "further", "also",
-    "thus", "therefore", "in particular", "in response", "in addition",
-    "for example", "for instance", "recently", "specifically"
-}
-
-LEAD_WORDS = {
-    "see", "cf", "e.g", "i.e", "according to", "by", "from", "in", "as",
-    "for example", "for instance"
-}
-
-GEO_PREFIXES = {
-    "africa", "asia", "europe", "america", "latin america", "sub-saharan africa",
-    "ghana", "nigeria", "kenya", "south africa", "usa", "uk", "china", "india"
-}
-
-COMMON_NONAUTHOR = {
-    "war", "crisis", "revolution", "scandal", "attacks", "volatility", "model",
-    "countries", "coefficients", "estimates", "computation", "instance"
-}
-
-ORG_ALIASES = {
-    "who": ["who", "world health organization", "world health organisation"],
-    "un": ["un", "united nations", "u.n.", "united nations organisation", "united nations organization"],
-    "oecd": ["oecd", "organisation for economic co-operation and development", "organization for economic cooperation and development"],
-    "imf": ["imf", "international monetary fund"],
-    "world bank": ["world bank", "international bank for reconstruction and development", "ibrd"],
-}
-ORG_ACRONYMS = {k.upper() for k in ["WHO", "UN", "OECD", "IMF", "WORLD BANK", "IBRD"]}
+import requests
+from rapidfuzz import fuzz
 
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
 
+MAILTO = (
+    os.getenv("CITATION_CROSSCHECKER_MAILTO")
+    or os.getenv("CROSSREF_MAILTO")
+    or os.getenv("OPENALEX_MAILTO")
+    or ""
+)
+MAILTO = (MAILTO or "").strip()
 
+UNPAYWALL_EMAIL = (os.getenv("UNPAYWALL_EMAIL") or MAILTO or "").strip()
+
+
+# ---------- helpers ----------
 def _normalize_verify_status(s: str) -> str:
     st = (s or "").strip().lower().replace(" ", "_")
     if st not in _ALLOWED_VERIFY_STATUSES:
@@ -81,829 +28,657 @@ def _normalize_verify_status(s: str) -> str:
     return st
 
 
-@dataclass
-class InTextCitation:
-    style: str
-    raw: str
-    key: str
-    year: Optional[str] = None
-    surnames: Optional[Tuple[str, ...]] = None
-    number: Optional[int] = None
-    flags: Optional[str] = None
+def _safe_str(x: Any) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    try:
+        return str(x)
+    except Exception:
+        return ""
 
 
-@dataclass
-class ReferenceEntry:
-    raw: str
-    key: str
-    year: Optional[str] = None
-    surnames: Optional[Tuple[str, ...]] = None
-    number: Optional[int] = None
+def _safe_strip(x: Any) -> str:
+    return _safe_str(x).strip()
 
 
-def norm_space(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
-
-
-def _strip_accents(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s)
-    return "".join(ch for ch in s if not unicodedata.combining(ch))
-
-
-def norm_token(s: str) -> str:
-    s = (s or "").replace("’", "'")
-    s = _strip_accents(s)
-    s = s.lower().strip()
-    s = re.sub(r"[^a-z0-9\-\s'&\.]", " ", s)
+def _norm_text(s: str) -> str:
+    s = _safe_strip(s).lower()
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"[^\w\s\-:/]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
-def canon_org(name: str) -> str:
-    n = norm_token(name)
-    for canon, variants in ORG_ALIASES.items():
-        for v in variants:
-            if n == norm_token(v):
-                return canon
-    return n
-
-
-def is_known_org(text: str) -> bool:
-    t = (text or "").strip()
-    if t.upper() in ORG_ACRONYMS:
-        return True
-    c = canon_org(t)
-    return c in ORG_ALIASES.keys()
-
-
-def key_author_year(first_surname: str, year: str) -> str:
-    return f"au_{norm_token(first_surname)}_{(year or '').lower()}"
-
-
-def key_numeric(n: int) -> str:
-    return f"n_{int(n)}"
-
-
-def clean_surname(tok: str) -> str:
-    t = (tok or "").strip()
-    t = t.replace("&", " ")
-    t = re.sub(r"\bet\s+al\.?\b", "", t, flags=re.I)
-    t = re.sub(r"[^A-Za-z\-'\s]", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    if not t:
-        return ""
-    return t.split()[-1].strip()
-
-
-def extract_surnames_from_blob(auth_blob: str) -> List[str]:
-    b = (auth_blob or "").strip()
-    b = b.replace("&", " and ")
-    b = re.sub(r"\s+", " ", b).strip()
-
-    parts = [p.strip() for p in re.split(r",|\band\b", b, flags=re.I) if p.strip()]
-
-    surnames = []
-    for p in parts:
-        s = clean_surname(p)
-        if s:
-            surnames.append(s)
-
-    out = []
-    seen = set()
-    for s in surnames:
-        sn = norm_token(s)
-        if sn and sn not in seen:
-            out.append(s)
-            seen.add(sn)
-    return out
-
-
-def _plausible_author_blob(blob: str) -> bool:
-    b = norm_space(blob)
-    if not b:
-        return False
-
-    bn = norm_token(b)
-
-    if bn in {"al", "et", "et al"}:
-        return False
-
-    if len(b) > 65:
-        return False
-
-    toks = [t for t in re.split(r"\s+", bn) if t]
-    if not toks:
-        return False
-
-    if len(toks) == 1 and toks[0] in COMMON_NONAUTHOR:
-        return False
-
-    if not any(re.fullmatch(r"[a-z][a-z\-']{1,}", t) for t in toks):
-        return False
-
-    return True
-
-
-def _scrub_leading_prefixes(author_blob: str) -> Tuple[str, List[str]]:
-    flags = []
-    s = norm_space(author_blob).strip(" ,")
-    if not s:
-        return "", flags
-
-    while True:
-        m = re.match(r"^([A-Za-z][A-Za-z\s\-']+)\s*,\s*(.+)$", s)
-        if not m:
-            break
-        left = norm_token(m.group(1))
-        rest = m.group(2).strip()
-        if left in DISCOURSE_PREFIXES or left in GEO_PREFIXES or left in COMMON_NONAUTHOR:
-            flags.append(f"prefix_removed:{left}")
-            s = rest
-            continue
-        break
-
-    for lw in sorted(LEAD_WORDS, key=len, reverse=True):
-        if norm_token(s).startswith(lw + " "):
-            flags.append(f"lead_word_removed:{lw}")
-            s = s[len(lw):].strip(" ,")
-            break
-
-    return s, flags
-
-
-# -----------------------------
-# File readers
-# -----------------------------
-def read_docx_paragraphs(file_bytes: bytes) -> List[str]:
-    if not DOCX_OK:
-        raise RuntimeError("python-docx not installed")
-    doc = Document(io.BytesIO(file_bytes))
-    return [norm_space(p.text) for p in doc.paragraphs if norm_space(p.text)]
-
-
-def read_pdf_text(file_bytes: bytes) -> str:
-    if not PDF_OK:
-        raise RuntimeError("pdfplumber not installed")
-    out = []
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for p in pdf.pages:
-            out.append(p.extract_text() or "")
-    return "\n".join(out)
-def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
-    """Fast DOCX strategy: iterate paragraphs once and split at References heading."""
-    if not DOCX_OK:
-        raise RuntimeError("python-docx not installed")
-
-    doc = Document(io.BytesIO(file_bytes))
-
-    main_lines: List[str] = []
-    ref_lines: List[str] = []
-    in_refs = False
-    heading_line = ""
-
-    for p in doc.paragraphs:
-        t = norm_space(p.text)
-        if not t:
-            continue
-
-        if not in_refs:
-            # strict match
-            for pat in REF_HEADINGS:
-                if re.search(pat, t, flags=re.I):
-                    in_refs = True
-                    heading_line = t
-                    break
-
-            # relaxed match: "REFERENCES [1] ..."
-            if not in_refs:
-                m = REF_HEADING_RELAXED.search(t)
-                if m and m.start() <= 4 and len(t) <= 160:
-                    in_refs = True
-                    heading_line = t
-                    tail = t[m.end():].strip(" :-\t")
-                    if tail:
-                        ref_lines.append(tail)
-                    continue
-
-        if in_refs:
-            ref_lines.append(t)
-        else:
-            main_lines.append(t)
-
-    msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
-    return "\n".join(main_lines).strip(), ref_lines, msg
-
-
-
-# -----------------------------
-# Reference extraction
-# -----------------------------
-def _find_reference_heading(lines: List[str]) -> Tuple[int, str]:
-    """Return (index, tail_after_heading).
-
-    Many IEEE PDFs become a line like "REFERENCES [1] ..." after extraction.
-    """
-    for i, line in enumerate(lines):
-        s = (line or "").strip()
-        if not s:
-            continue
-
-        # Strict heading match (line is only heading)
-        for pat in REF_HEADINGS:
-            if re.search(pat, s, flags=re.I):
-                return i, ""
-
-        # Relaxed heading match (heading plus first entry on same line)
-        m = REF_HEADING_RELAXED.search(s)
-        if m:
-            # Heading should be near the start, and the line shouldn't be extremely long
-            if m.start() <= 4 and len(s) <= 160:
-                tail = s[m.end():].strip(" :-\t")
-                return i, tail
-
-    return -1, ""
-
-
-
-def _looks_like_new_apa_reference_start(line: str) -> bool:
-    s = (line or "").strip()
-    if not s:
-        return False
-    if not re.match(r"^[A-Z][A-Za-z\-']+(?:\s+(?:Jr|Sr|II|III|IV))?(?:,|\s)", s):
-        return False
-    if re.search(rf"\(\s*{YEAR}\s*\)", s):
-        return True
-    if YEAR_RE.search(s[:90]):
-        return True
-    return False
-
-
-def _looks_like_new_numeric_reference_start(line: str) -> bool:
-    s = (line or "").strip()
-    if not s:
-        return False
-    if re.match(r"^\s*\[\d+\]\s+", s):
-        return True
-    if re.match(r"^\s*\d{1,4}[\.\)]\s+", s):
-        return True
-    # Guard: avoid treating a year like "2019 ..." as a numeric reference number
-    m = re.match(r"^\s*(\d{4})\s+", s)
-    if m and YEAR_RE.fullmatch(m.group(1)):
-        return False
-    return False
-
-
-def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
-    raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
-    if not raw_lines:
-        return []
-
-    merged: List[str] = []
-    buf = ""
-
-    for ln in raw_lines:
-        s = ln.strip()
-
-        is_doi_line = bool(re.match(r"^\s*(doi\s*:\s*)?10\.\d{4,9}/", s, flags=re.I)) or \
-                      bool(re.match(r"^\s*https?://doi\.org/10\.\d{4,9}/", s, flags=re.I)) or \
-                      bool(re.match(r"^\s*10\.\d{4,9}/", s, flags=re.I))
-
-        apa_start = _looks_like_new_apa_reference_start(s)
-        numeric_start = _looks_like_new_numeric_reference_start(s)
-
-        if is_doi_line:
-            buf = (buf + " " + s).strip() if buf else s
-            continue
-
-        if apa_start or numeric_start:
-            if buf:
-                merged.append(buf.strip())
-            buf = s
-        else:
-            buf = (buf + " " + s).strip() if buf else s
-
-    if buf:
-        merged.append(buf.strip())
-
-    return [m for m in merged if len(m) >= 10]
-
-
-# -----------------------------
-# Reference parsers
-# -----------------------------
-def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
-    r = (ref_raw or "").strip()
-    if not r:
-        return None
-
-    m = re.search(rf"\(\s*({YEAR})\s*\)", r, flags=re.I)
-    if m:
-        year = m.group(1)
-        pre = r[: m.start()].strip()
-    else:
-        m2 = YEAR_RE.search(r)
-        if not m2:
-            return None
-        year = m2.group(1)
-        pre = r[: m2.start()].strip()
-
-    pre = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", pre).strip()
-
-    if is_known_org(pre) or pre.upper() in ORG_ACRONYMS:
-        k = f"org_{canon_org(pre)}_{year.lower()}"
-        return ReferenceEntry(raw=r, key=k, year=year, surnames=(pre,), number=None)
-
-    first = pre.split(",")[0].strip() if "," in pre else (pre.split()[0].strip() if pre.split() else "")
-    if not first:
-        return None
-    return ReferenceEntry(raw=r, key=key_author_year(first, year), year=year, surnames=(first,), number=None)
-
-
-def _numeric_ref_guard(n: int, remainder: str) -> bool:
-    # Typical reference lists are not in the thousands
-    if n < 1 or n > 5000:
-        return False
-
-    rem = (remainder or "").strip()
-    if len(rem) < 4:
-        return False
-
-    # Avoid capturing years like "2019 ..." as reference numbers
-    if YEAR_RE.fullmatch(str(n)):
-        return False
-
-    # Avoid capturing DOI prefixes or decimals as "10 ..."
-    if rem.startswith(".") or rem.lower().startswith("0."):
-        return False
-
-    # Must have some letters early on, otherwise it's probably a table/page/numbering artifact
-    head = rem[:40]
-    if not re.search(r"[A-Za-z]", head):
-        return False
-
-    return True
-
-
-def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
-    r = (ref_raw or "").strip()
-    if not r:
-        return None
-
-    m = re.match(r"^\s*\[\s*(\d+)\s*\]\s*(.+)$", r)
-    if m:
-        n = int(m.group(1))
-        rem = m.group(2)
-        if _numeric_ref_guard(n, rem):
-            return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
-        return None
-
-    m = re.match(r"^\s*(\d+)\s*[\.\)]\s*(.+)$", r)
-    if m:
-        n = int(m.group(1))
-        rem = m.group(2)
-        if _numeric_ref_guard(n, rem):
-            return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
-        return None
-
-    # Removed the overly-broad pattern: r"^\s*(\d+)\s+(.+)$"
-    # It caused false positives on lines starting with years, page numbers, etc.
-    return None
-
-
-# -----------------------------
-# In-text extraction (APA/Harvard)
-# -----------------------------
-def _split_parenthetical_group(inside: str) -> List[str]:
-    parts = [p.strip() for p in (inside or "").split(";")]
-    return [p for p in parts if p and YEAR_RE.search(p)]
-
-
-def _parse_one_author_year_piece(piece: str) -> Optional[Tuple[str, str, Tuple[str, ...], str]]:
-    seg = norm_space(piece).strip()
-    if not seg:
-        return None
-
-    y_m = YEAR_RE.search(seg)
-    if not y_m:
-        return None
-    y = y_m.group(1)
-
-    left = seg[:y_m.start()].strip().rstrip(",").strip()
-    if not left:
-        return None
-
-    lead_flag = ""
-    for w in sorted(LEAD_WORDS, key=len, reverse=True):
-        if norm_token(left).startswith(w + " "):
-            lead_flag = w
-            left = left[len(w):].strip(" ,")
-            break
-
-    left2, scrub_flags = _scrub_leading_prefixes(left)
-    left2 = left2.strip()
-
-    if not _plausible_author_blob(left2):
-        return None
-
-    flags = []
-    if lead_flag:
-        flags.append(f"lead_word:{lead_flag}")
-    flags.extend(scrub_flags)
-
-    if is_known_org(left2):
-        return (seg, y, (left2,), ";".join(flags))
-
-    if re.search(r"\bet\s+al\.?\b", left2, flags=re.I):
-        first = clean_surname(left2)
-        if not first:
-            return None
-        return (seg, y, (first,), ";".join(flags) + (";etal" if flags else "etal"))
-
-    surnames = extract_surnames_from_blob(left2)
-    if not surnames:
-        return None
-
-    return (seg, y, tuple(surnames), ";".join(flags))
-
-
-def extract_author_year_citations(text: str) -> List[InTextCitation]:
-    txt = text or ""
-    out: List[InTextCitation] = []
-    seen = set()
-
-    par_pat = re.compile(rf"\(([^()]*\b{YEAR}\b[^()]*)\)", flags=re.I)
-
-    for m in par_pat.finditer(txt):
-        inside = m.group(1).strip()
-        pieces = _split_parenthetical_group(inside) or [inside]
-
-        for piece in pieces:
-            parsed = _parse_one_author_year_piece(piece)
-            if not parsed:
-                continue
-            seg, y, surnames, flags = parsed
-
-            if is_known_org(surnames[0]):
-                k = f"org_{canon_org(surnames[0])}_{y.lower()}"
-            else:
-                k = key_author_year(surnames[0], y)
-
-            raw = f"({seg})"
-            if raw in seen:
-                continue
-            out.append(InTextCitation("author-year", raw, k, year=y, surnames=surnames, flags=flags))
-            seen.add(raw)
-
-    narr_pat = re.compile(
-        rf"""
-        (?P<lead>\b(?:according\s+to|see|by|from|in|as|for\s+example|for\s+instance|cf)\b\s+)?   # lead word
-        (?P<authors>
-            (?:[A-Z][A-Za-z\-']+(?:'s)?\s+et\.?\s+al\.?)                                         # Surname et al.
-            |
-            (?:[A-Z][A-Za-z\-']+(?:'s)?)                                                         # first token
-            (?:\s*,\s*[A-Z][A-Za-z\-']+(?:'s)?)*                                                 # more tokens via comma
-            (?:\s*,?\s*(?:and|&)\s*[A-Z][A-Za-z\-']+(?:'s)?)*                                    # final and/&
-        )
-        \s*\(\s*(?P<year>{YEAR})\s*\)
-        """,
-        flags=re.VERBOSE | re.I,
-    )
-
-    for m in narr_pat.finditer(txt):
-        lead = (m.group("lead") or "").strip()
-        authors_blob = (m.group("authors") or "").strip()
-        y = m.group("year")
-
-        authors_blob_clean = re.sub(r"\'s\b", "", authors_blob, flags=re.I).strip()
-        cleaned, scrub_flags = _scrub_leading_prefixes(authors_blob_clean)
-        if not cleaned:
-            continue
-
-        if not _plausible_author_blob(cleaned):
-            continue
-
-        flags_out = []
-        if lead:
-            flags_out.append(f"lead_word:{norm_token(lead).strip()}")
-        flags_out.extend(scrub_flags)
-        if re.search(r"\'s\s*\(", authors_blob, flags=re.I):
-            flags_out.append("possessive")
-
-        if re.search(r"\bet\s+al\.?\b", cleaned, flags=re.I):
-            first = clean_surname(cleaned)
-            if not first:
-                continue
-            k = key_author_year(first, y)
-            raw = norm_space(m.group(0))
-            if raw not in seen:
-                out.append(InTextCitation("author-year", raw, k, year=y, surnames=(first,), flags=";".join(flags_out + ["etal"])))
-                seen.add(raw)
-            continue
-
-        if is_known_org(cleaned):
-            k = f"org_{canon_org(cleaned)}_{y.lower()}"
-            raw = norm_space(m.group(0))
-            if raw not in seen:
-                out.append(InTextCitation("author-year", raw, k, year=y, surnames=(cleaned,), flags=";".join(flags_out)))
-                seen.add(raw)
-            continue
-
-        surnames = extract_surnames_from_blob(cleaned)
-        if not surnames:
-            continue
-
-        k = key_author_year(surnames[0], y)
-        raw = norm_space(m.group(0))
-        if raw not in seen:
-            out.append(InTextCitation("author-year", raw, k, year=y, surnames=tuple(surnames), flags=";".join(flags_out)))
-            seen.add(raw)
-
-    return out
-
-
-# -----------------------------
-# Numeric extraction (IEEE/Vancouver)
-# -----------------------------
-_SUP_DIGITS = {"⁰":"0","¹":"1","²":"2","³":"3","⁴":"4","⁵":"5","⁶":"6","⁷":"7","⁸":"8","⁹":"9"}
-
-def _sup_to_int(s: str) -> Optional[int]:
+def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 22) -> Optional[dict]:
     try:
-        digits = "".join(_SUP_DIGITS.get(ch, "") for ch in s)
-        return int(digits) if digits else None
+        headers = {"User-Agent": "CitationCrosschecker/1.0", "Accept": "application/json"}
+        r = requests.get(url, params=params, timeout=timeout, headers=headers)
+        if r.status_code != 200:
+            return None
+        return r.json()
     except Exception:
         return None
 
-def _expand_numeric_chunks(inside: str) -> List[int]:
-    inside = inside.replace("–", "-")
-    chunks = [c.strip() for c in inside.split(",") if c.strip()]
-    nums: List[int] = []
-    for c in chunks:
-        m = re.match(r"^(\d+)\s*-\s*(\d+)$", c)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-            if a <= b and (b - a) <= 2000:
-                nums.extend(range(a, b + 1))
-        else:
-            if c.isdigit():
-                nums.append(int(c))
-    return nums
 
-def extract_ieee_numeric_citations(text: str) -> List[InTextCitation]:
-    out: List[InTextCitation] = []
-    pat = re.compile(r"\[\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*\]")
-    for m in pat.finditer(text or ""):
-        raw = m.group(0)
-        inside = m.group(1)
-        for n in _expand_numeric_chunks(inside):
-            out.append(InTextCitation("numeric", raw, key_numeric(n), number=n))
-    return out
+def _extract_year(text: str) -> str:
+    m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", text or "", flags=re.I)
+    return (_safe_str(m.group(1)) + (_safe_str(m.group(2)) if m and m.group(2) else "")).lower() if m else ""
 
-def extract_vancouver_numeric_citations(text: str) -> List[InTextCitation]:
-    out: List[InTextCitation] = []
-    paren = re.compile(r"\(\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*\)")
-    for m in paren.finditer(text or ""):
-        inside = m.group(1)
-        if re.fullmatch(rf"{YEAR}", inside.strip(), flags=re.I):
+
+def _strip_leading_numbering(text: str) -> str:
+    t = _safe_strip(text)
+    t = re.sub(r"^\s*(\[\s*\d+\s*\]|\d+\s*[\.\)])\s*", "", t)
+    return t.strip()
+
+
+def _extract_doi(text: str) -> str:
+    t = _safe_str(text)
+    m = re.search(r"(10\.\d{4,9}/[^\s]+)", t, flags=re.I)
+    if not m:
+        return ""
+    return _safe_strip(m.group(1)).rstrip(").,;")
+
+
+def _clean_query_string(s: str) -> str:
+    s = _safe_strip(s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > 280:
+        s = s[:280].rstrip()
+    return s
+
+
+def _doi_equal(a: str, b: str) -> bool:
+    a = _safe_strip(a).lower()
+    b = _safe_strip(b).lower()
+    if not a or not b:
+        return False
+    return a == b
+
+
+# ---------- parsing: title + authors ----------
+def _extract_title_guess(ref: str) -> str:
+    """
+    Best-effort title guess:
+    - remove leading numbering
+    - remove DOI + doi.org link
+    - remove URLs/noisy "Retrieved from / Link via"
+    - prefer sentence after (YEAR) when present
+    """
+    t = _strip_leading_numbering(ref)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # remove DOI forms and doi.org links
+    t = re.sub(r"(doi\s*:\s*)?10\.\d{4,9}/\S+", "", t, flags=re.I)
+    t = re.sub(r"https?://doi\.org/10\.\d{4,9}/\S+", "", t, flags=re.I)
+
+    # remove urls and noisy tails
+    t = re.sub(r"https?://\S+", "", t, flags=re.I)
+    t = re.sub(r"\b(retrieved\s+from|link\s+via)\b.*$", "", t, flags=re.I)
+
+    parts = re.split(r"\(\s*(1[6-9]\d{2}|20\d{2})([a-z])?\s*\)\.?\s*", t, maxsplit=1, flags=re.I)
+    if len(parts) >= 4:
+        after = _safe_strip(parts[3])
+    else:
+        m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", t, flags=re.I)
+        after = t[m.end():].strip() if m else t
+
+    after = after.lstrip(". ").strip()
+    # take first sentence chunk as title
+    title = after.split(".", 1)[0].strip() if "." in after else after.strip()
+
+    if len(title) < 8:
+        title = t.strip()
+
+    return _norm_text(title)
+
+
+def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
+    """
+    Robust-ish for APA/Vancouver:
+    - take block before year as "author block"
+    - split by '&', 'and', ';'
+    - handle "Surname, Initials" and "Surname Initials" patterns
+    """
+    t = _strip_leading_numbering(ref)
+    if not t:
+        return []
+
+    m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", t, flags=re.I)
+    head = t[: m.start()].strip() if m else t
+
+    head = head.replace("&", " and ")
+    head = re.sub(r"\bet\s+al\.?\b", "", head, flags=re.I)
+    head = re.sub(r"\s+", " ", head).strip()
+    if not head:
+        return []
+
+    parts = re.split(r";|\band\b", head, flags=re.I)
+    surnames: List[str] = []
+
+    for p in parts:
+        p = p.strip(" ,.")
+        if not p:
             continue
-        for n in _expand_numeric_chunks(inside):
-            out.append(InTextCitation("numeric", m.group(0), key_numeric(n), number=n))
 
-    out.extend(extract_ieee_numeric_citations(text))
-
-    sup_run = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+")
-    for m in sup_run.finditer(text or ""):
-        n = _sup_to_int(m.group(0))
-        if n is not None:
-            out.append(InTextCitation("numeric", m.group(0), key_numeric(n), number=n))
-    return out
-
-
-# -----------------------------
-# Reconciliation + reporting
-# -----------------------------
-def reconcile_author_year(cites: List[InTextCitation], refs: List[ReferenceEntry]):
-    ref_by_key = defaultdict(list)
-    for r in refs:
-        ref_by_key[r.key].append(r)
-
-    c2r = []
-    for c in cites:
-        hits = ref_by_key.get(c.key, [])
-        if not hits:
-            c2r.append({"in_text": c.raw, "status": "not_found", "matched_reference": "", "flags": c.flags or ""})
-        elif len(hits) == 1:
-            c2r.append({"in_text": c.raw, "status": "matched", "matched_reference": hits[0].raw, "flags": c.flags or ""})
+        # APA often: "Austin, P. C.," -> surname before comma
+        if "," in p:
+            cand = p.split(",", 1)[0].strip()
         else:
-            c2r.append({
-                "in_text": c.raw,
-                "status": f"ambiguous ({len(hits)})",
-                "matched_reference": " || ".join(h.raw[:220] for h in hits),
-                "flags": c.flags or "",
-            })
+            # otherwise last token
+            toks = p.split()
+            cand = toks[-1] if toks else ""
 
-    cite_group = defaultdict(list)
-    for c in cites:
-        cite_group[c.key].append(c.raw)
+        cand = re.sub(r"[^A-Za-z\-']", "", cand).lower().strip()
+        if cand and len(cand) >= 2 and cand not in surnames:
+            surnames.append(cand)
 
-    r2c = []
-    for r in refs:
-        cited_by = cite_group.get(r.key, [])
-        r2c.append({"reference": r.raw, "times_cited": int(len(cited_by)), "cited_by": cited_by})
+        if len(surnames) >= max_authors:
+            break
 
-    r2c.sort(key=lambda x: x.get("times_cited", 0), reverse=True)
-    return c2r, r2c
+    return surnames
 
 
-def reconcile_numeric(cites: List[InTextCitation], refs: List[ReferenceEntry]):
-    ref_by_key = {r.key: r for r in refs}
-    c2r = []
-    for c in cites:
-        r = ref_by_key.get(c.key)
-        if not r:
-            c2r.append({"in_text": c.raw, "status": "not_found", "matched_reference": "", "flags": c.flags or ""})
-        else:
-            c2r.append({"in_text": c.raw, "status": "matched", "matched_reference": r.raw, "flags": c.flags or ""})
-
-    cite_group = defaultdict(list)
-    for c in cites:
-        cite_group[c.key].append(c.raw)
-
-    r2c = []
-    for r in refs:
-        cited_by = cite_group.get(r.key, [])
-        r2c.append({"reference": r.raw, "times_cited": int(len(cited_by)), "cited_by": cited_by})
-
-    r2c.sort(key=lambda x: x.get("times_cited", 0), reverse=True)
-    return c2r, r2c
+def _authors_to_query(authors: List[str], max_join: int = 3) -> str:
+    authors = [a for a in (authors or []) if _safe_strip(a)]
+    if not authors:
+        return ""
+    return " ".join(authors[:max_join]).strip()
 
 
-def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry]):
-    cite_keys = [c.key for c in cites]
-    ref_keys = [r.key for r in refs]
+def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str:
+    """
+    Query string used for both Crossref/OpenAlex.
+    No strict year filter, we just include year token to help ranking.
+    """
+    base = title if len(_safe_str(title)) >= 8 else _safe_str(raw_ref)
+    base = _clean_query_string(base)
+    y4 = _safe_str(year)[:4] if _safe_str(year)[:4].isdigit() else ""
+    a = _authors_to_query(authors, max_join=3)
 
-    # Count by key (fixes [1-3] inflating and same-raw issues)
-    cite_count_by_key = Counter(cite_keys)
-    example_raw_by_key: Dict[str, str] = {}
-    for c in cites:
-        example_raw_by_key.setdefault(c.key, c.raw)
+    bits = [base]
+    if a:
+        bits.append(a)
+    if y4:
+        bits.append(y4)
 
-    ref_key_set = set(ref_keys)
-    missing = []
-    for k, cnt in cite_count_by_key.items():
-        if k and (k not in ref_key_set):
-            missing.append({
-                "citation_in_text": example_raw_by_key.get(k, ""),
-                "count_in_text": int(cnt),
-            })
-    missing.sort(key=lambda x: (-x["count_in_text"], x["citation_in_text"]))
+    return _clean_query_string(" ".join(bits))
 
-    cite_key_set = set(cite_keys)
-    uncited = [r.raw for r in refs if r.key not in cite_key_set]
 
-    summary = {
-        "in_text_citations_found": int(len(cites)),     # occurrences (expanded ranges count as multiple)
-        "reference_entries_found": int(len(refs)),
-        "missing_in_references": int(len(missing)),
-        "uncited_references": int(len(uncited)),
+# ---------- queries ----------
+def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    doi = _safe_strip(doi)
+    if not doi:
+        return None
+    url = f"https://api.crossref.org/works/{doi}"
+    params: Dict[str, Any] = {}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return None
+    item = (data.get("message") or {})
+    return {"source": "crossref", "item": item or {}, "query_used": f"doi:{doi}"}
+
+
+def _query_crossref(q: str, a_query: str) -> List[Dict[str, Any]]:
+    url = "https://api.crossref.org/works"
+    params: Dict[str, Any] = {
+        "query.bibliographic": q,
+        "rows": 5,
+        "sort": "score",
+        "order": "desc",
     }
-    return missing, uncited, summary
+    if a_query:
+        params["query.author"] = a_query
+    if MAILTO:
+        params["mailto"] = MAILTO
+
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return []
+    items = ((data.get("message") or {}).get("items") or [])
+    return [{"source": "crossref", "item": it or {}, "query_used": q} for it in items]
 
 
-def _online_verify_select_refs(refs: List[ReferenceEntry], uncited_raw: List[str], verify_mode: str) -> List[str]:
-    mode = (verify_mode or "all").strip().lower()
-    all_ref_texts = [r.raw for r in refs]
+def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    doi = _safe_strip(doi)
+    if not doi:
+        return None
+    doi_url = "https://doi.org/" + doi.lower()
+    url = "https://api.openalex.org/works/" + doi_url
+    params: Dict[str, Any] = {}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return None
+    return {"source": "openalex", "item": data or {}, "query_used": f"doi:{doi}"}
 
-    if mode == "uncited_only":
-        unc_set = set(uncited_raw or [])
-        work = [r for r in all_ref_texts if r in unc_set]
-        return work if work else all_ref_texts
 
-    return all_ref_texts
+def _query_openalex(q: str) -> List[Dict[str, Any]]:
+    url = "https://api.openalex.org/works"
+    params: Dict[str, Any] = {"search": q, "per-page": 5}
+    if MAILTO:
+        params["mailto"] = MAILTO
+
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return []
+    results = data.get("results") or []
+    return [{"source": "openalex", "item": it or {}, "query_used": q} for it in results]
 
 
-def run_crosscheck(
-    file_bytes: bytes,
-    filename: str,
-    style: str = "apa",
-    verify_online: bool = False,
-    verify_mode: str = "all",
-    max_verify: int = 0,
+def _query_unpaywall_by_doi(doi: str) -> Optional[Dict[str, Any]]:
+    doi = _safe_strip(doi)
+    if not doi or not UNPAYWALL_EMAIL:
+        return None
+    url = f"https://api.unpaywall.org/v2/{doi}"
+    params = {"email": UNPAYWALL_EMAIL}
+    data = _safe_get_json(url, params=params, timeout=22)
+    if not data:
+        return None
+    return {"source": "unpaywall", "item": data or {}, "query_used": f"doi:{doi}"}
+
+
+# ---------- candidate extraction ----------
+def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], int]:
+    """
+    Returns (doi, title_norm, year, author_surnames[], api_score_if_any)
+    """
+    src = _safe_strip((cand or {}).get("source"))
+    item = (cand or {}).get("item") or {}
+
+    doi = ""
+    title = ""
+    year = ""
+    authors: List[str] = []
+    api_score = 0
+
+    if src == "crossref":
+        doi = _safe_strip(item.get("DOI"))
+        titles = item.get("title") or []
+        title_raw = _safe_str(titles[0]).strip() if titles else ""
+        title = _norm_text(title_raw)
+
+        try:
+            api_score = int(item.get("score") or 0)
+        except Exception:
+            api_score = 0
+
+        pp = (((item.get("published-print") or {}).get("date-parts")) or [[None]])
+        po = (((item.get("published-online") or {}).get("date-parts")) or [[None]])
+        y = (pp[0][0] if pp and pp[0] else None) or (po[0][0] if po and po[0] else None) or ""
+        year = _safe_str(y).strip()
+
+        for au in (item.get("author") or [])[:10]:
+            fam = _safe_strip((au or {}).get("family")).lower()
+            fam = re.sub(r"[^a-z\-']", "", fam)
+            if fam:
+                authors.append(fam)
+
+    elif src == "openalex":
+        doi_raw = item.get("doi")
+        doi = _safe_str(doi_raw).replace("https://doi.org/", "").strip()
+        title = _norm_text(_safe_strip(item.get("title")))
+        year = _safe_strip(item.get("publication_year"))
+
+        for a in (item.get("authorships") or [])[:10]:
+            au = (a or {}).get("author") or {}
+            nm = _safe_strip(au.get("display_name"))
+            if nm:
+                last = nm.split()[-1].lower()
+                last = re.sub(r"[^a-z\-']", "", last)
+                if last:
+                    authors.append(last)
+
+    elif src == "unpaywall":
+        doi = _safe_strip(item.get("doi"))
+        title = _norm_text(_safe_strip(item.get("title")))
+        year = _safe_strip(item.get("year")) or ""
+        authors = []
+
+    return doi, title, year, authors, api_score
+
+
+# ---------- scoring + classification ----------
+def _score(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    cand_title: str,
+    cand_authors: List[str],
+    cand_year: str,
+    api_score: int = 0,
+) -> Dict[str, Any]:
+    ref_title = _norm_text(ref_title)
+    cand_title = _norm_text(cand_title)
+
+    title_score = fuzz.token_set_ratio(ref_title, cand_title) if (ref_title and cand_title) else 0
+
+    ref_set = set([a for a in (ref_authors or []) if a])
+    cand_set = set([a for a in (cand_authors or []) if a])
+    author_overlap = len(ref_set.intersection(cand_set))
+
+    # year mismatch is common (online-first vs issue year)
+    year_match = 1 if (ref_year and cand_year and ref_year[:4] == cand_year[:4]) else 0
+
+    score = (title_score * 1.35) + (author_overlap * 26) + (year_match * 8)
+
+    if api_score and api_score > 0:
+        score += min(20, int(api_score / 10))
+
+    return {
+        "score": int(score),
+        "title_score": int(title_score),
+        "author_overlap": int(author_overlap),
+        "year_match": int(year_match),
+    }
+
+
+def _classify(
+    ref_has_authors: bool,
+    doi_match: bool,
+    title_score: int,
+    author_overlap: int,
+    year_match: int,
+    score: int,
+    cand_has_doi: bool,
+) -> str:
+    """
+    Fixes:
+    - if reference lacks authors, don't penalize for author_overlap=0
+    - don't hard-fail on year mismatch
+    - high score + good title should not be not_found
+    """
+    if doi_match and title_score >= 55:
+        return "verified"
+
+    if title_score >= 88 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 120):
+        return "verified"
+
+    if title_score >= 80 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 105):
+        return "likely"
+
+    if title_score >= 70 and (author_overlap >= 1 or year_match == 1 or not ref_has_authors):
+        return "needs_review"
+
+    return "not_found"
+
+
+def _attempt_summary(source: str, doi: str, title: str, year: str, meta: Dict[str, Any], doi_match: bool) -> Dict[str, Any]:
+    return {
+        "source": source,
+        "doi": doi,
+        "title": title,
+        "year": year,
+        "doi_match": bool(doi_match),
+        "score": int(meta.get("score") or 0),
+        "title_score": int(meta.get("title_score") or 0),
+        "author_overlap": int(meta.get("author_overlap") or 0),
+        "year_match": int(meta.get("year_match") or 0),
+    }
+
+
+def _pick_best_candidate(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    ref_doi: str,
+    candidates: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any], bool]:
+    best = None
+    best_meta: Dict[str, Any] = {"score": -1, "title_score": 0, "author_overlap": 0, "year_match": 0}
+    best_doi_match = False
+
+    for cand in candidates:
+        cand_doi, cand_title, cand_year, cand_authors, api_score = _candidate_fields(cand)
+        meta = _score(ref_title, ref_authors, ref_year, cand_title, cand_authors, cand_year, api_score)
+
+        doi_match = _doi_equal(ref_doi, cand_doi) if ref_doi else False
+        meta_score = int(meta["score"] + (35 if doi_match else 0))
+
+        if meta_score > int(best_meta.get("score") or -1):
+            best = cand
+            best_meta = dict(meta)
+            best_meta["score"] = meta_score
+            best_doi_match = doi_match
+
+    return best, best_meta, best_doi_match
+
+
+# ---------- public function ----------
+def verify_references_batch(
+    references: List[str],
+    max_to_check: int = 0,
     throttle_s: float = 0.12,
     use_crossref: bool = True,
     use_openalex: bool = True,
-) -> Dict[str, Any]:
-    name = (filename or "").lower().strip()
-    if name.endswith(".docx"):
-        # Fast split for DOCX (avoids building a huge blob then re-scanning)
-        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines(ref_block_lines)
-        full_text = main_text + "\n" + "\n".join(ref_block_lines)
+    use_unpaywall: bool = True,
+    use_semantic_scholar: bool = False,  # kept for compatibility
+) -> List[Dict[str, Any]]:
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    if not refs:
+        return []
 
-    elif name.endswith(".pdf"):
-        full_text = read_pdf_text(file_bytes)
-        lines = full_text.splitlines()
-        idx, tail = _find_reference_heading(lines)
+    if max_to_check and max_to_check > 0:
+        refs = refs[: max_to_check]
 
-        if idx == -1:
-            main_text = full_text
-            references_raw = []
-            ref_msg = "No References heading found."
-        else:
-            main_text = "\n".join(lines[:idx]).strip()
-            ref_msg = f"Found References heading: {lines[idx].strip()}"
-            ref_block_lines = []
-            if tail:
-                ref_block_lines.append(tail)
-            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
-            references_raw = _merge_reference_lines(ref_block_lines)
+    rows: List[Dict[str, Any]] = []
 
-        # Rebuild full_text consistently (lightweight)
-        full_text = main_text + "\n" + "\n".join(references_raw)
+    for ref in refs:
+        ref_raw = _safe_strip(ref)
+        ref_year = _extract_year(ref_raw)
+        ref_authors = _extract_author_surnames(ref_raw, max_authors=8)
+        ref_has_authors = bool(ref_authors)
+        ref_doi = _extract_doi(ref_raw)
+        ref_title = _extract_title_guess(ref_raw)
 
-    else:
-        return {"error": "Upload a DOCX or PDF"}
+        query = _build_query(ref_title, ref_authors, ref_year, ref_raw)
+        author_for_ui = ", ".join(ref_authors) if ref_authors else ""
 
+        row: Dict[str, Any] = {
+            "reference": ref_raw,
+            "status": "offline",
+            "source": "",
+            "score": 0,
+            "doi_in_reference": ref_doi,
+            "doi": "",
+            "doi_match": False,
+            "matched_year": "",
+            "matched_authors": "",
+            "matched_title": "",
+            "title_score": 0,
+            "author_overlap": 0,
+            "year_match": 0,
+            "query_used": query,
+            "attempts": [],
+            "error": "",
+            "author": author_for_ui,
+            "query": query,
+        }
 
-    style_norm = (style or "apa").strip().lower()
-    if style_norm in ("apa/harvard", "harvard", "author-year"):
-        style_norm = "apa"
+        try:
+            # ---------- 1) CROSSREF ----------
+            crossref_candidates: List[Dict[str, Any]] = []
+            if use_crossref:
+                if ref_doi:
+                    hit = _query_crossref_by_doi(ref_doi)
+                    if hit:
+                        crossref_candidates.append(hit)
+                    time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-    if style_norm == "apa":
-        # Trim very long texts to keep regex fast (still enough for most theses)
-        if len(main_text) > 250_000:
-            main_text = main_text[:250_000]
-        cites = extract_author_year_citations(main_text)
-        refs = [parse_reference_author_year(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-        c2r, r2c = reconcile_author_year(cites, refs)
-    elif style_norm == "ieee":
-        cites = extract_ieee_numeric_citations(main_text)
-        refs = [parse_reference_numeric(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-        c2r, r2c = reconcile_numeric(cites, refs)
-    else:
-        cites = extract_vancouver_numeric_citations(main_text)
-        refs = [parse_reference_numeric(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-        c2r, r2c = reconcile_numeric(cites, refs)
+                a_query = _authors_to_query(ref_authors, max_join=3)
+                crossref_candidates.extend(_query_crossref(query, a_query))
+                time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-    missing, uncited, summary = build_missing_uncited(cites, refs)
+            best, meta, doi_match = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, crossref_candidates)
+            if best is not None:
+                cand_doi, cand_title, cand_year, cand_auths, _ = _candidate_fields(best)
+                row["attempts"].append(_attempt_summary("crossref", cand_doi, cand_title, cand_year, meta, doi_match))
 
-    verify_rows: List[Dict[str, Any]] = []
-    verify_counts = {k: 0 for k in ["verified", "likely", "needs_review", "not_found", "offline"]}
+                status = _classify(
+                    ref_has_authors=ref_has_authors,
+                    doi_match=doi_match,
+                    title_score=int(meta["title_score"]),
+                    author_overlap=int(meta["author_overlap"]),
+                    year_match=int(meta["year_match"]),
+                    score=int(meta["score"]),
+                    cand_has_doi=bool(_safe_strip(cand_doi)),
+                )
+                status = _normalize_verify_status(status)
 
-    if verify_online:
-        if not VERIFY_OK:
-            verify_rows = [{
-                "reference": "",
-                "status": "offline",
-                "source": "",
-                "score": 0,
-                "doi": "",
-                "matched_year": "",
-                "matched_authors": "",
-                "matched_title": "",
-                "query_used": "",
-            }]
-            verify_counts["offline"] = 1
-        else:
-            selected = _online_verify_select_refs(refs=refs, uncited_raw=uncited, verify_mode=verify_mode)
-            mv = int(max_verify or 0)
-            if mv > 0:
-                selected = selected[:mv]
+                if status in {"verified", "likely"}:
+                    row["status"] = status
+                    row["source"] = "crossref"
+                    row["score"] = int(meta["score"])
+                    row["doi"] = _safe_strip(cand_doi)
+                    row["doi_match"] = bool(doi_match)
+                    row["matched_year"] = _safe_strip(cand_year)
+                    row["matched_authors"] = ", ".join([a for a in cand_auths if a])
+                    row["matched_title"] = _safe_strip(cand_title)
+                    row["title_score"] = int(meta["title_score"])
+                    row["author_overlap"] = int(meta["author_overlap"])
+                    row["year_match"] = int(meta["year_match"])
 
-            verify_rows = verify_references_batch(
-                references=selected,
-                max_to_check=(len(selected) if selected else 0),
-                throttle_s=float(throttle_s or 0.0),
-                use_crossref=bool(use_crossref),
-                use_openalex=bool(use_openalex),
-            )
+                    if not row["author"]:
+                        row["author"] = row["matched_authors"]
+                    rows.append(row)
+                    continue
 
-            for row in verify_rows:
-                row["status"] = _normalize_verify_status(row.get("status"))
-                verify_counts[row["status"]] += 1
+            # ---------- 2) OPENALEX ----------
+            openalex_candidates: List[Dict[str, Any]] = []
+            if use_openalex:
+                crossref_best_doi = _safe_strip(_candidate_fields(best)[0]) if best is not None else ""
+                if crossref_best_doi:
+                    hit = _query_openalex_by_doi(crossref_best_doi)
+                    if hit:
+                        openalex_candidates.append(hit)
+                    time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-    online_verification = {
-        "summary": {**verify_counts, "total": int(sum(verify_counts.values()))},
-        "rows": verify_rows,
-    }
+                openalex_candidates.extend(_query_openalex(query))
+                time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-    return {
-        "filename": filename,
-        "style": style_norm,
-        "reference_detection_message": ref_msg,
-        "text_length": len(full_text),
-        "main_text_length": len(main_text),
-        "references_detected": len(references_raw),
+            best2, meta2, doi_match2 = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, openalex_candidates)
+            if best2 is not None:
+                cand_doi2, cand_title2, cand_year2, cand_auths2, _ = _candidate_fields(best2)
+                row["attempts"].append(_attempt_summary("openalex", cand_doi2, cand_title2, cand_year2, meta2, doi_match2))
 
-        "summary": summary,
-        "missing_in_references": missing,
-        "uncited_references": uncited,
+                status2 = _classify(
+                    ref_has_authors=ref_has_authors,
+                    doi_match=doi_match2,
+                    title_score=int(meta2["title_score"]),
+                    author_overlap=int(meta2["author_overlap"]),
+                    year_match=int(meta2["year_match"]),
+                    score=int(meta2["score"]),
+                    cand_has_doi=bool(_safe_strip(cand_doi2)),
+                )
+                status2 = _normalize_verify_status(status2)
 
-        "reconciliation_intext_to_reference": c2r[:5000],
-        "reconciliation_reference_to_intext": r2c[:5000],
+                if status2 in {"verified", "likely"}:
+                    row["status"] = status2
+                    row["source"] = "openalex"
+                    row["score"] = int(meta2["score"])
+                    row["doi"] = _safe_strip(cand_doi2)
+                    row["doi_match"] = bool(doi_match2)
+                    row["matched_year"] = _safe_strip(cand_year2)
+                    row["matched_authors"] = ", ".join([a for a in cand_auths2 if a])
+                    row["matched_title"] = _safe_strip(cand_title2)
+                    row["title_score"] = int(meta2["title_score"])
+                    row["author_overlap"] = int(meta2["author_overlap"])
+                    row["year_match"] = int(meta2["year_match"])
 
-        "online_verification": online_verification,
-        "verify_mode_used": (verify_mode or "all"),
-    }
+                    if not row["author"]:
+                        row["author"] = row["matched_authors"]
+                    rows.append(row)
+                    continue
+
+            # ---------- 3) UNPAYWALL ----------
+            best_doi_any = ""
+            if best2 is not None:
+                best_doi_any = _safe_strip(_candidate_fields(best2)[0])
+            if not best_doi_any and best is not None:
+                best_doi_any = _safe_strip(_candidate_fields(best)[0])
+            if not best_doi_any:
+                best_doi_any = _safe_strip(ref_doi)
+
+            if use_unpaywall and best_doi_any:
+                up = _query_unpaywall_by_doi(best_doi_any)
+                if up is not None:
+                    cand_du, cand_tu, cand_yu, cand_au, _ = _candidate_fields(up)
+                    meta_u = _score(ref_title, ref_authors, ref_year, cand_tu, cand_au, cand_yu, 0)
+                    doi_match_u = _doi_equal(ref_doi, cand_du) if ref_doi else False
+                    meta_u["score"] = int(meta_u["score"] + (35 if doi_match_u else 0))
+
+                    row["attempts"].append(_attempt_summary("unpaywall", cand_du, cand_tu, cand_yu, meta_u, doi_match_u))
+
+                    status_u = _classify(
+                        ref_has_authors=ref_has_authors,
+                        doi_match=doi_match_u,
+                        title_score=int(meta_u["title_score"]),
+                        author_overlap=int(meta_u["author_overlap"]),
+                        year_match=int(meta_u["year_match"]),
+                        score=int(meta_u["score"]),
+                        cand_has_doi=bool(_safe_strip(cand_du)),
+                    )
+                    status_u = _normalize_verify_status(status_u)
+
+                    if status_u in {"verified", "likely"}:
+                        row["status"] = status_u
+                        row["source"] = "unpaywall"
+                        row["score"] = int(meta_u["score"])
+                        row["doi"] = _safe_strip(cand_du)
+                        row["doi_match"] = bool(doi_match_u)
+                        row["matched_year"] = _safe_strip(cand_yu)
+                        row["matched_authors"] = ""
+                        row["matched_title"] = _safe_strip(cand_tu)
+                        row["title_score"] = int(meta_u["title_score"])
+                        row["author_overlap"] = int(meta_u["author_overlap"])
+                        row["year_match"] = int(meta_u["year_match"])
+
+                        if not row["author"]:
+                            row["author"] = row["matched_authors"]
+                        rows.append(row)
+                        continue
+
+            # ---------- 4) fallback ----------
+            if row["attempts"]:
+                row["attempts"].sort(key=lambda x: int(x.get("score") or 0), reverse=True)
+                top = row["attempts"][0]
+
+                fallback = _classify(
+                    ref_has_authors=ref_has_authors,
+                    doi_match=bool(top.get("doi_match")),
+                    title_score=int(top.get("title_score") or 0),
+                    author_overlap=int(top.get("author_overlap") or 0),
+                    year_match=int(top.get("year_match") or 0),
+                    score=int(top.get("score") or 0),
+                    cand_has_doi=bool(_safe_strip(top.get("doi"))),
+                )
+                row["status"] = _normalize_verify_status(fallback)
+                row["source"] = _safe_strip(top.get("source"))
+                row["score"] = int(top.get("score") or 0)
+                row["doi"] = _safe_strip(top.get("doi"))
+                row["matched_year"] = _safe_strip(top.get("year"))
+                row["matched_title"] = _safe_strip(top.get("title"))
+                row["title_score"] = int(top.get("title_score") or 0)
+                row["author_overlap"] = int(top.get("author_overlap") or 0)
+                row["year_match"] = int(top.get("year_match") or 0)
+
+                if not row["author"]:
+                    row["author"] = row.get("matched_authors") or ""
+            else:
+                row["status"] = "not_found"
+
+            rows.append(row)
+
+        except Exception as e:
+            row["status"] = "offline"
+            row["error"] = _safe_str(e)
+            rows.append(row)
+
+    for r in rows:
+        r["status"] = _normalize_verify_status(r.get("status"))
+
+    return rows
