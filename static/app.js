@@ -45,36 +45,36 @@ function renderDashboard(ui){
 }
 
 function renderSummary(result, ui){
-  const msg = result.reference_detection_message || "";
-  const d = ui.dashboard || {};
-  $("summary").innerHTML = `
-    <div class="muted">${escapeHtml(msg)}</div>
-    <div class="muted">Generated: ${escapeHtml(d.timestamp || "")}</div>
-  `;
+  const s = result.summary || {};
+  const items = [
+    ["Filename", result.filename || ""],
+    ["Style", result.style || ""],
+    ["Text length", result.text_length ?? ""],
+    ["Main text length", result.main_text_length ?? ""],
+    ["References detected (raw)", result.references_detected ?? ""],
+    ["In-text citations found", s.in_text_citations_found ?? 0],
+    ["Reference entries found", s.reference_entries_found ?? 0],
+    ["Missing in references", s.missing_in_references ?? 0],
+    ["Uncited references", s.uncited_references ?? 0],
+    ["Elapsed (s)", result.elapsed_seconds ?? ""],
+  ];
+  $("summaryTable").innerHTML = items.map(([k,v]) => `
+    <tr><td class="kcol">${escapeHtml(k)}</td><td>${escapeHtml(String(v ?? ""))}</td></tr>
+  `).join("");
+  $("refMsg").textContent = result.reference_detection_message || "";
 }
 
 function renderMissing(ui){
   const rows = ui.missing_rows || [];
   $("missingBody").innerHTML = rows.length
-    ? rows.map(r => `
-      <tr>
-        <td>${escapeHtml(r.no)}</td>
-        <td>${escapeHtml(r.citation_in_text)}</td>
-        <td>${escapeHtml(String(r.count_in_text ?? ""))}</td>
-      </tr>
-    `).join("")
-    : `<tr><td colspan="3" class="muted">No missing citations.</td></tr>`;
+    ? rows.map(r => `<tr><td>${escapeHtml(r.no)}</td><td>${escapeHtml(r.count_in_text)}</td><td>${escapeHtml(r.citation_in_text)}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">No missing items.</td></tr>`;
 }
 
 function renderUncited(ui){
   const rows = ui.uncited_rows || [];
   $("uncitedBody").innerHTML = rows.length
-    ? rows.map(r => `
-      <tr>
-        <td>${escapeHtml(r.no)}</td>
-        <td>${escapeHtml(r.reference)}</td>
-      </tr>
-    `).join("")
+    ? rows.map(r => `<tr><td>${escapeHtml(r.no)}</td><td>${escapeHtml(r.reference)}</td></tr>`).join("")
     : `<tr><td colspan="2" class="muted">No uncited references.</td></tr>`;
 }
 
@@ -87,10 +87,10 @@ function renderC2R(ui){
         <td>${badge(r.status)}</td>
         <td>${escapeHtml(r.in_text)}</td>
         <td>${escapeHtml(r.matched_reference)}</td>
-        <td>${escapeHtml(r.flags)}</td>
+        <td>${escapeHtml(r.flags || "")}</td>
       </tr>
     `).join("")
-    : `<tr><td colspan="5" class="muted">No reconciliation rows.</td></tr>`;
+    : `<tr><td colspan="5" class="muted">No rows.</td></tr>`;
 }
 
 function renderR2C(ui){
@@ -101,7 +101,7 @@ function renderR2C(ui){
         <td>${escapeHtml(r.no)}</td>
         <td>${escapeHtml(String(r.times_cited ?? 0))}</td>
         <td>${escapeHtml(r.reference)}</td>
-        <td>${escapeHtml(r.cited_by)}</td>
+        <td>${escapeHtml(r.cited_by || "")}</td>
       </tr>
     `).join("")
     : `<tr><td colspan="4" class="muted">No rows.</td></tr>`;
@@ -148,52 +148,64 @@ document.addEventListener("click", (e) => {
   setActiveTab(tab.dataset.tab);
 });
 
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
 async function postForm(endpoint, formData){
-  let res;
-  try{
-    res = await fetch(endpoint, { method:"POST", body: formData });
-  }catch(err){
-    return { ok:false, data:{ error: "Network error. Check your internet or the server is restarting." } };
-  }
+  const maxAttempts = 4;
 
-  const ct = (res.headers.get("content-type") || "").toLowerCase();
-
-  // JSON
-  if (ct.includes("application/json")){
-    let data = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++){
+    let res;
     try{
-      data = await res.json();
-    }catch(e){
-      data = { error: "Server returned invalid JSON." };
+      res = await fetch(endpoint, { method:"POST", body: formData });
+    }catch(err){
+      if (attempt === maxAttempts) return { ok:false, data:{ error: "Network error. Check your internet or the server is restarting." } };
+      await sleep(350 * attempt);
+      continue;
     }
 
-    // FastAPI validation errors: {detail:[...]}
-    if (!res.ok && res.status === 422 && data && data.detail){
-      const msg = Array.isArray(data.detail)
-        ? data.detail.map(d => `${(d.loc || []).slice(-1)[0] || "field"}: ${d.msg}`).join(" | ")
-        : "Validation error (422).";
-      return { ok:false, data:{ error: msg } };
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+
+    if (ct.includes("application/json")){
+      let data = null;
+      try{ data = await res.json(); }catch(e){ data = { error: "Server returned invalid JSON." }; }
+      if (!res.ok) return { ok:false, data };
+      if (data && data.error) return { ok:false, data };
+      return { ok:true, data };
     }
 
-    if (!res.ok) return { ok:false, data };
-    if (data && data.error) return { ok:false, data };
-    return { ok:true, data };
+    const text = await res.text();
+    const isRetryable = [502,503,504].includes(res.status);
+
+    if (isRetryable && attempt < maxAttempts){
+      setStatus(`Server waking up, retrying (${attempt}/${maxAttempts})…`, "muted");
+      await sleep(650 * attempt);
+      continue;
+    }
+
+    let msg = "Server error.";
+    if (res.status === 502) msg = "Server timeout (502). Reduce Max Verify and try again.";
+    else if (res.status === 503) msg = "Server unavailable (503). The app may be restarting.";
+    else if (res.status === 504) msg = "Gateway timeout (504). Reduce Max Verify and try again.";
+    else if (res.status === 413) msg = "File too large (413). Upload a smaller file.";
+    else if (res.status === 429) msg = "Too many requests (429). Increase throttle and retry.";
+    else if (res.status >= 500) msg = `Server error (${res.status}). Check Render logs.`;
+
+    const short = (text || "").replace(/\s+/g, " ").trim();
+    if (short && short.length < 220 && !short.toLowerCase().includes("<html")) msg = short;
+
+    return { ok:false, data:{ error: msg } };
   }
 
-  // HTML / text (Render 502 pages)
-  const text = await res.text();
+  return { ok:false, data:{ error: "Request failed." } };
+}
 
-  let msg = "Server error.";
-  if (res.status === 502) msg = "Server error (502). The server likely restarted (memory) or timed out. Use batch mode or reduce Max Verify.";
-  else if (res.status === 503) msg = "Server unavailable (503). The app may be restarting (cold start). Try again in 10–20 seconds.";
-  else if (res.status === 504) msg = "Gateway timeout (504). Use batch mode or reduce Max Verify.";
-  else if (res.status === 413) msg = "File too large (413). Upload a smaller file.";
-  else if (res.status === 429) msg = "Too many requests (429). Increase throttle and retry.";
-
-  const hint = (text || "").replace(/\s+/g, " ").trim().slice(0, 120);
-  if (hint) msg += `\n\nHint: ${hint}`;
-
-  return { ok:false, data:{ error: msg } };
+function requireFile(){
+  const f = $("file").files[0];
+  if (!f){
+    alert("Select a DOCX or PDF first.");
+    return null;
+  }
+  return f;
 }
 
 function lockButtons(lock){
@@ -201,15 +213,6 @@ function lockButtons(lock){
   $("btnVerify").disabled = lock;
   $("btnExportCsvTop").disabled = lock || !lastResult;
   $("btnExportWordTop").disabled = lock || !lastResult;
-}
-
-function requireFile(){
-  const f = $("file").files?.[0];
-  if (!f){
-    setStatus("Choose a file first.", "warn");
-    return null;
-  }
-  return f;
 }
 
 async function runCheck(){
@@ -223,151 +226,65 @@ async function runCheck(){
   lockButtons(true);
   setStatus("Running check…", "muted");
 
-  const { ok, data } = await postForm("/check", form);
-
+  const resp = await postForm("/check", form);
   lockButtons(false);
 
-  if (!ok){
-    setStatus("Check failed.", "bad");
-    alert(data?.error || "Server error");
+  if (!resp.ok){
+    setStatus(resp.data?.error || "Check failed.", "bad");
     return;
   }
 
-  lastResult = data;
-  showResults();
-
-  const ui = data._ui || {};
+  lastResult = resp.data;
+  const ui = lastResult._ui || {};
   renderDashboard(ui);
-  renderSummary(data, ui);
+  renderSummary(lastResult, ui);
   renderMissing(ui);
   renderUncited(ui);
   renderC2R(ui);
   renderR2C(ui);
-
-  setActiveTab("summaryPane");
-  setStatus("Check complete.", "good");
+  renderVerify(lastResult, ui);
+  showResults();
+  setStatus("Done.", "good");
 }
 
 async function runVerify(){
   const f = requireFile();
   if (!f) return;
 
-  const style = $("style").value;
-  const verifyMode = $("verifyMode").value;
-  const useCrossref = $("useCrossref").checked ? "true" : "false";
-  const useOpenAlex = $("useOpenAlex").checked ? "true" : "false";
-  const throttle = String(parseFloat($("throttle").value || "0"));
-
-  let mvInput = parseInt($("maxVerify").value || "0", 10);
-  const verifyAll = (!mvInput || mvInput <= 0);
-
-  const batchSize = verifyAll ? 60 : mvInput;
-
-  let offset = 0;
-  let mergedVerifyRows = [];
-  let mergedCounts = { verified:0, likely:0, needs_review:0, not_found:0, offline:0 };
-  let totalSelected = null;
+  const form = new FormData();
+  form.append("file", f);
+  form.append("style", $("style").value);
+  form.append("verify_mode", $("verifyMode").value);
+  form.append("use_crossref", $("useCrossref").checked ? "true" : "false");
+  form.append("use_openalex", $("useOpenalex").checked ? "true" : "false");
+  form.append("throttle_s", $("throttle").value);
+  form.append("max_verify", $("maxVerify").value);
 
   lockButtons(true);
-  setStatus(verifyAll ? "Verifying all references in batches…" : "Running online verification…", "muted");
+  setStatus("Running online verification…", "muted");
 
-  // Ensure base check exists
-  let baseResult = lastResult;
-  if (!baseResult){
-    const checkForm = new FormData();
-    checkForm.append("file", f);
-    checkForm.append("style", style);
+  const resp = await postForm("/verify", form);
+  lockButtons(false);
 
-    const c = await postForm("/check", checkForm);
-    if (!c.ok){
-      lockButtons(false);
-      setStatus("Check failed.", "bad");
-      alert(c.data?.error || "Server error");
-      return;
-    }
-    baseResult = c.data;
-    lastResult = baseResult;
-    showResults();
+  if (!resp.ok){
+    setStatus(resp.data?.error || "Online verification failed.", "bad");
+    return;
   }
 
-  while (true){
-    const form = new FormData();
-    form.append("file", f);
-    form.append("style", style);
-    form.append("verify_mode", verifyMode);
-    form.append("use_crossref", useCrossref);
-    form.append("use_openalex", useOpenAlex);
-    form.append("throttle_s", throttle);
-    form.append("max_verify", String(batchSize));
-    form.append("offset", String(offset));
-
-    const { ok, data } = await postForm("/verify", form);
-
-    if (!ok){
-      lockButtons(false);
-      setStatus("Online verification failed.", "bad");
-      alert(data?.error || "Server error");
-      return;
-    }
-
-    const ov = data.online_verification || {};
-    totalSelected = (ov.total_selected ?? totalSelected);
-    const nextOffset = ov.next_offset;
-
-    const sum = (ov.summary || {});
-    mergedCounts.verified += (sum.verified || 0);
-    mergedCounts.likely += (sum.likely || 0);
-    mergedCounts.needs_review += (sum.needs_review || 0);
-    mergedCounts.not_found += (sum.not_found || 0);
-    mergedCounts.offline += (sum.offline || 0);
-
-    const ui = data._ui || {};
-    const batchRows = (ui.verify_rows || []);
-    mergedVerifyRows = mergedVerifyRows.concat(batchRows.map(r => ({...r})));
-
-    const done = (nextOffset === null || nextOffset === undefined);
-    const doneCount = offset + (ov.batch_size || batchRows.length || 0);
-    const total = (totalSelected ?? doneCount);
-    setStatus(`Verified ${Math.min(doneCount, total)}/${total} references…`, "muted");
-
-    if (done){
-      const finalResult = baseResult;
-
-      finalResult.online_verification = {
-        summary: { ...mergedCounts, total: mergedCounts.verified + mergedCounts.likely + mergedCounts.needs_review + mergedCounts.not_found + mergedCounts.offline },
-        total_selected: totalSelected ?? mergedVerifyRows.length,
-        offset: 0,
-        batch_size: mergedVerifyRows.length,
-        next_offset: null,
-      };
-
-      finalResult._ui = finalResult._ui || {};
-      finalResult._ui.verify_rows = mergedVerifyRows.map((r, i) => ({...r, no: (i + 1)}));
-      finalResult._ui.verify_total = mergedVerifyRows.length;
-      finalResult._ui.verify_truncated = false;
-
-      lastResult = finalResult;
-
-      showResults();
-      renderDashboard(finalResult._ui);
-      renderSummary(finalResult, finalResult._ui);
-      renderMissing(finalResult._ui);
-      renderUncited(finalResult._ui);
-      renderC2R(finalResult._ui);
-      renderR2C(finalResult._ui);
-      renderVerify(finalResult, finalResult._ui);
-
-      setActiveTab("verifyPane");
-      setStatus("Online verification complete.", "good");
-      lockButtons(false);
-      return;
-    }
-
-    offset = nextOffset;
-  }
+  lastResult = resp.data;
+  const ui = lastResult._ui || {};
+  renderDashboard(ui);
+  renderSummary(lastResult, ui);
+  renderMissing(ui);
+  renderUncited(ui);
+  renderC2R(ui);
+  renderR2C(ui);
+  renderVerify(lastResult, ui);
+  showResults();
+  setStatus("Online verification complete.", "good");
 }
 
-async function downloadFromEndpoint(endpoint){
+async function exportCsv(){
   const f = requireFile();
   if (!f) return;
 
@@ -375,26 +292,42 @@ async function downloadFromEndpoint(endpoint){
   form.append("file", f);
   form.append("style", $("style").value);
 
-  const res = await fetch(endpoint, { method:"POST", body: form });
+  const res = await fetch("/export/csv", { method:"POST", body: form });
   if (!res.ok){
-    const t = await res.text();
-    alert((t || "").slice(0, 250) || "Download failed");
+    setStatus("Export failed.", "bad");
     return;
   }
 
   const blob = await res.blob();
-  const cd = res.headers.get("content-disposition") || "";
-  let filename = "";
-  const m = cd.match(/filename="([^"]+)"/);
-  if (m) filename = m[1];
-  if (!filename){
-    filename = endpoint.includes("csv") ? "citation_report.csv" : "citation_report.docx";
-  }
-
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename;
+  a.download = "citation_report.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportWord(){
+  const f = requireFile();
+  if (!f) return;
+
+  const form = new FormData();
+  form.append("file", f);
+  form.append("style", $("style").value);
+
+  const res = await fetch("/export/word", { method:"POST", body: form });
+  if (!res.ok){
+    setStatus("Export failed.", "bad");
+    return;
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "citation_report.docx";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -403,9 +336,5 @@ async function downloadFromEndpoint(endpoint){
 
 $("btnCheck").addEventListener("click", runCheck);
 $("btnVerify").addEventListener("click", runVerify);
-
-$("btnExportCsvTop").addEventListener("click", () => downloadFromEndpoint("/export/csv"));
-$("btnExportWordTop").addEventListener("click", () => downloadFromEndpoint("/export/word"));
-
-setActiveTab("summaryPane");
-setStatus("Ready.", "muted");
+$("btnExportCsvTop").addEventListener("click", exportCsv);
+$("btnExportWordTop").addEventListener("click", exportWord);
