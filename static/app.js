@@ -1,269 +1,82 @@
-/* static/app.js
-   Citation Crosschecker frontend logic
-
-   What this fixes:
-   - Export files were empty because export calls did NOT include job_id
-   - Adds safe defaults for Online Verification to reduce 502 timeouts
-   - Robust DOM selectors so the JS won’t crash if an element id differs
+/* static/app.js - FULL FILE
+   Matches your index.html IDs exactly.
+   Fixes:
+   - Run buttons not working (wrong selectors)
+   - Export empty (export now sends job_id)
 */
 
 (() => {
   "use strict";
 
   // -----------------------------
-  // State
+  // DOM
   // -----------------------------
-  let LAST_JOB_ID = null;      // key fix for exports
-  let LAST_RESULT = null;      // optional fallback (client-side export payload)
-  let IS_RUNNING = false;
+  const el = {
+    file: document.getElementById("file"),
+    style: document.getElementById("style"),
 
-  // For Online Verification safety
-  const DEFAULT_MAX_VERIFY_ONLINE = 120; // prevents router 502 on big lists
-  const DEFAULT_THROTTLE_ONLINE = 0.20;  // safer for rate limits
+    btnCheck: document.getElementById("btnCheck"),
+    btnVerify: document.getElementById("btnVerify"),
 
-  // -----------------------------
-  // DOM helpers
-  // -----------------------------
-  const qs = (sel) => document.querySelector(sel);
-  const qsa = (sel) => Array.from(document.querySelectorAll(sel));
+    verifyMode: document.getElementById("verifyMode"),
+    throttle: document.getElementById("throttle"),
+    maxVerify: document.getElementById("maxVerify"),
+    useCrossref: document.getElementById("useCrossref"),
+    useOpenAlex: document.getElementById("useOpenAlex"),
 
-  function pickFirst(selectors) {
-    for (const s of selectors) {
-      const el = qs(s);
-      if (el) return el;
-    }
-    return null;
-  }
+    status: document.getElementById("status"),
 
-  function getEl(ref) {
-    if (!ref) return null;
-    if (typeof ref === "string") return qs(ref);
-    return ref;
-  }
+    resultsCard: document.getElementById("resultsCard"),
+    dash: document.getElementById("dash"),
+    verifyDash: document.getElementById("verifyDash"),
+    summary: document.getElementById("summary"),
+    summaryTable: document.getElementById("summaryTable"),
+    refMsg: document.getElementById("refMsg"),
 
-  function setText(el, txt) {
-    el = getEl(el);
-    if (!el) return;
-    el.textContent = (txt ?? "").toString();
-  }
+    missingBody: document.getElementById("missingBody"),
+    uncitedBody: document.getElementById("uncitedBody"),
+    c2rBody: document.getElementById("c2rBody"),
+    r2cBody: document.getElementById("r2cBody"),
+    verifyBody: document.getElementById("verifyBody"),
 
-  function setHTML(el, html) {
-    el = getEl(el);
-    if (!el) return;
-    el.innerHTML = html ?? "";
-  }
+    btnExportCsvTop: document.getElementById("btnExportCsvTop"),
+    btnExportWordTop: document.getElementById("btnExportWordTop"),
 
-  function setDisabled(el, disabled) {
-    el = getEl(el);
-    if (!el) return;
-    el.disabled = !!disabled;
-  }
-
-  function show(el) {
-    el = getEl(el);
-    if (!el) return;
-    el.style.display = "";
-  }
-
-  function hide(el) {
-    el = getEl(el);
-    if (!el) return;
-    el.style.display = "none";
-  }
-
-  // -----------------------------
-  // UI element bindings (robust)
-  // -----------------------------
-  const els = {
-    fileInput: pickFirst(["#file", "#fileInput", "input[type='file']"]),
-    styleSelect: pickFirst(["#style", "#citation_style", "#styleSelect", "select[name='style']"]),
-    verifyMode: pickFirst(["#verify_mode", "#verifyMode", "select[name='verify_mode']"]),
-    throttle: pickFirst(["#throttle_s", "#throttle", "#throttleSeconds", "input[name='throttle_s']"]),
-    maxVerify: pickFirst(["#max_verify", "#maxVerify", "#maxVerifyPerBatch", "input[name='max_verify']"]),
-    useCrossref: pickFirst(["#use_crossref", "#useCrossref", "input[name='use_crossref']"]),
-    useOpenalex: pickFirst(["#use_openalex", "#useOpenalex", "input[name='use_openalex']"]),
-
-    runBtn: pickFirst(["#runBtn", "#runCheckBtn", "button[data-action='run-check']"]),
-    runOnlineBtn: pickFirst(["#runOnlineBtn", "#runOnlineVerificationBtn", "button[data-action='run-online']"]),
-
-    exportCsvBtn: pickFirst(["#exportCsvBtn", "button[data-action='export-csv']"]),
-    exportWordBtn: pickFirst(["#exportWordBtn", "button[data-action='export-word']"]),
-    exportPdfBtn: pickFirst(["#exportPdfBtn", "button[data-action='export-pdf']"]),
-
-    banner: pickFirst(["#banner", "#alertBox", "#messageBox"]),
-    bannerText: pickFirst(["#bannerText", "#alertText", "#messageText"]),
-
-    // Metrics (optional, update if present)
-    metricInText: pickFirst(["#metricInText", "[data-metric='intext']"]),
-    metricRefs: pickFirst(["#metricRefs", "[data-metric='refs']"]),
-    metricMissing: pickFirst(["#metricMissing", "[data-metric='missing']"]),
-    metricUncited: pickFirst(["#metricUncited", "[data-metric='uncited']"]),
-    metricMatchRate: pickFirst(["#metricMatchRate", "[data-metric='matchrate']"]),
-
-    // Results containers (optional)
-    summaryBox: pickFirst(["#summaryBox", "#summary", "[data-tab='summary']"]),
-    missingTable: pickFirst(["#missingTable", "#missing", "[data-tab='missing']"]),
-    uncitedTable: pickFirst(["#uncitedTable", "#uncited", "[data-tab='uncited']"]),
-    c2rTable: pickFirst(["#c2rTable", "#intextToRef", "[data-tab='c2r']"]),
-    r2cTable: pickFirst(["#r2cTable", "#refToIntext", "[data-tab='r2c']"]),
-    onlineTable: pickFirst(["#onlineTable", "#onlineVerification", "[data-tab='online']"]),
-    rawJsonPre: pickFirst(["#rawJson", "#rawJSON", "pre[data-role='raw-json']"])
+    tabs: Array.from(document.querySelectorAll(".tab")),
+    panes: Array.from(document.querySelectorAll(".tabPane")),
   };
 
   // -----------------------------
-  // Banner messaging
+  // State
   // -----------------------------
-  function banner(type, msg) {
-    // type: "info" | "success" | "warn" | "error"
-    const box = els.banner;
-    const textEl = els.bannerText;
+  let LAST_JOB_ID = null;
+  let LAST_RESULT = null;
+  let RUNNING = false;
 
-    if (!box && !textEl) {
-      // last resort
-      if (type === "error") console.error(msg);
-      else console.log(msg);
-      return;
-    }
-
-    if (box) {
-      box.classList.remove("is-info", "is-success", "is-warn", "is-error");
-      box.classList.add(`is-${type}`);
-      show(box);
-    }
-    if (textEl) setText(textEl, msg);
-  }
-
-  function clearBanner() {
-    if (els.banner) hide(els.banner);
-    if (els.bannerText) setText(els.bannerText, "");
-  }
+  // Safety defaults for online verification (prevents 502 on big lists)
+  const SAFE_ONLINE_THROTTLE = 0.20;
+  const SAFE_ONLINE_MAX_VERIFY = 120;
 
   // -----------------------------
-  // Network helpers
+  // Utils
   // -----------------------------
-  async function fetchJson(url, opts = {}) {
-    const res = await fetch(url, opts);
-    const text = await res.text();
-    let js = null;
-    try { js = text ? JSON.parse(text) : null; } catch { js = null; }
-    return { res, text, js };
+  function setStatus(msg, tone = "muted") {
+    if (!el.status) return;
+    el.status.className = `status ${tone}`;
+    el.status.textContent = msg;
   }
 
-  function parseContentDispositionFilename(cd) {
-    if (!cd) return "";
-    // attachment; filename="abc.docx"
-    const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
-    return m ? decodeURIComponent(m[1].replace(/\"/g, "").trim()) : "";
+  function setRunning(on) {
+    RUNNING = !!on;
+    if (el.btnCheck) el.btnCheck.disabled = on;
+    if (el.btnVerify) el.btnVerify.disabled = on;
+    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = on || !LAST_JOB_ID;
+    if (el.btnExportWordTop) el.btnExportWordTop.disabled = on || !LAST_JOB_ID;
   }
 
-  async function downloadFromResponse(res, fallbackName) {
-    const blob = await res.blob();
-    const cd = res.headers.get("Content-Disposition") || "";
-    const fn = parseContentDispositionFilename(cd) || fallbackName || "download";
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fn;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
-  }
-
-  // -----------------------------
-  // Build FormData for /verify
-  // -----------------------------
-  function buildVerifyFormData({ verifyOnline }) {
-    const fd = new FormData();
-
-    const f = els.fileInput?.files?.[0];
-    if (!f) throw new Error("Please choose a DOCX or PDF file.");
-
-    fd.append("file", f);
-
-    const styleVal = (els.styleSelect?.value || "apa").trim();
-    fd.append("style", styleVal);
-
-    fd.append("verify_online", verifyOnline ? "true" : "false");
-
-    const verifyModeVal = (els.verifyMode?.value || "all").trim();
-    fd.append("verify_mode", verifyModeVal);
-
-    let throttleVal = (els.throttle?.value ?? "").toString().trim();
-    let maxVerifyVal = (els.maxVerify?.value ?? "").toString().trim();
-
-    // Safety defaults for Online Verification to avoid router 502
-    if (verifyOnline) {
-      if (!throttleVal) throttleVal = DEFAULT_THROTTLE_ONLINE.toString();
-      if (!maxVerifyVal || maxVerifyVal === "0") {
-        // 0 means "verify all" but that is what causes 502 on large lists
-        maxVerifyVal = DEFAULT_MAX_VERIFY_ONLINE.toString();
-      }
-    }
-
-    fd.append("throttle_s", throttleVal || "0.12");
-    fd.append("max_verify", maxVerifyVal || "0");
-
-    const crossref = !!els.useCrossref?.checked;
-    const openalex = !!els.useOpenalex?.checked;
-
-    fd.append("use_crossref", crossref ? "true" : "false");
-    fd.append("use_openalex", openalex ? "true" : "false");
-
-    return fd;
-  }
-
-  // -----------------------------
-  // Rendering
-  // -----------------------------
-  function toPct(x) {
-    const n = Number(x);
-    if (!Number.isFinite(n)) return "";
-    return `${n.toFixed(1)}%`;
-  }
-
-  function renderMetrics(data) {
-    const s = data?.summary || {};
-    setText(els.metricInText, s.in_text_citations_found ?? "");
-    setText(els.metricRefs, s.reference_entries_found ?? "");
-    setText(els.metricMissing, s.missing_in_references ?? "");
-    setText(els.metricUncited, s.uncited_references ?? "");
-    // If your backend already computed match rate, use it. Else compute rough.
-    if (s.reference_entries_found && s.missing_in_references !== undefined) {
-      const total = Number(s.in_text_citations_found || 0);
-      const missing = Number(s.missing_in_references || 0);
-      const ok = total > 0 ? ((total - missing) / total) * 100 : 0;
-      setText(els.metricMatchRate, toPct(ok));
-    }
-  }
-
-  function renderRawJson(data) {
-    if (!els.rawJsonPre) return;
-    setText(els.rawJsonPre, JSON.stringify(data, null, 2));
-  }
-
-  function renderSimpleListTable(containerEl, rows, columns) {
-    containerEl = getEl(containerEl);
-    if (!containerEl) return;
-
-    const safeRows = Array.isArray(rows) ? rows : [];
-    const cols = Array.isArray(columns) && columns.length ? columns : Object.keys(safeRows[0] || {});
-
-    if (!cols.length) {
-      setHTML(containerEl, "<div class='muted'>No data</div>");
-      return;
-    }
-
-    const thead = `<thead><tr>${cols.map(c => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
-    const tbody = `<tbody>${
-      safeRows.map(r => `<tr>${cols.map(c => `<td>${escapeHtml(String(r?.[c] ?? ""))}</td>`).join("")}</tr>`).join("")
-    }</tbody>`;
-
-    setHTML(containerEl, `<div class="table-wrap"><table class="table">${thead}${tbody}</table></div>`);
-  }
-
-  function escapeHtml(s) {
-    return (s ?? "").toString()
+  function esc(s) {
+    return (s ?? "")
+      .toString()
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
@@ -271,166 +84,393 @@
       .replaceAll("'", "&#039;");
   }
 
-  function renderResults(data) {
-    LAST_RESULT = data || null;
+  function fmtNum(x) {
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "0";
+    return n.toLocaleString();
+  }
 
-    renderMetrics(data);
-    renderRawJson(data);
+  function pct(x) {
+    const n = Number(x);
+    if (!Number.isFinite(n)) return "";
+    return `${n.toFixed(1)}%`;
+  }
 
-    // Summary box if present
-    if (els.summaryBox) {
-      const msg = data?.reference_detection_message ? escapeHtml(data.reference_detection_message) : "";
-      const style = escapeHtml(data?.style || "");
-      const fn = escapeHtml(data?.filename || "");
-      const refsDetected = data?.references_detected ?? "";
-      setHTML(
-        els.summaryBox,
-        `<div class="kv">
-           <div><b>File</b> ${fn}</div>
-           <div><b>Style</b> ${style}</div>
-           <div><b>References detected</b> ${refsDetected}</div>
-           <div><b>Notes</b> ${msg}</div>
-         </div>`
-      );
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || "download";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function parseFilenameFromCD(cd) {
+    if (!cd) return "";
+    const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
+    return m ? decodeURIComponent(m[1].replace(/\"/g, "").trim()) : "";
+  }
+
+  // -----------------------------
+  // Tabs
+  // -----------------------------
+  function activateTab(paneId) {
+    el.tabs.forEach((t) => {
+      const active = t.dataset.tab === paneId;
+      t.classList.toggle("active", active);
+    });
+    el.panes.forEach((p) => {
+      const active = p.id === paneId;
+      p.classList.toggle("active", active);
+    });
+  }
+
+  function bindTabs() {
+    el.tabs.forEach((t) => {
+      t.addEventListener("click", () => {
+        activateTab(t.dataset.tab);
+      });
+    });
+  }
+
+  // -----------------------------
+  // Rendering
+  // -----------------------------
+  function showResults() {
+    if (el.resultsCard) el.resultsCard.style.display = "";
+  }
+
+  function renderDashboard(data) {
+    const s = data?.summary || {};
+
+    const inText = Number(s.in_text_citations_found || 0);
+    const refs = Number(s.reference_entries_found || 0);
+    const missing = Number(s.missing_in_references || 0);
+    const uncited = Number(s.uncited_references || 0);
+
+    const matchRate = inText > 0 ? ((inText - missing) / inText) * 100 : 0;
+
+    if (el.dash) {
+      el.dash.innerHTML = `
+        <div class="kpi"><div class="k">In-text</div><div class="v">${fmtNum(inText)}</div></div>
+        <div class="kpi"><div class="k">References</div><div class="v">${fmtNum(refs)}</div></div>
+        <div class="kpi"><div class="k">Missing</div><div class="v">${fmtNum(missing)}</div></div>
+        <div class="kpi"><div class="k">Uncited</div><div class="v">${fmtNum(uncited)}</div></div>
+        <div class="kpi"><div class="k">Match rate</div><div class="v">${pct(matchRate)}</div></div>
+      `;
+    }
+  }
+
+  function renderSummaryTable(data) {
+    const s = data?.summary || {};
+    const rows = [
+      ["In-text citations found", s.in_text_citations_found],
+      ["Reference entries found", s.reference_entries_found],
+      ["Missing in references", s.missing_in_references],
+      ["Uncited references", s.uncited_references],
+      ["Style", data?.style || ""],
+      ["Main text length", data?.main_text_length ?? ""],
+      ["Total text length", data?.text_length ?? ""],
+      ["References detected (raw)", data?.references_detected ?? ""],
+      ["Verify mode used", data?.verify_mode_used ?? ""],
+    ];
+
+    if (el.summaryTable) {
+      el.summaryTable.innerHTML = rows
+        .map(
+          (r) => `
+            <tr>
+              <td>${esc(r[0])}</td>
+              <td>${esc(r[1] ?? "")}</td>
+            </tr>
+          `
+        )
+        .join("");
     }
 
-    // Missing
+    if (el.refMsg) {
+      el.refMsg.textContent = data?.reference_detection_message || "";
+    }
+  }
+
+  function renderMissing(data) {
     const missing = Array.isArray(data?.missing_in_references) ? data.missing_in_references : [];
-    renderSimpleListTable(els.missingTable, missing, ["citation_in_text", "count_in_text"]);
+    if (!el.missingBody) return;
 
-    // Uncited
-    const uncited = Array.isArray(data?.uncited_references)
-      ? data.uncited_references.map(r => ({ reference: r }))
+    if (!missing.length) {
+      el.missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
+      return;
+    }
+
+    el.missingBody.innerHTML = missing
+      .slice(0, 5000)
+      .map(
+        (m, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${esc(m.citation_in_text || "")}</td>
+            <td>${esc(m.count_in_text ?? 0)}</td>
+          </tr>
+        `
+      )
+      .join("");
+  }
+
+  function renderUncited(data) {
+    const uncited = Array.isArray(data?.uncited_references) ? data.uncited_references : [];
+    if (!el.uncitedBody) return;
+
+    if (!uncited.length) {
+      el.uncitedBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
+      return;
+    }
+
+    el.uncitedBody.innerHTML = uncited
+      .slice(0, 5000)
+      .map(
+        (r, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${esc(r)}</td>
+          </tr>
+        `
+      )
+      .join("");
+  }
+
+  function renderC2R(data) {
+    const rows = Array.isArray(data?.reconciliation_intext_to_reference)
+      ? data.reconciliation_intext_to_reference
       : [];
-    renderSimpleListTable(els.uncitedTable, uncited, ["reference"]);
+    if (!el.c2rBody) return;
 
-    // Intext -> Reference
-    const c2r = Array.isArray(data?.reconciliation_intext_to_reference) ? data.reconciliation_intext_to_reference : [];
-    renderSimpleListTable(els.c2rTable, c2r.slice(0, 2000), ["in_text", "status", "matched_reference", "flags"]);
+    if (!rows.length) {
+      el.c2rBody.innerHTML = `<tr><td colspan="5" class="muted">No rows</td></tr>`;
+      return;
+    }
 
-    // Reference -> Intext
-    const r2c = Array.isArray(data?.reconciliation_reference_to_intext) ? data.reconciliation_reference_to_intext : [];
-    // Show fewer because cited_by arrays can be huge
-    const r2cShort = r2c.slice(0, 1000).map(r => ({
-      reference: r.reference ?? "",
-      times_cited: r.times_cited ?? 0,
-      cited_by: Array.isArray(r.cited_by) ? r.cited_by.slice(0, 6).join(" | ") : ""
-    }));
-    renderSimpleListTable(els.r2cTable, r2cShort, ["reference", "times_cited", "cited_by"]);
+    el.c2rBody.innerHTML = rows
+      .slice(0, 5000)
+      .map(
+        (r, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${esc(r.status || "")}</td>
+            <td>${esc(r.in_text || "")}</td>
+            <td>${esc(r.matched_reference || "")}</td>
+            <td>${esc(r.flags || "")}</td>
+          </tr>
+        `
+      )
+      .join("");
+  }
 
-    // Online verification
-    const ovRows = Array.isArray(data?.online_verification?.rows) ? data.online_verification.rows : [];
-    const ovRowsShort = ovRows.slice(0, 1500).map(r => ({
-      status: r.status ?? "",
-      source: r.source ?? "",
-      score: r.score ?? 0,
-      doi: r.doi ?? "",
-      reference: r.reference ?? "",
-      matched_title: r.matched_title ?? ""
-    }));
-    renderSimpleListTable(els.onlineTable, ovRowsShort, ["status", "source", "score", "doi", "reference", "matched_title"]);
+  function renderR2C(data) {
+    const rows = Array.isArray(data?.reconciliation_reference_to_intext)
+      ? data.reconciliation_reference_to_intext
+      : [];
+    if (!el.r2cBody) return;
+
+    if (!rows.length) {
+      el.r2cBody.innerHTML = `<tr><td colspan="4" class="muted">No rows</td></tr>`;
+      return;
+    }
+
+    el.r2cBody.innerHTML = rows
+      .slice(0, 3000)
+      .map((r, i) => {
+        const citedBy = Array.isArray(r.cited_by) ? r.cited_by.slice(0, 6).join(" | ") : "";
+        return `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${esc(r.times_cited ?? 0)}</td>
+            <td>${esc(r.reference || "")}</td>
+            <td>${esc(citedBy)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  function renderVerify(data) {
+    const ov = data?.online_verification || {};
+    const summary = ov.summary || {};
+    const rows = Array.isArray(ov.rows) ? ov.rows : [];
+
+    if (el.verifyDash) {
+      const parts = [
+        ["Verified", summary.verified ?? 0],
+        ["Likely", summary.likely ?? 0],
+        ["Needs review", summary.needs_review ?? 0],
+        ["Not found", summary.not_found ?? 0],
+        ["Offline", summary.offline ?? 0],
+        ["Total", summary.total ?? 0],
+      ];
+      el.verifyDash.innerHTML = parts
+        .map((p) => `<div class="kpi"><div class="k">${esc(p[0])}</div><div class="v">${fmtNum(p[1])}</div></div>`)
+        .join("");
+    }
+
+    if (!el.verifyBody) return;
+
+    if (!rows.length) {
+      el.verifyBody.innerHTML = `<tr><td colspan="9" class="muted">No online verification rows (not run or timed out).</td></tr>`;
+      return;
+    }
+
+    el.verifyBody.innerHTML = rows
+      .slice(0, 5000)
+      .map(
+        (r, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td>${esc(r.status || "")}</td>
+            <td>${esc(r.source || "")}</td>
+            <td>${esc(r.score ?? 0)}</td>
+            <td>${esc(r.doi || "")}</td>
+            <td>${esc(r.matched_year || "")}</td>
+            <td>${esc(r.matched_authors || "")}</td>
+            <td>${esc(r.matched_title || "")}</td>
+            <td>${esc(r.query_used || "")}</td>
+          </tr>
+        `
+      )
+      .join("");
+  }
+
+  function renderAll(data) {
+    LAST_RESULT = data || null;
+    showResults();
+    renderDashboard(data);
+    renderSummaryTable(data);
+    renderMissing(data);
+    renderUncited(data);
+    renderC2R(data);
+    renderR2C(data);
+    renderVerify(data);
+
+    // Enable exports once we have a job id
+    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = !LAST_JOB_ID;
+    if (el.btnExportWordTop) el.btnExportWordTop.disabled = !LAST_JOB_ID;
   }
 
   // -----------------------------
-  // Actions
+  // Requests
   // -----------------------------
-  function setRunning(on) {
-    IS_RUNNING = !!on;
-    setDisabled(els.runBtn, on);
-    setDisabled(els.runOnlineBtn, on);
-    setDisabled(els.exportCsvBtn, on);
-    setDisabled(els.exportWordBtn, on);
-    setDisabled(els.exportPdfBtn, on);
-  }
+  async function postVerify({ verifyOnline }) {
+    if (RUNNING) return;
 
-  async function doVerify({ verifyOnline }) {
-    if (IS_RUNNING) return;
-    clearBanner();
+    const f = el.file?.files?.[0];
+    if (!f) {
+      setStatus("Choose a DOCX or PDF file first.", "warn");
+      return;
+    }
+
     setRunning(true);
 
     try {
-      const fd = buildVerifyFormData({ verifyOnline });
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("style", el.style?.value || "apa");
 
+      fd.append("verify_online", verifyOnline ? "true" : "false");
+      fd.append("verify_mode", el.verifyMode?.value || "all");
+
+      let throttleVal = Number(el.throttle?.value || 0.12);
+      if (!Number.isFinite(throttleVal) || throttleVal < 0) throttleVal = 0.12;
+
+      let maxVerifyVal = Number(el.maxVerify?.value || 0);
+      if (!Number.isFinite(maxVerifyVal) || maxVerifyVal < 0) maxVerifyVal = 0;
+
+      // Safety for online: avoid router 502
       if (verifyOnline) {
-        // Inform user if we are forcing safer defaults
-        const maxVerifyVal = (fd.get("max_verify") || "").toString();
-        if (maxVerifyVal && maxVerifyVal !== "0") {
-          banner("info", `Online verification is running with Max verify = ${maxVerifyVal} to avoid timeouts. Increase it if needed.`);
-        }
-      } else {
-        banner("info", "Running citation check...");
+        if (!throttleVal || throttleVal < 0.12) throttleVal = SAFE_ONLINE_THROTTLE;
+        if (!maxVerifyVal || maxVerifyVal === 0) maxVerifyVal = SAFE_ONLINE_MAX_VERIFY;
       }
 
-      const { res, js, text } = await fetchJson("/verify", { method: "POST", body: fd });
+      fd.append("throttle_s", String(throttleVal));
+      fd.append("max_verify", String(maxVerifyVal));
+
+      fd.append("use_crossref", el.useCrossref?.checked ? "true" : "false");
+      fd.append("use_openalex", el.useOpenAlex?.checked ? "true" : "false");
+
+      setStatus(verifyOnline ? "Running online verification..." : "Running check...", "muted");
+
+      const res = await fetch("/verify", { method: "POST", body: fd });
 
       if (!res.ok) {
-        // Handle Render/router 502
+        const txt = await res.text();
         if (res.status === 502) {
-          banner("error", "Server timeout (502). Reduce Max verify and try again, or enable only Crossref.");
+          setStatus("Server timeout (502). Reduce Max verify or increase Throttle.", "warn");
         } else {
-          banner("error", `Error (${res.status}). ${text?.slice(0, 300) || "Request failed."}`);
+          setStatus(`Error (${res.status}). ${txt.slice(0, 200)}`, "warn");
         }
         return;
       }
 
+      const js = await res.json();
       if (!js || js.ok !== true) {
-        const msg = js?.data?.error || "Unexpected response from server.";
-        banner("error", msg);
+        const msg = js?.data?.error || "Unexpected server response.";
+        setStatus(msg, "warn");
         return;
       }
 
       LAST_JOB_ID = js.job_id || null;
-      renderResults(js.data);
+      renderAll(js.data);
 
-      if (verifyOnline) {
-        banner("success", "Citation check completed. Online verification results included if it finished within the request.");
-      } else {
-        banner("success", "Citation check completed.");
-      }
+      setStatus("Done.", "success");
     } catch (e) {
-      banner("error", e?.message || String(e));
+      console.error(e);
+      setStatus(`Error: ${e?.message || String(e)}`, "warn");
     } finally {
       setRunning(false);
     }
   }
 
-  async function doExport(kind) {
-    if (IS_RUNNING) return;
-    clearBanner();
-
-    if (!LAST_JOB_ID && !LAST_RESULT) {
-      banner("warn", "Run a check first, then export.");
+  async function exportKind(kind) {
+    if (RUNNING) return;
+    if (!LAST_JOB_ID) {
+      setStatus("Run a check first, then export.", "warn");
       return;
     }
 
     setRunning(true);
     try {
-      let url = "";
-      let fallbackName = "export";
-      if (kind === "csv") { url = "/export/csv"; fallbackName = "citation_crosscheck.csv"; }
-      if (kind === "word") { url = "/export/word"; fallbackName = "citation_crosscheck.docx"; }
-      if (kind === "pdf") { url = "/export/pdf"; fallbackName = "citation_crosscheck.pdf"; }
+      const url = kind === "csv" ? "/export/csv" : kind === "word" ? "/export/word" : "/export/pdf";
+      const fallback =
+        kind === "csv" ? "citation_crosscheck.csv" : kind === "word" ? "citation_crosscheck.docx" : "citation_crosscheck.pdf";
 
-      const payload = LAST_JOB_ID
-        ? { job_id: LAST_JOB_ID }
-        : { result: LAST_RESULT }; // fallback only
+      setStatus(`Exporting ${kind.toUpperCase()}...`, "muted");
 
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ job_id: LAST_JOB_ID }),
       });
 
       if (!res.ok) {
         const t = await res.text();
-        banner("error", `Export failed (${res.status}). ${t?.slice(0, 200) || ""}`);
+        setStatus(`Export failed (${res.status}). ${t.slice(0, 160)}`, "warn");
         return;
       }
 
-      await downloadFromResponse(res, fallbackName);
-      banner("success", "Export ready.");
+      const cd = res.headers.get("Content-Disposition") || "";
+      const fn = parseFilenameFromCD(cd) || fallback;
+
+      const blob = await res.blob();
+      // Basic empty-file protection
+      if (blob.size < 20) {
+        setStatus("Export returned an empty file. This usually means the server did not receive job_id or job expired.", "warn");
+        return;
+      }
+
+      downloadBlob(blob, fn);
+      setStatus("Export ready.", "success");
     } catch (e) {
-      banner("error", e?.message || String(e));
+      console.error(e);
+      setStatus(`Export error: ${e?.message || String(e)}`, "warn");
     } finally {
       setRunning(false);
     }
@@ -440,58 +480,52 @@
   // Bind events
   // -----------------------------
   function bind() {
-    if (els.runBtn) {
-      els.runBtn.addEventListener("click", (ev) => {
+    if (!el.btnCheck || !el.btnVerify) {
+      console.error("Buttons not found. Check IDs in HTML.");
+      return;
+    }
+
+    bindTabs();
+
+    el.btnCheck.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      postVerify({ verifyOnline: false });
+    });
+
+    el.btnVerify.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      postVerify({ verifyOnline: true });
+    });
+
+    if (el.btnExportCsvTop) {
+      el.btnExportCsvTop.addEventListener("click", (ev) => {
         ev.preventDefault();
-        doVerify({ verifyOnline: false });
+        exportKind("csv");
       });
     }
 
-    if (els.runOnlineBtn) {
-      els.runOnlineBtn.addEventListener("click", (ev) => {
+    if (el.btnExportWordTop) {
+      el.btnExportWordTop.addEventListener("click", (ev) => {
         ev.preventDefault();
-        doVerify({ verifyOnline: true });
+        exportKind("word");
       });
     }
 
-    if (els.exportCsvBtn) {
-      els.exportCsvBtn.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        doExport("csv");
-      });
-    }
+    // Exports disabled until first successful run
+    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = true;
+    if (el.btnExportWordTop) el.btnExportWordTop.disabled = true;
 
-    if (els.exportWordBtn) {
-      els.exportWordBtn.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        doExport("word");
-      });
-    }
-
-    if (els.exportPdfBtn) {
-      els.exportPdfBtn.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        doExport("pdf");
-      });
-    }
+    setStatus("Ready.", "muted");
+    console.log("app.js bound OK");
   }
 
   // -----------------------------
   // Init
   // -----------------------------
-  document.addEventListener("DOMContentLoaded", () => {
-    bind();
-
-    // Small UX: if user set max_verify=0 and presses online, we’ll apply safe default,
-    // but we can also hint in advance.
-    if (els.maxVerify && els.runOnlineBtn) {
-      els.runOnlineBtn.addEventListener("mouseenter", () => {
-        const v = (els.maxVerify.value ?? "").toString().trim();
-        if (!v || v === "0") {
-          banner("info", `Tip: Online verification with Max verify = 0 can timeout. This app will use ${DEFAULT_MAX_VERIFY_ONLINE} unless you set a value.`);
-        }
-      });
-    }
+  window.addEventListener("error", (e) => {
+    console.error("Global error:", e?.error || e);
+    setStatus("A page script error occurred. Open console for details.", "warn");
   });
 
+  document.addEventListener("DOMContentLoaded", bind);
 })();
