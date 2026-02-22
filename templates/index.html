@@ -1,4 +1,3 @@
-<!-- templates/index.html -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -82,9 +81,7 @@
           <div class="opt">
             <label for="maxVerify">Max verify per batch</label>
             <input id="maxVerify" type="number" step="1" min="0" value="0" />
-            <div class="hint">
-              0 uses the server’s safe cap. Exports will include verification only if you ran Online Verification.
-            </div>
+            <div class="hint">0 means verify all references in batches (recommended for large lists).</div>
           </div>
         </div>
 
@@ -96,6 +93,8 @@
           <h2 class="h2">Results</h2>
           <div class="dashboard" id="dash"></div>
         </div>
+
+        <div id="summary" class="summary"></div>
 
         <div class="tabs">
           <button class="tab active" data-tab="summaryPane">Summary</button>
@@ -110,11 +109,12 @@
           <div id="summaryPane" class="tabPane active">
             <div class="pane-note">
               Use the tabs to explore results. Online verification can take time on large PDFs.
-              Exports include online verification only when you have run it.
             </div>
 
-            <div class="tableWrap" style="margin-top:12px;">
-              <table class="tbl" style="min-width:720px;">
+            <div style="height:10px;"></div>
+
+            <div class="tableWrap">
+              <table class="tbl" style="min-width:520px;">
                 <thead>
                   <tr>
                     <th style="width:220px;">Item</th>
@@ -125,7 +125,9 @@
               </table>
             </div>
 
-            <div id="refMsg" class="summary" style="margin-top:10px;"></div>
+            <div style="height:10px;"></div>
+
+            <div id="refMsg" class="status muted"></div>
           </div>
 
           <div id="missingPane" class="tabPane">
@@ -201,8 +203,7 @@
             </div>
 
             <div class="pane-note">
-              Tip: If you hit rate limits, increase Throttle to 0.20–0.35 and retry.
-              Exports include these results when available.
+              Tip: For large reference lists, keep Max verify as 0 so the app runs safe batches.
             </div>
 
             <div class="tableWrap">
