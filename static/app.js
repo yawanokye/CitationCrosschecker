@@ -1,24 +1,29 @@
 // static/app.js
+"use strict";
+
 let lastResult = null;
 
-function $(id){ return document.getElementById(id); }
+function $(id) {
+  return document.getElementById(id);
+}
 
-function setStatus(text, kind="muted"){
+function setStatus(text, kind = "muted") {
   const el = $("status");
+  if (!el) return;
   el.textContent = text || "";
   el.className = `status ${kind}`;
 }
 
-function escapeHtml(str){
+function escapeHtml(str) {
   return String(str ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
-function badge(status){
+function badge(status) {
   const s = (status || "").toLowerCase();
   let cls = "chip";
   if (s.includes("matched") || s === "verified") cls = "chip good";
@@ -27,15 +32,37 @@ function badge(status){
   return `<span class="${cls}">${escapeHtml(status || "")}</span>`;
 }
 
-function showResults(){
-  $("resultsCard").style.display = "block";
-  $("btnExportCsvTop").disabled = false;
-  $("btnExportWordTop").disabled = false;
+function showResults() {
+  const card = $("resultsCard");
+  if (card) card.style.display = "block";
+
+  const csvBtn = $("btnExportCsvTop");
+  const wordBtn = $("btnExportWordTop");
+  if (csvBtn) csvBtn.disabled = false;
+  if (wordBtn) wordBtn.disabled = false;
 }
 
-function renderDashboard(ui){
-  const d = ui.dashboard || {};
-  $("dash").innerHTML = `
+function lockButtons(lock) {
+  const btnCheck = $("btnCheck");
+  const btnVerify = $("btnVerify");
+  const btnCsv = $("btnExportCsvTop");
+  const btnWord = $("btnExportWordTop");
+
+  if (btnCheck) btnCheck.disabled = lock;
+  if (btnVerify) btnVerify.disabled = lock;
+
+  // Only enable exports after we have at least one successful result
+  const canExport = !!lastResult;
+  if (btnCsv) btnCsv.disabled = lock || !canExport;
+  if (btnWord) btnWord.disabled = lock || !canExport;
+}
+
+function renderDashboard(ui) {
+  const d = (ui && ui.dashboard) || {};
+  const el = $("dash");
+  if (!el) return;
+
+  el.innerHTML = `
     <div class="metric"><div class="k">In-text</div><div class="v">${d.in_text_citations_found ?? 0}</div></div>
     <div class="metric"><div class="k">References</div><div class="v">${d.reference_entries_found ?? 0}</div></div>
     <div class="metric"><div class="k">Missing</div><div class="v">${d.missing_in_references ?? 0}</div></div>
@@ -44,11 +71,17 @@ function renderDashboard(ui){
   `;
 }
 
-function renderSummary(result, ui){
-  const s = result.summary || {};
+function renderSummary(result) {
+  // Your current index.html uses <div id="summary"> ... </div>
+  // We'll render a compact summary panel there, without requiring extra IDs.
+  const host = $("summary");
+  if (!host) return;
+
+  const s = (result && result.summary) || {};
   const items = [
     ["Filename", result.filename || ""],
     ["Style", result.style || ""],
+    ["Reference detection", result.reference_detection_message || ""],
     ["Text length", result.text_length ?? ""],
     ["Main text length", result.main_text_length ?? ""],
     ["References detected (raw)", result.references_detected ?? ""],
@@ -58,70 +91,126 @@ function renderSummary(result, ui){
     ["Uncited references", s.uncited_references ?? 0],
     ["Elapsed (s)", result.elapsed_seconds ?? ""],
   ];
-  $("summaryTable").innerHTML = items.map(([k,v]) => `
-    <tr><td class="kcol">${escapeHtml(k)}</td><td>${escapeHtml(String(v ?? ""))}</td></tr>
-  `).join("");
-  $("refMsg").textContent = result.reference_detection_message || "";
+
+  host.innerHTML = `
+    <div class="tableWrap" style="min-width:0;">
+      <table class="tbl" style="min-width:520px;">
+        <thead><tr><th style="width:220px;">Item</th><th>Value</th></tr></thead>
+        <tbody>
+          ${items
+            .map(
+              ([k, v]) =>
+                `<tr><td class="muted">${escapeHtml(k)}</td><td>${escapeHtml(String(v ?? ""))}</td></tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
-function renderMissing(ui){
-  const rows = ui.missing_rows || [];
-  $("missingBody").innerHTML = rows.length
-    ? rows.map(r => `<tr><td>${escapeHtml(r.no)}</td><td>${escapeHtml(r.count_in_text)}</td><td>${escapeHtml(r.citation_in_text)}</td></tr>`).join("")
+function renderMissing(ui) {
+  const rows = (ui && ui.missing_rows) || [];
+  const body = $("missingBody");
+  if (!body) return;
+
+  body.innerHTML = rows.length
+    ? rows
+        .map(
+          (r) =>
+            `<tr>
+              <td>${escapeHtml(r.no)}</td>
+              <td>${escapeHtml(r.citation_in_text)}</td>
+              <td>${escapeHtml(r.count_in_text)}</td>
+            </tr>`
+        )
+        .join("")
     : `<tr><td colspan="3" class="muted">No missing items.</td></tr>`;
 }
 
-function renderUncited(ui){
-  const rows = ui.uncited_rows || [];
-  $("uncitedBody").innerHTML = rows.length
-    ? rows.map(r => `<tr><td>${escapeHtml(r.no)}</td><td>${escapeHtml(r.reference)}</td></tr>`).join("")
+function renderUncited(ui) {
+  const rows = (ui && ui.uncited_rows) || [];
+  const body = $("uncitedBody");
+  if (!body) return;
+
+  body.innerHTML = rows.length
+    ? rows
+        .map(
+          (r) =>
+            `<tr>
+              <td>${escapeHtml(r.no)}</td>
+              <td>${escapeHtml(r.reference)}</td>
+            </tr>`
+        )
+        .join("")
     : `<tr><td colspan="2" class="muted">No uncited references.</td></tr>`;
 }
 
-function renderC2R(ui){
-  const rows = ui.c2r_rows || [];
-  $("c2rBody").innerHTML = rows.length
-    ? rows.map(r => `
+function renderC2R(ui) {
+  const rows = (ui && ui.c2r_rows) || [];
+  const body = $("c2rBody");
+  if (!body) return;
+
+  body.innerHTML = rows.length
+    ? rows
+        .map(
+          (r) => `
       <tr>
         <td>${escapeHtml(r.no)}</td>
         <td>${badge(r.status)}</td>
         <td>${escapeHtml(r.in_text)}</td>
         <td>${escapeHtml(r.matched_reference)}</td>
         <td>${escapeHtml(r.flags || "")}</td>
-      </tr>
-    `).join("")
+      </tr>`
+        )
+        .join("")
     : `<tr><td colspan="5" class="muted">No rows.</td></tr>`;
 }
 
-function renderR2C(ui){
-  const rows = ui.r2c_rows || [];
-  $("r2cBody").innerHTML = rows.length
-    ? rows.map(r => `
+function renderR2C(ui) {
+  const rows = (ui && ui.r2c_rows) || [];
+  const body = $("r2cBody");
+  if (!body) return;
+
+  body.innerHTML = rows.length
+    ? rows
+        .map(
+          (r) => `
       <tr>
         <td>${escapeHtml(r.no)}</td>
         <td>${escapeHtml(String(r.times_cited ?? 0))}</td>
         <td>${escapeHtml(r.reference)}</td>
         <td>${escapeHtml(r.cited_by || "")}</td>
-      </tr>
-    `).join("")
+      </tr>`
+        )
+        .join("")
     : `<tr><td colspan="4" class="muted">No rows.</td></tr>`;
 }
 
-function renderVerify(result, ui){
-  const ov = result.online_verification || {summary:{}, rows:[]};
+function renderVerify(result) {
+  const ui = (result && result._ui) || {};
+  const ov = (result && result.online_verification) || { summary: {} };
   const sum = ov.summary || {};
   const rows = ui.verify_rows || [];
 
-  $("verifyDash").innerHTML = `
-    <div class="metric"><div class="k">Verified</div><div class="v">${sum.verified ?? 0}</div></div>
-    <div class="metric"><div class="k">Likely</div><div class="v">${sum.likely ?? 0}</div></div>
-    <div class="metric"><div class="k">Review</div><div class="v">${sum.needs_review ?? 0}</div></div>
-    <div class="metric"><div class="k">Not found</div><div class="v">${sum.not_found ?? 0}</div></div>
-    <div class="metric"><div class="k">Offline</div><div class="v">${sum.offline ?? 0}</div></div>
-  `;
+  const dash = $("verifyDash");
+  if (dash) {
+    dash.innerHTML = `
+      <div class="metric"><div class="k">Verified</div><div class="v">${sum.verified ?? 0}</div></div>
+      <div class="metric"><div class="k">Likely</div><div class="v">${sum.likely ?? 0}</div></div>
+      <div class="metric"><div class="k">Review</div><div class="v">${sum.needs_review ?? 0}</div></div>
+      <div class="metric"><div class="k">Not found</div><div class="v">${sum.not_found ?? 0}</div></div>
+      <div class="metric"><div class="k">Offline</div><div class="v">${sum.offline ?? 0}</div></div>
+    `;
+  }
 
-  $("verifyBody").innerHTML = rows.length
-    ? rows.map(r => `
+  const body = $("verifyBody");
+  if (!body) return;
+
+  body.innerHTML = rows.length
+    ? rows
+        .map(
+          (r) => `
       <tr>
         <td>${escapeHtml(r.no)}</td>
         <td>${badge(r.status)}</td>
@@ -132,14 +221,15 @@ function renderVerify(result, ui){
         <td>${escapeHtml(r.matched_authors ?? "")}</td>
         <td>${escapeHtml(r.matched_title ?? "")}</td>
         <td>${escapeHtml(r.query_used ?? "")}</td>
-      </tr>
-    `).join("")
+      </tr>`
+        )
+        .join("")
     : `<tr><td colspan="9" class="muted">No online verification results yet.</td></tr>`;
 }
 
-function setActiveTab(tabId){
-  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
-  document.querySelectorAll(".tabPane").forEach(p => p.classList.toggle("active", p.id === tabId));
+function setActiveTab(tabId) {
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tabId));
+  document.querySelectorAll(".tabPane").forEach((p) => p.classList.toggle("active", p.id === tabId));
 }
 
 document.addEventListener("click", (e) => {
@@ -148,35 +238,44 @@ document.addEventListener("click", (e) => {
   setActiveTab(tab.dataset.tab);
 });
 
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
-async function postForm(endpoint, formData){
+async function postForm(endpoint, formData) {
+  // Robust retry for Render cold starts / transient 502/503/504
   const maxAttempts = 4;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++){
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res;
-    try{
-      res = await fetch(endpoint, { method:"POST", body: formData });
-    }catch(err){
-      if (attempt === maxAttempts) return { ok:false, data:{ error: "Network error. Check your internet or the server is restarting." } };
+    try {
+      res = await fetch(endpoint, { method: "POST", body: formData });
+    } catch (err) {
+      if (attempt === maxAttempts) {
+        return { ok: false, data: { error: "Network error. Check your internet or the server is restarting." } };
+      }
       await sleep(350 * attempt);
       continue;
     }
 
     const ct = (res.headers.get("content-type") || "").toLowerCase();
 
-    if (ct.includes("application/json")){
+    if (ct.includes("application/json")) {
       let data = null;
-      try{ data = await res.json(); }catch(e){ data = { error: "Server returned invalid JSON." }; }
-      if (!res.ok) return { ok:false, data };
-      if (data && data.error) return { ok:false, data };
-      return { ok:true, data };
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = { error: "Server returned invalid JSON." };
+      }
+      if (!res.ok) return { ok: false, data };
+      if (data && data.error) return { ok: false, data };
+      return { ok: true, data };
     }
 
     const text = await res.text();
-    const isRetryable = [502,503,504].includes(res.status);
+    const isRetryable = [502, 503, 504].includes(res.status);
 
-    if (isRetryable && attempt < maxAttempts){
+    if (isRetryable && attempt < maxAttempts) {
       setStatus(`Server waking up, retrying (${attempt}/${maxAttempts})…`, "muted");
       await sleep(650 * attempt);
       continue;
@@ -193,107 +292,104 @@ async function postForm(endpoint, formData){
     const short = (text || "").replace(/\s+/g, " ").trim();
     if (short && short.length < 220 && !short.toLowerCase().includes("<html")) msg = short;
 
-    return { ok:false, data:{ error: msg } };
+    return { ok: false, data: { error: msg } };
   }
 
-  return { ok:false, data:{ error: "Request failed." } };
+  return { ok: false, data: { error: "Request failed." } };
 }
 
-function requireFile(){
-  const f = $("file").files[0];
-  if (!f){
+function requireFile() {
+  const inp = $("file");
+  const f = inp && inp.files ? inp.files[0] : null;
+  if (!f) {
     alert("Select a DOCX or PDF first.");
     return null;
   }
   return f;
 }
 
-function lockButtons(lock){
-  $("btnCheck").disabled = lock;
-  $("btnVerify").disabled = lock;
-  $("btnExportCsvTop").disabled = lock || !lastResult;
-  $("btnExportWordTop").disabled = lock || !lastResult;
+function applyResult(result) {
+  lastResult = result;
+  const ui = (lastResult && lastResult._ui) || {};
+
+  renderDashboard(ui);
+  renderSummary(lastResult);
+  renderMissing(ui);
+  renderUncited(ui);
+  renderC2R(ui);
+  renderR2C(ui);
+  renderVerify(lastResult);
+
+  showResults();
 }
 
-async function runCheck(){
+async function runCheck() {
   const f = requireFile();
   if (!f) return;
 
   const form = new FormData();
   form.append("file", f);
-  form.append("style", $("style").value);
+  form.append("style", ($("style") && $("style").value) || "apa");
 
   lockButtons(true);
   setStatus("Running check…", "muted");
 
   const resp = await postForm("/check", form);
+
   lockButtons(false);
 
-  if (!resp.ok){
+  if (!resp.ok) {
     setStatus(resp.data?.error || "Check failed.", "bad");
     return;
   }
 
-  lastResult = resp.data;
-  const ui = lastResult._ui || {};
-  renderDashboard(ui);
-  renderSummary(lastResult, ui);
-  renderMissing(ui);
-  renderUncited(ui);
-  renderC2R(ui);
-  renderR2C(ui);
-  renderVerify(lastResult, ui);
-  showResults();
+  applyResult(resp.data);
   setStatus("Done.", "good");
 }
 
-async function runVerify(){
+async function runVerify() {
   const f = requireFile();
   if (!f) return;
 
   const form = new FormData();
   form.append("file", f);
-  form.append("style", $("style").value);
-  form.append("verify_mode", $("verifyMode").value);
-  form.append("use_crossref", $("useCrossref").checked ? "true" : "false");
-  form.append("use_openalex", $("useOpenalex").checked ? "true" : "false");
-  form.append("throttle_s", $("throttle").value);
-  form.append("max_verify", $("maxVerify").value);
+  form.append("style", ($("style") && $("style").value) || "apa");
+
+  // IMPORTANT: backend expects snake_case keys (main.py /verify endpoint)
+  form.append("verify_mode", ($("verifyMode") && $("verifyMode").value) || "all");
+  form.append("use_crossref", $("useCrossref") && $("useCrossref").checked ? "true" : "false");
+  form.append("use_openalex", $("useOpenAlex") && $("useOpenAlex").checked ? "true" : "false");
+  form.append("throttle_s", ($("throttle") && $("throttle").value) || "0.12");
+  form.append("max_verify", ($("maxVerify") && $("maxVerify").value) || "0");
 
   lockButtons(true);
   setStatus("Running online verification…", "muted");
 
   const resp = await postForm("/verify", form);
+
   lockButtons(false);
 
-  if (!resp.ok){
+  if (!resp.ok) {
     setStatus(resp.data?.error || "Online verification failed.", "bad");
     return;
   }
 
-  lastResult = resp.data;
-  const ui = lastResult._ui || {};
-  renderDashboard(ui);
-  renderSummary(lastResult, ui);
-  renderMissing(ui);
-  renderUncited(ui);
-  renderC2R(ui);
-  renderR2C(ui);
-  renderVerify(lastResult, ui);
-  showResults();
+  applyResult(resp.data);
   setStatus("Online verification complete.", "good");
 }
 
-async function exportCsv(){
+async function exportCsv() {
   const f = requireFile();
   if (!f) return;
 
   const form = new FormData();
   form.append("file", f);
-  form.append("style", $("style").value);
+  form.append("style", ($("style") && $("style").value) || "apa");
 
-  const res = await fetch("/export/csv", { method:"POST", body: form });
-  if (!res.ok){
+  setStatus("Preparing CSV…", "muted");
+
+  const res = await fetch("/export/csv", { method: "POST", body: form });
+  if (!res.ok) {
     setStatus("Export failed.", "bad");
     return;
   }
@@ -302,23 +398,30 @@ async function exportCsv(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
+
+  // Let server filename win if possible (but we still provide a fallback)
   a.download = "citation_report.csv";
+
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+
+  setStatus("CSV downloaded.", "good");
 }
 
-async function exportWord(){
+async function exportWord() {
   const f = requireFile();
   if (!f) return;
 
   const form = new FormData();
   form.append("file", f);
-  form.append("style", $("style").value);
+  form.append("style", ($("style") && $("style").value) || "apa");
 
-  const res = await fetch("/export/word", { method:"POST", body: form });
-  if (!res.ok){
+  setStatus("Preparing Word report…", "muted");
+
+  const res = await fetch("/export/word", { method: "POST", body: form });
+  if (!res.ok) {
     setStatus("Export failed.", "bad");
     return;
   }
@@ -332,9 +435,23 @@ async function exportWord(){
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+
+  setStatus("Word report downloaded.", "good");
 }
 
-$("btnCheck").addEventListener("click", runCheck);
-$("btnVerify").addEventListener("click", runVerify);
-$("btnExportCsvTop").addEventListener("click", exportCsv);
-$("btnExportWordTop").addEventListener("click", exportWord);
+// Wire up events (safe even if some buttons are missing)
+(function init() {
+  const btnCheck = $("btnCheck");
+  const btnVerify = $("btnVerify");
+  const btnCsv = $("btnExportCsvTop");
+  const btnWord = $("btnExportWordTop");
+
+  if (btnCheck) btnCheck.addEventListener("click", runCheck);
+  if (btnVerify) btnVerify.addEventListener("click", runVerify);
+  if (btnCsv) btnCsv.addEventListener("click", exportCsv);
+  if (btnWord) btnWord.addEventListener("click", exportWord);
+
+  // Initial state
+  lockButtons(false);
+  setStatus("Ready.", "muted");
+})();
