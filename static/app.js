@@ -1,11 +1,7 @@
 // static/app.js
-"use strict";
-
 let lastResult = null;
 
-function $(id) {
-  return document.getElementById(id);
-}
+function $(id) { return document.getElementById(id); }
 
 function setStatus(text, kind = "muted") {
   const el = $("status");
@@ -35,34 +31,23 @@ function badge(status) {
 function showResults() {
   const card = $("resultsCard");
   if (card) card.style.display = "block";
-
-  const csvBtn = $("btnExportCsvTop");
-  const wordBtn = $("btnExportWordTop");
-  if (csvBtn) csvBtn.disabled = false;
-  if (wordBtn) wordBtn.disabled = false;
+  if ($("btnExportCsvTop")) $("btnExportCsvTop").disabled = false;
+  if ($("btnExportWordTop")) $("btnExportWordTop").disabled = false;
 }
 
 function lockButtons(lock) {
-  const btnCheck = $("btnCheck");
-  const btnVerify = $("btnVerify");
-  const btnCsv = $("btnExportCsvTop");
-  const btnWord = $("btnExportWordTop");
-
-  if (btnCheck) btnCheck.disabled = lock;
-  if (btnVerify) btnVerify.disabled = lock;
-
-  // Only enable exports after we have at least one successful result
-  const canExport = !!lastResult;
-  if (btnCsv) btnCsv.disabled = lock || !canExport;
-  if (btnWord) btnWord.disabled = lock || !canExport;
+  if ($("btnCheck")) $("btnCheck").disabled = lock;
+  if ($("btnVerify")) $("btnVerify").disabled = lock;
+  if ($("btnExportCsvTop")) $("btnExportCsvTop").disabled = lock || !lastResult;
+  if ($("btnExportWordTop")) $("btnExportWordTop").disabled = lock || !lastResult;
 }
 
 function renderDashboard(ui) {
-  const d = (ui && ui.dashboard) || {};
-  const el = $("dash");
-  if (!el) return;
+  const d = (ui && ui.dashboard) ? ui.dashboard : {};
+  const dash = $("dash");
+  if (!dash) return;
 
-  el.innerHTML = `
+  dash.innerHTML = `
     <div class="metric"><div class="k">In-text</div><div class="v">${d.in_text_citations_found ?? 0}</div></div>
     <div class="metric"><div class="k">References</div><div class="v">${d.reference_entries_found ?? 0}</div></div>
     <div class="metric"><div class="k">Missing</div><div class="v">${d.missing_in_references ?? 0}</div></div>
@@ -72,16 +57,13 @@ function renderDashboard(ui) {
 }
 
 function renderSummary(result) {
-  // Your current index.html uses <div id="summary"> ... </div>
-  // We'll render a compact summary panel there, without requiring extra IDs.
-  const host = $("summary");
-  if (!host) return;
+  const s = (result && result.summary) ? result.summary : {};
+  const tbl = $("summaryTable");
+  if (!tbl) return;
 
-  const s = (result && result.summary) || {};
   const items = [
     ["Filename", result.filename || ""],
     ["Style", result.style || ""],
-    ["Reference detection", result.reference_detection_message || ""],
     ["Text length", result.text_length ?? ""],
     ["Main text length", result.main_text_length ?? ""],
     ["References detected (raw)", result.references_detected ?? ""],
@@ -90,108 +72,90 @@ function renderSummary(result) {
     ["Missing in references", s.missing_in_references ?? 0],
     ["Uncited references", s.uncited_references ?? 0],
     ["Elapsed (s)", result.elapsed_seconds ?? ""],
-  ];
+    ["Max verify used", result.max_verify_used ?? ""],
+  ].filter(([_, v]) => v !== "" && v !== null && v !== undefined);
 
-  host.innerHTML = `
-    <div class="tableWrap" style="min-width:0;">
-      <table class="tbl" style="min-width:520px;">
-        <thead><tr><th style="width:220px;">Item</th><th>Value</th></tr></thead>
-        <tbody>
-          ${items
-            .map(
-              ([k, v]) =>
-                `<tr><td class="muted">${escapeHtml(k)}</td><td>${escapeHtml(String(v ?? ""))}</td></tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
+  tbl.innerHTML = items.map(([k, v]) => `
+    <tr>
+      <td class="kcol">${escapeHtml(k)}</td>
+      <td>${escapeHtml(String(v ?? ""))}</td>
+    </tr>
+  `).join("");
+
+  const refMsg = $("refMsg");
+  if (refMsg) refMsg.textContent = result.reference_detection_message || "";
 }
 
 function renderMissing(ui) {
-  const rows = (ui && ui.missing_rows) || [];
   const body = $("missingBody");
   if (!body) return;
 
+  const rows = (ui && ui.missing_rows) ? ui.missing_rows : [];
   body.innerHTML = rows.length
-    ? rows
-        .map(
-          (r) =>
-            `<tr>
-              <td>${escapeHtml(r.no)}</td>
-              <td>${escapeHtml(r.citation_in_text)}</td>
-              <td>${escapeHtml(r.count_in_text)}</td>
-            </tr>`
-        )
-        .join("")
+    ? rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.no)}</td>
+        <td>${escapeHtml(r.citation_in_text)}</td>
+        <td>${escapeHtml(r.count_in_text)}</td>
+      </tr>
+    `).join("")
     : `<tr><td colspan="3" class="muted">No missing items.</td></tr>`;
 }
 
 function renderUncited(ui) {
-  const rows = (ui && ui.uncited_rows) || [];
   const body = $("uncitedBody");
   if (!body) return;
 
+  const rows = (ui && ui.uncited_rows) ? ui.uncited_rows : [];
   body.innerHTML = rows.length
-    ? rows
-        .map(
-          (r) =>
-            `<tr>
-              <td>${escapeHtml(r.no)}</td>
-              <td>${escapeHtml(r.reference)}</td>
-            </tr>`
-        )
-        .join("")
+    ? rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.no)}</td>
+        <td>${escapeHtml(r.reference)}</td>
+      </tr>
+    `).join("")
     : `<tr><td colspan="2" class="muted">No uncited references.</td></tr>`;
 }
 
 function renderC2R(ui) {
-  const rows = (ui && ui.c2r_rows) || [];
   const body = $("c2rBody");
   if (!body) return;
 
+  const rows = (ui && ui.c2r_rows) ? ui.c2r_rows : [];
   body.innerHTML = rows.length
-    ? rows
-        .map(
-          (r) => `
+    ? rows.map(r => `
       <tr>
         <td>${escapeHtml(r.no)}</td>
         <td>${badge(r.status)}</td>
         <td>${escapeHtml(r.in_text)}</td>
         <td>${escapeHtml(r.matched_reference)}</td>
         <td>${escapeHtml(r.flags || "")}</td>
-      </tr>`
-        )
-        .join("")
+      </tr>
+    `).join("")
     : `<tr><td colspan="5" class="muted">No rows.</td></tr>`;
 }
 
 function renderR2C(ui) {
-  const rows = (ui && ui.r2c_rows) || [];
   const body = $("r2cBody");
   if (!body) return;
 
+  const rows = (ui && ui.r2c_rows) ? ui.r2c_rows : [];
   body.innerHTML = rows.length
-    ? rows
-        .map(
-          (r) => `
+    ? rows.map(r => `
       <tr>
         <td>${escapeHtml(r.no)}</td>
         <td>${escapeHtml(String(r.times_cited ?? 0))}</td>
         <td>${escapeHtml(r.reference)}</td>
         <td>${escapeHtml(r.cited_by || "")}</td>
-      </tr>`
-        )
-        .join("")
+      </tr>
+    `).join("")
     : `<tr><td colspan="4" class="muted">No rows.</td></tr>`;
 }
 
-function renderVerify(result) {
-  const ui = (result && result._ui) || {};
-  const ov = (result && result.online_verification) || { summary: {} };
-  const sum = ov.summary || {};
-  const rows = ui.verify_rows || [];
+function renderVerify(result, ui) {
+  const ov = (result && result.online_verification) ? result.online_verification : { summary: {}, rows: [] };
+  const sum = (ov && ov.summary) ? ov.summary : {};
+  const rows = (ui && ui.verify_rows) ? ui.verify_rows : [];
 
   const dash = $("verifyDash");
   if (dash) {
@@ -208,9 +172,7 @@ function renderVerify(result) {
   if (!body) return;
 
   body.innerHTML = rows.length
-    ? rows
-        .map(
-          (r) => `
+    ? rows.map(r => `
       <tr>
         <td>${escapeHtml(r.no)}</td>
         <td>${badge(r.status)}</td>
@@ -221,15 +183,14 @@ function renderVerify(result) {
         <td>${escapeHtml(r.matched_authors ?? "")}</td>
         <td>${escapeHtml(r.matched_title ?? "")}</td>
         <td>${escapeHtml(r.query_used ?? "")}</td>
-      </tr>`
-        )
-        .join("")
+      </tr>
+    `).join("")
     : `<tr><td colspan="9" class="muted">No online verification results yet.</td></tr>`;
 }
 
 function setActiveTab(tabId) {
-  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tabId));
-  document.querySelectorAll(".tabPane").forEach((p) => p.classList.toggle("active", p.id === tabId));
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
+  document.querySelectorAll(".tabPane").forEach(p => p.classList.toggle("active", p.id === tabId));
 }
 
 document.addEventListener("click", (e) => {
@@ -238,16 +199,14 @@ document.addEventListener("click", (e) => {
   setActiveTab(tab.dataset.tab);
 });
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function postForm(endpoint, formData) {
-  // Robust retry for Render cold starts / transient 502/503/504
   const maxAttempts = 4;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res;
+
     try {
       res = await fetch(endpoint, { method: "POST", body: formData });
     } catch (err) {
@@ -262,24 +221,22 @@ async function postForm(endpoint, formData) {
 
     if (ct.includes("application/json")) {
       let data = null;
-      try {
-        data = await res.json();
-      } catch (e) {
-        data = { error: "Server returned invalid JSON." };
-      }
+      try { data = await res.json(); } catch (e) { data = { error: "Server returned invalid JSON." }; }
       if (!res.ok) return { ok: false, data };
       if (data && data.error) return { ok: false, data };
       return { ok: true, data };
     }
 
-    const text = await res.text();
+    // Retry common Render wake-up / gateway issues
     const isRetryable = [502, 503, 504].includes(res.status);
-
     if (isRetryable && attempt < maxAttempts) {
       setStatus(`Server waking up, retrying (${attempt}/${maxAttempts})…`, "muted");
       await sleep(650 * attempt);
       continue;
     }
+
+    let text = "";
+    try { text = await res.text(); } catch (_) { text = ""; }
 
     let msg = "Server error.";
     if (res.status === 502) msg = "Server timeout (502). Reduce Max Verify and try again.";
@@ -300,27 +257,12 @@ async function postForm(endpoint, formData) {
 
 function requireFile() {
   const inp = $("file");
-  const f = inp && inp.files ? inp.files[0] : null;
+  const f = inp ? inp.files[0] : null;
   if (!f) {
     alert("Select a DOCX or PDF first.");
     return null;
   }
   return f;
-}
-
-function applyResult(result) {
-  lastResult = result;
-  const ui = (lastResult && lastResult._ui) || {};
-
-  renderDashboard(ui);
-  renderSummary(lastResult);
-  renderMissing(ui);
-  renderUncited(ui);
-  renderC2R(ui);
-  renderR2C(ui);
-  renderVerify(lastResult);
-
-  showResults();
 }
 
 async function runCheck() {
@@ -329,13 +271,12 @@ async function runCheck() {
 
   const form = new FormData();
   form.append("file", f);
-  form.append("style", ($("style") && $("style").value) || "apa");
+  form.append("style", $("style").value);
 
   lockButtons(true);
   setStatus("Running check…", "muted");
 
   const resp = await postForm("/check", form);
-
   lockButtons(false);
 
   if (!resp.ok) {
@@ -343,7 +284,18 @@ async function runCheck() {
     return;
   }
 
-  applyResult(resp.data);
+  lastResult = resp.data;
+  const ui = lastResult._ui || {};
+
+  renderDashboard(ui);
+  renderSummary(lastResult);
+  renderMissing(ui);
+  renderUncited(ui);
+  renderC2R(ui);
+  renderR2C(ui);
+  renderVerify(lastResult, ui);
+
+  showResults();
   setStatus("Done.", "good");
 }
 
@@ -353,20 +305,17 @@ async function runVerify() {
 
   const form = new FormData();
   form.append("file", f);
-  form.append("style", ($("style") && $("style").value) || "apa");
-
-  // IMPORTANT: backend expects snake_case keys (main.py /verify endpoint)
-  form.append("verify_mode", ($("verifyMode") && $("verifyMode").value) || "all");
-  form.append("use_crossref", $("useCrossref") && $("useCrossref").checked ? "true" : "false");
-  form.append("use_openalex", $("useOpenAlex") && $("useOpenAlex").checked ? "true" : "false");
-  form.append("throttle_s", ($("throttle") && $("throttle").value) || "0.12");
-  form.append("max_verify", ($("maxVerify") && $("maxVerify").value) || "0");
+  form.append("style", $("style").value);
+  form.append("verify_mode", $("verifyMode").value);
+  form.append("use_crossref", $("useCrossref").checked ? "true" : "false");
+  form.append("use_openalex", $("useOpenalex").checked ? "true" : "false");
+  form.append("throttle_s", $("throttle").value);
+  form.append("max_verify", $("maxVerify").value);
 
   lockButtons(true);
   setStatus("Running online verification…", "muted");
 
   const resp = await postForm("/verify", form);
-
   lockButtons(false);
 
   if (!resp.ok) {
@@ -374,72 +323,97 @@ async function runVerify() {
     return;
   }
 
-  applyResult(resp.data);
+  lastResult = resp.data;
+  const ui = lastResult._ui || {};
+
+  renderDashboard(ui);
+  renderSummary(lastResult);
+  renderMissing(ui);
+  renderUncited(ui);
+  renderC2R(ui);
+  renderR2C(ui);
+  renderVerify(lastResult, ui);
+
+  showResults();
   setStatus("Online verification complete.", "good");
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function exportCsv() {
   const f = requireFile();
   if (!f) return;
 
+  // Export includes online verification when it exists in lastResult
+  const includeVerify = !!(lastResult && lastResult.online_verification && (lastResult.online_verification.summary?.total ?? 0) > 0);
+
   const form = new FormData();
   form.append("file", f);
-  form.append("style", ($("style") && $("style").value) || "apa");
+  form.append("style", $("style").value);
 
-  setStatus("Preparing CSV…", "muted");
+  if (includeVerify) {
+    form.append("verify_online", "true");
+    form.append("verify_mode", $("verifyMode").value);
+    form.append("use_crossref", $("useCrossref").checked ? "true" : "false");
+    form.append("use_openalex", $("useOpenalex").checked ? "true" : "false");
+    form.append("throttle_s", $("throttle").value);
+    form.append("max_verify", $("maxVerify").value);
+  } else {
+    form.append("verify_online", "false");
+  }
 
+  setStatus(includeVerify ? "Exporting CSV with verification…" : "Exporting CSV…", "muted");
   const res = await fetch("/export/csv", { method: "POST", body: form });
   if (!res.ok) {
     setStatus("Export failed.", "bad");
     return;
   }
-
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-
-  // Let server filename win if possible (but we still provide a fallback)
-  a.download = "citation_report.csv";
-
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-
-  setStatus("CSV downloaded.", "good");
+  downloadBlob(blob, "citation_report.csv");
+  setStatus("CSV exported.", "good");
 }
 
 async function exportWord() {
   const f = requireFile();
   if (!f) return;
 
+  const includeVerify = !!(lastResult && lastResult.online_verification && (lastResult.online_verification.summary?.total ?? 0) > 0);
+
   const form = new FormData();
   form.append("file", f);
-  form.append("style", ($("style") && $("style").value) || "apa");
+  form.append("style", $("style").value);
 
-  setStatus("Preparing Word report…", "muted");
+  if (includeVerify) {
+    form.append("verify_online", "true");
+    form.append("verify_mode", $("verifyMode").value);
+    form.append("use_crossref", $("useCrossref").checked ? "true" : "false");
+    form.append("use_openalex", $("useOpenalex").checked ? "true" : "false");
+    form.append("throttle_s", $("throttle").value);
+    form.append("max_verify", $("maxVerify").value);
+  } else {
+    form.append("verify_online", "false");
+  }
 
+  setStatus(includeVerify ? "Exporting Word with verification…" : "Exporting Word…", "muted");
   const res = await fetch("/export/word", { method: "POST", body: form });
   if (!res.ok) {
     setStatus("Export failed.", "bad");
     return;
   }
-
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "citation_report.docx";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-
-  setStatus("Word report downloaded.", "good");
+  downloadBlob(blob, "citation_report.docx");
+  setStatus("Word exported.", "good");
 }
 
-// Wire up events (safe even if some buttons are missing)
 (function init() {
   const btnCheck = $("btnCheck");
   const btnVerify = $("btnVerify");
@@ -451,7 +425,5 @@ async function exportWord() {
   if (btnCsv) btnCsv.addEventListener("click", exportCsv);
   if (btnWord) btnWord.addEventListener("click", exportWord);
 
-  // Initial state
-  lockButtons(false);
   setStatus("Ready.", "muted");
 })();
