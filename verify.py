@@ -3,11 +3,12 @@ import os
 import re
 import time
 from typing import List, Dict, Any, Optional, Tuple
+from urllib.parse import quote
 
 import requests
 from rapidfuzz import fuzz
-from urllib.parse import quote  # IMPORTANT for OpenAlex DOI lookup
 
+__version__ = "1.2.3"
 
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
 
@@ -16,18 +17,16 @@ MAILTO = (
     or os.getenv("CROSSREF_MAILTO")
     or os.getenv("OPENALEX_MAILTO")
     or ""
-)
-MAILTO = (MAILTO or "").strip()
+).strip()
 
 UNPAYWALL_EMAIL = (os.getenv("UNPAYWALL_EMAIL") or MAILTO or "").strip()
 
-
-# ---------- helpers ----------
+# ---------------------------
+# helpers (safe + normalize)
+# ---------------------------
 def _normalize_verify_status(s: str) -> str:
     st = (s or "").strip().lower().replace(" ", "_")
-    if st not in _ALLOWED_VERIFY_STATUSES:
-        st = "needs_review"
-    return st
+    return st if st in _ALLOWED_VERIFY_STATUSES else "needs_review"
 
 
 def _safe_str(x: Any) -> str:
@@ -53,23 +52,13 @@ def _norm_text(s: str) -> str:
     return s
 
 
-def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 22) -> Optional[dict]:
-    try:
-        headers = {
-            "User-Agent": "CitationCrosschecker/1.0",
-            "Accept": "application/json",
-        }
-        r = requests.get(url, params=params, timeout=timeout, headers=headers)
-        if r.status_code != 200:
-            return None
-        return r.json()
-    except Exception:
-        return None
-
-
 def _extract_year(text: str) -> str:
     m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", text or "", flags=re.I)
-    return (_safe_str(m.group(1)) + (_safe_str(m.group(2)) if m and m.group(2) else "")).lower() if m else ""
+    if not m:
+        return ""
+    y = _safe_str(m.group(1))
+    suf = _safe_str(m.group(2)) if m.group(2) else ""
+    return (y + suf).lower()
 
 
 def _strip_leading_numbering(text: str) -> str:
@@ -83,7 +72,7 @@ def _extract_doi(text: str) -> str:
     m = re.search(r"(10\.\d{4,9}/[^\s]+)", t, flags=re.I)
     if not m:
         return ""
-    return _safe_strip(m.group(1)).rstrip(").,;")
+    return _safe_strip(m.group(1)).rstrip(").,;\"'")
 
 
 def _clean_query_string(s: str) -> str:
@@ -97,28 +86,47 @@ def _clean_query_string(s: str) -> str:
 def _doi_equal(a: str, b: str) -> bool:
     a = _safe_strip(a).lower()
     b = _safe_strip(b).lower()
-    if not a or not b:
-        return False
-    return a == b
+    return bool(a and b and a == b)
 
 
-# ---------- parsing: title + authors ----------
+# ---------------------------
+# HTTP with retries + pooling
+# ---------------------------
+_SESSION = requests.Session()
+_SESSION.headers.update(
+    {
+        "User-Agent": "CitationCrosschecker/1.2.3",
+        "Accept": "application/json",
+    }
+)
+
+
+def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 18) -> Optional[dict]:
+    try:
+        r = _SESSION.get(url, params=params, timeout=timeout)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+# ---------------------------
+# parsing: title + authors
+# ---------------------------
 def _extract_title_guess(ref: str) -> str:
     """
     Best-effort title guess:
     - remove leading numbering
     - remove DOI + doi.org link
-    - remove URLs/noisy "Retrieved from / Link via"
+    - remove URLs/noisy tails
     - prefer sentence after (YEAR) when present
     """
     t = _strip_leading_numbering(ref)
     t = re.sub(r"\s+", " ", t).strip()
 
-    # remove DOI forms and doi.org links
     t = re.sub(r"(doi\s*:\s*)?10\.\d{4,9}/\S+", "", t, flags=re.I)
     t = re.sub(r"https?://doi\.org/10\.\d{4,9}/\S+", "", t, flags=re.I)
-
-    # remove urls and noisy tails
     t = re.sub(r"https?://\S+", "", t, flags=re.I)
     t = re.sub(r"\b(retrieved\s+from|link\s+via)\b.*$", "", t, flags=re.I)
 
@@ -131,7 +139,6 @@ def _extract_title_guess(ref: str) -> str:
 
     after = after.lstrip(". ").strip()
     title = after.split(".", 1)[0].strip() if "." in after else after.strip()
-
     if len(title) < 8:
         title = t.strip()
 
@@ -139,13 +146,6 @@ def _extract_title_guess(ref: str) -> str:
 
 
 def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
-    """
-    Robust-ish for APA/Vancouver:
-    - take block before year as "author block"
-    - if year not found, fall back to text before first period as author block
-    - split by '&', 'and', ';'
-    - handle "Surname, Initials" and "Surname Initials" patterns
-    """
     t = _strip_leading_numbering(ref)
     if not t:
         return []
@@ -154,7 +154,6 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
     if m:
         head = t[: m.start()].strip()
     else:
-        # fallback: many references still start with authors then first period
         head = t.split(".", 1)[0].strip()
 
     head = head.replace("&", " and ")
@@ -171,7 +170,6 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
         if not p:
             continue
 
-        # APA: "Austin, P. C." -> surname before comma
         if "," in p:
             cand = p.split(",", 1)[0].strip()
         else:
@@ -190,17 +188,10 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
 
 def _authors_to_query(authors: List[str], max_join: int = 3) -> str:
     authors = [a for a in (authors or []) if _safe_strip(a)]
-    if not authors:
-        return ""
     return " ".join(authors[:max_join]).strip()
 
 
 def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str:
-    """
-    Query string used for both Crossref/OpenAlex.
-    No strict year filter, we just include year token to help ranking.
-    (UNCHANGED BEHAVIOUR)
-    """
     base = title if len(_safe_str(title)) >= 8 else _safe_str(raw_ref)
     base = _clean_query_string(base)
     y4 = _safe_str(year)[:4] if _safe_str(year)[:4].isdigit() else ""
@@ -211,11 +202,12 @@ def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str
         bits.append(a)
     if y4:
         bits.append(y4)
-
     return _clean_query_string(" ".join(bits))
 
 
-# ---------- queries ----------
+# ---------------------------
+# Queries
+# ---------------------------
 def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
     if not doi:
@@ -224,7 +216,7 @@ def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     params: Dict[str, Any] = {}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=18)
     if not data:
         return None
     item = (data.get("message") or {})
@@ -243,8 +235,7 @@ def _query_crossref(q: str, a_query: str) -> List[Dict[str, Any]]:
         params["query.author"] = a_query
     if MAILTO:
         params["mailto"] = MAILTO
-
-    data = _safe_get_json(url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=18)
     if not data:
         return []
     items = ((data.get("message") or {}).get("items") or [])
@@ -253,19 +244,18 @@ def _query_crossref(q: str, a_query: str) -> List[Dict[str, Any]]:
 
 def _query_openalex_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     """
-    FIX: OpenAlex requires URL-encoded work id when using https://doi.org/<doi> form.
-    Without encoding, many valid DOIs return "not found".
+    OpenAlex DOI lookup must URL-encode the full https://doi.org/<doi>.
     """
     doi = _safe_strip(doi)
     if not doi:
         return None
     doi_url = "https://doi.org/" + doi.lower()
-    work_id = quote(doi_url, safe="")  # <<<< KEY FIX
+    work_id = quote(doi_url, safe="")
     url = "https://api.openalex.org/works/" + work_id
     params: Dict[str, Any] = {}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=18)
     if not data:
         return None
     return {"source": "openalex", "item": data or {}, "query_used": f"doi:{doi}"}
@@ -276,8 +266,7 @@ def _query_openalex(q: str) -> List[Dict[str, Any]]:
     params: Dict[str, Any] = {"search": q, "per-page": 5}
     if MAILTO:
         params["mailto"] = MAILTO
-
-    data = _safe_get_json(url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=18)
     if not data:
         return []
     results = data.get("results") or []
@@ -290,13 +279,15 @@ def _query_unpaywall_by_doi(doi: str) -> Optional[Dict[str, Any]]:
         return None
     url = f"https://api.unpaywall.org/v2/{doi}"
     params = {"email": UNPAYWALL_EMAIL}
-    data = _safe_get_json(url, params=params, timeout=22)
+    data = _safe_get_json(url, params=params, timeout=18)
     if not data:
         return None
     return {"source": "unpaywall", "item": data or {}, "query_used": f"doi:{doi}"}
 
 
-# ---------- candidate extraction ----------
+# ---------------------------
+# Candidate extraction
+# ---------------------------
 def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], int]:
     """
     Returns (doi, title_norm, year, author_surnames[], api_score_if_any)
@@ -356,7 +347,9 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
     return doi, title, year, authors, api_score
 
 
-# ---------- scoring + classification ----------
+# ---------------------------
+# scoring + classification
+# ---------------------------
 def _score(
     ref_title: str,
     ref_authors: List[str],
@@ -375,7 +368,6 @@ def _score(
     cand_set = set([a for a in (cand_authors or []) if a])
     author_overlap = len(ref_set.intersection(cand_set))
 
-    # year mismatch is common (online-first vs issue year)
     year_match = 1 if (ref_year and cand_year and ref_year[:4] == cand_year[:4]) else 0
 
     score = (title_score * 1.35) + (author_overlap * 26) + (year_match * 8)
@@ -400,37 +392,21 @@ def _classify(
     score: int,
     cand_has_doi: bool,
 ) -> str:
-    """
-    Your requirement:
-    - title match + author match + DOI match => verified
-    Practical reality:
-    - year mismatch happens (online-first vs issue), so never hard-fail on year
-    Adjusted so many true positives move from likely -> verified, and needs_review -> likely.
-    """
-
-    # strongest: DOI match, with reasonable title evidence
     if doi_match and title_score >= 55:
         return "verified"
 
-    # very strong bibliographic match
-    # (if ref has authors, we want overlap evidence; if ref lacks authors, don't penalise)
     if title_score >= 88 and (author_overlap >= 1 or not ref_has_authors):
         return "verified"
 
-    # strong match (promote many "manual verified" likely cases)
-    # If title strong and we have author evidence OR a DOI exists on candidate, treat as verified
     if title_score >= 82 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 120):
         return "verified"
 
-    # likely match
     if title_score >= 75 and (author_overlap >= 1 or not ref_has_authors) and (cand_has_doi or score >= 105):
         return "likely"
 
-    # needs review -> likely when title is decent and we have either authors OR year support
     if title_score >= 68 and (author_overlap >= 1 or year_match == 1 or not ref_has_authors):
         return "likely"
 
-    # needs review band (weak author support but title suggests something)
     if title_score >= 60:
         return "needs_review"
 
@@ -467,7 +443,7 @@ def _pick_best_candidate(
         meta = _score(ref_title, ref_authors, ref_year, cand_title, cand_authors, cand_year, api_score)
 
         doi_match = _doi_equal(ref_doi, cand_doi) if ref_doi else False
-        meta_score = int(meta["score"] + (35 if doi_match else 0))  # DOI match boost
+        meta_score = int(meta["score"] + (35 if doi_match else 0))
 
         if meta_score > int(best_meta.get("score") or -1):
             best = cand
@@ -478,7 +454,9 @@ def _pick_best_candidate(
     return best, best_meta, best_doi_match
 
 
-# ---------- public function ----------
+# ---------------------------
+# public API
+# ---------------------------
 def verify_references_batch(
     references: List[str],
     max_to_check: int = 0,
@@ -496,6 +474,7 @@ def verify_references_batch(
         refs = refs[: max_to_check]
 
     rows: List[Dict[str, Any]] = []
+    throttle = max(0.0, float(throttle_s or 0.0))
 
     for ref in refs:
         ref_raw = _safe_strip(ref)
@@ -505,7 +484,6 @@ def verify_references_batch(
         ref_doi = _extract_doi(ref_raw)
         ref_title = _extract_title_guess(ref_raw)
 
-        # build query once and always return it for UI (UNCHANGED)
         query = _build_query(ref_title, ref_authors, ref_year, ref_raw)
         author_for_ui = ", ".join(ref_authors) if ref_authors else ""
 
@@ -526,24 +504,25 @@ def verify_references_batch(
             "query_used": query,
             "attempts": [],
             "error": "",
-            # keys your UI reads
             "author": author_for_ui,
             "query": query,
         }
 
         try:
-            # ---------- 1) CROSSREF ----------
+            # 1) Crossref
             crossref_candidates: List[Dict[str, Any]] = []
             if use_crossref:
                 if ref_doi:
                     hit = _query_crossref_by_doi(ref_doi)
                     if hit:
                         crossref_candidates.append(hit)
-                    time.sleep(max(0.0, float(throttle_s or 0.0)))
+                    if throttle:
+                        time.sleep(throttle)
 
                 a_query = _authors_to_query(ref_authors, max_join=3)
                 crossref_candidates.extend(_query_crossref(query, a_query))
-                time.sleep(max(0.0, float(throttle_s or 0.0)))
+                if throttle:
+                    time.sleep(throttle)
 
             best, meta, doi_match = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, crossref_candidates)
             if best is not None:
@@ -573,25 +552,25 @@ def verify_references_batch(
                     row["title_score"] = int(meta["title_score"])
                     row["author_overlap"] = int(meta["author_overlap"])
                     row["year_match"] = int(meta["year_match"])
-
                     if not row["author"]:
                         row["author"] = row["matched_authors"]
                     rows.append(row)
                     continue
 
-            # ---------- 2) OPENALEX ----------
+            # 2) OpenAlex
             openalex_candidates: List[Dict[str, Any]] = []
             if use_openalex:
-                # if we already got a DOI from crossref best, try direct
                 crossref_best_doi = _safe_strip(_candidate_fields(best)[0]) if best is not None else ""
                 if crossref_best_doi:
                     hit = _query_openalex_by_doi(crossref_best_doi)
                     if hit:
                         openalex_candidates.append(hit)
-                    time.sleep(max(0.0, float(throttle_s or 0.0)))
+                    if throttle:
+                        time.sleep(throttle)
 
                 openalex_candidates.extend(_query_openalex(query))
-                time.sleep(max(0.0, float(throttle_s or 0.0)))
+                if throttle:
+                    time.sleep(throttle)
 
             best2, meta2, doi_match2 = _pick_best_candidate(ref_title, ref_authors, ref_year, ref_doi, openalex_candidates)
             if best2 is not None:
@@ -621,13 +600,12 @@ def verify_references_batch(
                     row["title_score"] = int(meta2["title_score"])
                     row["author_overlap"] = int(meta2["author_overlap"])
                     row["year_match"] = int(meta2["year_match"])
-
                     if not row["author"]:
                         row["author"] = row["matched_authors"]
                     rows.append(row)
                     continue
 
-            # ---------- 3) UNPAYWALL (DOI validate if we found DOI from any source) ----------
+            # 3) Unpaywall (DOI validate)
             best_doi_any = ""
             if best2 is not None:
                 best_doi_any = _safe_strip(_candidate_fields(best2)[0])
@@ -643,7 +621,6 @@ def verify_references_batch(
                     meta_u = _score(ref_title, ref_authors, ref_year, cand_tu, cand_au, cand_yu, 0)
                     doi_match_u = _doi_equal(ref_doi, cand_du) if ref_doi else False
                     meta_u["score"] = int(meta_u["score"] + (35 if doi_match_u else 0))
-
                     row["attempts"].append(_attempt_summary("unpaywall", cand_du, cand_tu, cand_yu, meta_u, doi_match_u))
 
                     status_u = _classify(
@@ -669,13 +646,12 @@ def verify_references_batch(
                         row["title_score"] = int(meta_u["title_score"])
                         row["author_overlap"] = int(meta_u["author_overlap"])
                         row["year_match"] = int(meta_u["year_match"])
-
                         if not row["author"]:
                             row["author"] = row["matched_authors"]
                         rows.append(row)
                         continue
 
-            # ---------- 4) fallback ----------
+            # fallback
             if row["attempts"]:
                 row["attempts"].sort(key=lambda x: int(x.get("score") or 0), reverse=True)
                 top = row["attempts"][0]
@@ -698,17 +674,16 @@ def verify_references_batch(
                 row["title_score"] = int(top.get("title_score") or 0)
                 row["author_overlap"] = int(top.get("author_overlap") or 0)
                 row["year_match"] = int(top.get("year_match") or 0)
-
-                if not row["author"]:
-                    row["author"] = row.get("matched_authors") or ""
             else:
                 row["status"] = "not_found"
 
+            row["status"] = _normalize_verify_status(row.get("status"))
             rows.append(row)
 
         except Exception as e:
             row["status"] = "offline"
             row["error"] = _safe_str(e)
+            row["status"] = _normalize_verify_status(row.get("status"))
             rows.append(row)
 
     for r in rows:
