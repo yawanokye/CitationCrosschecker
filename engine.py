@@ -1,4 +1,6 @@
 # engine.py
+__version__ = "1.2.3"
+
 import re
 import io
 import unicodedata
@@ -249,6 +251,8 @@ def read_pdf_text(file_bytes: bytes) -> str:
         for p in pdf.pages:
             out.append(p.extract_text() or "")
     return "\n".join(out)
+
+
 def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
     """Fast DOCX strategy: iterate paragraphs once and split at References heading."""
     if not DOCX_OK:
@@ -294,7 +298,6 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
     return "\n".join(main_lines).strip(), ref_lines, msg
 
 
-
 # -----------------------------
 # Reference extraction
 # -----------------------------
@@ -316,13 +319,11 @@ def _find_reference_heading(lines: List[str]) -> Tuple[int, str]:
         # Relaxed heading match (heading plus first entry on same line)
         m = REF_HEADING_RELAXED.search(s)
         if m:
-            # Heading should be near the start, and the line shouldn't be extremely long
             if m.start() <= 4 and len(s) <= 160:
                 tail = s[m.end():].strip(" :-\t")
                 return i, tail
 
     return -1, ""
-
 
 
 def _looks_like_new_apa_reference_start(line: str) -> bool:
@@ -420,7 +421,6 @@ def parse_reference_author_year(ref_raw: str) -> Optional[ReferenceEntry]:
 
 
 def _numeric_ref_guard(n: int, remainder: str) -> bool:
-    # Typical reference lists are not in the thousands
     if n < 1 or n > 5000:
         return False
 
@@ -428,15 +428,12 @@ def _numeric_ref_guard(n: int, remainder: str) -> bool:
     if len(rem) < 4:
         return False
 
-    # Avoid capturing years like "2019 ..." as reference numbers
     if YEAR_RE.fullmatch(str(n)):
         return False
 
-    # Avoid capturing DOI prefixes or decimals as "10 ..."
     if rem.startswith(".") or rem.lower().startswith("0."):
         return False
 
-    # Must have some letters early on, otherwise it's probably a table/page/numbering artifact
     head = rem[:40]
     if not re.search(r"[A-Za-z]", head):
         return False
@@ -465,8 +462,6 @@ def parse_reference_numeric(ref_raw: str) -> Optional[ReferenceEntry]:
             return ReferenceEntry(raw=r, key=key_numeric(n), number=n)
         return None
 
-    # Removed the overly-broad pattern: r"^\s*(\d+)\s+(.+)$"
-    # It caused false positives on lines starting with years, page numbers, etc.
     return None
 
 
@@ -624,7 +619,8 @@ def extract_author_year_citations(text: str) -> List[InTextCitation]:
 # -----------------------------
 # Numeric extraction (IEEE/Vancouver)
 # -----------------------------
-_SUP_DIGITS = {"⁰":"0","¹":"1","²":"2","³":"3","⁴":"4","⁵":"5","⁶":"6","⁷":"7","⁸":"8","⁹":"9"}
+_SUP_DIGITS = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9"}
+
 
 def _sup_to_int(s: str) -> Optional[int]:
     try:
@@ -632,6 +628,7 @@ def _sup_to_int(s: str) -> Optional[int]:
         return int(digits) if digits else None
     except Exception:
         return None
+
 
 def _expand_numeric_chunks(inside: str) -> List[int]:
     inside = inside.replace("–", "-")
@@ -648,6 +645,7 @@ def _expand_numeric_chunks(inside: str) -> List[int]:
                 nums.append(int(c))
     return nums
 
+
 def extract_ieee_numeric_citations(text: str) -> List[InTextCitation]:
     out: List[InTextCitation] = []
     pat = re.compile(r"\[\s*(\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)*)\s*\]")
@@ -657,6 +655,7 @@ def extract_ieee_numeric_citations(text: str) -> List[InTextCitation]:
         for n in _expand_numeric_chunks(inside):
             out.append(InTextCitation("numeric", raw, key_numeric(n), number=n))
     return out
+
 
 def extract_vancouver_numeric_citations(text: str) -> List[InTextCitation]:
     out: List[InTextCitation] = []
@@ -741,7 +740,6 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     cite_keys = [c.key for c in cites]
     ref_keys = [r.key for r in refs]
 
-    # Count by key (fixes [1-3] inflating and same-raw issues)
     cite_count_by_key = Counter(cite_keys)
     example_raw_by_key: Dict[str, str] = {}
     for c in cites:
@@ -761,7 +759,7 @@ def build_missing_uncited(cites: List[InTextCitation], refs: List[ReferenceEntry
     uncited = [r.raw for r in refs if r.key not in cite_key_set]
 
     summary = {
-        "in_text_citations_found": int(len(cites)),     # occurrences (expanded ranges count as multiple)
+        "in_text_citations_found": int(len(cites)),  # occurrences (expanded ranges count as multiple)
         "reference_entries_found": int(len(refs)),
         "missing_in_references": int(len(missing)),
         "uncited_references": int(len(uncited)),
@@ -794,7 +792,6 @@ def run_crosscheck(
 ) -> Dict[str, Any]:
     name = (filename or "").lower().strip()
     if name.endswith(".docx"):
-        # Fast split for DOCX (avoids building a huge blob then re-scanning)
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
         references_raw = _merge_reference_lines(ref_block_lines)
         full_text = main_text + "\n" + "\n".join(ref_block_lines)
@@ -817,30 +814,31 @@ def run_crosscheck(
             ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
             references_raw = _merge_reference_lines(ref_block_lines)
 
-        # Rebuild full_text consistently (lightweight)
         full_text = main_text + "\n" + "\n".join(references_raw)
 
     else:
         return {"error": "Upload a DOCX or PDF"}
 
-
     style_norm = (style or "apa").strip().lower()
     if style_norm in ("apa/harvard", "harvard", "author-year"):
         style_norm = "apa"
 
+    # Keep regex fast on huge docs
+    if len(main_text) > 350_000:
+        main_text = main_text[:350_000]
+
     if style_norm == "apa":
-        # Trim very long texts to keep regex fast (still enough for most theses)
-        if len(main_text) > 250_000:
-            main_text = main_text[:250_000]
         cites = extract_author_year_citations(main_text)
         refs = [parse_reference_author_year(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
         c2r, r2c = reconcile_author_year(cites, refs)
+
     elif style_norm == "ieee":
         cites = extract_ieee_numeric_citations(main_text)
         refs = [parse_reference_numeric(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
         c2r, r2c = reconcile_numeric(cites, refs)
+
     else:
         cites = extract_vancouver_numeric_citations(main_text)
         refs = [parse_reference_numeric(r) for r in references_raw]
