@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.2.4"
+__version__ = "1.2.5"
 
 import re
 import io
@@ -19,15 +19,6 @@ try:
     PDF_OK = True
 except Exception:
     PDF_OK = False
-
-# Online verification is run by main.py in background batches.
-# engine.py keeps import optional for local/offline runs.
-try:
-    from verify import verify_references_batch  # noqa
-    VERIFY_OK = True
-except Exception:
-    VERIFY_OK = False
-
 
 YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
 YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
@@ -52,7 +43,7 @@ DISCOURSE_PREFIXES = {
 
 
 # -----------------------------
-# Helpers
+# Small helpers
 # -----------------------------
 def norm_space(s: str) -> str:
     s = s or ""
@@ -90,10 +81,9 @@ def _looks_like_toc_references_line(s: str, tail: str) -> bool:
 
 
 # -----------------------------
-# DOCX text extraction
+# DOCX extraction (robust)
 # -----------------------------
 def _iter_docx_text(doc: "Document"):
-    """Yield text from paragraphs and table cells."""
     for p in doc.paragraphs:
         t = norm_space(p.text)
         if t:
@@ -124,7 +114,6 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
             root = ET.fromstring(xml_bytes)
         except Exception:
             return out
-
         for p in root.findall(".//w:p", NS):
             parts = []
             for tnode in p.findall(".//w:t", NS):
@@ -135,15 +124,10 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
                 out.append(s)
         return out
 
-    targets = [
-        "word/document.xml",
-        "word/footnotes.xml",
-        "word/endnotes.xml",
-    ]
+    targets = ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml"]
 
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
         names = set(z.namelist())
-
         for name in sorted(names):
             if name.startswith("word/header") and name.endswith(".xml"):
                 targets.append(name)
@@ -161,12 +145,6 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
 
 
 def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
-    """Split DOCX into main_text and reference lines.
-    Fixes:
-    - Avoid TOC trap lines ('REFERENCES 60')
-    - Includes tables
-    - Includes headers/footers/footnotes/textboxes via XML
-    """
     if not DOCX_OK:
         raise RuntimeError("python-docx not installed")
 
@@ -194,7 +172,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
                     heading_line = t
                     break
 
-            # relaxed heading
+            # relaxed heading with TOC guard
             if not in_refs:
                 m = REF_HEADING_RELAXED.search(t)
                 if m and m.start() <= 4 and len(t) <= 160:
@@ -218,7 +196,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
 
 # -----------------------------
-# PDF reading
+# PDF extraction + heading detection
 # -----------------------------
 def read_pdf_text(file_bytes: bytes) -> str:
     if not PDF_OK:
@@ -231,14 +209,10 @@ def read_pdf_text(file_bytes: bytes) -> str:
                 text = page.extract_text() or ""
             except Exception:
                 text = ""
-            text = text.replace("\x00", " ")
-            out.append(text)
+            out.append((text or "").replace("\x00", " "))
     return "\n".join(out)
 
 
-# -----------------------------
-# Reference start detectors
-# -----------------------------
 def _looks_like_new_numeric_reference_start(s: str) -> bool:
     s0 = (s or "").strip()
     if not s0:
@@ -252,7 +226,6 @@ def _looks_like_new_numeric_reference_start(s: str) -> bool:
     m = re.match(r"^(\d{1,4})([.)])\s+(.+)$", s0)
     if m:
         num = m.group(1)
-        # avoid treating "2019." as a reference number
         if YEAR_RE.fullmatch(num):
             return False
         return True
@@ -272,12 +245,11 @@ def _looks_like_new_apa_reference_start(s: str) -> bool:
     if m:
         a = m.group(1)
         a = re.sub(r"[^A-Za-z,\.\-\s&]", "", a).strip()
-        if len(a) >= 3:
-            return True
+        return len(a) >= 3
     return False
 
 
-def _count_reference_like(lines: List[str], style_hint: str = "auto") -> int:
+def _count_reference_like(lines: List[str], style_hint: str) -> int:
     c = 0
     for ln in lines:
         s = (ln or "").strip()
@@ -286,20 +258,13 @@ def _count_reference_like(lines: List[str], style_hint: str = "auto") -> int:
         if style_hint == "numeric":
             if _looks_like_new_numeric_reference_start(s):
                 c += 1
-        elif style_hint == "apa":
-            if _looks_like_new_apa_reference_start(s):
-                c += 1
         else:
-            if _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s):
+            if _looks_like_new_apa_reference_start(s):
                 c += 1
     return c
 
 
-def _find_reference_heading(lines: List[str], style_hint: str = "auto") -> Tuple[int, str]:
-    """Return (index, tail_after_heading). Adds:
-    - TOC/header guard
-    - validation: next ~30 lines must look like references
-    """
+def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str]:
     candidates: List[Tuple[int, str]] = []
 
     for i, line in enumerate(lines):
@@ -358,22 +323,23 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
 
     if cur:
         merged.append(norm_space(cur))
-    merged = [m for m in merged if m and len(m) >= 8]
-    return merged
+
+    return [m for m in merged if m and len(m) >= 8]
 
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
-    """Split when multiple numeric references were glued into one string,
-    e.g. '[36] ... [37] ... [38] ...' which makes [37] look 'missing'.
+    """Split when multiple numeric references got glued together in PDFs,
+    e.g. '[36] ... [37] ... [38] ...'
     """
     out: List[str] = []
     br_pat = re.compile(r"(?=(\[\s*\d{1,4}\s*\]\s+))")
     dot_pat = re.compile(r"(?=(\b\d{1,4}[\.\)]\s+))")
 
     for s in merged:
+        s = (s or "").strip()
         if not s:
             continue
-        s = s.strip()
+
         cuts = []
 
         for m in br_pat.finditer(s):
@@ -414,9 +380,11 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
 
+    # (Author, 2020; Author2, 2021)
     paren_pat = re.compile(
         r"\(([^()]{0,220}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,220}?)\)"
     )
+    # Author (2020)
     narr_pat = re.compile(
         r"\b([A-Z][A-Za-z'\-]+(?:\s+(?:&|and)\s+[A-Z][A-Za-z'\-]+)?|[A-Z][A-Za-z'\-]+\s+et\s+al\.)\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)"
     )
@@ -441,11 +409,12 @@ def extract_author_year_citations(text: str) -> List[str]:
 
 
 def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
-    t = (text or "")
+    t = text or ""
     out: List[str] = []
     if bracketed:
         pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\s*\]")
     else:
+        # captures standalone numbers and ranges (used as fallback for Vancouver)
         pat = re.compile(r"\b(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\b")
 
     for m in pat.finditer(t):
@@ -478,15 +447,6 @@ class RefAY:
 class RefNum:
     reference_full: str
     num: str
-
-
-def _guess_title_from_reference(ref: str) -> str:
-    s = norm_space(ref)
-    s = re.sub(r"https?://\S+", "", s).strip()
-    s = re.sub(r"\bdoi\s*:\s*\S+", "", s, flags=re.I).strip()
-    parts = [p.strip() for p in re.split(r"\.\s+", s) if p.strip()]
-    title = parts[1] if len(parts) >= 2 else (parts[0] if parts else s)
-    return strip_punct(title)[:220]
 
 
 def parse_reference_author_year(ref: str) -> Optional[RefAY]:
@@ -522,13 +482,11 @@ def parse_reference_numeric(ref: str) -> Optional[RefNum]:
 
     m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
     if m:
-        num = m.group(1)
-        return RefNum(reference_full=s, num=num)
+        return RefNum(reference_full=s, num=m.group(1))
 
     m2 = re.match(r"^(\d{1,4})[.)]\s*(.+)$", s)
     if m2 and not YEAR_RE.fullmatch(m2.group(1)):
-        num = m2.group(1)
-        return RefNum(reference_full=s, num=num)
+        return RefNum(reference_full=s, num=m2.group(1))
 
     return None
 
@@ -556,7 +514,6 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     year = ym.group(1)
 
     left = s[:ym.start()].strip(" ,;()")
-    # drop discourse prefixes
     left = re.sub(
         r"^(?:"
         + "|".join(sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True))
@@ -573,13 +530,15 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     return auth, year
 
 
-def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str], List[str]]:
-    ref_map: Dict[str, str] = {}
-    for r in references:
-        ref_map[r.key] = r.reference_full
+def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
 
     cite_key_counts = Counter()
+    cite_text_counts = Counter()
     parsed_cites: List[Tuple[str, str]] = []
+
     for c in citations:
         parsed = _parse_author_year_from_cite(c)
         if not parsed:
@@ -587,74 +546,95 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         auth, year = parsed
         key = f"{auth}|{year}".lower()
         cite_key_counts[key] += 1
+        cite_text_counts[c] += 1
         parsed_cites.append((key, c))
 
     c2r: List[Dict[str, Any]] = []
-    missing_unique = set()
+    missing_counter = Counter()
+
     for key, c in parsed_cites:
         if key in ref_map:
             c2r.append({"status": "matched", "in_text": c, "matched_reference": ref_map[key], "flags": ""})
         else:
             c2r.append({"status": "not_found", "in_text": c, "matched_reference": "", "flags": ""})
-            missing_unique.add(c)
+            missing_counter[c] += 1
 
+    # r2c rows + uncited list
     r2c: List[Dict[str, Any]] = []
     uncited_refs: List[str] = []
+
+    # build sample cited_by (up to 6)
+    cite_samples_by_key: Dict[str, List[str]] = defaultdict(list)
+    for key, c in parsed_cites:
+        lst = cite_samples_by_key[key]
+        if len(lst) < 6:
+            lst.append(c)
+
     for r in references:
-        times = cite_key_counts.get(r.key, 0)
+        times = int(cite_key_counts.get(r.key, 0))
         if times == 0:
             uncited_refs.append(r.reference_full)
         r2c.append({
-            "times_cited": int(times),
+            "times_cited": times,
             "reference": r.reference_full,
-            "cited_by_sample": []
+            "cited_by": cite_samples_by_key.get(r.key, []),
         })
 
-    # missing citations list should be the "Citation in Text" strings
-    missing_list = sorted(missing_unique)
-    return c2r, r2c, missing_list, uncited_refs
+    missing_rows = [
+        {"citation_in_text": k, "count_in_text": int(v)}
+        for k, v in missing_counter.most_common()
+    ]
+
+    intext_count = sum(int(v) for v in cite_text_counts.values())
+    return c2r, r2c, missing_rows, uncited_refs, int(intext_count)
 
 
-def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str], List[str]]:
-    ref_by_num: Dict[str, str] = {}
-    for r in references:
-        ref_by_num[r.num] = r.reference_full
-
+def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    ref_by_num: Dict[str, str] = {r.num: r.reference_full for r in references}
     cite_counts = Counter(citations)
 
     c2r: List[Dict[str, Any]] = []
-    missing_nums = set()
+    missing_counter = Counter()
+
     for num in citations:
         if num in ref_by_num:
             c2r.append({"status": "matched", "in_text": f"[{num}]", "matched_reference": ref_by_num[num], "flags": ""})
         else:
             c2r.append({"status": "not_found", "in_text": f"[{num}]", "matched_reference": "", "flags": ""})
-            missing_nums.add(f"[{num}]")
+            missing_counter[f"[{num}]"] += 1
 
+    # r2c rows + uncited list
     r2c: List[Dict[str, Any]] = []
     uncited_refs: List[str] = []
     for r in references:
-        times = cite_counts.get(r.num, 0)
+        times = int(cite_counts.get(r.num, 0))
         if times == 0:
             uncited_refs.append(r.reference_full)
         r2c.append({
-            "times_cited": int(times),
+            "times_cited": times,
             "reference": r.reference_full,
-            "cited_by_sample": [f"[{r.num}]"] if times else []
+            "cited_by": [f"[{r.num}]"] if times else [],
         })
 
-    missing_list = sorted(missing_nums, key=lambda x: int(re.sub(r"\D", "", x) or "0"))
-    return c2r, r2c, missing_list, uncited_refs
+    missing_rows = [
+        {"citation_in_text": k, "count_in_text": int(v)}
+        for k, v in missing_counter.most_common()
+    ]
+
+    intext_count = sum(int(v) for v in cite_counts.values())
+    return c2r, r2c, missing_rows, uncited_refs, int(intext_count)
 
 
 # -----------------------------
-# Main runner
+# Public API: run_crosscheck
 # -----------------------------
 def run_crosscheck(
     file_bytes: bytes,
     filename: str,
     style: str = "apa",
-    verify_online: bool = False,   # kept for compatibility, main.py uses offline here
+    verify_online: bool = False,   # main.py always calls offline here (kept for compatibility)
     verify_mode: str = "all",
     max_verify: int = 0,
     throttle_s: float = 0.12,
@@ -663,17 +643,12 @@ def run_crosscheck(
 ) -> Dict[str, Any]:
 
     name = (filename or "").lower().strip()
-
-    # style hint for reference split and numeric glue splitting
     style_s = (style or "apa").strip().lower()
-    if "ieee" in style_s or "vancouver" in style_s or "numeric" in style_s:
-        style_hint = "numeric"
-    else:
-        style_hint = "apa"
 
-    # --------------------------------
-    # Read + split
-    # --------------------------------
+    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
+    style_hint = "numeric" if is_numeric else "apa"
+
+    # ---- read + split ----
     if name.endswith(".docx"):
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
         references_raw = _merge_reference_lines(ref_block_lines)
@@ -683,8 +658,8 @@ def run_crosscheck(
     elif name.endswith(".pdf"):
         full_text = read_pdf_text(file_bytes)
         lines = full_text.splitlines()
-        idx, tail = _find_reference_heading(lines, style_hint=style_hint)
 
+        idx, tail = _find_reference_heading(lines, style_hint=style_hint)
         if idx == -1:
             main_text = full_text
             references_raw = []
@@ -703,69 +678,70 @@ def run_crosscheck(
     else:
         return {"error": "Upload a DOCX or PDF"}
 
-    # --------------------------------
-    # Speed cap, keep head + tail (not only head)
-    # --------------------------------
+    # ---- speed cap: keep head + tail ----
     if len(main_text) > 350_000:
         half = 175_000
         main_text = main_text[:half] + "\n... [TRUNCATED] ...\n" + main_text[-half:]
 
-    # --------------------------------
-    # Extract + reconcile
-    # --------------------------------
+    # ---- extract + reconcile ----
     if style_hint == "apa":
         cites = extract_author_year_citations(main_text)
         refs = [parse_reference_author_year(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
 
-        c2r, r2c, missing_list, uncited_refs = reconcile_author_year(cites, refs)
-
-        intext_count = len([c for c in cites if _parse_author_year_from_cite(c)])
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
         ref_count = len(refs)
 
     else:
-        # IEEE uses bracketed citations by default
-        bracketed = True
+        # IEEE is bracketed. Vancouver can vary, so fallback if bracketed yields too few.
+        if "ieee" in style_s:
+            bracketed = True
+        else:
+            bracketed = True  # try bracketed first for Vancouver too
+
         cites_nums = extract_numeric_citations(main_text, bracketed=bracketed)
+
+        if "vancouver" in style_s and len(cites_nums) < 3:
+            cites_nums = extract_numeric_citations(main_text, bracketed=False)
+
         refs = [parse_reference_numeric(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
 
-        c2r, r2c, missing_list, uncited_refs = reconcile_numeric(cites_nums, refs)
-
-        intext_count = len(cites_nums)
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites_nums, refs)
         ref_count = len(refs)
 
-    # compute summary rates
-    missing_rows = [x for x in c2r if x.get("status") != "matched"]
-    uncited_rows = [x for x in r2c if int(x.get("times_cited") or 0) == 0]
+    # ---- summary match rate based on citation occurrences ----
+    missing_occ = sum(int(x.get("count_in_text") or 0) for x in (missing_rows or []))
     match_rate = 0.0
-    if c2r:
-        match_rate = 100.0 * (len(c2r) - len(missing_rows)) / len(c2r)
+    if intext_count > 0:
+        match_rate = 100.0 * max(0.0, float(intext_count - missing_occ)) / float(intext_count)
 
-    # --------------------------------
-    # Return keys matching main.py
-    # --------------------------------
+    # ---- return schema that app.js expects ----
     return {
         "filename": filename,
-
-        "summary": {
-            "in_text": int(intext_count),
-            "references": int(ref_count),
-            "missing": int(len(missing_list)),
-            "uncited": int(len(uncited_refs)),
-            "match_rate": float(round(match_rate, 1)),
-        },
+        "style": style_s,
+        "verify_mode_used": (verify_mode or "all"),
 
         "reference_detection_message": ref_msg,
 
-        # Main reconciliation outputs (what UI + CSV expects)
+        "summary": {
+            "in_text_citations_found": int(intext_count),
+            "reference_entries_found": int(ref_count),
+            "missing_in_references": int(missing_occ),
+            "uncited_references": int(len(uncited_refs)),
+            "match_rate": float(round(match_rate, 1)),
+        },
+
+        # Missing tab expects list of dicts: {citation_in_text, count_in_text}
+        "missing_in_references": missing_rows,
+
+        # Uncited tab expects list[str]
+        "uncited_references": uncited_refs,
+
+        # Mapping tabs
         "reconciliation_intext_to_reference": c2r,
         "reconciliation_reference_to_intext": r2c,
 
-        # Lists used by main.py selection logic
-        "missing_citations": missing_list,          # list[str], e.g. ["[37]", "[10]", ...] or "(Smith, 2020)"
-        "uncited_references": uncited_refs,         # list[str] of full reference strings
-
-        # Keep raw refs for optional debugging or future features
+        # useful debugging / future features
         "references_raw": references_raw,
     }
