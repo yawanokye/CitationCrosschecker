@@ -65,6 +65,41 @@ def strip_punct(s: str) -> str:
     return s
 
 
+
+
+def _first_author_or_org_key(author_left: str) -> str:
+    """
+    Stable key from first author surname or acronym in parentheses.
+    Examples:
+      "Barsky, R. B., & Kilian, L." -> "barsky"
+      "United Nations Conference on Trade and Development (UNCTAD)" -> "unctad"
+      "UNCTAD" -> "unctad"
+    """
+    s = norm_space(author_left)
+
+    # Prefer acronym like (UNCTAD)
+    m = re.search(r"\(([A-Z]{2,10})\)", s)
+    if m:
+        return strip_punct(m.group(1))
+
+    # Remove leading numbering
+    s = re.sub(r"^\[\s*\d{1,4}\s*\]\s*", "", s).strip()
+    s = re.sub(r"^\d{1,4}[.)]\s*", "", s).strip()
+
+    # Remove trailing year if leaked in
+    s = re.sub(r"\(\s*(?:(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?)\s*\).*", "", s).strip()
+
+    # Take first author segment
+    s = re.split(r"\s+(?:&|and)\s+|,", s, maxsplit=1)[0].strip()
+
+    # Remove et al
+    s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I).strip()
+
+    toks = [t for t in re.split(r"\s+", s) if t]
+    if not toks:
+        return ""
+    return strip_punct(toks[-1])
+
 def _looks_like_toc_references_line(s: str, tail: str) -> bool:
     """Detect TOC/header lines like:
       - 'REFERENCES 60'
@@ -465,14 +500,13 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
         year = m.group(1)
         left = s[:m.start()].strip()
 
-    left2 = re.sub(r"^\[\s*\d{1,4}\s*\]\s*", "", left).strip()
-    left2 = re.sub(r"^\d{1,4}[.)]\s*", "", left2).strip()
+    author_key = _first_author_or_org_key(left)
+    if not author_key:
+        return None
 
-    authors = strip_punct(left2)[:160]
-    auth_key = authors.replace(" et al", "").replace(" and ", "&")
-    auth_key = re.sub(r"\s+", " ", auth_key).strip()
-    key = f"{auth_key}|{year}".lower()
+    key = f"{author_key}|{year}".lower()
     return RefAY(reference_full=s, key=key)
+
 
 
 def parse_reference_numeric(ref: str) -> Optional[RefNum]:
@@ -524,10 +558,11 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     ).strip(" ,;()")
 
     left = left.replace(" et al.", " et al")
-    auth = _norm_author_block(left)
-    if not auth:
+    author_key = _first_author_or_org_key(left)
+    if not author_key:
         return None
-    return auth, year
+    return author_key, year
+
 
 
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
