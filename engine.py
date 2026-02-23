@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.2.6"
+__version__ = "1.2.7"
 
 import re
 import io
@@ -94,9 +94,10 @@ def _first_author_or_org_key(author_left: str) -> str:
     # Handle "et al."
     s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
 
-    toks = [t for t in re.split(r"\s+", s0) if t]
+    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
     if not toks:
         return ""
+    # Use the last alpha-numeric token as the surname/acronym
     return strip_punct(toks[-1])
 
 
