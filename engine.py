@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.2.5"
+__version__ = "1.2.6"
 
 import re
 import io
@@ -64,41 +64,41 @@ def strip_punct(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-
-
-
 def _first_author_or_org_key(author_left: str) -> str:
-    """
-    Stable key from first author surname or acronym in parentheses.
+    """Return a stable key using the *first* author surname or an acronym in brackets.
     Examples:
-      "Barsky, R. B., & Kilian, L." -> "barsky"
-      "United Nations Conference on Trade and Development (UNCTAD)" -> "unctad"
-      "UNCTAD" -> "unctad"
+      - "Bartlett, J. E., Kotrlik, J. W., & Higgins, C. C." -> "bartlett"
+      - "United Nations Conference on Trade and Development (UNCTAD)" -> "unctad"
+      - "Adam's" -> "adam"
     """
     s = norm_space(author_left)
 
-    # Prefer acronym like (UNCTAD)
+    # Prefer acronym in brackets, e.g. "(UNCTAD)"
     m = re.search(r"\(([A-Z]{2,10})\)", s)
     if m:
         return strip_punct(m.group(1))
 
-    # Remove leading numbering
+    # Remove numbering
     s = re.sub(r"^\[\s*\d{1,4}\s*\]\s*", "", s).strip()
     s = re.sub(r"^\d{1,4}[.)]\s*", "", s).strip()
 
-    # Remove trailing year if leaked in
-    s = re.sub(r"\(\s*(?:(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?)\s*\).*", "", s).strip()
+    # Remove year if it leaked in
+    s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
 
-    # Take first author segment
-    s = re.split(r"\s+(?:&|and)\s+|,", s, maxsplit=1)[0].strip()
+    # Remove possessive on author token
+    s = re.sub(r"(’s|'s)\b", "", s)
 
-    # Remove et al
-    s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I).strip()
+    # Split on separators, keep the first author part
+    s0 = re.split(r"\s+(?:&|and)\s+|,", s, maxsplit=1)[0].strip()
 
-    toks = [t for t in re.split(r"\s+", s) if t]
+    # Handle "et al."
+    s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
+
+    toks = [t for t in re.split(r"\s+", s0) if t]
     if not toks:
         return ""
     return strip_punct(toks[-1])
+
 
 def _looks_like_toc_references_line(s: str, tail: str) -> bool:
     """Detect TOC/header lines like:
@@ -415,33 +415,41 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
 
-    # (Author, 2020; Author2, 2021)
+    # Parenthetical: (Author, 2020; Author2, 2021)
     paren_pat = re.compile(
-        r"\(([^()]{0,220}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,220}?)\)"
+        r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)"
     )
-    # Author (2020)
+
+    # Narrative: Bartlett, Kotrlik, and Higgins (2001); Adam's (2020); Bartlett & Higgins (2001); Bartlett et al. (2001)
+    S = r"[A-Z][A-Za-z'\-]+(?:'s)?"
     narr_pat = re.compile(
-        r"\b([A-Z][A-Za-z'\-]+(?:\s+(?:&|and)\s+[A-Z][A-Za-z'\-]+)?|[A-Z][A-Za-z'\-]+\s+et\s+al\.)\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)"
+        rf"\b("
+        rf"(?:{S}(?:\s*,\s*{S}){{0,4}}(?:\s*,?\s*(?:&|and)\s*{S})?)"
+        rf"|(?:{S}\s+(?:&|and)\s+{S})"
+        rf"|(?:{S}\s+et\s+al\.)"
+        rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)"
     )
 
     out: List[str] = []
 
+    # parenthetical chunks
     for m in paren_pat.finditer(t):
         inside = m.group(1)
         chunks = [c.strip() for c in inside.split(";") if c.strip()]
         for ch in chunks:
-            ch2 = re.sub(r"\bp\.?\s*\d+\b", "", ch, flags=re.I).strip()
-            ch2 = re.sub(r"\bpp\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch2, flags=re.I).strip()
+            ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
             if YEAR_RE.search(ch2):
                 out.append(norm_space(ch2))
 
+    # narrative
     for m in narr_pat.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
+        # remove possessive: Adam's (2020) -> Adam (2020)
+        author = re.sub(r"(’s|'s)\b", "", author).strip()
         out.append(norm_space(f"{author}, {year}"))
 
     return [c for c in out if c]
-
 
 def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
     t = text or ""
@@ -507,8 +515,6 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
     key = f"{author_key}|{year}".lower()
     return RefAY(reference_full=s, key=key)
 
-
-
 def parse_reference_numeric(ref: str) -> Optional[RefNum]:
     s = norm_space(ref)
     if not s:
@@ -557,13 +563,13 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
         flags=re.I
     ).strip(" ,;()")
 
-    left = left.replace(" et al.", " et al")
+    # remove possessive: Adam's, 2020 -> Adam, 2020
+    left = re.sub(r"(’s|'s)\b", "", left).strip()
+
     author_key = _first_author_or_org_key(left)
     if not author_key:
         return None
     return author_key, year
-
-
 
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
@@ -620,9 +626,9 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         for k, v in missing_counter.most_common()
     ]
 
-    intext_count = sum(int(v) for v in cite_text_counts.values())
-    return c2r, r2c, missing_rows, uncited_refs, int(intext_count)
-
+    # In-text summary should be UNIQUE citations (unique keys), not total occurrences
+    unique_intext_count = int(len(cite_key_counts))
+    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
 
 def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
