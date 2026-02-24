@@ -1,5 +1,6 @@
 # engine.py
-__version__ = "1.2.8"
+__version__ = "1.3.0"
+
 import re
 import io
 import unicodedata
@@ -34,34 +35,170 @@ REF_HEADING_RELAXED = re.compile(
     re.I
 )
 
+# Headings that indicate end of reference list
+POST_REF_HEADINGS = [
+    r"^\s*appendix\s*",
+    r"^\s*appendices\s*",
+    r"^\s*supplementary\s+(?:materials?|information|data)",
+    r"^\s*supporting\s+(?:information|materials?)",
+    r"^\s*online\s+resources?",
+    r"^\s*additional\s+materials?",
+    r"^\s*acknowledgements?\s*$",
+    r"^\s*acknowledgments?\s*$",
+]
+
 DISCOURSE_PREFIXES = {
     "see", "e.g", "eg", "i.e", "ie",
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
     "according", "adapted", "based", "cited", "citing", "reported",
 }
 
-
-# Headings that often appear *after* the reference list in theses/articles.
-# Used to avoid swallowing appendices/supplementary material as references.
-REF_END_HEADINGS = [
-    r"^\s*appendix(?:es)?\b",
-    r"^\s*annex(?:es)?\b",
-    r"^\s*supplement(?:ary)?\b",
-    r"^\s*supporting\s+information\b",
-    r"^\s*supporting\s+documents?\b",
-    r"^\s*additional\s+materials?\b",
-    r"^\s*online\s+appendix\b",
-]
-
-REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
-
-# Common false-positive "author" tokens we should never treat as citations.
-NON_NAME_AUTHOR_KEYS = {
-    "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", "figure", "fig", "figures",
-    "chapter", "section", "appendix", "appendices", "annex", "equation", "eq", "model", "models",
-    "analysis", "results", "method", "methods", "discussion", "introduction", "conclusion",
-    "study", "paper", "thesis", "report", "source", "sources", "author", "authors",
+# Common false positive terms that aren't author names
+FALSE_POSITIVE_AUTHORS = {
+    "survey", "field", "fieldwork", "field work", "study", "studies",
+    "research", "analysis", "data", "results", "figure", "table",
+    "chapter", "section", "appendix", "supplement", "supplementary",
+    "online", "web", "website", "retrieved", "accessed", "available",
+    "university", "college", "institute", "department", "laboratory",
+    "lab", "experiment", "experimental", "method", "methodology",
+    "review", "literature", "systematic", "meta-analysis", "meta analysis",
+    "trial", "clinical", "patient", "patients", "group", "groups",
+    "participant", "participants", "author", "authors", "et al",
+    "unpublished", "manuscript", "submitted", "forthcoming", "in press",
+    "personal communication", "pers comm", "personal observation",
+    "observation", "observations", "preprint", "pre-print", "archive",
+    "database", "dataset", "data set", "code", "software", "package",
+    "library", "version", "release", "manual", "documentation",
+    "report", "technical report", "tech report", "working paper",
+    "discussion paper", "conference paper", "conference proceeding",
+    "proceeding", "proceedings", "abstract", "poster", "presentation",
+    "talk", "keynote", "panel", "symposium", "workshop", "meeting",
+    "annual meeting", "annual conference", "international conference",
+    "national conference", "regional conference", "local conference",
+    "email", "e-mail", "message", "correspondence", "conversation",
+    "discussion", "interview", "phone call", "telephone call",
+    "skype call", "zoom call", "video call", "video conference",
+    "webinar", "seminar", "colloquium", "lecture", "class", "course",
+    "thesis", "dissertation", "doctoral dissertation", "phd thesis",
+    "master's thesis", "masters thesis", "undergraduate thesis",
+    "honors thesis", "honours thesis", "capstone", "final project",
+    "research project", "research paper", "term paper", "student paper",
+    "student project", "class project", "group project", "team project",
+    "collaborative project", "collaboration", "partnership",
+    "consortium", "network", "association", "society", "academy",
+    "foundation", "fund", "grant", "fellowship", "scholarship",
+    "award", "prize", "honor", "honour", "distinction",
+    "center", "centre", "unit", "division", "branch", "section",
+    "office", "bureau", "agency", "administration", "government",
+    "ministry", "department", "organization", "organisation",
+    "company", "corporation", "firm", "business", "enterprise",
+    "industry", "sector", "market", "economy", "economic",
+    "social", "society", "cultural", "political", "policy",
+    "public", "private", "nonprofit", "non-profit", "ngo",
+    "international", "national", "regional", "local", "global",
+    "world", "worldwide", "global", "international",
+    "north", "south", "east", "west", "northern", "southern",
+    "eastern", "western", "central", "rural", "urban", "suburban",
+    "developed", "developing", "underdeveloped", "industrialized",
+    "industrialised", "emerging", "transitional", "transitioning",
+    "rich", "wealthy", "poor", "impoverished", "low-income",
+    "middle-income", "high-income", "low-resource", "resource-poor",
+    "resource-rich", "resource-wealthy", "resource-dependent",
+    "resource-based", "resource-driven", "resource-focused",
+    "resource-oriented", "resource-related", "resource-associated",
 }
+
+# Common first names and initials to filter out as author surnames
+COMMON_FIRST_NAMES = {
+    "john", "james", "robert", "michael", "william", "david", "richard",
+    "charles", "joseph", "thomas", "christopher", "daniel", "paul",
+    "mark", "donald", "george", "kenneth", "steven", "edward", "brian",
+    "ronald", "anthony", "kevin", "jason", "matthew", "gary", "timothy",
+    "jose", "larry", "jeffrey", "frank", "scott", "eric", "stephen",
+    "andrew", "raymond", "gregory", "joshua", "jerry", "dennis",
+    "mary", "patricia", "jennifer", "linda", "elizabeth", "barbara",
+    "susan", "jessica", "sarah", "karen", "lisa", "nancy", "betty",
+    "helen", "sandra", "donna", "carol", "ruth", "sharon", "michelle",
+    "laura", "sarah", "kimberly", "deborah", "jessica", "shirley",
+    "cynthia", "angela", "melissa", "brenda", "amy", "anna", "rebecca",
+    "virginia", "kathleen", "pamela", "martha", "debra", "amanda",
+    "stephanie", "carolyn", "christine", "marie", "janet", "catherine",
+    "frances", "ann", "joyce", "diane", "alice", "julie", "heather",
+    "teresa", "doris", "gloria", "evelyn", "jean", "cheryl", "mildred",
+    "katherine", "joan", "ashley", "judith", "rose", "janice", "kelly",
+    "nicole", "judy", "christina", "kathy", "theresa", "beverly",
+    "denise", "tammy", "irene", "jane", "lori", "rachel", "marilyn",
+    "andrea", "kathryn", "louise", "sara", "anne", "jacqueline",
+    "wanda", "bonnie", "julia", "ruby", "lois", "tina", "phyllis",
+    "norma", "paula", "diana", "annie", "lillian", "emily", "robin",
+    "peggy", "crystal", "gladys", "rita", "dawn", "connie", "florence",
+    "tracy", "edna", "tiffany", "carmen", "rosa", "cindy", "grace",
+    "wendy", "victoria", "edith", "kim", "sherry", "sylvia", "josephine",
+    "thelma", "shannon", "sheila", "ethel", "ellen", "elaine", "marjorie",
+    "carrie", "charlotte", "monica", "esther", "pauline", "emma",
+    "juanita", "anita", "rhonda", "hazel", "amber", "eva", "debbie",
+    "april", "leslie", "clara", "lucille", "jamie", "joanne", "eleanor",
+    "valerie", "danielle", "megan", "alicia", "suzanne", "michele",
+    "gail", "bertha", "darlene", "veronica", "jill", "ernestine",
+    "geraldine", "lauren", "cathy", "joann", "josephine", "lynn",
+    "sally", "julie", "martha", "kathryn", "jennie", "nora", "margie",
+    "nina", "cassandra", "leah", "penny", "kay", "priscilla", "naomi",
+    "carole", "brandy", "olga", "billie", "dianne", "tracey", "leona",
+    "jenny", "felicia", "sonia", "miriam", "velma", "becky", "bobbie",
+    "violet", "kristina", "toni", "misty", "mae", "shelly", "daisy",
+    "ramona", "sherri", "erika", "katrina", "claire", "lindsey",
+    "lindsay", "geneva", "guadalupe", "belinda", "margarita", "sheryl",
+    "cora", "faye", "ada", "natasha", "sabrina", "isabel", "margret",
+    "hilda", "gwen", "jodi", "candace", "kenya", "alma", "kellie",
+    "flora", "tanya", "maya", "jeanette", "phyllis", "grady", "bryce",
+    "dewayne", "garret", "houston", "kasey", "kendall", "kent", "kip",
+    "kory", "kurtis", "lacy", "lamar", "lando", "lane", "langston",
+    "lashawn", "latrell", "laurance", "leif", "len", "lenny", "leon",
+    "leonard", "les", "lesley", "lester", "levi", "lewis", "lincoln",
+    "lindsay", "linwood", "lionel", "lloyd", "logan", "lon", "lonnie",
+    "louie", "louis", "lowell", "loyd", "lucas", "luke", "lynwood",
+}
+
+# Common academic terms that might be mistaken for author names
+ACADEMIC_TERMS = {
+    "study", "studies", "research", "analysis", "analyses", "data",
+    "results", "finding", "findings", "conclusion", "conclusions",
+    "discussion", "method", "methods", "methodology", "methodologies",
+    "approach", "approaches", "framework", "frameworks", "model",
+    "models", "theory", "theories", "concept", "concepts", "construct",
+    "constructs", "variable", "variables", "factor", "factors",
+    "dimension", "dimensions", "component", "components", "element",
+    "elements", "aspect", "aspects", "feature", "features",
+    "characteristic", "characteristics", "property", "properties",
+    "attribute", "attributes", "quality", "qualities", "indicator",
+    "indicators", "measure", "measures", "measurement", "measurements",
+    "assessment", "assessments", "evaluation", "evaluations",
+    "examination", "examinations", "investigation", "investigations",
+    "exploration", "explorations", "inquiry", "inquiries", "enquiry",
+    "enquiries", "survey", "surveys", "questionnaire", "questionnaires",
+    "interview", "interviews", "observation", "observations",
+    "experiment", "experiments", "trial", "trials", "test", "tests",
+    "testing", "pilot", "pilots", "case", "cases", "example", "examples",
+    "instance", "instances", "sample", "samples", "population",
+    "populations", "participant", "participants", "subject", "subjects",
+    "respondent", "respondents", "informant", "informants", "group",
+    "groups", "cohort", "cohorts", "panel", "panels", "wave", "waves",
+    "phase", "phases", "stage", "stages", "step", "steps", "process",
+    "processes", "procedure", "procedures", "protocol", "protocols",
+    "technique", "techniques", "tool", "tools", "instrument",
+    "instruments", "apparatus", "equipment", "device", "devices",
+    "material", "materials", "stimulus", "stimuli", "item", "items",
+    "question", "questions", "scale", "scales", "index", "indexes",
+    "indices", "score", "scores", "rating", "ratings", "rank", "ranks",
+    "ranking", "rankings", "classification", "classifications",
+    "category", "categories", "type", "types", "kind", "kinds",
+    "form", "forms", "mode", "modes", "pattern", "patterns",
+    "trend", "trends", "theme", "themes", "topic", "topics",
+    "subject", "subjects", "domain", "domains", "area", "areas",
+    "field", "fields", "discipline", "disciplines", "specialty",
+    "specialties", "specialization", "specializations",
+}
+
 
 # -----------------------------
 # Small helpers
@@ -85,6 +222,79 @@ def strip_punct(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+
+def is_likely_author_name(text: str) -> bool:
+    """Check if text is likely an author name (not a false positive)."""
+    if not text:
+        return False
+    
+    text_lower = text.lower().strip()
+    
+    # Check against false positive lists
+    if text_lower in FALSE_POSITIVE_AUTHORS:
+        return False
+    
+    if text_lower in COMMON_FIRST_NAMES:
+        return False
+    
+    if text_lower in ACADEMIC_TERMS:
+        return False
+    
+    # Check if it's a single common word
+    words = text_lower.split()
+    if len(words) == 1:
+        single_word = words[0]
+        if len(single_word) <= 2:  # Too short
+            return False
+        if single_word in FALSE_POSITIVE_AUTHORS:
+            return False
+        if single_word in COMMON_FIRST_NAMES:
+            return False
+        if single_word in ACADEMIC_TERMS:
+            return False
+    
+    # Check for common false positive patterns
+    false_patterns = [
+        r"^(the|a|an|this|that|these|those|some|any|no|all|both|each|every|few|many|most|several)\s+",
+        r"^(survey|study|research|analysis|data|results)\s+(of|on|in|from|by|with|about|regarding|concerning)$",
+        r"^(figure|table|chapter|section|appendix)\s+\d+$",
+        r"^(vol|volume|no|number|issue|part|suppl|supplement)\s+\d+$",
+        r"^(p|pp|page|pages)\s+\d+$",
+        r"^(et al|and others|and colleagues)\s*$",
+        r"^(unpublished|submitted|forthcoming|in press)\s*$",
+        r"^(personal communication|pers comm|personal observation)\s*$",
+        r"^(conference|symposium|workshop|meeting|proceeding)\s+",
+        r"^(university|college|institute|school|department)\s+",
+        r"^(laboratory|lab|center|centre|unit|division)\s+",
+        r"^(government|ministry|agency|bureau|office)\s+",
+        r"^(organization|organisation|company|corporation|firm)\s+",
+        r"^(international|national|regional|local|global)\s+",
+    ]
+    
+    for pattern in false_patterns:
+        if re.search(pattern, text_lower):
+            return False
+    
+    # Check if it contains any non-name characters
+    if re.search(r"[0-9_+=<>@#$%^&*()\[\]{}|\\:;\"',.?/~`]", text):
+        # Allow commas, periods, hyphens in names
+        allowed = re.sub(r"[,\-\.\s]", "", text)
+        if re.search(r"[0-9_+=<>@#$%^&*()\[\]{}|\\:;\"'/?~`]", allowed):
+            return False
+    
+    # Check if it's all uppercase (acronyms are often organizations)
+    if text.isupper() and len(text) <= 8:
+        return True  # Acronyms can be valid (e.g., NASA, WHO)
+    
+    # Check if it has at least one capital letter (likely a name)
+    if not any(c.isupper() for c in text if c.isalpha()):
+        # All lowercase might be a false positive
+        if len(words) == 1 and len(text) > 3:
+            return False
+    
+    return True
+
+
 def _first_author_or_org_key(author_left: str) -> str:
     """Return a stable key using the *first* author surname or an acronym in brackets.
     Examples:
@@ -97,7 +307,10 @@ def _first_author_or_org_key(author_left: str) -> str:
     # Prefer acronym in brackets, e.g. "(UNCTAD)"
     m = re.search(r"\(([A-Z]{2,10})\)", s)
     if m:
-        return strip_punct(m.group(1))
+        acronym = m.group(1)
+        # Check if acronym is likely valid
+        if acronym.isupper() and 2 <= len(acronym) <= 8:
+            return strip_punct(acronym)
 
     # Remove numbering
     s = re.sub(r"^\[\s*\d{1,4}\s*\]\s*", "", s).strip()
@@ -115,9 +328,21 @@ def _first_author_or_org_key(author_left: str) -> str:
     # Handle "et al."
     s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
 
-    toks = [t for t in re.split(r"\s+", s0) if t]
+    # Filter out false positives
+    if not is_likely_author_name(s0):
+        # Try to extract a meaningful part
+        words = s0.split()
+        if words:
+            # Use the last word if it's capitalized (likely surname)
+            last_word = words[-1]
+            if last_word and last_word[0].isupper():
+                return strip_punct(last_word)
+        return ""
+
+    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
     if not toks:
         return ""
+    # Use the last alpha-numeric token as the surname/acronym
     return strip_punct(toks[-1])
 
 
@@ -136,56 +361,14 @@ def _looks_like_toc_references_line(s: str, tail: str) -> bool:
     return False
 
 
-def _looks_like_heading_line(s: str) -> bool:
-    """Heuristic: short heading-like line (often appendix/supplementary headings)."""
-    s0 = (s or "").strip()
-    if not s0:
-        return False
-    if len(s0) > 120:
-        return False
-    # Avoid lines that look like normal sentences.
-    if s0.endswith(".") and len(s0) > 25:
-        return False
-    # Many headings are ALL CAPS or Title Case
-    letters = re.sub(r"[^A-Za-z]", "", s0)
-    if letters and letters.isupper() and len(letters) >= 6:
-        return True
-    # Title case-ish (not perfect, but helpful)
-    if re.match(r"^[A-Z][A-Za-z0-9\s\-,:]{3,}$", s0):
-        return True
+def _is_post_reference_heading(s: str) -> bool:
+    """Check if line indicates end of reference list (appendix, supplementary, etc.)."""
+    s_lower = s.lower().strip()
+    for pat in POST_REF_HEADINGS:
+        if re.search(pat, s_lower, re.I):
+            return True
     return False
 
-
-def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
-    """Stop the reference block when it clearly transitions to appendices/supplementary sections."""
-    out: List[str] = []
-    ref_like_seen = 0
-
-    def _is_ref_like(ln: str) -> bool:
-        if style_hint == "numeric":
-            return _looks_like_new_numeric_reference_start(ln)
-        return _looks_like_new_apa_reference_start(ln)
-
-    for i, ln in enumerate(lines):
-        s = (ln or "").strip()
-        if not s:
-            continue
-
-        # count reference-like starts early so we only allow end detection after we truly are in refs
-        if _is_ref_like(s):
-            ref_like_seen += 1
-
-        # End heading detection (only after some refs already found)
-        if ref_like_seen >= 3 and (REF_END_HEADING_RE.search(s) or (_looks_like_heading_line(s) and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I))):
-            # Lookahead: if upcoming lines don't look like references, stop here
-            look = [x for x in lines[i:i+25] if (x or "").strip()]
-            look_ref = sum(1 for x in look if _is_ref_like((x or "").strip()))
-            if look_ref <= 1:
-                break
-
-        out.append(ln)
-
-    return out
 
 # -----------------------------
 # DOCX extraction (robust)
@@ -271,6 +454,12 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
     heading_line = ""
 
     for t in lines:
+        # Check for post-reference headings when in reference section
+        if in_refs and _is_post_reference_heading(t):
+            in_refs = False
+            main_lines.append(t)  # Add to main text instead of references
+            continue
+
         if not in_refs:
             # strict heading
             for pat in REF_HEADINGS:
@@ -294,17 +483,9 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
                     continue
 
         if in_refs:
-            # Stop at appendix/supplementary sections that follow references
-            if REF_END_HEADING_RE.search(t) and _is_section_heading(t):
-                break
             ref_lines.append(t)
         else:
             main_lines.append(t)
-
-    if in_refs:
-        ref_lines = _truncate_reference_block(ref_lines, style_hint="apa")
-        # also guard numeric-style theses
-        ref_lines = _truncate_reference_block(ref_lines, style_hint="numeric")
 
     msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
     return "\n".join(main_lines).strip(), ref_lines, msg
@@ -409,108 +590,23 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 # -----------------------------
 # Merge and split reference lines
 # -----------------------------
-def _is_section_heading(line: str) -> bool:
-    """Heuristic: looks like a section heading (short, no year/doi/url, mostly letters)."""
-    s = norm_space(line)
-    if not s:
-        return False
-    if len(s) > 90:
-        return False
-    if YEAR_RE.search(s):
-        return False
-    if "http://" in s.lower() or "https://" in s.lower() or "doi" in s.lower():
-        return False
-    letters = sum(ch.isalpha() for ch in s)
-    if letters < 4:
-        return False
-    if s.isupper():
-        return True
-    if s.endswith("."):
-        return False
-    if re.fullmatch(r"[A-Za-z][A-Za-z\s&/\-]{3,}", s):
-        return True
-    return False
-
-
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
-    """Merge wrapped reference lines into full reference entries.
-
-    Refinements:
-    - Avoid creating "new" references for Vancouver/IEEE fragments like:
-        '1. Available from: ...'
-        '50. https://doi.org/...'
-      These are appended to the previous reference if numbering repeats or the
-      content is clearly a continuation (URL/DOI/available-from).
-    - Stop at post-reference sections (Appendix, Supplementary, etc.).
-    - Filter orphan URL/DOI lines and other non-reference debris.
-    """
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
         return []
 
     merged: List[str] = []
     cur = ""
-    cur_num: Optional[int] = None
-
-    def _lead_num(s: str) -> Optional[int]:
-        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s+", s)
-        if m:
-            return int(m.group(1))
-        m = re.match(r"^(\d{1,4})[.)]\s+", s)
-        if m:
-            if YEAR_RE.fullmatch(m.group(1)):
-                return None
-            return int(m.group(1))
-        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s+", s)
-        if m:
-            return int(m.group(1))
-        return None
-
-    def _strip_lead_num(s: str) -> str:
-        return re.sub(r"^\[\s*\d{1,4}\s*\]\s+|^\(\s*\d{1,4}\s*\)\s+|^\d{1,4}[.)]\s+", "", s).strip()
-
-    def _is_continuation_fragment(body: str) -> bool:
-        b = (body or "").strip().lower()
-        return (
-            b.startswith("available from")
-            or b.startswith("retrieved from")
-            or b.startswith("accessed")
-            or b.startswith("doi:")
-            or b.startswith("https://doi.org/")
-            or b.startswith("http://")
-            or b.startswith("https://")
-            or b.startswith("www.")
-        )
-
     for ln in raw_lines:
         s = ln.strip()
         if not s:
             continue
 
-        # Stop if appendix/supplementary begins after refs have started
-        if (merged or cur) and REF_END_HEADING_RE.search(s) and _is_section_heading(s):
-            break
-
-        is_new_numeric = _looks_like_new_numeric_reference_start(s)
-        is_new_apa = _looks_like_new_apa_reference_start(s)
-        is_new = is_new_numeric or is_new_apa
-
-        if is_new and is_new_numeric and cur:
-            n = _lead_num(s)
-            body = _strip_lead_num(s)
-            if (n is not None and cur_num is not None and n == cur_num) or _is_continuation_fragment(body):
-                joiner = " "
-                if cur.endswith("-"):
-                    cur = cur[:-1]
-                    joiner = ""
-                cur = cur + joiner + s
-                continue
-
+        is_new = _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s)
         if is_new:
             if cur:
                 merged.append(norm_space(cur))
             cur = s
-            cur_num = _lead_num(s) if is_new_numeric else None
         else:
             if not cur:
                 cur = s
@@ -524,40 +620,7 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     if cur:
         merged.append(norm_space(cur))
 
-    # Split glued numeric references from PDFs
-    merged = _split_embedded_numeric_refs(merged)
-
-    # Filter non-references and duplicates
-    cleaned: List[str] = []
-    seen = set()
-    doi_re = re.compile(r"\b10\.\d{4,9}/[^\s)>,;]+", re.I)
-
-    for r0 in merged:
-        r = norm_space(r0)
-        if not r or len(r) < 12:
-            continue
-
-        # Drop post-reference headings that slipped in
-        if REF_END_HEADING_RE.search(r) and _is_section_heading(r):
-            continue
-
-        body = re.sub(r"^\[\s*\d{1,4}\s*\]\s+|^\(\s*\d{1,4}\s*\)\s+|^\d{1,4}[.)]\s+", "", r).strip()
-
-        # Orphan continuation lines
-        if _is_continuation_fragment(body) and not (YEAR_RE.search(r) or doi_re.search(r)) and len(body.split()) <= 8:
-            continue
-
-        # Must look like a real ref
-        if not (YEAR_RE.search(r) or doi_re.search(r) or re.search(r"(?i)\bvol\.|\bno\.|\bpp\.|\bjournal\b|\bpress\b|\bproceedings\b|\bed\.\b|\bpublisher\b", r)):
-            continue
-
-        if r in seen:
-            continue
-        seen.add(r)
-        cleaned.append(r)
-
-    return cleaned
-
+    return [m for m in merged if m and len(m) >= 8]
 
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
@@ -637,7 +700,11 @@ def extract_author_year_citations(text: str) -> List[str]:
         for ch in chunks:
             ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
             if YEAR_RE.search(ch2):
-                out.append(norm_space(ch2))
+                # Extract author part and check if likely a real author
+                author_part = re.sub(r",\s*\d{4}[a-z]?\s*$", "", ch2)
+                author_part = re.sub(r"\s*\(\d{4}[a-z]?\)\s*$", "", author_part)
+                if is_likely_author_name(author_part):
+                    out.append(norm_space(ch2))
 
     # narrative
     for m in narr_pat.finditer(t):
@@ -645,341 +712,6 @@ def extract_author_year_citations(text: str) -> List[str]:
         year = m.group(2).strip()
         # remove possessive: Adam's (2020) -> Adam (2020)
         author = re.sub(r"(’s|'s)\b", "", author).strip()
-        out.append(norm_space(f"{author}, {year}"))
-
-    return [c for c in out if c]
-
-def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
-    t = text or ""
-    out: List[str] = []
-    if bracketed:
-        pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\s*\]")
-    else:
-        # captures standalone numbers and ranges (used as fallback for Vancouver)
-        pat = re.compile(r"\b(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\b")
-
-    for m in pat.finditer(t):
-        a = int(m.group(1))
-        b = m.group(2)
-        if b:
-            b2 = int(b)
-            lo, hi = (a, b2) if a <= b2 else (b2, a)
-            if hi - lo <= 50:
-                for k in range(lo, hi + 1):
-                    out.append(str(k))
-            else:
-                out.append(str(a))
-                out.append(str(b2))
-        else:
-            out.append(str(a))
-    return out
-
-
-# -----------------------------
-# Reference parsers
-# -----------------------------
-@dataclass
-class RefAY:
-    reference_full: str
-    key: str
-
-
-@dataclass
-class RefNum:
-    reference_full: str
-    num: str
-
-
-def parse_reference_author_year(ref: str) -> Optional[RefAY]:
-    s = norm_space(ref)
-    if not s:
-        return None
-
-    m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s)
-    if not m:
-        m2 = re.search(r"\b(" + YEAR + r")\b", s)
-        if not m2:
-            return None
-        year = m2.group(1)
-        left = s[:m2.start()].strip()
-    else:
-        year = m.group(1)
-        left = s[:m.start()].strip()
-
-    author_key = _first_author_or_org_key(left)
-    if not author_key:
-        return None
-
-    key = f"{author_key}|{year}".lower()
-    return RefAY(reference_full=s, key=key)
-
-def parse_reference_numeric(ref: str) -> Optional[RefNum]:
-    s = norm_space(ref)
-    if not s:
-        return None
-
-    m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
-    if m:
-        return RefNum(reference_full=s, num=m.group(1))
-
-    m2 = re.match(r"^(\d{1,4})[.)]\s*(.+)$", s)
-    if m2 and not YEAR_RE.fullmatch(m2.group(1)):
-        return RefNum(reference_full=s, num=m2.group(1))
-
-    return None
-
-
-# -----------------------------
-# Reconciliation
-# -----------------------------
-def _norm_author_block(s: str) -> str:
-    s = strip_punct(s)
-    s = s.replace("&", " and ")
-    s = re.sub(r"\bet al\b", "", s).strip()
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
-    s = norm_space(cite)
-    if not s:
-        return None
-
-    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
-    ym = YEAR_RE.search(s)
-    if not ym:
-        return None
-    year = ym.group(1)
-
-    left = s[:ym.start()].strip(" ,;()")
-    left = re.sub(
-        r"^(?:"
-        + "|".join(sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True))
-        + r")\b",
-        "",
-        left,
-        flags=re.I
-    ).strip(" ,;()")
-
-    # remove possessive: Adam's, 2020 -> Adam, 2020
-    left = re.sub(r"(’s|'s)\b", "", left).strip()
-
-    author_key = _first_author_or_org_key(left)
-    if not author_key:
-        return None
-    if author_key.lower() in NON_NAME_AUTHOR_KEYS:
-        return None
-    return author_key, year
-
-def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
-    ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
-
-    cite_key_counts = Counter()
-    cite_text_counts = Counter()
-    parsed_cites: List[Tuple[str, str]] = []
-
-    for c in citations:
-        parsed = _parse_author_year_from_cite(c)
-        if not parsed:
-            continue
-        auth, year = parsed
-        key = f"{auth}|{year}".lower()
-        cite_key_counts[key] += 1
-        cite_text_counts[c] += 1
-        parsed_cites.append((key, c))
-
-    c2r: List[Dict[str, Any]] = []
-    missing_counter = Counter()
-
-    for key, c in parsed_cites:
-        if key in ref_map:
-            c2r.append({"status": "matched", "in_text": c, "matched_reference": ref_map[key], "flags": ""})
-        else:
-            c2r.append({"status": "not_found", "in_text": c, "matched_reference": "", "flags": ""})
-            missing_counter[c] += 1
-
-    # r2c rows + uncited list
-    r2c: List[Dict[str, Any]] = []
-    uncited_refs: List[str] = []
-
-    # build sample cited_by (up to 6)
-    cite_samples_by_key: Dict[str, List[str]] = defaultdict(list)
-    for key, c in parsed_cites:
-        lst = cite_samples_by_key[key]
-        if len(lst) < 6:
-            lst.append(c)
-
-    for r in references:
-        times = int(cite_key_counts.get(r.key, 0))
-        if times == 0:
-            uncited_refs.append(r.reference_full)
-        r2c.append({
-            "times_cited": times,
-            "reference": r.reference_full,
-            "cited_by": cite_samples_by_key.get(r.key, []),
-        })
-
-    missing_rows = [
-        {"citation_in_text": k, "count_in_text": int(v)}
-        for k, v in missing_counter.most_common()
-    ]
-
-    # In-text summary should be UNIQUE citations (unique keys), not total occurrences
-    unique_intext_count = int(len(cite_key_counts))
-    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
-
-def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
-    ref_by_num: Dict[str, str] = {r.num: r.reference_full for r in references}
-    cite_counts = Counter(citations)
-
-    c2r: List[Dict[str, Any]] = []
-    missing_counter = Counter()
-
-    for num in citations:
-        if num in ref_by_num:
-            c2r.append({"status": "matched", "in_text": f"[{num}]", "matched_reference": ref_by_num[num], "flags": ""})
-        else:
-            c2r.append({"status": "not_found", "in_text": f"[{num}]", "matched_reference": "", "flags": ""})
-            missing_counter[f"[{num}]"] += 1
-
-    # r2c rows + uncited list
-    r2c: List[Dict[str, Any]] = []
-    uncited_refs: List[str] = []
-    for r in references:
-        times = int(cite_counts.get(r.num, 0))
-        if times == 0:
-            uncited_refs.append(r.reference_full)
-        r2c.append({
-            "times_cited": times,
-            "reference": r.reference_full,
-            "cited_by": [f"[{r.num}]"] if times else [],
-        })
-
-    missing_rows = [
-        {"citation_in_text": k, "count_in_text": int(v)}
-        for k, v in missing_counter.most_common()
-    ]
-
-    unique_intext_count = int(len(set(citations)))
-    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
-
-
-# -----------------------------
-# Public API: run_crosscheck
-# -----------------------------
-def run_crosscheck(
-    file_bytes: bytes,
-    filename: str,
-    style: str = "apa",
-    verify_online: bool = False,   # main.py always calls offline here (kept for compatibility)
-    verify_mode: str = "all",
-    max_verify: int = 0,
-    throttle_s: float = 0.12,
-    use_crossref: bool = True,
-    use_openalex: bool = True,
-) -> Dict[str, Any]:
-
-    name = (filename or "").lower().strip()
-    style_s = (style or "apa").strip().lower()
-
-    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
-    style_hint = "numeric" if is_numeric else "apa"
-
-    # ---- read + split ----
-    if name.endswith(".docx"):
-        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines(ref_block_lines)
-
-    elif name.endswith(".pdf"):
-        full_text = read_pdf_text(file_bytes)
-        lines = full_text.splitlines()
-
-        idx, tail = _find_reference_heading(lines, style_hint=style_hint)
-        if idx == -1:
-            main_text = full_text
-            references_raw = []
-            ref_msg = "No References heading found."
-        else:
-            main_text = "\n".join(lines[:idx]).strip()
-            ref_msg = f"Found References heading: {lines[idx].strip()}"
-            ref_block_lines = []
-            if tail:
-                ref_block_lines.append(tail)
-            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
-            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
-            references_raw = _merge_reference_lines(ref_block_lines)
-
-    else:
-        return {"error": "Upload a DOCX or PDF"}
-
-    # ---- speed cap: keep head + tail ----
-    if len(main_text) > 350_000:
-        half = 175_000
-        main_text = main_text[:half] + "\n... [TRUNCATED] ...\n" + main_text[-half:]
-
-    # ---- extract + reconcile ----
-    if style_hint == "apa":
-        cites = extract_author_year_citations(main_text)
-        refs = [parse_reference_author_year(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
-        ref_count = len(refs)
-
-    else:
-        # IEEE is bracketed. Vancouver can vary, so fallback if bracketed yields too few.
-        if "ieee" in style_s:
-            bracketed = True
-        else:
-            bracketed = True  # try bracketed first for Vancouver too
-
-        cites_nums = extract_numeric_citations(main_text, bracketed=bracketed)
-
-        if "vancouver" in style_s and len(cites_nums) < 3:
-            cites_nums = extract_numeric_citations(main_text, bracketed=False)
-
-        refs = [parse_reference_numeric(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites_nums, refs)
-        ref_count = len(refs)
-
-    # ---- summary match rate based on citation occurrences ----
-    missing_unique = int(len(missing_rows or []))
-    match_rate = 0.0
-    if intext_count > 0:
-        match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
-
-    # ---- return schema that app.js expects ----
-    return {
-        "filename": filename,
-        "style": style_s,
-        "verify_mode_used": (verify_mode or "all"),
-
-        "reference_detection_message": ref_msg,
-
-        "summary": {
-            "in_text_citations_found": int(intext_count),
-            "reference_entries_found": int(ref_count),
-            "missing_in_references": int(missing_unique),
-            "uncited_references": int(len(uncited_refs)),
-            "match_rate": float(round(match_rate, 1)),
-        },
-
-        # Missing tab expects list of dicts: {citation_in_text, count_in_text}
-        "missing_in_references": missing_rows,
-
-        # Uncited tab expects list[str]
-        "uncited_references": uncited_refs,
-
-        # Mapping tabs
-        "reconciliation_intext_to_reference": c2r,
-        "reconciliation_reference_to_intext": r2c,
-
-        # useful debugging / future features
-        "references_raw": references_raw,
-    }
+        # Check if author is likely a real author
+        if is_likely_author_name(author):
+            out.append
