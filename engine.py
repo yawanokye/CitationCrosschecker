@@ -1,6 +1,5 @@
 # engine.py
-__version__ = "1.2.7"
-
+__version__ = "1.2.8"
 import re
 import io
 import unicodedata
@@ -41,6 +40,28 @@ DISCOURSE_PREFIXES = {
     "according", "adapted", "based", "cited", "citing", "reported",
 }
 
+
+# Headings that often appear *after* the reference list in theses/articles.
+# Used to avoid swallowing appendices/supplementary material as references.
+REF_END_HEADINGS = [
+    r"^\s*appendix(?:es)?\b",
+    r"^\s*annex(?:es)?\b",
+    r"^\s*supplement(?:ary)?\b",
+    r"^\s*supporting\s+information\b",
+    r"^\s*supporting\s+documents?\b",
+    r"^\s*additional\s+materials?\b",
+    r"^\s*online\s+appendix\b",
+]
+
+REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
+
+# Common false-positive "author" tokens we should never treat as citations.
+NON_NAME_AUTHOR_KEYS = {
+    "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", "figure", "fig", "figures",
+    "chapter", "section", "appendix", "appendices", "annex", "equation", "eq", "model", "models",
+    "analysis", "results", "method", "methods", "discussion", "introduction", "conclusion",
+    "study", "paper", "thesis", "report", "source", "sources", "author", "authors",
+}
 
 # -----------------------------
 # Small helpers
@@ -94,10 +115,9 @@ def _first_author_or_org_key(author_left: str) -> str:
     # Handle "et al."
     s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
 
-    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
+    toks = [t for t in re.split(r"\s+", s0) if t]
     if not toks:
         return ""
-    # Use the last alpha-numeric token as the surname/acronym
     return strip_punct(toks[-1])
 
 
@@ -115,6 +135,57 @@ def _looks_like_toc_references_line(s: str, tail: str) -> bool:
         return True
     return False
 
+
+def _looks_like_heading_line(s: str) -> bool:
+    """Heuristic: short heading-like line (often appendix/supplementary headings)."""
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+    if len(s0) > 120:
+        return False
+    # Avoid lines that look like normal sentences.
+    if s0.endswith(".") and len(s0) > 25:
+        return False
+    # Many headings are ALL CAPS or Title Case
+    letters = re.sub(r"[^A-Za-z]", "", s0)
+    if letters and letters.isupper() and len(letters) >= 6:
+        return True
+    # Title case-ish (not perfect, but helpful)
+    if re.match(r"^[A-Z][A-Za-z0-9\s\-,:]{3,}$", s0):
+        return True
+    return False
+
+
+def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
+    """Stop the reference block when it clearly transitions to appendices/supplementary sections."""
+    out: List[str] = []
+    ref_like_seen = 0
+
+    def _is_ref_like(ln: str) -> bool:
+        if style_hint == "numeric":
+            return _looks_like_new_numeric_reference_start(ln)
+        return _looks_like_new_apa_reference_start(ln)
+
+    for i, ln in enumerate(lines):
+        s = (ln or "").strip()
+        if not s:
+            continue
+
+        # count reference-like starts early so we only allow end detection after we truly are in refs
+        if _is_ref_like(s):
+            ref_like_seen += 1
+
+        # End heading detection (only after some refs already found)
+        if ref_like_seen >= 3 and (REF_END_HEADING_RE.search(s) or (_looks_like_heading_line(s) and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I))):
+            # Lookahead: if upcoming lines don't look like references, stop here
+            look = [x for x in lines[i:i+25] if (x or "").strip()]
+            look_ref = sum(1 for x in look if _is_ref_like((x or "").strip()))
+            if look_ref <= 1:
+                break
+
+        out.append(ln)
+
+    return out
 
 # -----------------------------
 # DOCX extraction (robust)
@@ -226,6 +297,11 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
             ref_lines.append(t)
         else:
             main_lines.append(t)
+
+    if in_refs:
+        ref_lines = _truncate_reference_block(ref_lines, style_hint="apa")
+        # also guard numeric-style theses
+        ref_lines = _truncate_reference_block(ref_lines, style_hint="numeric")
 
     msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
     return "\n".join(main_lines).strip(), ref_lines, msg
@@ -570,6 +646,8 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     author_key = _first_author_or_org_key(left)
     if not author_key:
         return None
+    if author_key.lower() in NON_NAME_AUTHOR_KEYS:
+        return None
     return author_key, year
 
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
@@ -665,8 +743,8 @@ def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
         for k, v in missing_counter.most_common()
     ]
 
-    intext_count = sum(int(v) for v in cite_counts.values())
-    return c2r, r2c, missing_rows, uncited_refs, int(intext_count)
+    unique_intext_count = int(len(set(citations)))
+    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
 
 
 # -----------------------------
@@ -713,6 +791,7 @@ def run_crosscheck(
             if tail:
                 ref_block_lines.append(tail)
             ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
+            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
             references_raw = _merge_reference_lines(ref_block_lines)
             if style_hint == "numeric":
                 references_raw = _split_embedded_numeric_refs(references_raw)
@@ -753,10 +832,10 @@ def run_crosscheck(
         ref_count = len(refs)
 
     # ---- summary match rate based on citation occurrences ----
-    missing_occ = sum(int(x.get("count_in_text") or 0) for x in (missing_rows or []))
+    missing_unique = int(len(missing_rows or []))
     match_rate = 0.0
     if intext_count > 0:
-        match_rate = 100.0 * max(0.0, float(intext_count - missing_occ)) / float(intext_count)
+        match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
 
     # ---- return schema that app.js expects ----
     return {
@@ -769,7 +848,7 @@ def run_crosscheck(
         "summary": {
             "in_text_citations_found": int(intext_count),
             "reference_entries_found": int(ref_count),
-            "missing_in_references": int(missing_occ),
+            "missing_in_references": int(missing_unique),
             "uncited_references": int(len(uncited_refs)),
             "match_rate": float(round(match_rate, 1)),
         },
