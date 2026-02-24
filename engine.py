@@ -1,5 +1,6 @@
 # engine.py
-__version__ = "1.2.9"
+__version__ = "1.2.7"
+
 import re
 import io
 import unicodedata
@@ -40,28 +41,6 @@ DISCOURSE_PREFIXES = {
     "according", "adapted", "based", "cited", "citing", "reported",
 }
 
-
-# Headings that often appear *after* the reference list in theses/articles.
-# Used to avoid swallowing appendices/supplementary material as references.
-REF_END_HEADINGS = [
-    r"^\s*appendix(?:es)?\b",
-    r"^\s*annex(?:es)?\b",
-    r"^\s*supplement(?:ary)?\b",
-    r"^\s*supporting\s+information\b",
-    r"^\s*supporting\s+documents?\b",
-    r"^\s*additional\s+materials?\b",
-    r"^\s*online\s+appendix\b",
-]
-
-REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
-
-# Common false-positive "author" tokens we should never treat as citations.
-NON_NAME_AUTHOR_KEYS = {
-    "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", "figure", "fig", "figures",
-    "chapter", "section", "appendix", "appendices", "annex", "equation", "eq", "model", "models",
-    "analysis", "results", "method", "methods", "discussion", "introduction", "conclusion",
-    "study", "paper", "thesis", "report", "source", "sources", "author", "authors",
-}
 
 # -----------------------------
 # Small helpers
@@ -115,9 +94,10 @@ def _first_author_or_org_key(author_left: str) -> str:
     # Handle "et al."
     s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
 
-    toks = [t for t in re.split(r"\s+", s0) if t]
+    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
     if not toks:
         return ""
+    # Use the last alpha-numeric token as the surname/acronym
     return strip_punct(toks[-1])
 
 
@@ -135,57 +115,6 @@ def _looks_like_toc_references_line(s: str, tail: str) -> bool:
         return True
     return False
 
-
-def _looks_like_heading_line(s: str) -> bool:
-    """Heuristic: short heading-like line (often appendix/supplementary headings)."""
-    s0 = (s or "").strip()
-    if not s0:
-        return False
-    if len(s0) > 120:
-        return False
-    # Avoid lines that look like normal sentences.
-    if s0.endswith(".") and len(s0) > 25:
-        return False
-    # Many headings are ALL CAPS or Title Case
-    letters = re.sub(r"[^A-Za-z]", "", s0)
-    if letters and letters.isupper() and len(letters) >= 6:
-        return True
-    # Title case-ish (not perfect, but helpful)
-    if re.match(r"^[A-Z][A-Za-z0-9\s\-,:]{3,}$", s0):
-        return True
-    return False
-
-
-def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
-    """Stop the reference block when it clearly transitions to appendices/supplementary sections."""
-    out: List[str] = []
-    ref_like_seen = 0
-
-    def _is_ref_like(ln: str) -> bool:
-        if style_hint == "numeric":
-            return _looks_like_new_numeric_reference_start(ln)
-        return _looks_like_new_apa_reference_start(ln)
-
-    for i, ln in enumerate(lines):
-        s = (ln or "").strip()
-        if not s:
-            continue
-
-        # count reference-like starts early so we only allow end detection after we truly are in refs
-        if _is_ref_like(s):
-            ref_like_seen += 1
-
-        # End heading detection (only after some refs already found)
-        if ref_like_seen >= 3 and (REF_END_HEADING_RE.search(s) or (_looks_like_heading_line(s) and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I))):
-            # Lookahead: if upcoming lines don't look like references, stop here
-            look = [x for x in lines[i:i+25] if (x or "").strip()]
-            look_ref = sum(1 for x in look if _is_ref_like((x or "").strip()))
-            if look_ref <= 1:
-                break
-
-        out.append(ln)
-
-    return out
 
 # -----------------------------
 # DOCX extraction (robust)
@@ -294,17 +223,9 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
                     continue
 
         if in_refs:
-            # Stop at appendix/supplementary sections that follow references
-            if REF_END_HEADING_RE.search(t) and _is_section_heading(t):
-                break
             ref_lines.append(t)
         else:
             main_lines.append(t)
-
-    if in_refs:
-        ref_lines = _truncate_reference_block(ref_lines, style_hint="apa")
-        # also guard numeric-style theses
-        ref_lines = _truncate_reference_block(ref_lines, style_hint="numeric")
 
     msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
     return "\n".join(main_lines).strip(), ref_lines, msg
@@ -409,108 +330,23 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 # -----------------------------
 # Merge and split reference lines
 # -----------------------------
-def _is_section_heading(line: str) -> bool:
-    """Heuristic: looks like a section heading (short, no year/doi/url, mostly letters)."""
-    s = norm_space(line)
-    if not s:
-        return False
-    if len(s) > 90:
-        return False
-    if YEAR_RE.search(s):
-        return False
-    if "http://" in s.lower() or "https://" in s.lower() or "doi" in s.lower():
-        return False
-    letters = sum(ch.isalpha() for ch in s)
-    if letters < 4:
-        return False
-    if s.isupper():
-        return True
-    if s.endswith("."):
-        return False
-    if re.fullmatch(r"[A-Za-z][A-Za-z\s&/\-]{3,}", s):
-        return True
-    return False
-
-
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
-    """Merge wrapped reference lines into full reference entries.
-
-    Refinements:
-    - Avoid creating "new" references for Vancouver/IEEE fragments like:
-        '1. Available from: ...'
-        '50. https://doi.org/...'
-      These are appended to the previous reference if numbering repeats or the
-      content is clearly a continuation (URL/DOI/available-from).
-    - Stop at post-reference sections (Appendix, Supplementary, etc.).
-    - Filter orphan URL/DOI lines and other non-reference debris.
-    """
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
         return []
 
     merged: List[str] = []
     cur = ""
-    cur_num: Optional[int] = None
-
-    def _lead_num(s: str) -> Optional[int]:
-        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s+", s)
-        if m:
-            return int(m.group(1))
-        m = re.match(r"^(\d{1,4})[.)]\s+", s)
-        if m:
-            if YEAR_RE.fullmatch(m.group(1)):
-                return None
-            return int(m.group(1))
-        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s+", s)
-        if m:
-            return int(m.group(1))
-        return None
-
-    def _strip_lead_num(s: str) -> str:
-        return re.sub(r"^\[\s*\d{1,4}\s*\]\s+|^\(\s*\d{1,4}\s*\)\s+|^\d{1,4}[.)]\s+", "", s).strip()
-
-    def _is_continuation_fragment(body: str) -> bool:
-        b = (body or "").strip().lower()
-        return (
-            b.startswith("available from")
-            or b.startswith("retrieved from")
-            or b.startswith("accessed")
-            or b.startswith("doi:")
-            or b.startswith("https://doi.org/")
-            or b.startswith("http://")
-            or b.startswith("https://")
-            or b.startswith("www.")
-        )
-
     for ln in raw_lines:
         s = ln.strip()
         if not s:
             continue
 
-        # Stop if appendix/supplementary begins after refs have started
-        if (merged or cur) and REF_END_HEADING_RE.search(s) and _is_section_heading(s):
-            break
-
-        is_new_numeric = _looks_like_new_numeric_reference_start(s)
-        is_new_apa = _looks_like_new_apa_reference_start(s)
-        is_new = is_new_numeric or is_new_apa
-
-        if is_new and is_new_numeric and cur:
-            n = _lead_num(s)
-            body = _strip_lead_num(s)
-            if (n is not None and cur_num is not None and n == cur_num) or _is_continuation_fragment(body):
-                joiner = " "
-                if cur.endswith("-"):
-                    cur = cur[:-1]
-                    joiner = ""
-                cur = cur + joiner + s
-                continue
-
+        is_new = _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s)
         if is_new:
             if cur:
                 merged.append(norm_space(cur))
             cur = s
-            cur_num = _lead_num(s) if is_new_numeric else None
         else:
             if not cur:
                 cur = s
@@ -524,141 +360,7 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     if cur:
         merged.append(norm_space(cur))
 
-    # Split glued numeric references from PDFs
-    merged = _split_embedded_numeric_refs(merged)
-
-    # Filter non-references and duplicates
-    cleaned: List[str] = []
-    seen = set()
-    doi_re = re.compile(r"\b10\.\d{4,9}/[^\s)>,;]+", re.I)
-
-    for r0 in merged:
-        r = norm_space(r0)
-        if not r or len(r) < 12:
-            continue
-
-        # Drop post-reference headings that slipped in
-        if REF_END_HEADING_RE.search(r) and _is_section_heading(r):
-            continue
-
-        body = re.sub(r"^\[\s*\d{1,4}\s*\]\s+|^\(\s*\d{1,4}\s*\)\s+|^\d{1,4}[.)]\s+", "", r).strip()
-
-        # Orphan continuation lines
-        if _is_continuation_fragment(body) and not (YEAR_RE.search(r) or doi_re.search(r)) and len(body.split()) <= 8:
-            continue
-
-        # Must look like a real ref
-        if not (YEAR_RE.search(r) or doi_re.search(r) or re.search(r"(?i)\bvol\.|\bno\.|\bpp\.|\bjournal\b|\bpress\b|\bproceedings\b|\bed\.\b|\bpublisher\b", r)):
-            continue
-
-        if r in seen:
-            continue
-        seen.add(r)
-        cleaned.append(r)
-
-    return cleaned
-
-
-
-
-def _merge_reference_lines_numeric(raw_lines: List[str]) -> List[str]:
-    """
-    Merge Vancouver/IEEE numeric reference blocks into one entry per reference number.
-
-    Fixes PDF artifacts that inflate counts, such as:
-      - "1. Available from: ..." as a separate entry
-      - "50. https://doi.org/..." as a separate entry
-      - wrapped lines being mis-split
-
-    Strategy:
-      - detect leading number tokens: [12], 12., 12), (12)
-      - treat lines starting with a continuation prefix (Available from, doi:, URL...) as continuation
-      - aggregate by reference number (dict), keep the longest text for duplicates
-      - filter obvious debris entries that have no letters and are just URLs/DOIs
-    """
-    raw_lines = [ln.strip() for ln in (raw_lines or []) if ln and ln.strip()]
-    if not raw_lines:
-        return []
-
-    def _lead_num(s: str) -> Optional[int]:
-        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*", s)
-        if m:
-            return int(m.group(1))
-        m = re.match(r"^(\d{1,4})[.)]\s*", s)
-        if m and not YEAR_RE.fullmatch(m.group(1)):
-            return int(m.group(1))
-        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*", s)
-        if m:
-            return int(m.group(1))
-        return None
-
-    def _strip_lead_num(s: str) -> str:
-        return re.sub(r"^\[\s*\d{1,4}\s*\]\s*|^\(\s*\d{1,4}\s*\)\s*|^\d{1,4}[.)]\s*", "", s).strip()
-
-    def _is_continuation(body: str) -> bool:
-        b = (body or "").strip().lower()
-        return (
-            b.startswith("available from")
-            or b.startswith("retrieved from")
-            or b.startswith("accessed")
-            or b.startswith("doi:")
-            or b.startswith("https://doi.org/")
-            or b.startswith("http://")
-            or b.startswith("https://")
-            or b.startswith("www.")
-            or b.startswith("pmid:")
-            or b.startswith("pmc")
-        )
-
-    ref_dict: Dict[int, str] = {}
-    cur_num: Optional[int] = None
-
-    for ln in raw_lines:
-        s = ln.strip()
-
-        # Stop at appendix/supplementary after refs have started
-        if ref_dict and REF_END_HEADING_RE.search(s) and _is_section_heading(s):
-            break
-
-        n = _lead_num(s)
-        if n is not None:
-            body = _strip_lead_num(s)
-
-            # If it's a numbered continuation fragment, attach to current number if sensible
-            if _is_continuation(body) and cur_num is not None:
-                ref_dict[cur_num] = norm_space(ref_dict.get(cur_num, "") + " " + body)
-                continue
-
-            cur_num = n
-            prev = ref_dict.get(n, "")
-            cand = norm_space((prev + " " + body).strip()) if prev else norm_space(s)
-            # Keep the longer entry if duplicates happen
-            if len(cand) >= len(prev):
-                ref_dict[n] = cand
-            continue
-
-        # no leading number, treat as continuation of current reference
-        if cur_num is not None:
-            ref_dict[cur_num] = norm_space(ref_dict.get(cur_num, "") + " " + s)
-
-    # Build ordered list
-    ordered_nums = sorted(ref_dict.keys())
-    merged = [ref_dict[k] for k in ordered_nums if ref_dict.get(k)]
-
-    # Final filtering: drop URL-only/DOI-only debris masquerading as full references
-    cleaned: List[str] = []
-    for r in merged:
-        rr = norm_space(r)
-        # if after stripping number it's just a URL/DOI, skip
-        body = _strip_lead_num(rr)
-        if re.fullmatch(r"(https?://\S+|www\.\S+|doi:\s*\S+|https?://doi\.org/\S+)", body, flags=re.I):
-            continue
-        # must contain some letters
-        if not re.search(r"[A-Za-z]", body):
-            continue
-        cleaned.append(rr)
-
-    return cleaned
+    return [m for m in merged if m and len(m) >= 8]
 
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
@@ -751,77 +453,44 @@ def extract_author_year_citations(text: str) -> List[str]:
     return [c for c in out if c]
 
 def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
-    """
-    Robust numeric in-text extractor for IEEE/Vancouver.
-
-    Handles:
-      [1], [1-3], [1–3], [1,4,6], [1, 4-6, 9]
-      (1), (1-3), (1,2,3)
-      and mixed whitespace.
-
-    Returns a list of citation NUMBERS as strings (may repeat for counts).
-    """
     t = text or ""
     out: List[str] = []
+    if bracketed:
+        pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\s*\]")
+    else:
+        # captures standalone numbers and ranges (used as fallback for Vancouver)
+        pat = re.compile(r"\b(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\b")
 
-    def _emit_num(a: int, b: Optional[int] = None):
-        if b is None:
-            out.append(str(a))
-            return
-        lo, hi = (a, b) if a <= b else (b, a)
-        if hi - lo <= 200:
-            for k in range(lo, hi + 1):
-                out.append(str(k))
+    for m in pat.finditer(t):
+        a = int(m.group(1))
+        b = m.group(2)
+        if b:
+            b2 = int(b)
+            lo, hi = (a, b2) if a <= b2 else (b2, a)
+            if hi - lo <= 50:
+                for k in range(lo, hi + 1):
+                    out.append(str(k))
+            else:
+                out.append(str(a))
+                out.append(str(b2))
         else:
             out.append(str(a))
-            out.append(str(b))
-
-    # 1) Bracket groups like [ ... ]
-    if bracketed:
-        grp_pat = re.compile(r"\[\s*([0-9][0-9,\s;\-–]{0,120})\s*\]")
-        for gm in grp_pat.finditer(t):
-            inside = gm.group(1)
-            parts = re.split(r"[,\s;]+", inside.strip())
-            for p in parts:
-                if not p:
-                    continue
-                rm = re.match(r"^(\d{1,4})\s*[-–]\s*(\d{1,4})$", p)
-                if rm:
-                    _emit_num(int(rm.group(1)), int(rm.group(2)))
-                else:
-                    nm = re.match(r"^(\d{1,4})$", p)
-                    if nm:
-                        _emit_num(int(nm.group(1)))
-
-    # 2) Parentheses groups like (1,2,3) but avoid years like (2020)
-    par_pat = re.compile(r"\(\s*([0-9][0-9,\s;\-–]{0,120})\s*\)")
-    for gm in par_pat.finditer(t):
-        inside = gm.group(1).strip()
-        # if it's just a year, skip
-        if YEAR_RE.fullmatch(inside):
-            continue
-        # Vancouver often uses (1-3) or (1,2,3)
-        parts = re.split(r"[,\s;]+", inside)
-        for p in parts:
-            if not p:
-                continue
-            rm = re.match(r"^(\d{1,4})\s*[-–]\s*(\d{1,4})$", p)
-            if rm:
-                _emit_num(int(rm.group(1)), int(rm.group(2)))
-            else:
-                nm = re.match(r"^(\d{1,4})$", p)
-                if nm:
-                    _emit_num(int(nm.group(1)))
-
-    # 3) Fallback: isolated bracketed singles that weren't captured (rare)
-    if bracketed and not out:
-        pat = re.compile(r"\[\s*(\d{1,4})\s*\]")
-        for m in pat.finditer(t):
-            out.append(m.group(1))
-
-    # Guard: drop impossible zeros
-    out = [x for x in out if x and x != "0"]
     return out
+
+
+# -----------------------------
+# Reference parsers
+# -----------------------------
+@dataclass
+class RefAY:
+    reference_full: str
+    key: str
+
+
+@dataclass
+class RefNum:
+    reference_full: str
+    num: str
 
 
 def parse_reference_author_year(ref: str) -> Optional[RefAY]:
@@ -900,8 +569,6 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
 
     author_key = _first_author_or_org_key(left)
     if not author_key:
-        return None
-    if author_key.lower() in NON_NAME_AUTHOR_KEYS:
         return None
     return author_key, year
 
@@ -998,8 +665,8 @@ def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
         for k, v in missing_counter.most_common()
     ]
 
-    unique_intext_count = int(len(set(citations)))
-    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
+    intext_count = sum(int(v) for v in cite_counts.values())
+    return c2r, r2c, missing_rows, uncited_refs, int(intext_count)
 
 
 # -----------------------------
@@ -1026,7 +693,9 @@ def run_crosscheck(
     # ---- read + split ----
     if name.endswith(".docx"):
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines_numeric(ref_block_lines) if style_hint=='numeric' else _merge_reference_lines(ref_block_lines)
+        references_raw = _merge_reference_lines(ref_block_lines)
+        if style_hint == "numeric":
+            references_raw = _split_embedded_numeric_refs(references_raw)
 
     elif name.endswith(".pdf"):
         full_text = read_pdf_text(file_bytes)
@@ -1044,8 +713,9 @@ def run_crosscheck(
             if tail:
                 ref_block_lines.append(tail)
             ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
-            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
-            references_raw = _merge_reference_lines_numeric(ref_block_lines) if style_hint=='numeric' else _merge_reference_lines(ref_block_lines)
+            references_raw = _merge_reference_lines(ref_block_lines)
+            if style_hint == "numeric":
+                references_raw = _split_embedded_numeric_refs(references_raw)
 
     else:
         return {"error": "Upload a DOCX or PDF"}
@@ -1083,10 +753,10 @@ def run_crosscheck(
         ref_count = len(refs)
 
     # ---- summary match rate based on citation occurrences ----
-    missing_unique = int(len(missing_rows or []))
+    missing_occ = sum(int(x.get("count_in_text") or 0) for x in (missing_rows or []))
     match_rate = 0.0
     if intext_count > 0:
-        match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
+        match_rate = 100.0 * max(0.0, float(intext_count - missing_occ)) / float(intext_count)
 
     # ---- return schema that app.js expects ----
     return {
@@ -1099,7 +769,7 @@ def run_crosscheck(
         "summary": {
             "in_text_citations_found": int(intext_count),
             "reference_entries_found": int(ref_count),
-            "missing_in_references": int(missing_unique),
+            "missing_in_references": int(missing_occ),
             "uncited_references": int(len(uncited_refs)),
             "match_rate": float(round(match_rate, 1)),
         },
