@@ -37,13 +37,7 @@ REF_HEADING_RELAXED = re.compile(
 DISCOURSE_PREFIXES = {
     "see", "e.g", "eg", "i.e", "ie",
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
-    "according", "adapted", "based", "cited", "citing", "reported", "traditional", "classical", "analytical", "for", "from", "in", "on", "at", "by",
-    "methods", "method", "approach", "approaches", "sample", "size", "power",
-    "results", "discussion", "model", "framework", "similarly", "however", "nonetheless", "nevertheless", "therefore",
-    "thus", "hence", "moreover", "furthermore", "additionally", "also",
-    "conversely", "instead", "meanwhile", "specifically", "notably",
-    "indeed", "importantly", "overall", "increasingly", "generally",
-    "consequently", "accordingly", "alternatively", "likewise",
+    "according", "adapted", "based", "cited", "citing", "reported",
 }
 
 
@@ -300,6 +294,9 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
                     continue
 
         if in_refs:
+            # Stop at appendix/supplementary sections that follow references
+            if REF_END_HEADING_RE.search(t) and _is_section_heading(t):
+                break
             ref_lines.append(t)
         else:
             main_lines.append(t)
@@ -412,23 +409,108 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 # -----------------------------
 # Merge and split reference lines
 # -----------------------------
+def _is_section_heading(line: str) -> bool:
+    """Heuristic: looks like a section heading (short, no year/doi/url, mostly letters)."""
+    s = norm_space(line)
+    if not s:
+        return False
+    if len(s) > 90:
+        return False
+    if YEAR_RE.search(s):
+        return False
+    if "http://" in s.lower() or "https://" in s.lower() or "doi" in s.lower():
+        return False
+    letters = sum(ch.isalpha() for ch in s)
+    if letters < 4:
+        return False
+    if s.isupper():
+        return True
+    if s.endswith("."):
+        return False
+    if re.fullmatch(r"[A-Za-z][A-Za-z\s&/\-]{3,}", s):
+        return True
+    return False
+
+
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
+    """Merge wrapped reference lines into full reference entries.
+
+    Refinements:
+    - Avoid creating "new" references for Vancouver/IEEE fragments like:
+        '1. Available from: ...'
+        '50. https://doi.org/...'
+      These are appended to the previous reference if numbering repeats or the
+      content is clearly a continuation (URL/DOI/available-from).
+    - Stop at post-reference sections (Appendix, Supplementary, etc.).
+    - Filter orphan URL/DOI lines and other non-reference debris.
+    """
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
         return []
 
     merged: List[str] = []
     cur = ""
+    cur_num: Optional[int] = None
+
+    def _lead_num(s: str) -> Optional[int]:
+        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s+", s)
+        if m:
+            return int(m.group(1))
+        m = re.match(r"^(\d{1,4})[.)]\s+", s)
+        if m:
+            if YEAR_RE.fullmatch(m.group(1)):
+                return None
+            return int(m.group(1))
+        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s+", s)
+        if m:
+            return int(m.group(1))
+        return None
+
+    def _strip_lead_num(s: str) -> str:
+        return re.sub(r"^\[\s*\d{1,4}\s*\]\s+|^\(\s*\d{1,4}\s*\)\s+|^\d{1,4}[.)]\s+", "", s).strip()
+
+    def _is_continuation_fragment(body: str) -> bool:
+        b = (body or "").strip().lower()
+        return (
+            b.startswith("available from")
+            or b.startswith("retrieved from")
+            or b.startswith("accessed")
+            or b.startswith("doi:")
+            or b.startswith("https://doi.org/")
+            or b.startswith("http://")
+            or b.startswith("https://")
+            or b.startswith("www.")
+        )
+
     for ln in raw_lines:
         s = ln.strip()
         if not s:
             continue
 
-        is_new = _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s)
+        # Stop if appendix/supplementary begins after refs have started
+        if (merged or cur) and REF_END_HEADING_RE.search(s) and _is_section_heading(s):
+            break
+
+        is_new_numeric = _looks_like_new_numeric_reference_start(s)
+        is_new_apa = _looks_like_new_apa_reference_start(s)
+        is_new = is_new_numeric or is_new_apa
+
+        if is_new and is_new_numeric and cur:
+            n = _lead_num(s)
+            body = _strip_lead_num(s)
+            if (n is not None and cur_num is not None and n == cur_num) or _is_continuation_fragment(body):
+                joiner = " "
+                if cur.endswith("-"):
+                    cur = cur[:-1]
+                    joiner = ""
+                cur = cur + joiner + s
+                continue
+
         if is_new:
             if cur:
                 merged.append(norm_space(cur))
             cur = s
+            cur_num = _lead_num(s) if is_new_numeric else None
         else:
             if not cur:
                 cur = s
@@ -442,7 +524,40 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     if cur:
         merged.append(norm_space(cur))
 
-    return [m for m in merged if m and len(m) >= 8]
+    # Split glued numeric references from PDFs
+    merged = _split_embedded_numeric_refs(merged)
+
+    # Filter non-references and duplicates
+    cleaned: List[str] = []
+    seen = set()
+    doi_re = re.compile(r"\b10\.\d{4,9}/[^\s)>,;]+", re.I)
+
+    for r0 in merged:
+        r = norm_space(r0)
+        if not r or len(r) < 12:
+            continue
+
+        # Drop post-reference headings that slipped in
+        if REF_END_HEADING_RE.search(r) and _is_section_heading(r):
+            continue
+
+        body = re.sub(r"^\[\s*\d{1,4}\s*\]\s+|^\(\s*\d{1,4}\s*\)\s+|^\d{1,4}[.)]\s+", "", r).strip()
+
+        # Orphan continuation lines
+        if _is_continuation_fragment(body) and not (YEAR_RE.search(r) or doi_re.search(r)) and len(body.split()) <= 8:
+            continue
+
+        # Must look like a real ref
+        if not (YEAR_RE.search(r) or doi_re.search(r) or re.search(r"(?i)\bvol\.|\bno\.|\bpp\.|\bjournal\b|\bpress\b|\bproceedings\b|\bed\.\b|\bpublisher\b", r)):
+            continue
+
+        if r in seen:
+            continue
+        seen.add(r)
+        cleaned.append(r)
+
+    return cleaned
+
 
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
@@ -778,8 +893,6 @@ def run_crosscheck(
     if name.endswith(".docx"):
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
         references_raw = _merge_reference_lines(ref_block_lines)
-        if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
 
     elif name.endswith(".pdf"):
         full_text = read_pdf_text(file_bytes)
@@ -799,8 +912,6 @@ def run_crosscheck(
             ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
             ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
             references_raw = _merge_reference_lines(ref_block_lines)
-            if style_hint == "numeric":
-                references_raw = _split_embedded_numeric_refs(references_raw)
 
     else:
         return {"error": "Upload a DOCX or PDF"}
@@ -872,4 +983,3 @@ def run_crosscheck(
         # useful debugging / future features
         "references_raw": references_raw,
     }
-
