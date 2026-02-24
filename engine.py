@@ -37,7 +37,13 @@ REF_HEADING_RELAXED = re.compile(
 DISCOURSE_PREFIXES = {
     "see", "e.g", "eg", "i.e", "ie",
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
-    "according", "adapted", "based", "cited", "citing", "reported",
+    "according", "adapted", "based", "cited", "citing", "reported", "traditional", "classical", "analytical", "for", "from", "in", "on", "at", "by",
+    "methods", "method", "approach", "approaches", "sample", "size", "power",
+    "results", "discussion", "model", "framework", "similarly", "however", "nonetheless", "nevertheless", "therefore",
+    "thus", "hence", "moreover", "furthermore", "additionally", "also",
+    "conversely", "instead", "meanwhile", "specifically", "notably",
+    "indeed", "importantly", "overall", "increasingly", "generally",
+    "consequently", "accordingly", "alternatively", "likewise",
 }
 
 
@@ -866,3 +872,4 @@ def run_crosscheck(
         # useful debugging / future features
         "references_raw": references_raw,
     }
+
