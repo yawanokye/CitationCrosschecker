@@ -100,11 +100,12 @@ def _doi_equal(a: str, b: str) -> bool:
 # ---------- parsing: title + authors ----------
 def _extract_title_guess(ref: str) -> str:
     """
-    Best-effort title guess:
-    - remove leading numbering
-    - remove DOI + doi.org link
-    - remove URLs/noisy "Retrieved from / Link via"
-    - prefer sentence after (YEAR) when present
+    Better title guess for APA/Harvard/Vancouver/IEEE:
+    - strip leading numbering
+    - prefer text inside the first quote pair ("..." or “...”)
+    - otherwise prefer first sentence chunk after YEAR
+    - remove DOI/URLs and noisy tails
+    Returns a readable title string (not lowercased).
     """
     t = _strip_leading_numbering(ref)
     t = re.sub(r"\s+", " ", t).strip()
@@ -115,9 +116,24 @@ def _extract_title_guess(ref: str) -> str:
 
     # remove urls and noisy tails
     t = re.sub(r"https?://\S+", "", t, flags=re.I)
-    t = re.sub(r"\b(retrieved\s+from|link\s+via)\b.*$", "", t, flags=re.I)
+    t = re.sub(r"\b(retrieved\s+from|link\s+via|available\s+at)\b.*$", "", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip()
 
+    # IEEE/Vancouver often uses quoted titles
+    for q1, q2 in [('“', '”'), ('"', '"'), ("‘", "’"), ("'", "'")]:
+        if q1 in t and q2 in t and t.count(q1) >= 1 and t.count(q2) >= 1:
+            try:
+                start = t.index(q1) + 1
+                end = t.index(q2, start)
+                cand = t[start:end].strip(" ,.;:")
+                if len(cand) >= 8:
+                    return cand
+            except Exception:
+                pass
+
+    # Prefer sentence after (YEAR)
     parts = re.split(r"\(\s*(1[6-9]\d{2}|20\d{2})([a-z])?\s*\)\.?\s*", t, maxsplit=1, flags=re.I)
+    after = ""
     if len(parts) >= 4:
         after = _safe_strip(parts[3])
     else:
@@ -125,28 +141,48 @@ def _extract_title_guess(ref: str) -> str:
         after = t[m.end():].strip() if m else t
 
     after = after.lstrip(". ").strip()
-    # take first sentence chunk as title
-    title = after.split(".", 1)[0].strip() if "." in after else after.strip()
+    title = after.split(".", 1)[0].strip(" ,;:") if after else ""
+    if len(title) >= 8:
+        return title
 
-    if len(title) < 8:
-        title = t.strip()
+    # fallback: remove author block heuristically (up to first period) then take next sentence
+    if "." in t:
+        tail = t.split(".", 1)[1].strip()
+        title2 = tail.split(".", 1)[0].strip(" ,;:")
+        if len(title2) >= 8:
+            return title2
 
-    return _norm_text(title)
+    return t.strip()
 
 
 def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
     """
-    Robust-ish for APA/Vancouver:
-    - take block before year as "author block"
-    - split by '&', 'and', ';'
-    - handle "Surname, Initials" and "Surname Initials" patterns
+    Robust-ish surnames extractor for APA/Harvard/Vancouver/IEEE.
+    Key idea:
+    - If the reference contains a quoted title, treat everything before the first quote as the author block (IEEE/Vancouver).
+    - Else, take the block before the year; if it looks too long, truncate at the first period.
     """
     t = _strip_leading_numbering(ref)
     if not t:
         return []
 
-    m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", t, flags=re.I)
-    head = t[: m.start()].strip() if m else t
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # Prefer author block before quoted title (common in IEEE)
+    qpos = None
+    for q in ['“', '"', "‘", "'"]:
+        if q in t:
+            qpos = t.index(q)
+            break
+    if qpos is not None and qpos > 0:
+        head = t[:qpos].strip()
+    else:
+        m = re.search(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", t, flags=re.I)
+        head = t[: m.start()].strip() if m else t
+
+        # If the "before year" block is very long, it's probably not only authors
+        if len(head) > 120 and "." in head:
+            head = head.split(".", 1)[0].strip()
 
     head = head.replace("&", " and ")
     head = re.sub(r"\bet\s+al\.?\b", "", head, flags=re.I)
@@ -154,6 +190,7 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
     if not head:
         return []
 
+    # Split on typical separators
     parts = re.split(r";|\band\b", head, flags=re.I)
     surnames: List[str] = []
 
@@ -162,16 +199,17 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
         if not p:
             continue
 
-        # APA often: "Austin, P. C.," -> surname before comma
+        # handle "Surname, Initials" or "Initials Surname"
         if "," in p:
             cand = p.split(",", 1)[0].strip()
         else:
-            # otherwise last token
             toks = p.split()
             cand = toks[-1] if toks else ""
 
         cand = re.sub(r"[^A-Za-z\-']", "", cand).lower().strip()
-        if cand and len(cand) >= 2 and cand not in surnames:
+        if not cand or len(cand) < 2:
+            continue
+        if cand not in surnames:
             surnames.append(cand)
 
         if len(surnames) >= max_authors:
@@ -189,13 +227,18 @@ def _authors_to_query(authors: List[str], max_join: int = 3) -> str:
 
 def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str:
     """
-    Query string used for both Crossref/OpenAlex.
-    No strict year filter, we just include year token to help ranking.
+    Query string used for Crossref/OpenAlex.
+    For IEEE/Vancouver, a clean title is the best signal, so we keep it as the base.
+    We add up to 2 author surnames and the 4-digit year token as light hints.
     """
-    base = title if len(_safe_str(title)) >= 8 else _safe_str(raw_ref)
+    base = _safe_strip(title)
+    if len(base) < 8:
+        base = _strip_leading_numbering(raw_ref)
+
     base = _clean_query_string(base)
+
     y4 = _safe_str(year)[:4] if _safe_str(year)[:4].isdigit() else ""
-    a = _authors_to_query(authors, max_join=3)
+    a = _authors_to_query(authors, max_join=2)
 
     bits = [base]
     if a:
@@ -206,7 +249,6 @@ def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str
     return _clean_query_string(" ".join(bits))
 
 
-# ---------- queries ----------
 def _query_crossref_by_doi(doi: str) -> Optional[Dict[str, Any]]:
     doi = _safe_strip(doi)
     if not doi:
