@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.3.1"
+__version__ = "1.3.0"
 
 import re
 import io
@@ -7,15 +7,6 @@ import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
-
-# Fuzzy matching (optional)
-try:
-    from rapidfuzz import fuzz
-    FUZZ_OK = True
-except Exception:
-    fuzz = None
-    FUZZ_OK = False
-
 
 try:
     from docx import Document
@@ -51,6 +42,7 @@ DISCOURSE_PREFIXES = {
     "see", "e.g", "eg", "i.e", "ie",
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
     "according", "adapted", "based", "cited", "citing", "reported",
+    "like",
 
     # common prose lead-ins
     "however", "similarly", "regrettably", "traditionally", "notably",
@@ -88,6 +80,51 @@ NON_NAME_AUTHOR_KEYS = {
     "nevertheless", "overall", "generally", "specifically", "particularly", "importantly",
     "indeed", "instance", "example",
 }
+
+
+# -----------------------------
+# Commercial-grade narrative filtering (avoid false "Missing")
+# -----------------------------
+# These are common *narrative* words/phrases that the regex can mistakenly treat as "Author, YEAR".
+# We filter them out at parse-time so they don't inflate "Missing" counts.
+NARRATIVE_SINGLE_TOKENS = {
+    "crisis", "war", "scandal", "revolution", "katrina",
+    "pandemic", "covid", "covid19", "covid-19",
+}
+
+NARRATIVE_PHRASE_PATTERNS = [
+    r"\byear\s+on\s+year\b",
+    r"\bgrowth\s+rate\b",
+    r"\ball\s+share\s+index\b",
+    r"\bselected\s+african\s+countries\b",
+    r"\btop\s+four\s+african\s+countries\b",
+    r"\baccording\s+to\b",
+]
+
+_DECADE_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})s\b", re.I)
+
+def _is_likely_narrative_citation(left: str, year: str, full_cite: str) -> bool:
+    """Return True if the captured 'Author' part looks like narrative text, not a real author/org."""
+    l = (left or "").strip()
+    if not l:
+        return True
+
+    s_full = (full_cite or "").lower()
+    for pat in NARRATIVE_PHRASE_PATTERNS:
+        if re.search(pat, s_full, flags=re.I):
+            return True
+
+    # decades like "Fisher, 1930s" are not standard author-year citations
+    if year and isinstance(year, str) and year.lower().endswith("s"):
+        if _DECADE_YEAR_RE.search(full_cite or ""):
+            return True
+
+    # single-word narrative tokens
+    l_norm = soft_lower(l)
+    if re.fullmatch(r"[a-z\-']+", l_norm) and l_norm in NARRATIVE_SINGLE_TOKENS:
+        return True
+
+    return False
 
 
 # -----------------------------
@@ -236,21 +273,6 @@ def _is_plausible_reference_entry(s: str) -> bool:
         or _looks_like_org_author(s0[:120])
     )
     if not author_ok:
-        # Relaxed: some valid references (working papers, SSRN, reports) don't look like
-        # standard person/org author patterns. If a year exists and a plausible title-like
-        # segment exists (or common report cues), accept.
-        cue_ok = bool(re.search(r"\b(ssrn|arxiv|working\s+paper|available\s+at|retrieved\s+from|doi|report|policy\s+brief)\b", s0, re.I))
-        after = s0[ym.end():].lstrip(" ).,;:-")
-        after_title = after.split(".", 1)[0].strip()
-        if len(after_title) < 6 and "," in after:
-            after_title = after.split(",", 1)[0].strip()
-
-        before = s0[: ym.start()].strip(" .;:-")
-        before_parts = [p.strip() for p in before.split(".") if p.strip()]
-        before_title = before_parts[-1] if before_parts else ""
-
-        if cue_ok or _looks_like_title_piece(after_title) or _looks_like_title_piece(before_title):
-            return True
         return False
 
     after = s0[ym.end():].lstrip(" ).,;:-")
@@ -785,7 +807,11 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
             break
         left = rest.strip(" ,;()")
 
-    left = re.sub(r"(’s|'s)\b", "", left).strip()
+    left = re.sub(r"(’s|'s)", "", left).strip()
+
+    # commercial-grade: drop likely narrative/non-citation captures
+    if _is_likely_narrative_citation(left, year, s):
+        return None
 
     author_key = _first_author_or_org_key(left)
     if not author_key:
@@ -838,13 +864,6 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
     # Build an alias -> reference map
     ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
     alias_map: Dict[str, str] = dict(ref_map)
-
-    # Index references by base year for fuzzy fallback (same-year matching)
-    refs_by_year: Dict[str, List[RefAY]] = defaultdict(list)
-    for r in references:
-        ym_r = YEAR_RE.search(r.reference_full)
-        if ym_r:
-            refs_by_year[_base_year(ym_r.group(1))].append(r)
 
     for r in references:
         # Add year-without-suffix alias for the canonical key
@@ -930,43 +949,7 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
             cite_counts_by_ref[matched_ref] += 1
             parsed_cites.append((matched_ref, c, f"alias:{used}" if used else ""))
         else:
-            # Fuzzy fallback (same-year) when alias matching fails
-            best_ref = ""
-            best_score = 0
-            ym_c = YEAR_RE.search(c)
-            if ym_c:
-                yb = _base_year(ym_c.group(1))
-                left_c = (c[: ym_c.start()] or "").strip(" ,;()")
-                cite_names = _surnames_from_author_blob(left_c)
-
-                for rr in refs_by_year.get(yb, []):
-                    s_full = rr.reference_full
-                    ym_r = YEAR_RE.search(s_full)
-                    if not ym_r:
-                        continue
-                    left_r = s_full[: ym_r.start()].strip(" ,;()")
-                    ref_names = _surnames_from_author_blob(left_r)
-
-                    # Overlap score (robust to order / initials)
-                    overlap = len(set(cite_names) & set(ref_names))
-                    score_overlap = int(round(100 * (overlap / max(1, len(set(cite_names))))))
-
-                    score = score_overlap
-                    if FUZZ_OK and cite_names and ref_names:
-                        score1 = fuzz.token_set_ratio(" ".join(cite_names), " ".join(ref_names))
-                        score2 = fuzz.partial_ratio(" ".join(cite_names), " ".join(ref_names))
-                        score_fuzz = 0.6 * score1 + 0.4 * score2
-                        score = max(score, score_fuzz)
-
-                    if score > best_score:
-                        best_score = score
-                        best_ref = rr.reference_full
-
-            if best_ref and best_score >= 74:
-                cite_counts_by_ref[best_ref] += 1
-                parsed_cites.append((best_ref, c, f"fuzzy:{best_score}"))
-            else:
-                parsed_cites.append(("", c, ""))
+            parsed_cites.append(("", c, ""))
 
     # Build c2r + missing
     c2r: List[Dict[str, Any]] = []
