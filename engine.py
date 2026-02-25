@@ -9,6 +9,13 @@ from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
 try:
+    from rapidfuzz import fuzz  # type: ignore
+    FUZZ_OK = True
+except Exception:
+    fuzz = None
+    FUZZ_OK = False
+
+try:
     from docx import Document
     DOCX_OK = True
 except Exception:
@@ -853,6 +860,21 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
                 alias_map[f"{a}+{b}|{year_base}".lower()] = r.reference_full
                 alias_map[f"{b}+{a}|{year_base}".lower()] = r.reference_full
 
+
+    # Build year-indexed reference features for fuzzy fallback (same-year only)
+    refs_by_year: Dict[str, List[Tuple[str, str, set]]] = defaultdict(list)
+    for r in references:
+        s_full = r.reference_full
+        ym = YEAR_RE.search(s_full)
+        if not ym:
+            continue
+        y_full = ym.group(1)
+        yb = _base_year(y_full)
+        left = s_full[: ym.start()].strip(" ,;()")
+        left_norm = re.sub(r"\s+", " ", left).strip().lower()
+        name_set = set(_surnames_from_author_blob(left))
+        refs_by_year[yb].append((r.reference_full, left_norm, name_set))
+
     # Parse citations and try multiple candidate keys
     cite_counts_by_ref = Counter()
     parsed_cites: List[Tuple[str, str, str]] = []  # (matched_ref_key, cite_str, flags)
@@ -899,7 +921,33 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
             cite_counts_by_ref[matched_ref] += 1
             parsed_cites.append((matched_ref, c, f"alias:{used}" if used else ""))
         else:
-            parsed_cites.append(("", c, ""))
+            # --- Fuzzy fallback (same-year) ---
+            ym2 = YEAR_RE.search(c)
+            matched_ref2 = ""
+            score2 = 0
+            if ym2:
+                yb2 = _base_year(ym2.group(1))
+                left2 = (c[: ym2.start()] or "").strip(" ,;()")
+                left2_norm = re.sub(r"\s+", " ", left2).strip().lower()
+                cite_set = set(_surnames_from_author_blob(left2))
+
+                for (rfull, rleft_norm, rset) in refs_by_year.get(yb2, []):
+                    s_overlap = 0
+                    if cite_set and rset:
+                        s_overlap = int(round(100 * (len(cite_set & rset) / max(1, len(cite_set)))))
+                    s_fuzz = 0
+                    if FUZZ_OK and fuzz is not None and left2_norm and rleft_norm:
+                        s_fuzz = int(fuzz.token_set_ratio(left2_norm, rleft_norm))
+                    s = max(s_overlap, s_fuzz)
+                    if s > score2:
+                        score2 = s
+                        matched_ref2 = rfull
+
+            if matched_ref2 and score2 >= 86:
+                cite_counts_by_ref[matched_ref2] += 1
+                parsed_cites.append((matched_ref2, c, f"fuzzy:{score2}"))
+            else:
+                parsed_cites.append(("", c, ""))
 
     # Build c2r + missing
     c2r: List[Dict[str, Any]] = []
