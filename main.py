@@ -190,6 +190,42 @@ _AI_NON_AUTHOR = {
 }
 
 
+
+def _canonical_ai_author(author: str) -> str:
+    """Convert AI-returned author/org strings into a matching-friendly key.
+
+    Aligns with our author-year reconciliation keys (typically first author surname
+    or a stable org acronym).
+    """
+    a = (author or "").strip()
+    if not a:
+        return ""
+
+    # Remove trailing 'et al.'
+    a = re.sub(r"\bet\s+al\.?\b", "", a, flags=re.I).strip()
+
+    # If 'Surname, Initials' keep surname
+    if "," in a:
+        a = a.split(",", 1)[0].strip()
+
+    # Keep acronyms like WHO, IMF
+    if re.fullmatch(r"[A-Z]{2,10}", a):
+        return a
+
+    # Split into tokens, drop connectors
+    parts = re.split(r"\s+", a)
+    parts = [p for p in parts if p and p not in {"&", "and", "AND"}]
+    if not parts:
+        return ""
+
+    # Drop standalone initials like 'A.' or 'M'
+    parts2 = [p for p in parts if not re.fullmatch(r"[A-Z]\.?", p)]
+    if parts2:
+        parts = parts2
+
+    # Use last token as surname (works well for most Western name formats)
+    return parts[-1]
+
 def _deepseek_chat(messages: List[Dict[str, str]], timeout_s: float = 25.0) -> str:
     if not DEEPSEEK_API_KEY:
         return ""
@@ -607,12 +643,14 @@ def _run_ai_assist(job_id: str) -> None:
         else:
             cites = extract_author_year_citations(main_text)
 
-            # add AI citations as raw strings like "Author, YEAR"
+            # add AI citations (canonicalised) as raw strings like "Surname, YEAR"
             for it in ai_items:
-                a = (it.get("author") or "").strip()
+                a0 = (it.get("author") or "").strip()
+                a = _canonical_ai_author(a0)
                 y = (it.get("year") or "").strip()
-                if a and _AI_YEAR_RE.search(y):
-                    cites.append(f"{a}, {_AI_YEAR_RE.search(y).group(0)}")
+                m = _AI_YEAR_RE.search(y)
+                if a and m:
+                    cites.append(f"{a}, {m.group(0)}")
 
             refs = [parse_reference_author_year(r) for r in references_raw]
             refs = [r for r in refs if r is not None]
