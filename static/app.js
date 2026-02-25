@@ -1,4 +1,8 @@
-/* static/app.js - FULL FILE (polling online verification until complete) */
+/* static/app.js — FIXED:
+   - Adds tab switching (previous file had none)
+   - Renders table rows with correct column counts
+   - Shows AI state (skipped/running/done/error) clearly
+*/
 
 (() => {
   "use strict";
@@ -41,12 +45,6 @@
   let POLL_TIMER = null;
   let RUNNING = false;
 
-  function setRunning(on) {
-    RUNNING = !!on;
-    if (el.btnCheck) el.btnCheck.disabled = RUNNING;
-    if (el.btnVerify) el.btnVerify.disabled = RUNNING;
-  }
-
   function esc(s) {
     return String(s ?? "")
       .replaceAll("&", "&amp;")
@@ -68,6 +66,36 @@
     return `${n.toFixed(1)}%`;
   }
 
+  function setRunning(on) {
+    RUNNING = !!on;
+    if (el.btnCheck) el.btnCheck.disabled = RUNNING;
+    if (el.btnVerify) el.btnVerify.disabled = RUNNING;
+  }
+
+  // ---------- Tabs ----------
+  function initTabs() {
+    const tabs = Array.from(document.querySelectorAll(".tabs .tab"));
+    const panes = Array.from(document.querySelectorAll(".tabPanes .tabPane"));
+    if (!tabs.length || !panes.length) return;
+
+    function activate(tabEl) {
+      const id = tabEl.getAttribute("data-tab");
+      tabs.forEach(t => t.classList.toggle("active", t === tabEl));
+      panes.forEach(p => p.classList.toggle("active", p.id === id));
+    }
+
+    tabs.forEach(t => {
+      t.addEventListener("click", () => activate(t));
+      t.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          activate(t);
+        }
+      });
+    });
+  }
+
+  // ---------- Render helpers ----------
   function clearTables() {
     if (el.missingBody) el.missingBody.innerHTML = "";
     if (el.uncitedBody) el.uncitedBody.innerHTML = "";
@@ -81,17 +109,19 @@
     if (!el.summaryTable) return;
 
     const rows = [];
-    function addRow(k, v) {
-      rows.push(`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`);
-    }
+    const addRow = (k, v) => rows.push(`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`);
 
     addRow("In-text citations found", s.in_text_citations_found ?? "");
     addRow("Reference entries found", s.reference_entries_found ?? "");
     addRow("Missing in references", s.missing_in_references ?? "");
     addRow("Uncited references", s.uncited_references ?? "");
     addRow("Match rate", fmtPct(s.match_rate));
-    if (data?.ai_assist?.enabled) {
-      addRow("AI added citations", String(data.ai_assist.added_citations || 0));
+
+    const ai = data?.ai_assist || {};
+    if (ai.enabled) {
+      addRow("AI Assist", `enabled (added: ${ai.added_citations || 0})`);
+    } else if (ai.state) {
+      addRow("AI Assist", ai.state);
     }
 
     el.summaryTable.innerHTML = rows.join("");
@@ -100,69 +130,83 @@
   function renderMissing(data) {
     const rows = data?.missing_in_references || [];
     if (!el.missingBody) return;
+
     if (!rows.length) {
-      el.missingBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
+      el.missingBody.innerHTML = `<tr><td colspan="3" class="muted">None</td></tr>`;
       return;
     }
-    el.missingBody.innerHTML = rows
-      .map(
-        (r) =>
-          `<tr><td>${esc(r.citation_in_text || "")}</td><td class="num">${esc(
-            r.count_in_text ?? ""
-          )}</td></tr>`
-      )
-      .join("");
+
+    el.missingBody.innerHTML = rows.map((r, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td>${esc(r.citation_in_text || "")}</td>
+        <td class="num">${esc(r.count_in_text ?? "")}</td>
+      </tr>
+    `).join("");
   }
 
   function renderUncited(data) {
     const rows = data?.uncited_references || [];
     if (!el.uncitedBody) return;
+
     if (!rows.length) {
-      el.uncitedBody.innerHTML = `<tr><td class="muted">None</td></tr>`;
+      el.uncitedBody.innerHTML = `<tr><td colspan="2" class="muted">None</td></tr>`;
       return;
     }
-    el.uncitedBody.innerHTML = rows.map((r) => `<tr><td>${esc(r)}</td></tr>`).join("");
+
+    el.uncitedBody.innerHTML = rows.map((r, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td>${esc(r)}</td>
+      </tr>
+    `).join("");
   }
 
   function renderC2R(data) {
     const rows = data?.reconciliation_intext_to_reference || [];
     if (!el.c2rBody) return;
+
     if (!rows.length) {
-      el.c2rBody.innerHTML = `<tr><td colspan="3" class="muted">No rows</td></tr>`;
+      el.c2rBody.innerHTML = `<tr><td colspan="5" class="muted">No rows</td></tr>`;
       return;
     }
-    el.c2rBody.innerHTML = rows
-      .slice(0, 500)
-      .map((r) => {
-        const st = r.status || "";
-        return `<tr>
-          <td class="badge ${esc(st)}">${esc(st)}</td>
+
+    el.c2rBody.innerHTML = rows.slice(0, 800).map((r, i) => {
+      const st = r.status || "";
+      const flags = Array.isArray(r.flags) ? r.flags.join("; ") : (r.flags || "");
+      return `
+        <tr>
+          <td class="num">${i + 1}</td>
+          <td><span class="badge ${esc(st)}">${esc(st)}</span></td>
           <td>${esc(r.in_text || "")}</td>
           <td>${esc(r.matched_reference || "")}</td>
-        </tr>`;
-      })
-      .join("");
+          <td>${esc(flags)}</td>
+        </tr>
+      `;
+    }).join("");
   }
 
   function renderR2C(data) {
     const rows = data?.reconciliation_reference_to_intext || [];
     if (!el.r2cBody) return;
+
     if (!rows.length) {
-      el.r2cBody.innerHTML = `<tr><td colspan="3" class="muted">No rows</td></tr>`;
+      el.r2cBody.innerHTML = `<tr><td colspan="4" class="muted">No rows</td></tr>`;
       return;
     }
-    el.r2cBody.innerHTML = rows
-      .slice(0, 500)
-      .map((r) => {
-        const times = r.times_cited ?? 0;
-        const citedBy = Array.isArray(r.cited_by) ? r.cited_by.join("; ") : "";
-        return `<tr>
+
+    el.r2cBody.innerHTML = rows.slice(0, 800).map((r, i) => {
+      const times = r.times_cited ?? 0;
+      const citedBy = Array.isArray(r.cited_by) ? r.cited_by.join("; ") : (r.cited_by || "");
+      return `
+        <tr>
+          <td class="num">${i + 1}</td>
           <td class="num">${esc(times)}</td>
           <td>${esc(r.reference || "")}</td>
           <td>${esc(citedBy)}</td>
-        </tr>`;
-      })
-      .join("");
+        </tr>
+      `;
+    }).join("");
   }
 
   function renderVerify(data) {
@@ -183,27 +227,40 @@
     }
 
     if (!el.verifyBody) return;
+
     if (!rows.length) {
-      el.verifyBody.innerHTML = `<tr><td colspan="5" class="muted">No online verification rows yet.</td></tr>`;
+      el.verifyBody.innerHTML = `<tr><td colspan="9" class="muted">No online verification rows yet.</td></tr>`;
       return;
     }
-    el.verifyBody.innerHTML = rows
-      .slice(0, 500)
-      .map((r) => {
-        const st = r.status || "";
-        return `<tr>
-          <td class="badge ${esc(st)}">${esc(st)}</td>
-          <td>${esc(r.reference_full || "")}</td>
-          <td>${esc(r.found_title || "")}</td>
-          <td>${esc(r.found_doi || "")}</td>
-          <td class="num">${esc(r.score ?? "")}</td>
-        </tr>`;
-      })
-      .join("");
+
+    el.verifyBody.innerHTML = rows.slice(0, 800).map((r, i) => {
+      const st = r.status || "";
+      const src = r.source || "";
+      const score = r.score ?? "";
+      const doi = r.found_doi || "";
+      const year = r.found_year || "";
+      const authors = r.found_authors || "";
+      const title = r.found_title || "";
+      const query = r.query_used || r.query || "";
+      return `
+        <tr>
+          <td class="num">${i + 1}</td>
+          <td><span class="badge ${esc(st)}">${esc(st)}</span></td>
+          <td>${esc(src)}</td>
+          <td class="num">${esc(score)}</td>
+          <td>${esc(doi)}</td>
+          <td class="num">${esc(year)}</td>
+          <td>${esc(authors)}</td>
+          <td>${esc(title)}</td>
+          <td>${esc(query)}</td>
+        </tr>
+      `;
+    }).join("");
   }
 
   function renderAll(data) {
     if (!data) return;
+
     clearTables();
 
     if (el.resultsCard) el.resultsCard.style.display = "block";
@@ -216,10 +273,11 @@
     renderR2C(data);
     renderVerify(data);
 
-    el.btnExportCsvTop.disabled = !LAST_JOB_ID;
-    el.btnExportWordTop.disabled = !LAST_JOB_ID;
+    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = !LAST_JOB_ID;
+    if (el.btnExportWordTop) el.btnExportWordTop.disabled = !LAST_JOB_ID;
   }
 
+  // ---------- API ----------
   async function postVerify(verifyOnline) {
     if (RUNNING) return;
 
@@ -238,15 +296,15 @@
       fd.append("verify_online", verifyOnline ? "true" : "false");
       fd.append("verify_mode", el.verifyMode?.value || "all");
 
-      const throttleVal = Number(el.throttle?.value || 0.12);
-      fd.append("throttle_s", String(throttleVal));
-      fd.append("max_verify", String(Number(el.maxVerify?.value || 0))); // kept for compatibility
+      fd.append("throttle_s", String(Number(el.throttle?.value || 0.12)));
+      fd.append("max_verify", String(Number(el.maxVerify?.value || 0)));
 
       fd.append("use_crossref", el.useCrossref?.checked ? "true" : "false");
       fd.append("use_openalex", el.useOpenAlex?.checked ? "true" : "false");
       fd.append("ai_assist", el.aiAssist?.checked ? "true" : "false");
 
       const aiOn = !!el.aiAssist?.checked;
+
       setStatus(
         verifyOnline && aiOn
           ? "Running check, starting AI assist and online verification..."
@@ -276,7 +334,7 @@
 
       if (verifyOnline || aiOn) {
         setStatus("Check done. Background tasks running, progress will update.", "muted");
-        startPollingOnline();
+        startPolling();
       } else {
         setStatus("Done.", "success");
       }
@@ -288,109 +346,89 @@
     }
   }
 
-  function stopPollingOnline() {
+  function stopPolling() {
     if (POLL_TIMER) {
       clearInterval(POLL_TIMER);
       POLL_TIMER = null;
     }
   }
 
-  function startPollingOnline() {
-    stopPollingOnline();
+  function startPolling() {
+    stopPolling();
     if (!LAST_JOB_ID) return;
 
     POLL_TIMER = setInterval(async () => {
       try {
-        const res = await fetch(
-          `/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}&include_result=1`
-        );
+        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}&include_result=1`);
         if (!res.ok) return;
 
         const js = await res.json();
         if (!js || js.ok !== true) return;
 
-        // If AI assist patched results, refresh dashboard
         if (js.result && Object.keys(js.result).length) {
           renderAll(js.result);
         }
 
-        // Show AI status message if present
-        if (js.ai && js.ai.state && js.ai.state !== "idle") {
-          const msg = js.ai.message || `AI assist: ${js.ai.state}`;
-          if (js.ai.state === "running") setStatus(msg, "muted");
-          if (js.ai.state === "done") setStatus(msg, "success");
-          if (js.ai.state === "error") setStatus(msg, "warn");
-          if (js.ai.state === "skipped") setStatus(msg, "muted");
+        // AI message
+        const ai = js.ai || {};
+        if (ai.state && ai.state !== "idle") {
+          if (ai.state === "running") setStatus(ai.message || "AI assist running...", "muted");
+          else if (ai.state === "done") setStatus(ai.message || "AI assist done.", "success");
+          else if (ai.state === "skipped") setStatus(ai.message || "AI assist skipped.", "muted");
+          else if (ai.state === "error") setStatus(ai.message || "AI assist error.", "warn");
         }
 
+        // Online verification message
         const online = js.online || {};
-        if (online.state === "running") {
-          setStatus(online.message || "Online verification running...", "muted");
-          renderVerify(js.result || {});
-        } else if (online.state === "done") {
-          setStatus("Online verification completed.", "success");
-          renderVerify(js.result || {});
-          stopPollingOnline();
-        } else if (online.state === "error") {
-          setStatus(online.message || "Online verification error.", "warn");
-          stopPollingOnline();
-        }
+        if (online.state === "running") setStatus(online.message || "Online verification running...", "muted");
+        else if (online.state === "done") setStatus("Online verification completed.", "success");
+        else if (online.state === "error") setStatus(online.message || "Online verification error.", "warn");
 
-        // Stop polling when both are done/idle/skipped
-        const aiState = (js.ai || {}).state || "idle";
-        const onlineState = (online || {}).state || "idle";
-        const aiFinished = aiState === "done" || aiState === "error" || aiState === "skipped" || aiState === "idle";
-        const onlineFinished = onlineState === "done" || onlineState === "error" || onlineState === "idle";
-        if (aiFinished && onlineFinished) stopPollingOnline();
+        const aiDoneish = ["idle", "done", "skipped", "error"].includes((ai.state || "idle"));
+        const onDoneish = ["idle", "done", "error"].includes((online.state || "idle"));
+        if (aiDoneish && onDoneish) stopPolling();
       } catch (e) {
-        // ignore transient polling errors
+        // keep polling silently
       }
     }, 1200);
   }
 
-  async function exportCsv() {
+  // ---------- Export ----------
+  async function exportFile(kind) {
     if (!LAST_JOB_ID) return;
-    const res = await fetch("/export/csv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_id: LAST_JOB_ID }),
-    });
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "citation_crosscheck.csv";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    try {
+      const res = await fetch(`/export/${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: LAST_JOB_ID }),
+      });
+      if (!res.ok) {
+        setStatus(`Export failed (${res.status}).`, "warn");
+        return;
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = kind === "csv" ? "citation_crosscheck.csv" : "citation_crosscheck.docx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    } catch (e) {
+      setStatus("Export failed.", "warn");
+    }
   }
 
-  async function exportWord() {
-    if (!LAST_JOB_ID) return;
-    const res = await fetch("/export/word", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_id: LAST_JOB_ID }),
-    });
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "citation_crosscheck.docx";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+  // ---------- Bind ----------
+  function bind() {
+    initTabs();
+
+    if (el.btnCheck) el.btnCheck.addEventListener("click", () => postVerify(false));
+    if (el.btnVerify) el.btnVerify.addEventListener("click", () => postVerify(true));
+
+    if (el.btnExportCsvTop) el.btnExportCsvTop.addEventListener("click", () => exportFile("csv"));
+    if (el.btnExportWordTop) el.btnExportWordTop.addEventListener("click", () => exportFile("word"));
   }
 
-  // wire buttons
-  if (el.btnCheck) el.btnCheck.addEventListener("click", () => postVerify(false));
-  if (el.btnVerify) el.btnVerify.addEventListener("click", () => postVerify(true));
-  if (el.btnExportCsvTop) el.btnExportCsvTop.addEventListener("click", exportCsv);
-  if (el.btnExportWordTop) el.btnExportWordTop.addEventListener("click", exportWord);
-
-  setStatus("Ready.", "muted");
+  bind();
 })();
