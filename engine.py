@@ -1,5 +1,6 @@
 # engine.py
-__version__ = "1.2.8"
+__version__ = "1.3.0"
+
 import re
 import io
 import unicodedata
@@ -19,6 +20,7 @@ try:
 except Exception:
     PDF_OK = False
 
+
 YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
 YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
 
@@ -34,12 +36,21 @@ REF_HEADING_RELAXED = re.compile(
     re.I
 )
 
+# Words that often appear before an in-text citation but are NOT author names.
+# We strip these from the left side before trying to parse the author key.
 DISCOURSE_PREFIXES = {
+    # classic discourse / cue phrases
+    "however", "similarly", "regrettably", "traditionally", "notably", "interestingly",
+    "therefore", "thus", "hence", "consequently", "moreover", "furthermore", "additionally",
+    "meanwhile", "nonetheless", "nevertheless", "overall", "increasingly", "generally",
+    "specifically", "particularly", "importantly", "clearly", "indeed",
+
+    # prior set
     "see", "e.g", "eg", "i.e", "ie",
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
     "according", "adapted", "based", "cited", "citing", "reported",
+    "using", "use", "via",
 }
-
 
 # Headings that often appear *after* the reference list in theses/articles.
 # Used to avoid swallowing appendices/supplementary material as references.
@@ -52,16 +63,21 @@ REF_END_HEADINGS = [
     r"^\s*additional\s+materials?\b",
     r"^\s*online\s+appendix\b",
 ]
-
 REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
 
 # Common false-positive "author" tokens we should never treat as citations.
 NON_NAME_AUTHOR_KEYS = {
+    # structural / doc words
     "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", "figure", "fig", "figures",
     "chapter", "section", "appendix", "appendices", "annex", "equation", "eq", "model", "models",
     "analysis", "results", "method", "methods", "discussion", "introduction", "conclusion",
     "study", "paper", "thesis", "report", "source", "sources", "author", "authors",
+    # discourse words that might sneak in as "author"
+    "however", "similarly", "regrettably", "traditionally", "therefore", "thus", "hence", "consequently",
+    "moreover", "furthermore", "additionally", "meanwhile", "nonetheless", "nevertheless",
+    "overall", "generally", "specifically", "particularly", "importantly", "indeed",
 }
+
 
 # -----------------------------
 # Small helpers
@@ -84,41 +100,6 @@ def strip_punct(s: str) -> str:
     s = re.sub(r"[^a-z0-9\s\-&]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
-
-def _first_author_or_org_key(author_left: str) -> str:
-    """Return a stable key using the *first* author surname or an acronym in brackets.
-    Examples:
-      - "Bartlett, J. E., Kotrlik, J. W., & Higgins, C. C." -> "bartlett"
-      - "United Nations Conference on Trade and Development (UNCTAD)" -> "unctad"
-      - "Adam's" -> "adam"
-    """
-    s = norm_space(author_left)
-
-    # Prefer acronym in brackets, e.g. "(UNCTAD)"
-    m = re.search(r"\(([A-Z]{2,10})\)", s)
-    if m:
-        return strip_punct(m.group(1))
-
-    # Remove numbering
-    s = re.sub(r"^\[\s*\d{1,4}\s*\]\s*", "", s).strip()
-    s = re.sub(r"^\d{1,4}[.)]\s*", "", s).strip()
-
-    # Remove year if it leaked in
-    s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
-
-    # Remove possessive on author token
-    s = re.sub(r"(’s|'s)\b", "", s)
-
-    # Split on separators, keep the first author part
-    s0 = re.split(r"\s+(?:&|and)\s+|,", s, maxsplit=1)[0].strip()
-
-    # Handle "et al."
-    s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
-
-    toks = [t for t in re.split(r"\s+", s0) if t]
-    if not toks:
-        return ""
-    return strip_punct(toks[-1])
 
 
 def _looks_like_toc_references_line(s: str, tail: str) -> bool:
@@ -150,12 +131,184 @@ def _looks_like_heading_line(s: str) -> bool:
     letters = re.sub(r"[^A-Za-z]", "", s0)
     if letters and letters.isupper() and len(letters) >= 6:
         return True
-    # Title case-ish (not perfect, but helpful)
     if re.match(r"^[A-Z][A-Za-z0-9\s\-,:]{3,}$", s0):
         return True
     return False
 
 
+# -----------------------------
+# Strict reference detection
+# -----------------------------
+_AUTHOR_PERSON_RE = re.compile(r"\b[A-Z][A-Za-z'\-]+,\s*(?:[A-Z]\.){1,3}", re.UNICODE)
+_TITLE_MIN_LETTERS_RE = re.compile(r"[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z].*[A-Za-z]")  # >= ~5 letters
+
+
+def _looks_like_org_author(text: str) -> bool:
+    """
+    Broad organisation author detection:
+    - finds runs of Title-Case words (2+), or ALLCAPS acronyms (2+)
+    - avoids obviously non-author boilerplate
+    """
+    s = norm_space(text)
+    if not s or len(s) < 6:
+        return False
+
+    s_low = s.lower()
+    # avoid common non-author lines
+    bad = ["retrieved from", "available at", "accessed", "doi:", "http://", "https://", "www."]
+    if any(b in s_low for b in bad):
+        return False
+
+    # Tokenize roughly
+    toks = [t for t in re.split(r"\s+", re.sub(r"[^A-Za-z0-9&\-\s]", " ", s)) if t]
+    if len(toks) < 2:
+        return False
+
+    def is_titleish(w: str) -> bool:
+        if re.fullmatch(r"[A-Z]{2,10}", w):  # acronym
+            return True
+        return bool(re.match(r"^[A-Z][a-z]{2,}$", w))
+
+    # Count consecutive title-ish tokens
+    run = 0
+    best = 0
+    for w in toks[:14]:  # only need early part
+        if is_titleish(w):
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+
+    # organisation-like if we have a run of 2+ title-ish tokens (e.g., "World Health Organization")
+    return best >= 2
+
+
+def _has_author_signal(s: str) -> bool:
+    s0 = norm_space(s)
+    if not s0:
+        return False
+    if _AUTHOR_PERSON_RE.search(s0):
+        return True
+    if _looks_like_org_author(s0):
+        return True
+    # acronym in brackets e.g. (WHO) is handled elsewhere, but allow it here too
+    if re.search(r"\(([A-Z]{2,10})\)", s0):
+        return True
+    return False
+
+
+def _looks_like_title(t: str) -> bool:
+    t0 = norm_space(t)
+    if len(t0) < 6:
+        return False
+    # reject pure container/metadata words
+    if re.fullmatch(r"(?:doi|vol|volume|issue|pp|pages)\b.*", t0, re.I):
+        return False
+    # needs letters
+    return bool(_TITLE_MIN_LETTERS_RE.search(t0))
+
+
+def _title_candidate_after_year(s: str, year_span: Tuple[int, int]) -> str:
+    s0 = norm_space(s)
+    ys, ye = year_span
+    after = s0[ye:].lstrip(" ).,;:-")
+    # take up to next period (often title in APA)
+    part = after.split(".", 1)[0].strip()
+    return part
+
+
+def _title_candidate_before_year(s: str, year_span: Tuple[int, int]) -> str:
+    s0 = norm_space(s)
+    ys, _ = year_span
+    before = s0[:ys].strip(" .;:-")
+    if not before:
+        return ""
+    segs = [p.strip() for p in before.split(".") if p.strip()]
+    if not segs:
+        return ""
+    # last fragment before year is the best guess for Title in "Author. Title. (Year)."
+    return segs[-1]
+
+
+def _is_strict_reference_entry(s: str) -> bool:
+    """
+    STRICT RULE for APA/Harvard AND IEEE/Vancouver reference bodies:
+      Must contain:
+        - author signal (person or organisation)
+        - year
+        - title
+      Allow either order:
+        Author -> Year -> Title  OR  Author -> Title -> Year
+    """
+    s0 = norm_space(s)
+    if not s0 or len(s0) < 25:
+        return False
+
+    ym = YEAR_RE.search(s0)
+    if not ym:
+        return False
+    year_span = (ym.start(), ym.end())
+
+    # Author should appear in the left-ish portion, but allow anywhere as fallback
+    left_portion = s0[: max(0, year_span[0] + 5)]
+    if not _has_author_signal(left_portion) and not _has_author_signal(s0):
+        return False
+
+    title_after = _title_candidate_after_year(s0, year_span)
+    title_before = _title_candidate_before_year(s0, year_span)
+
+    if _looks_like_title(title_after):
+        return True
+    if _looks_like_title(title_before):
+        return True
+
+    return False
+
+
+# -----------------------------
+# Author key extractor (FIXED for et al. punctuation)
+# -----------------------------
+def _first_author_or_org_key(author_left: str) -> str:
+    """Return a stable key using the *first* author surname or an acronym in brackets.
+    Examples:
+      - "Bartlett, J. E., Kotrlik, J. W., & Higgins, C. C." -> "bartlett"
+      - "United Nations Conference on Trade and Development (UNCTAD)" -> "unctad"
+      - "Adam's" -> "adam"
+      - "Button et al." -> "button"   (bug fixed)
+    """
+    s = norm_space(author_left)
+
+    # Prefer acronym in brackets, e.g. "(UNCTAD)"
+    m = re.search(r"\(([A-Z]{2,10})\)", s)
+    if m:
+        return strip_punct(m.group(1))
+
+    # Remove numbering
+    s = re.sub(r"^\[\s*\d{1,4}\s*\]\s*", "", s).strip()
+    s = re.sub(r"^\d{1,4}[.)]\s*", "", s).strip()
+
+    # Remove year if it leaked in
+    s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
+
+    # Remove possessive on author token
+    s = re.sub(r"(’s|'s)\b", "", s)
+
+    # Split on separators, keep the first author part
+    s0 = re.split(r"\s+(?:&|and)\s+|,", s, maxsplit=1)[0].strip()
+
+    # Handle "et al."
+    s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
+
+    # ✅ FIX: ignore punctuation-only tokens (prevents "." becoming the last token)
+    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
+    if not toks:
+        return ""
+    return strip_punct(toks[-1])
+
+
+# -----------------------------
+# Stop refs from swallowing appendices
+# -----------------------------
 def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
     """Stop the reference block when it clearly transitions to appendices/supplementary sections."""
     out: List[str] = []
@@ -171,14 +324,14 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
         if not s:
             continue
 
-        # count reference-like starts early so we only allow end detection after we truly are in refs
         if _is_ref_like(s):
             ref_like_seen += 1
 
-        # End heading detection (only after some refs already found)
-        if ref_like_seen >= 3 and (REF_END_HEADING_RE.search(s) or (_looks_like_heading_line(s) and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I))):
-            # Lookahead: if upcoming lines don't look like references, stop here
-            look = [x for x in lines[i:i+25] if (x or "").strip()]
+        if ref_like_seen >= 3 and (
+            REF_END_HEADING_RE.search(s)
+            or (_looks_like_heading_line(s) and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I))
+        ):
+            look = [x for x in lines[i:i + 25] if (x or "").strip()]
             look_ref = sum(1 for x in look if _is_ref_like((x or "").strip()))
             if look_ref <= 1:
                 break
@@ -186,6 +339,7 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
         out.append(ln)
 
     return out
+
 
 # -----------------------------
 # DOCX extraction (robust)
@@ -272,14 +426,12 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
     for t in lines:
         if not in_refs:
-            # strict heading
             for pat in REF_HEADINGS:
                 if re.search(pat, t, flags=re.I):
                     in_refs = True
                     heading_line = t
                     break
 
-            # relaxed heading with TOC guard
             if not in_refs:
                 m = REF_HEADING_RELAXED.search(t)
                 if m and m.start() <= 4 and len(t) <= 160:
@@ -300,7 +452,6 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
     if in_refs:
         ref_lines = _truncate_reference_block(ref_lines, style_hint="apa")
-        # also guard numeric-style theses
         ref_lines = _truncate_reference_block(ref_lines, style_hint="numeric")
 
     msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
@@ -509,7 +660,6 @@ def extract_author_year_citations(text: str) -> List[str]:
 
     out: List[str] = []
 
-    # parenthetical chunks
     for m in paren_pat.finditer(t):
         inside = m.group(1)
         chunks = [c.strip() for c in inside.split(";") if c.strip()]
@@ -518,15 +668,14 @@ def extract_author_year_citations(text: str) -> List[str]:
             if YEAR_RE.search(ch2):
                 out.append(norm_space(ch2))
 
-    # narrative
     for m in narr_pat.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
-        # remove possessive: Adam's (2020) -> Adam (2020)
         author = re.sub(r"(’s|'s)\b", "", author).strip()
         out.append(norm_space(f"{author}, {year}"))
 
     return [c for c in out if c]
+
 
 def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
     t = text or ""
@@ -534,7 +683,6 @@ def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
     if bracketed:
         pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\s*\]")
     else:
-        # captures standalone numbers and ranges (used as fallback for Vancouver)
         pat = re.compile(r"\b(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\b")
 
     for m in pat.finditer(t):
@@ -574,6 +722,10 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
     if not s:
         return None
 
+    # ✅ STRICT filter: must contain Author + Year + Title (either order)
+    if not _is_strict_reference_entry(s):
+        return None
+
     m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s)
     if not m:
         m2 = re.search(r"\b(" + YEAR + r")\b", s)
@@ -592,6 +744,7 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
     key = f"{author_key}|{year}".lower()
     return RefAY(reference_full=s, key=key)
 
+
 def parse_reference_numeric(ref: str) -> Optional[RefNum]:
     s = norm_space(ref)
     if not s:
@@ -599,11 +752,20 @@ def parse_reference_numeric(ref: str) -> Optional[RefNum]:
 
     m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
     if m:
-        return RefNum(reference_full=s, num=m.group(1))
+        num = m.group(1)
+        body = m.group(2).strip()
+        # ✅ STRICT filter applied to the body
+        if not _is_strict_reference_entry(body):
+            return None
+        return RefNum(reference_full=s, num=num)
 
     m2 = re.match(r"^(\d{1,4})[.)]\s*(.+)$", s)
     if m2 and not YEAR_RE.fullmatch(m2.group(1)):
-        return RefNum(reference_full=s, num=m2.group(1))
+        num = m2.group(1)
+        body = m2.group(2).strip()
+        if not _is_strict_reference_entry(body):
+            return None
+        return RefNum(reference_full=s, num=num)
 
     return None
 
@@ -611,36 +773,33 @@ def parse_reference_numeric(ref: str) -> Optional[RefNum]:
 # -----------------------------
 # Reconciliation
 # -----------------------------
-def _norm_author_block(s: str) -> str:
-    s = strip_punct(s)
-    s = s.replace("&", " and ")
-    s = re.sub(r"\bet al\b", "", s).strip()
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
 def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     s = norm_space(cite)
     if not s:
         return None
 
+    # strip pages
     s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
+
     ym = YEAR_RE.search(s)
     if not ym:
         return None
     year = ym.group(1)
 
     left = s[:ym.start()].strip(" ,;()")
-    left = re.sub(
-        r"^(?:"
-        + "|".join(sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True))
-        + r")\b",
-        "",
-        left,
-        flags=re.I
-    ).strip(" ,;()")
 
-    # remove possessive: Adam's, 2020 -> Adam, 2020
+    # Remove leading discourse words repeatedly
+    if left:
+        prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
+        pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
+        # peel multiple prefixes if stacked: "However, similarly, ..."
+        while True:
+            new_left = pref_re.sub("", left).strip(" ,;()")
+            if new_left == left:
+                break
+            left = new_left
+
+    # remove possessive
     left = re.sub(r"(’s|'s)\b", "", left).strip()
 
     author_key = _first_author_or_org_key(left)
@@ -650,13 +809,14 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
         return None
     return author_key, year
 
-def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
+
+def reconcile_author_year(
+    citations: List[str],
+    references: List[RefAY]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int]:
     ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
 
     cite_key_counts = Counter()
-    cite_text_counts = Counter()
     parsed_cites: List[Tuple[str, str]] = []
 
     for c in citations:
@@ -666,7 +826,6 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         auth, year = parsed
         key = f"{auth}|{year}".lower()
         cite_key_counts[key] += 1
-        cite_text_counts[c] += 1
         parsed_cites.append((key, c))
 
     c2r: List[Dict[str, Any]] = []
@@ -679,11 +838,9 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
             c2r.append({"status": "not_found", "in_text": c, "matched_reference": "", "flags": ""})
             missing_counter[c] += 1
 
-    # r2c rows + uncited list
     r2c: List[Dict[str, Any]] = []
     uncited_refs: List[str] = []
 
-    # build sample cited_by (up to 6)
     cite_samples_by_key: Dict[str, List[str]] = defaultdict(list)
     for key, c in parsed_cites:
         lst = cite_samples_by_key[key]
@@ -705,13 +862,14 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         for k, v in missing_counter.most_common()
     ]
 
-    # In-text summary should be UNIQUE citations (unique keys), not total occurrences
     unique_intext_count = int(len(cite_key_counts))
     return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
 
-def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
+
+def reconcile_numeric(
+    citations: List[str],
+    references: List[RefNum]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int]:
     ref_by_num: Dict[str, str] = {r.num: r.reference_full for r in references}
     cite_counts = Counter(citations)
 
@@ -725,7 +883,6 @@ def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
             c2r.append({"status": "not_found", "in_text": f"[{num}]", "matched_reference": "", "flags": ""})
             missing_counter[f"[{num}]"] += 1
 
-    # r2c rows + uncited list
     r2c: List[Dict[str, Any]] = []
     uncited_refs: List[str] = []
     for r in references:
@@ -754,7 +911,7 @@ def run_crosscheck(
     file_bytes: bytes,
     filename: str,
     style: str = "apa",
-    verify_online: bool = False,   # main.py always calls offline here (kept for compatibility)
+    verify_online: bool = False,   # kept for compatibility
     verify_mode: str = "all",
     max_verify: int = 0,
     throttle_s: float = 0.12,
@@ -815,11 +972,7 @@ def run_crosscheck(
 
     else:
         # IEEE is bracketed. Vancouver can vary, so fallback if bracketed yields too few.
-        if "ieee" in style_s:
-            bracketed = True
-        else:
-            bracketed = True  # try bracketed first for Vancouver too
-
+        bracketed = True if "ieee" in style_s else True
         cites_nums = extract_numeric_citations(main_text, bracketed=bracketed)
 
         if "vancouver" in style_s and len(cites_nums) < 3:
@@ -837,7 +990,6 @@ def run_crosscheck(
     if intext_count > 0:
         match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
 
-    # ---- return schema that app.js expects ----
     return {
         "filename": filename,
         "style": style_s,
@@ -853,16 +1005,10 @@ def run_crosscheck(
             "match_rate": float(round(match_rate, 1)),
         },
 
-        # Missing tab expects list of dicts: {citation_in_text, count_in_text}
         "missing_in_references": missing_rows,
-
-        # Uncited tab expects list[str]
         "uncited_references": uncited_refs,
-
-        # Mapping tabs
         "reconciliation_intext_to_reference": c2r,
         "reconciliation_reference_to_intext": r2c,
 
-        # useful debugging / future features
         "references_raw": references_raw,
     }
