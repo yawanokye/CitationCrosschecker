@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.2.9"
+__version__ = "1.3.0"
 
 import re
 import io
@@ -33,24 +33,28 @@ REF_HEADINGS = [
 
 REF_HEADING_RELAXED = re.compile(
     r"^\s*(references?|bibliography|works\s+cited|literature\s+cited)\b",
-    re.I
+    re.I,
 )
 
+# Words/phrases that often precede citations in prose and should NOT be treated as author tokens.
+# Used only when they appear at the *start* of a candidate citation string.
 DISCOURSE_PREFIXES = {
     "see", "e.g", "eg", "i.e", "ie",
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
     "according", "adapted", "based", "cited", "citing", "reported",
 
-    # common thesis prose lead-ins
+    # common prose lead-ins
     "however", "similarly", "regrettably", "traditionally", "notably",
     "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
 
-    # you added these, keep them
+    # examples
     "for instance", "instance", "for example", "example",
+    "for instance,", "for example,",
 }
 
+# Headings that often appear *after* the reference list in theses/articles.
 REF_END_HEADINGS = [
     r"^\s*appendix(?:es)?\b",
     r"^\s*annex(?:es)?\b",
@@ -62,13 +66,14 @@ REF_END_HEADINGS = [
 ]
 REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
 
+# Common false-positive "author" tokens we should never treat as citations.
 NON_NAME_AUTHOR_KEYS = {
     "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", "figure", "fig", "figures",
     "chapter", "section", "appendix", "appendices", "annex", "equation", "eq", "model", "models",
     "analysis", "results", "method", "methods", "discussion", "introduction", "conclusion",
     "study", "paper", "thesis", "report", "source", "sources", "author", "authors",
 
-    # prose words that sometimes get mis-read as "authors"
+    # discourse words that sometimes get misread as authors
     "however", "similarly", "regrettably", "traditionally", "therefore", "thus", "hence",
     "consequently", "moreover", "furthermore", "additionally", "meanwhile", "nonetheless",
     "nevertheless", "overall", "generally", "specifically", "particularly", "importantly",
@@ -94,7 +99,7 @@ def soft_lower(s: str) -> str:
 def strip_punct(s: str) -> str:
     s = soft_lower(s)
     s = re.sub(r"[“”\"'’`]", "", s)
-    s = re.sub(r"[^a-z0-9\s\-&/]", " ", s)
+    s = re.sub(r"[^a-z0-9\s\-&/\u2013\u2014-]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -127,37 +132,56 @@ def _looks_like_heading_line(s: str) -> bool:
 
 
 # -----------------------------
-# Stricter reference acceptance (tolerant)
-# Rule: Author + Year + Title, either order.
+# Stricter reference acceptance (but not brittle)
+# Accept only entries that contain Author + Year + Title (either order)
+# and support broad organisation authors.
 # -----------------------------
+
+_LEAD_NUM_RE = re.compile(r"^\s*(?:\[\s*\d{1,4}\s*\]|\(?\s*\d{1,4}\s*\)?|\d{1,4})\s*[\.)\]]\s*")
+
+
+def _strip_leading_reference_number(s: str) -> str:
+    s0 = norm_space(s)
+    s0 = _LEAD_NUM_RE.sub("", s0)
+    return s0.strip()
+
+
 def _looks_like_person_author(s: str) -> bool:
-    # classic APA surname, initials
-    if re.search(r"\b[A-Z][A-Za-z'\-]+,\s*(?:[A-Z]\.){1,3}", s):
+    s0 = norm_space(s)
+    if re.search(r"\b[A-Z][A-Za-z'\-]+,\s*(?:[A-Z]\.\s*){1,4}(?:[A-Z]\.\s*)?", s0):
         return True
-    # "Adam, A. M." style without commas sometimes
-    if re.search(r"\b[A-Z][A-Za-z'\-]+\s+(?:[A-Z]\.){1,3}\b", s):
+    if re.search(r"\b[A-Z][A-Za-z'\-]+\s+(?:[A-Z]\.?)\s*(?:[A-Z]\.?)\b", s0):
+        return True
+    if re.search(r"\b[A-Z][A-Za-z'\-]+\s+et\s+al\.", s0):
         return True
     return False
 
 
 def _looks_like_org_author(s: str) -> bool:
-    # acronym in parentheses (UNCTAD)
-    if re.search(r"\(([A-Z]{2,10})\)", s):
+    s0 = norm_space(s)
+
+    if re.search(r"\(([A-Z]{2,10})\)", s0):
         return True
-    # ORGs often have 2+ Titlecase words early
-    head = re.sub(r"[^A-Za-z0-9\s/&\-]", " ", s)
+
+    head = re.sub(r"[^A-Za-z0-9\s/&\-]", " ", s0)
     toks = [t for t in head.split() if t]
-    if len(toks) < 2:
-        return False
+    if toks:
+        t0 = toks[0]
+        t0_clean = re.sub(r"[^A-Za-z]", "", t0)
+        if t0_clean and t0_clean.isupper() and len(t0_clean) >= 2:
+            return True
 
     def titleish(w: str) -> bool:
-        if re.fullmatch(r"[A-Z]{2,10}", w):
+        wc = re.sub(r"[^A-Za-z]", "", w)
+        if not wc:
+            return False
+        if wc.isupper() and 2 <= len(wc) <= 12:
             return True
-        return bool(re.match(r"^[A-Z][a-z]{2,}$", w))
+        return bool(re.match(r"^[A-Z][a-z]{2,}$", wc))
 
     run = 0
     best = 0
-    for w in toks[:14]:
+    for w in toks[:16]:
         if titleish(w):
             run += 1
             best = max(best, run)
@@ -170,40 +194,45 @@ def _looks_like_title_piece(s: str) -> bool:
     s0 = norm_space(s)
     if len(s0) < 6:
         return False
-    # needs at least 5 letters in total
     letters = re.findall(r"[A-Za-z]", s0)
     if len(letters) < 5:
         return False
-    # avoid pure journal/volume/page fragments
-    if re.fullmatch(r"(?:vol|volume|issue|no|pp|pages|doi)\b.*", s0, re.I):
+    if re.fullmatch(r"(?i)(?:vol(?:ume)?|issue|no\.?|pp\.?|pages?|doi)\b.*", s0):
         return False
+    if re.fullmatch(r"\d{1,4}(?:\s*[-–]\s*\d{1,4})?", s0):
+        return False
+
+    word_count = len([w for w in re.split(r"\s+", s0) if w])
+    if word_count >= 3:
+        return True
+    if ":" in s0 or "–" in s0 or "-" in s0:
+        return True
     return True
 
 
 def _is_plausible_reference_entry(s: str) -> bool:
-    """
-    Tolerant strictness:
-    - must contain a year
-    - must look like it starts with author/organisation
-    - must include a plausible title segment either before or after year
-    """
-    s0 = norm_space(s)
-    if not s0 or len(s0) < 20:
+    s0 = _strip_leading_reference_number(s)
+    if not s0 or len(s0) < 18:
         return False
 
     ym = YEAR_RE.search(s0)
     if not ym:
         return False
 
-    # author signal
     left = s0[: ym.start()].strip()
-    author_ok = _looks_like_person_author(left) or _looks_like_org_author(left) or _looks_like_person_author(s0) or _looks_like_org_author(s0)
+    author_ok = (
+        _looks_like_person_author(left)
+        or _looks_like_org_author(left)
+        or _looks_like_person_author(s0[:120])
+        or _looks_like_org_author(s0[:120])
+    )
     if not author_ok:
         return False
 
-    # title can be after year (common) or before year (some styles)
     after = s0[ym.end():].lstrip(" ).,;:-")
     after_title = after.split(".", 1)[0].strip()
+    if len(after_title) < 6 and "," in after:
+        after_title = after.split(",", 1)[0].strip()
 
     before = s0[: ym.start()].strip(" .;:-")
     before_parts = [p.strip() for p in before.split(".") if p.strip()]
@@ -218,33 +247,21 @@ def _is_plausible_reference_entry(s: str) -> bool:
 def _first_author_or_org_key(author_left: str) -> str:
     s = norm_space(author_left)
 
-    # Prefer acronym in brackets, e.g. "(UNCTAD)"
-    m = re.search(r"\(([A-Z]{2,10})\)", s)
+    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", s)
     if m:
         return strip_punct(m.group(1))
 
-    # Remove numbering
-    s = re.sub(r"^\[\s*\d{1,4}\s*\]\s*", "", s).strip()
-    s = re.sub(r"^\d{1,4}[.)]\s*", "", s).strip()
-
-    # Remove year if it leaked in
+    s = _strip_leading_reference_number(s)
     s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
-
-    # Remove possessive
     s = re.sub(r"(’s|'s)\b", "", s)
 
-    # NEW: handle "Surname Initials" without comma: "Pesaran MH" -> "Pesaran"
     m_si = re.match(r"^\s*([A-Z][A-Za-z'\-]+)\s+[A-Z]{1,3}\b", s)
     if m_si:
         return strip_punct(m_si.group(1))
 
-    # Split on separators, keep first author part
     s0 = re.split(r"\s+(?:&|and|＆)\s+|,", s, maxsplit=1)[0].strip()
-
-    # Handle "et al."
     s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
 
-    # NEW: ignore punctuation-only tokens (fixes '.' token bug)
     toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
     if not toks:
         return ""
@@ -270,9 +287,12 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
 
         if ref_like_seen >= 3 and (
             REF_END_HEADING_RE.search(s)
-            or (_looks_like_heading_line(s) and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I))
+            or (
+                _looks_like_heading_line(s)
+                and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I)
+            )
         ):
-            look = [x for x in lines[i:i + 25] if (x or "").strip()]
+            look = [x for x in lines[i : i + 25] if (x or "").strip()]
             look_ref = sum(1 for x in look if _is_ref_like((x or "").strip()))
             if look_ref <= 1:
                 break
@@ -306,13 +326,13 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
     NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
     def _extract_from_xml(xml_bytes: bytes) -> List[str]:
-        out = []
+        out: List[str] = []
         try:
             root = ET.fromstring(xml_bytes)
         except Exception:
             return out
         for p in root.findall(".//w:p", NS):
-            parts = []
+            parts: List[str] = []
             for tnode in p.findall(".//w:t", NS):
                 if tnode.text:
                     parts.append(tnode.text)
@@ -345,7 +365,6 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
     if not DOCX_OK:
         raise RuntimeError("python-docx not installed")
 
-    lines: List[str] = []
     try:
         lines = _docx_xml_text(file_bytes)
     except Exception:
@@ -371,7 +390,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
             if not in_refs:
                 m = REF_HEADING_RELAXED.search(t)
                 if m and m.start() <= 4 and len(t) <= 160:
-                    tail = t[m.end():].strip(" :-\t")
+                    tail = t[m.end() :].strip(" :-\t")
                     if _looks_like_toc_references_line(t, tail):
                         main_lines.append(t)
                         continue
@@ -401,7 +420,7 @@ def read_pdf_text(file_bytes: bytes) -> str:
     if not PDF_OK:
         raise RuntimeError("pdfplumber not installed")
 
-    out = []
+    out: List[str] = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
             try:
@@ -422,7 +441,7 @@ def _looks_like_new_numeric_reference_start(s: str) -> bool:
     if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
         return True
 
-    m = re.match(r"^(\d{1,4})([.)])\s+(.+)$", s0)
+    m = re.match(r"^(\d{1,4})([\.)])\s+(.+)$", s0)
     if m:
         num = m.group(1)
         if YEAR_RE.fullmatch(num):
@@ -443,7 +462,7 @@ def _looks_like_new_apa_reference_start(s: str) -> bool:
     m = re.match(r"^(.+?)\s*\(\s*" + YEAR + r"\s*\)", s0)
     if m:
         a = m.group(1)
-        a = re.sub(r"[^A-Za-z,\.\-\s&/]", "", a).strip()
+        a = re.sub(r"[^A-Za-z,\.\-\s&/\u2013\u2014-]", "", a).strip()
         return len(a) >= 3
     return False
 
@@ -477,13 +496,13 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 
         m = REF_HEADING_RELAXED.search(s)
         if m and m.start() <= 4 and len(s) <= 160:
-            tail = s[m.end():].strip(" :-\t")
+            tail = s[m.end() :].strip(" :-\t")
             if _looks_like_toc_references_line(s, tail):
                 continue
             candidates.append((i, tail))
 
     for i, tail in candidates:
-        lookahead = [ln for ln in lines[i + 1:i + 31] if (ln or "").strip()]
+        lookahead = [ln for ln in lines[i + 1 : i + 31] if (ln or "").strip()]
         if _count_reference_like(lookahead, style_hint=style_hint) >= 3:
             return i, tail
 
@@ -536,7 +555,7 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
         if not s:
             continue
 
-        cuts = []
+        cuts: List[int] = []
 
         for m in br_pat.finditer(s):
             pos = m.start(1)
@@ -576,21 +595,11 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
 
-    # Parenthetical: (Author, 2020; Author2, 2021)
-    paren_pat = re.compile(
-        r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)"
-    )
+    paren_pat = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
 
-    # Narrative: allow "&" and "＆"; and allow missing closing ')' after year (DOCX quirks)
     NAME = r"[A-Z][A-Za-z'\-]+(?:'s)?"
     AMP = r"(?:&|and|＆)"
-
-    # A, B & C forms
-    AUTHOR_LIST = (
-        rf"{NAME}"
-        rf"(?:\s*,\s*{NAME}){{0,10}}"
-        rf"(?:\s*,?\s*{AMP}\s*{NAME})?"
-    )
+    AUTHOR_LIST = rf"{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?"
 
     narr_pat = re.compile(
         rf"\b("
@@ -602,16 +611,18 @@ def extract_author_year_citations(text: str) -> List[str]:
 
     out: List[str] = []
 
-    # parenthetical chunks
     for m in paren_pat.finditer(t):
-        inside = m.group(1)
+        inside = (m.group(1) or "").strip()
+        # IMPORTANT FIX: ignore bare "(2008)" captured inside a bigger parenthesis
+        if YEAR_RE.fullmatch(inside) and not re.search(r"[A-Za-z]", inside):
+            continue
+
         chunks = [c.strip() for c in inside.split(";") if c.strip()]
         for ch in chunks:
             ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
             if YEAR_RE.search(ch2):
                 out.append(norm_space(ch2))
 
-    # narrative
     for m in narr_pat.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
@@ -666,27 +677,28 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
     if not s:
         return None
 
-    # NEW tolerant strictness: accept only plausible ref entries (author+year+title)
-    if not _is_plausible_reference_entry(s):
+    s_clean = _strip_leading_reference_number(s)
+
+    if not _is_plausible_reference_entry(s_clean):
         return None
 
-    m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s)
+    m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s_clean)
     if not m:
-        m2 = re.search(r"\b(" + YEAR + r")\b", s)
+        m2 = re.search(r"\b(" + YEAR + r")\b", s_clean)
         if not m2:
             return None
         year = m2.group(1)
-        left = s[:m2.start()].strip()
+        left = s_clean[: m2.start()].strip()
     else:
         year = m.group(1)
-        left = s[:m.start()].strip()
+        left = s_clean[: m.start()].strip()
 
     author_key = _first_author_or_org_key(left)
     if not author_key:
         return None
 
     key = f"{author_key}|{year}".lower()
-    return RefAY(reference_full=s, key=key)
+    return RefAY(reference_full=s_clean, key=key)
 
 
 def parse_reference_numeric(ref: str) -> Optional[RefNum]:
@@ -696,18 +708,21 @@ def parse_reference_numeric(ref: str) -> Optional[RefNum]:
 
     m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
     if m:
-        body = m.group(2).strip()
-        # apply same plausible filter to body
+        num = m.group(1)
+        body = norm_space(m.group(2))
+        body = _strip_leading_reference_number(body)
         if not _is_plausible_reference_entry(body):
             return None
-        return RefNum(reference_full=s, num=m.group(1))
+        return RefNum(reference_full=s, num=num)
 
-    m2 = re.match(r"^(\d{1,4})[.)]\s*(.+)$", s)
+    m2 = re.match(r"^(\d{1,4})[\.)]\s*(.+)$", s)
     if m2 and not YEAR_RE.fullmatch(m2.group(1)):
-        body = m2.group(2).strip()
+        num = m2.group(1)
+        body = norm_space(m2.group(2))
+        body = _strip_leading_reference_number(body)
         if not _is_plausible_reference_entry(body):
             return None
-        return RefNum(reference_full=s, num=m2.group(1))
+        return RefNum(reference_full=s, num=num)
 
     return None
 
@@ -726,9 +741,8 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
         return None
     year = ym.group(1)
 
-    left = s[:ym.start()].strip(" ,;()")
+    left = s[: ym.start()].strip(" ,;()")
 
-    # strip discourse prefixes repeatedly
     if left:
         prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
         pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
@@ -738,14 +752,14 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
                 break
             left = new_left
 
-    # NEW: drop leading non-name comma clause (fixes "for instance, Adam & X")
+    # Fix: "for instance, Adam & X" -> drop first clause if it has no names
     for _ in range(3):
-        chunk0 = left.split(",", 1)[0].strip()
-        if chunk0 and not re.search(r"\b[A-Z][A-Za-z'\-]+\b", chunk0):
-            if "," in left:
-                left = left.split(",", 1)[1].strip(" ,;()")
-                continue
-        break
+        if "," not in left:
+            break
+        first, rest = left.split(",", 1)
+        if re.search(r"\b[A-Z][A-Za-z'\-]+\b", first):
+            break
+        left = rest.strip(" ,;()")
 
     left = re.sub(r"(’s|'s)\b", "", left).strip()
 
@@ -847,7 +861,7 @@ def run_crosscheck(
     file_bytes: bytes,
     filename: str,
     style: str = "apa",
-    verify_online: bool = False,
+    verify_online: bool = False,  # kept for compatibility
     verify_mode: str = "all",
     max_verify: int = 0,
     throttle_s: float = 0.12,
@@ -879,7 +893,7 @@ def run_crosscheck(
         else:
             main_text = "\n".join(lines[:idx]).strip()
             ref_msg = f"Found References heading: {lines[idx].strip()}"
-            ref_block_lines = []
+            ref_block_lines: List[str] = []
             if tail:
                 ref_block_lines.append(tail)
             ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
@@ -904,8 +918,7 @@ def run_crosscheck(
         ref_count = len(refs)
 
     else:
-        bracketed = True if "ieee" in style_s else True
-        cites_nums = extract_numeric_citations(main_text, bracketed=bracketed)
+        cites_nums = extract_numeric_citations(main_text, bracketed=True)
         if "vancouver" in style_s and len(cites_nums) < 3:
             cites_nums = extract_numeric_citations(main_text, bracketed=False)
 
