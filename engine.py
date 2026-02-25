@@ -43,7 +43,8 @@ DISCOURSE_PREFIXES = {
     "however", "similarly", "regrettably", "traditionally", "notably", "interestingly",
     "therefore", "thus", "hence", "consequently", "moreover", "furthermore", "additionally",
     "meanwhile", "nonetheless", "nevertheless", "overall", "increasingly", "generally",
-    "specifically", "particularly", "importantly", "clearly", "indeed",
+    "specifically", "particularly", "importantly", "clearly", "indeed",     "for instance", "instance",
+    "for example", "example",
 
     # prior set
     "see", "e.g", "eg", "i.e", "ie",
@@ -1022,4 +1023,5 @@ def run_crosscheck(
 
         "references_raw": references_raw,
     }
+
 
