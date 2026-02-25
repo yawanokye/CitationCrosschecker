@@ -821,6 +821,145 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     return author_key, year
 
 
+
+# -----------------------------
+# Commercial-grade de-duplication for "Uncited" accuracy
+# -----------------------------
+_REF_STOPWORDS = {
+    "the","a","an","and","or","of","in","on","for","to","with","from","at","by","as",
+    "ed","eds","edition","vol","volume","no","number","pp","pages","page",
+}
+
+def _strip_accents(s: str) -> str:
+    s = s or ""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+
+def _norm_ref_text(s: str) -> str:
+    s = _strip_accents(s.lower())
+    s = s.replace("&", " and ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)]+", re.I)
+
+def _extract_ref_signature(ref_full: str) -> Tuple[str, str, str, str]:
+    """
+    Returns (year_base, first_author_key, title_stub, doi).
+    Used for clustering near-duplicate reference entries.
+    """
+    s = ref_full or ""
+    doi = ""
+    mdoi = _DOI_RE.search(s)
+    if mdoi:
+        doi = mdoi.group(0).rstrip(".,;")
+
+    m = YEAR_RE.search(s)
+    if not m:
+        # fall back: hash on first 80 chars
+        t = _norm_ref_text(s)[:80]
+        return ("", t[:24], t[24:60], doi)
+
+    year = _base_year(m.group(1))
+    left = (s[:m.start()] or "").strip(" ,;()")
+    right = (s[m.end():] or "").strip()
+
+    # first author key (surname or org token)
+    surnames = _surnames_from_author_blob(left)
+    first_author = surnames[0] if surnames else _norm_ref_text(left)[:24]
+    first_author = re.sub(r"[^a-z0-9\- ]+", "", _norm_ref_text(first_author))
+
+    # title stub: take a short token window after the year
+    # remove leading punctuation and quotes
+    right = right.lstrip(" .,:;)-–—\"'[]")
+    # stop at the first strong separator that often ends titles
+    right2 = re.split(r"\.\s+|\.?$|\s+https?://|\s+doi:\s*", right, maxsplit=1, flags=re.I)[0]
+    tokens = [re.sub(r"[^a-z0-9\-]+", "", t) for t in _norm_ref_text(right2).split()]
+    tokens = [t for t in tokens if t and t not in _REF_STOPWORDS]
+    title_stub = " ".join(tokens[:12])  # short but stable
+    return (year, first_author, title_stub, doi)
+
+def _cluster_references(references: List[RefEntry]) -> Dict[str, Dict[str, Any]]:
+    """
+    Build clusters of near-duplicate references.
+    Returns mapping: ref_full -> {cluster_id, canonical_ref, is_duplicate}
+    """
+    # Prefer RapidFuzz if present, otherwise fallback to overlap ratio
+    try:
+        from rapidfuzz import fuzz as _rfuzz
+        _HAS_RF = True
+    except Exception:
+        _HAS_RF = False
+        _rfuzz = None
+
+    # group by (doi) first (strongest), then (year, first_author)
+    by_doi: Dict[str, List[str]] = defaultdict(list)
+    by_bucket: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+    sigs: Dict[str, Tuple[str, str, str, str]] = {}
+
+    for r in references:
+        rf = r.reference_full
+        y, a1, t, doi = _extract_ref_signature(rf)
+        sigs[rf] = (y, a1, t, doi)
+        if doi:
+            by_doi[doi.lower()].append(rf)
+        else:
+            by_bucket[(y, a1)].append(rf)
+
+    clusters: List[List[str]] = []
+
+    # DOI clusters
+    for _doi, items in by_doi.items():
+        clusters.append(items)
+
+    # Title-based clusters within bucket
+    for (y, a1), items in by_bucket.items():
+        if len(items) <= 1:
+            clusters.append(items)
+            continue
+
+        used = set()
+        for i, rf_i in enumerate(items):
+            if rf_i in used:
+                continue
+            used.add(rf_i)
+            _, _, ti, _ = sigs[rf_i]
+            cluster = [rf_i]
+
+            for rf_j in items[i+1:]:
+                if rf_j in used:
+                    continue
+                _, _, tj, _ = sigs[rf_j]
+
+                if not ti or not tj:
+                    continue
+
+                if _HAS_RF:
+                    score = max(_rfuzz.token_set_ratio(ti, tj), _rfuzz.partial_ratio(ti, tj))
+                else:
+                    si = set(ti.split())
+                    sj = set(tj.split())
+                    score = int(round(100 * (len(si & sj) / max(1, len(si), len(sj)))))
+
+                if score >= 88:  # high confidence near-duplicate titles
+                    used.add(rf_j)
+                    cluster.append(rf_j)
+
+            clusters.append(cluster)
+
+    # Build mapping
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for cid, members in enumerate(clusters, start=1):
+        # canonical = longest string (often most complete)
+        canonical = max(members, key=lambda x: len(x or ""))
+        for rf in members:
+            mapping[rf] = {
+                "cluster_id": cid,
+                "canonical_ref": canonical,
+                "is_duplicate": (rf != canonical),
+            }
+    return mapping
+
+
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
@@ -971,15 +1110,28 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         if matched_ref and len(cite_samples_by_ref[matched_ref]) < 6:
             cite_samples_by_ref[matched_ref].append(c)
 
+    ref_cluster_map = _cluster_references(references)
+
     for r in references:
         ref_full = r.reference_full
         times = int(cite_counts_by_ref.get(ref_full, 0))
-        if times == 0:
+
+        meta = ref_cluster_map.get(ref_full) or {}
+        canonical = meta.get("canonical_ref", ref_full)
+        is_dup = bool(meta.get("is_duplicate", False))
+        cid = meta.get("cluster_id", 0)
+
+        canonical_times = int(cite_counts_by_ref.get(canonical, 0))
+        if times == 0 and not (is_dup and canonical_times > 0):
             uncited_refs.append(ref_full)
+
         r2c.append({
             "times_cited": times,
             "reference": ref_full,
             "cited_by": cite_samples_by_ref.get(ref_full, []),
+            "cluster_id": cid,
+            "canonical_reference": canonical,
+            "duplicate_of_cited": bool(is_dup and canonical_times > 0),
         })
 
     missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
