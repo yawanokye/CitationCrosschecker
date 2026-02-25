@@ -595,25 +595,82 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
 
-    paren_pat = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
+    # 1) Balanced-parentheses blocks (depth=1), so we can handle nested "(2008)" inside "(...; ...)"
+    def _paren_blocks_balanced(s: str, max_len: int = 1600) -> List[str]:
+        blocks = []
+        buf = []
+        depth = 0
+        start_depth1 = False
+
+        for ch in s:
+            if ch == "(":
+                depth += 1
+                if depth == 1:
+                    start_depth1 = True
+                    buf = []
+                else:
+                    if start_depth1:
+                        buf.append(ch)
+                continue
+
+            if ch == ")":
+                if depth == 1 and start_depth1:
+                    content = "".join(buf).strip()
+                    if content and len(content) <= max_len:
+                        blocks.append(content)
+                    start_depth1 = False
+                    buf = []
+                else:
+                    if start_depth1:
+                        buf.append(ch)
+                depth = max(0, depth - 1)
+                continue
+
+            if start_depth1:
+                buf.append(ch)
+
+        return blocks
 
     NAME = r"[A-Z][A-Za-z'\-]+(?:'s)?"
     AMP = r"(?:&|and|＆)"
-    AUTHOR_LIST = rf"{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?"
 
+    # "Adam & Tweneboah (2008)" or "Kalam (2020)" including inside bigger parentheses
     narr_pat = re.compile(
         rf"\b("
-        rf"(?:{AUTHOR_LIST})"
+        rf"(?:{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?)"
         rf"|(?:{NAME}\s+{AMP}\s+{NAME})"
         rf"|(?:{NAME}\s+et\s+al\.)"
-        rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)?"
+        rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)"
     )
+
+    # Old parenthetical pattern still useful for "(Author, 2008; Author, 2020)" (no nested)
+    paren_pat_simple = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
 
     out: List[str] = []
 
-    for m in paren_pat.finditer(t):
+    # A) Balanced blocks (captures your exact case)
+    for inside in _paren_blocks_balanced(t):
+        # split clusters by semicolon, then run narrative regex inside each chunk
+        chunks = [c.strip() for c in inside.split(";") if c.strip()]
+
+        # 1) Try narrative matches inside the whole inside string (best for Adam & Tweneboah (2008))
+        for m in narr_pat.finditer(inside):
+            author = re.sub(r"(’s|'s)\b", "", m.group(1).strip()).strip()
+            year = m.group(2).strip()
+            out.append(norm_space(f"{author}, {year}"))
+
+        # 2) Also keep classic "(Author, 2008)" style if present in chunks
+        for ch in chunks:
+            ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
+            if YEAR_RE.search(ch2):
+                # Don’t add bare years
+                if YEAR_RE.fullmatch(ch2) and not re.search(r"[A-Za-z]", ch2):
+                    continue
+                out.append(norm_space(ch2))
+
+    # B) Simple parenthetical citations (fast path)
+    for m in paren_pat_simple.finditer(t):
         inside = (m.group(1) or "").strip()
-        # IMPORTANT FIX: ignore bare "(2008)" captured inside a bigger parenthesis
         if YEAR_RE.fullmatch(inside) and not re.search(r"[A-Za-z]", inside):
             continue
 
@@ -623,14 +680,13 @@ def extract_author_year_citations(text: str) -> List[str]:
             if YEAR_RE.search(ch2):
                 out.append(norm_space(ch2))
 
+    # C) Narrative citations anywhere in text (keep this)
     for m in narr_pat.finditer(t):
-        author = m.group(1).strip()
+        author = re.sub(r"(’s|'s)\b", "", m.group(1).strip()).strip()
         year = m.group(2).strip()
-        author = re.sub(r"(’s|'s)\b", "", author).strip()
         out.append(norm_space(f"{author}, {year}"))
 
     return [c for c in out if c]
-
 
 def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
     t = text or ""
@@ -951,3 +1007,4 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+
