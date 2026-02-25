@@ -8,12 +8,14 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
+# Fuzzy matching (optional)
 try:
-    from rapidfuzz import fuzz  # type: ignore
+    from rapidfuzz import fuzz
     FUZZ_OK = True
 except Exception:
     fuzz = None
     FUZZ_OK = False
+
 
 try:
     from docx import Document
@@ -234,6 +236,21 @@ def _is_plausible_reference_entry(s: str) -> bool:
         or _looks_like_org_author(s0[:120])
     )
     if not author_ok:
+        # Relaxed: some valid references (working papers, SSRN, reports) don't look like
+        # standard person/org author patterns. If a year exists and a plausible title-like
+        # segment exists (or common report cues), accept.
+        cue_ok = bool(re.search(r"\b(ssrn|arxiv|working\s+paper|available\s+at|retrieved\s+from|doi|report|policy\s+brief)\b", s0, re.I))
+        after = s0[ym.end():].lstrip(" ).,;:-")
+        after_title = after.split(".", 1)[0].strip()
+        if len(after_title) < 6 and "," in after:
+            after_title = after.split(",", 1)[0].strip()
+
+        before = s0[: ym.start()].strip(" .;:-")
+        before_parts = [p.strip() for p in before.split(".") if p.strip()]
+        before_title = before_parts[-1] if before_parts else ""
+
+        if cue_ok or _looks_like_title_piece(after_title) or _looks_like_title_piece(before_title):
+            return True
         return False
 
     after = s0[ym.end():].lstrip(" ).,;:-")
@@ -822,6 +839,13 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
     ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
     alias_map: Dict[str, str] = dict(ref_map)
 
+    # Index references by base year for fuzzy fallback (same-year matching)
+    refs_by_year: Dict[str, List[RefAY]] = defaultdict(list)
+    for r in references:
+        ym_r = YEAR_RE.search(r.reference_full)
+        if ym_r:
+            refs_by_year[_base_year(ym_r.group(1))].append(r)
+
     for r in references:
         # Add year-without-suffix alias for the canonical key
         try:
@@ -859,21 +883,6 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
             if year_base and year_base != year_full:
                 alias_map[f"{a}+{b}|{year_base}".lower()] = r.reference_full
                 alias_map[f"{b}+{a}|{year_base}".lower()] = r.reference_full
-
-
-    # Build year-indexed reference features for fuzzy fallback (same-year only)
-    refs_by_year: Dict[str, List[Tuple[str, str, set]]] = defaultdict(list)
-    for r in references:
-        s_full = r.reference_full
-        ym = YEAR_RE.search(s_full)
-        if not ym:
-            continue
-        y_full = ym.group(1)
-        yb = _base_year(y_full)
-        left = s_full[: ym.start()].strip(" ,;()")
-        left_norm = re.sub(r"\s+", " ", left).strip().lower()
-        name_set = set(_surnames_from_author_blob(left))
-        refs_by_year[yb].append((r.reference_full, left_norm, name_set))
 
     # Parse citations and try multiple candidate keys
     cite_counts_by_ref = Counter()
@@ -921,31 +930,39 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
             cite_counts_by_ref[matched_ref] += 1
             parsed_cites.append((matched_ref, c, f"alias:{used}" if used else ""))
         else:
-            # --- Fuzzy fallback (same-year) ---
-            ym2 = YEAR_RE.search(c)
-            matched_ref2 = ""
-            score2 = 0
-            if ym2:
-                yb2 = _base_year(ym2.group(1))
-                left2 = (c[: ym2.start()] or "").strip(" ,;()")
-                left2_norm = re.sub(r"\s+", " ", left2).strip().lower()
-                cite_set = set(_surnames_from_author_blob(left2))
+            # Fuzzy fallback (same-year) when alias matching fails
+            best_ref = ""
+            best_score = 0
+            ym_c = YEAR_RE.search(c)
+            if ym_c:
+                yb = _base_year(ym_c.group(1))
+                left_c = (c[: ym_c.start()] or "").strip(" ,;()")
+                cite_names = _surnames_from_author_blob(left_c)
 
-                for (rfull, rleft_norm, rset) in refs_by_year.get(yb2, []):
-                    s_overlap = 0
-                    if cite_set and rset:
-                        s_overlap = int(round(100 * (len(cite_set & rset) / max(1, len(cite_set)))))
-                    s_fuzz = 0
-                    if FUZZ_OK and fuzz is not None and left2_norm and rleft_norm:
-                        s_fuzz = int(fuzz.token_set_ratio(left2_norm, rleft_norm))
-                    s = max(s_overlap, s_fuzz)
-                    if s > score2:
-                        score2 = s
-                        matched_ref2 = rfull
+                for rr in refs_by_year.get(yb, []):
+                    s_full = rr.reference_full
+                    ym_r = YEAR_RE.search(s_full)
+                    if not ym_r:
+                        continue
+                    left_r = s_full[: ym_r.start()].strip(" ,;()")
+                    ref_names = _surnames_from_author_blob(left_r)
 
-            if matched_ref2 and score2 >= 86:
-                cite_counts_by_ref[matched_ref2] += 1
-                parsed_cites.append((matched_ref2, c, f"fuzzy:{score2}"))
+                    # Overlap score (robust to order / initials)
+                    overlap = len(set(cite_names) & set(ref_names))
+                    score_overlap = int(round(100 * (overlap / max(1, len(set(cite_names))))))
+
+                    score = score_overlap
+                    if FUZZ_OK and cite_names and ref_names:
+                        score_fuzz = fuzz.token_set_ratio(" ".join(cite_names), " ".join(ref_names))
+                        score = max(score, score_fuzz)
+
+                    if score > best_score:
+                        best_score = score
+                        best_ref = rr.reference_full
+
+            if best_ref and best_score >= 78:
+                cite_counts_by_ref[best_ref] += 1
+                parsed_cites.append((best_ref, c, f"fuzzy:{best_score}"))
             else:
                 parsed_cites.append(("", c, ""))
 
