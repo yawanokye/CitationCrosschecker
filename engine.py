@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import re
 import io
@@ -953,14 +953,16 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
 
                     score = score_overlap
                     if FUZZ_OK and cite_names and ref_names:
-                        score_fuzz = fuzz.token_set_ratio(" ".join(cite_names), " ".join(ref_names))
+                        score1 = fuzz.token_set_ratio(" ".join(cite_names), " ".join(ref_names))
+                        score2 = fuzz.partial_ratio(" ".join(cite_names), " ".join(ref_names))
+                        score_fuzz = 0.6 * score1 + 0.4 * score2
                         score = max(score, score_fuzz)
 
                     if score > best_score:
                         best_score = score
                         best_ref = rr.reference_full
 
-            if best_ref and best_score >= 78:
+            if best_ref and best_score >= 74:
                 cite_counts_by_ref[best_ref] += 1
                 parsed_cites.append((best_ref, c, f"fuzzy:{best_score}"))
             else:
