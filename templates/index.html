@@ -73,6 +73,17 @@
           </div>
 
           <div class="opt">
+            <label>AI Assist</label>
+            <div class="checks">
+              <label class="check">
+                <input id="aiAssist" type="checkbox" />
+                <span>AI Assist (Improve detection)</span>
+              </label>
+            </div>
+            <div class="hint">Runs only when needed. If not configured, it will show “skipped”.</div>
+          </div>
+
+          <div class="opt">
             <label for="throttle">Throttle seconds</label>
             <input id="throttle" type="number" step="0.01" min="0" value="0.12" />
             <div class="hint">If you see rate limits or slowdowns, try 0.20 to 0.35.</div>
@@ -97,12 +108,12 @@
         <div id="summary" class="summary"></div>
 
         <div class="tabs">
-          <button class="tab active" data-tab="summaryPane">Summary</button>
-          <button class="tab" data-tab="missingPane">Missing</button>
-          <button class="tab" data-tab="uncitedPane">Uncited</button>
-          <button class="tab" data-tab="c2rPane">In-text → Reference</button>
-          <button class="tab" data-tab="r2cPane">Reference → In-text</button>
-          <button class="tab" data-tab="verifyPane">Online Verification</button>
+          <button class="tab active" data-tab="summaryPane" type="button">Summary</button>
+          <button class="tab" data-tab="missingPane" type="button">Missing</button>
+          <button class="tab" data-tab="uncitedPane" type="button">Uncited</button>
+          <button class="tab" data-tab="c2rPane" type="button">In-text → Reference</button>
+          <button class="tab" data-tab="r2cPane" type="button">Reference → In-text</button>
+          <button class="tab" data-tab="verifyPane" type="button">Online Verification</button>
         </div>
 
         <div class="tabPanes">
