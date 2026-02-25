@@ -809,7 +809,16 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
             if new_left == left:
                 break
             left = new_left
-
+        # ✅ EXTRA GUARD: drop leading non-name clauses like "for instance," "see," etc.
+    # If the first comma-separated chunk has no capitalised token, remove it and retry (up to 3 times).
+    for _ in range(3):
+        chunk0 = left.split(",", 1)[0].strip()
+        # no obvious name signal in first chunk
+        if chunk0 and not re.search(r"\b[A-Z][A-Za-z'\-]+\b", chunk0):
+            if "," in left:
+                left = left.split(",", 1)[1].strip(" ,;()")
+                continue
+        break
     # remove possessive
     left = re.sub(r"(’s|'s)\b", "", left).strip()
 
@@ -1023,5 +1032,6 @@ def run_crosscheck(
 
         "references_raw": references_raw,
     }
+
 
 
