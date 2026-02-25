@@ -268,141 +268,6 @@ def _first_author_or_org_key(author_left: str) -> str:
     return strip_punct(toks[-1])
 
 
-def _extract_surname_list(author_text: str) -> List[str]:
-    """Extract probable surnames from an author string.
-    Works for 'Adam, A. M., & Tweneboah, G.' and 'Adam & Tweneboah' and similar.
-    """
-    s = norm_space(author_text or "")
-    if not s:
-        return []
-
-    # Remove leading numbering and discourse prefixes
-    s = _strip_leading_reference_number(s)
-    prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
-    if prefixes:
-        pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
-        for _ in range(3):
-            s2 = pref_re.sub("", s).strip(" ,;()")
-            if s2 == s:
-                break
-            s = s2
-
-    # Drop year-in-parens fragments
-    s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\)", "", s).strip()
-    s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I).strip()
-
-    # Split authors on common separators
-    parts = re.split(r"\s+(?:&|and|＆)\s+|;|\s*,\s*", s)
-    surnames: List[str] = []
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        # If "Surname Initials" or "Surname, Initials" keep surname token
-        if "," in p:
-            p = p.split(",", 1)[0].strip()
-        toks = [t for t in re.split(r"\s+", p) if t]
-        # remove initials
-        toks = [t for t in toks if not re.fullmatch(r"[A-Z]\.?", t)]
-        if not toks:
-            continue
-        # keep last token (surname) unless it's a stopword
-        cand = strip_punct(toks[-1])
-        if not cand:
-            continue
-        if cand.lower() in NON_NAME_AUTHOR_KEYS:
-            continue
-        # must look like a name/acronym
-        if not re.search(r"[A-Za-z]", cand):
-            continue
-        surnames.append(cand)
-
-    # de-duplicate while preserving order
-    seen = set()
-    out = []
-    for x in surnames:
-        xl = x.lower()
-        if xl in seen:
-            continue
-        seen.add(xl)
-        out.append(x)
-    return out
-
-
-def _candidate_author_year_keys_from_cite(cite: str) -> List[str]:
-    """Return candidate keys for matching citations to references."""
-    s = norm_space(cite or "")
-    if not s:
-        return []
-    ym = YEAR_RE.search(s)
-    if not ym:
-        return []
-    year = ym.group(1)
-    left = s[: ym.start()].strip(" ,;()")
-    names = _extract_surname_list(left)
-
-    keys: List[str] = []
-    # primary: first surname
-    if names:
-        keys.append(f"{names[0]}|{year}".lower())
-
-    # also allow second surname (handles swapped author order in refs)
-    if len(names) >= 2:
-        keys.append(f"{names[1]}|{year}".lower())
-        # composite for 2-author cases
-        a, b = sorted([names[0].lower(), names[1].lower()])
-        keys.append(f"{a}+{b}|{year}")
-
-    # acronym in parentheses e.g. World Health Organization (WHO)
-    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", left)
-    if m:
-        keys.append(f"{strip_punct(m.group(1))}|{year}".lower())
-
-    # de-dupe
-    out = []
-    seen = set()
-    for k in keys:
-        if k in seen:
-            continue
-        seen.add(k)
-        out.append(k)
-    return out
-
-
-def _reference_alias_keys(ref: 'RefAY') -> List[str]:
-    """Generate alias keys for a reference to improve reconciliation robustness."""
-    # existing canonical key
-    keys = [ref.key.lower()]
-
-    # Try to build composite two-author key from reference text
-    # Extract up to first 2 surnames from the left side of the year
-    s = norm_space(ref.reference_full or "")
-    ym = YEAR_RE.search(s)
-    if ym:
-        year = ym.group(1)
-        left = s[: ym.start()].strip(" ,;()")
-        names = _extract_surname_list(left)
-        if len(names) >= 2:
-            a, b = sorted([names[0].lower(), names[1].lower()])
-            keys.append(f"{a}+{b}|{year}")
-            keys.append(f"{names[1]}|{year}".lower())
-
-    # acronym key if present
-    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", s)
-    if m and ym:
-        keys.append(f"{strip_punct(m.group(1))}|{ym.group(1)}".lower())
-
-    # de-dupe
-    out = []
-    seen=set()
-    for k in keys:
-        if k in seen:
-            continue
-        seen.add(k)
-        out.append(k)
-    return out
-
-
 def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
     out: List[str] = []
     ref_like_seen = 0
@@ -754,77 +619,76 @@ def extract_author_year_citations(text: str) -> List[str]:
 
         chunks = [c.strip() for c in inside.split(";") if c.strip()]
         for ch in chunks:
-            ch2 = re.sub(r"\b(p|pp)\.?\s*\ddef reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
-    # Build alias index: many real-world docs swap author order or use short forms
-    alias_to_ref: Dict[str, str] = {}
-    alias_to_canonical: Dict[str, str] = {}
-    for r in references:
-        for k in _reference_alias_keys(r):
-            if k not in alias_to_ref:
-                alias_to_ref[k] = r.reference_full
-                alias_to_canonical[k] = r.key.lower()
+            ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
+            if YEAR_RE.search(ch2):
+                out.append(norm_space(ch2))
 
-    # Count citations by CANONICAL reference key (not by raw cite key)
-    cite_counts_by_canonical = Counter()
-    cite_samples_by_canonical: Dict[str, List[str]] = defaultdict(list)
+    for m in narr_pat.finditer(t):
+        author = m.group(1).strip()
+        year = m.group(2).strip()
+        author = re.sub(r"(’s|'s)\b", "", author).strip()
+        out.append(norm_space(f"{author}, {year}"))
 
-    # Keep per-citation resolution for C2R
-    parsed_cites: List[Tuple[str, str, str]] = []  # (resolved_status, in_text, matched_ref)
+    return [c for c in out if c]
 
-    missing_counter = Counter()
 
-    for c in citations:
-        cand_keys = _candidate_author_year_keys_from_cite(c)
-        if not cand_keys:
-            continue
+def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
+    t = text or ""
+    out: List[str] = []
+    if bracketed:
+        pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\s*\]")
+    else:
+        pat = re.compile(r"\b(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\b")
 
-        matched = False
-        matched_ref = ""
-        matched_canonical = ""
-
-        for ck in cand_keys:
-            if ck in alias_to_ref:
-                matched = True
-                matched_ref = alias_to_ref[ck]
-                matched_canonical = alias_to_canonical[ck]
-                break
-
-        if matched:
-            parsed_cites.append(("matched", c, matched_ref))
-            cite_counts_by_canonical[matched_canonical] += 1
-            if len(cite_samples_by_canonical[matched_canonical]) < 6:
-                cite_samples_by_canonical[matched_canonical].append(c)
+    for m in pat.finditer(t):
+        a = int(m.group(1))
+        b = m.group(2)
+        if b:
+            b2 = int(b)
+            lo, hi = (a, b2) if a <= b2 else (b2, a)
+            if hi - lo <= 50:
+                for k in range(lo, hi + 1):
+                    out.append(str(k))
+            else:
+                out.append(str(a))
+                out.append(str(b2))
         else:
-            parsed_cites.append(("not_found", c, ""))
-            missing_counter[c] += 1
-
-    # Build C2R rows
-    c2r: List[Dict[str, Any]] = []
-    for st, c, mr in parsed_cites:
-        c2r.append({"status": st, "in_text": c, "matched_reference": mr, "flags": ""})
-
-    # Build R2C and uncited using canonical keys
-    r2c: List[Dict[str, Any]] = []
-    uncited_refs: List[str] = []
-    for r in references:
-        canon = r.key.lower()
-        times = int(cite_counts_by_canonical.get(canon, 0))
-        if times == 0:
-            uncited_refs.append(r.reference_full)
-        r2c.append({
-            "times_cited": times,
-            "reference": r.reference_full,
-            "cited_by": cite_samples_by_canonical.get(canon, []),
-        })
-
-    missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
-    unique_intext_count = int(len(cite_counts_by_canonical))
-    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
+            out.append(str(a))
+    return out
 
 
- m2.start()].strip()
+# -----------------------------
+# Reference parsers
+# -----------------------------
+@dataclass
+class RefAY:
+    reference_full: str
+    key: str
+
+
+@dataclass
+class RefNum:
+    reference_full: str
+    num: str
+
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    s = norm_space(ref)
+    if not s:
+        return None
+
+    s_clean = _strip_leading_reference_number(s)
+
+    if not _is_plausible_reference_entry(s_clean):
+        return None
+
+    m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s_clean)
+    if not m:
+        m2 = re.search(r"\b(" + YEAR + r")\b", s_clean)
+        if not m2:
+            return None
+        year = m2.group(1)
+        left = s_clean[: m2.start()].strip()
     else:
         year = m.group(1)
         left = s_clean[: m.start()].strip()
@@ -910,53 +774,167 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
-    ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
+    # Robust reconciliation:
+    # - supports year suffix mismatch (2008 vs 2008a)
+    # - supports swapped first/second author (Adam & Tweneboah vs Tweneboah & Adam)
+    # - supports organisation acronyms as authors (WHO/IMF etc.) via existing keying
 
-    cite_key_counts = Counter()
-    parsed_cites: List[Tuple[str, str]] = []
+    def _base_year(y: str) -> str:
+        y = (y or "").strip()
+        m = re.match(r"^((?:19|20)\d{2})", y)
+        return m.group(1) if m else y
+
+    def _surnames_from_author_blob(left: str) -> List[str]:
+        # Extract likely surnames from the author part (before year).
+        s = (left or "")
+        s = re.sub(r"(’s|'s)\b", "", s)
+        s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
+        s = s.replace("&", " and ")
+        s = re.sub(r"\b(and|for|instance|see|e\.g\.|i\.e\.)\b", " ", s, flags=re.I)
+        # remove initials like "A." "M."
+        s = re.sub(r"\b[A-Z]\.\b", " ", s)
+        s = re.sub(r"\b[A-Z]\b", " ", s)
+        # keep word tokens
+        tokens = re.findall(r"[A-Za-z][A-Za-z'\-]{1,}", s)
+        out = []
+        for tok in tokens:
+            # skip common non-name words
+            if tok.lower() in {"available", "ssrn", "university", "press", "journal"}:
+                continue
+            out.append(tok.lower())
+        # de-duplicate but keep order
+        seen = set()
+        res = []
+        for w in out:
+            if w not in seen:
+                seen.add(w)
+                res.append(w)
+        return res[:4]  # we only need a few
+
+    # Build an alias -> reference map
+    ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
+    alias_map: Dict[str, str] = dict(ref_map)
+
+    for r in references:
+        # Add year-without-suffix alias for the canonical key
+        try:
+            auth, y = r.key.split("|", 1)
+        except Exception:
+            continue
+        by = _base_year(y)
+        if by and by != y:
+            alias_map[f"{auth}|{by}".lower()] = r.reference_full
+
+        # Add aliases from full reference text (handles swapped author order)
+        s_full = r.reference_full
+        ym = YEAR_RE.search(s_full)
+        if not ym:
+            continue
+        year_full = ym.group(1)
+        year_base = _base_year(year_full)
+
+        left = s_full[: ym.start()].strip(" ,;()")
+        names = _surnames_from_author_blob(left)
+        if not names:
+            continue
+
+        # Single-name aliases
+        for nm in names[:2]:
+            alias_map[f"{nm}|{year_full}".lower()] = r.reference_full
+            if year_base and year_base != year_full:
+                alias_map[f"{nm}|{year_base}".lower()] = r.reference_full
+
+        # Two-name combined aliases (order-insensitive)
+        if len(names) >= 2:
+            a, b = names[0], names[1]
+            alias_map[f"{a}+{b}|{year_full}".lower()] = r.reference_full
+            alias_map[f"{b}+{a}|{year_full}".lower()] = r.reference_full
+            if year_base and year_base != year_full:
+                alias_map[f"{a}+{b}|{year_base}".lower()] = r.reference_full
+                alias_map[f"{b}+{a}|{year_base}".lower()] = r.reference_full
+
+    # Parse citations and try multiple candidate keys
+    cite_counts_by_ref = Counter()
+    parsed_cites: List[Tuple[str, str, str]] = []  # (matched_ref_key, cite_str, flags)
 
     for c in citations:
         parsed = _parse_author_year_from_cite(c)
         if not parsed:
             continue
         auth, year = parsed
-        key = f"{auth}|{year}".lower()
-        cite_key_counts[key] += 1
-        parsed_cites.append((key, c))
+        year_base = _base_year(year)
 
+        # candidate keys
+        cand_keys = [f"{auth}|{year}".lower()]
+        if year_base and year_base != year:
+            cand_keys.append(f"{auth}|{year_base}".lower())
+
+        # also attempt surname extraction from the raw citation string (captures "Adam & Tweneboah (2008)")
+        ym = YEAR_RE.search(c)
+        if ym:
+            left = (c[: ym.start()] or "").strip(" ,;()")
+            names = _surnames_from_author_blob(left)
+            if names:
+                cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
+                if year_base and year_base != ym.group(1):
+                    cand_keys.append(f"{names[0]}|{year_base}".lower())
+                if len(names) >= 2:
+                    cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
+                    cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
+                    if year_base and year_base != ym.group(1):
+                        cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
+                        cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
+
+        matched_ref = ""
+        matched_key = ""
+        used = ""
+        for k in cand_keys:
+            if k in alias_map:
+                matched_ref = alias_map[k]
+                matched_key = k
+                used = k
+                break
+
+        if matched_ref:
+            cite_counts_by_ref[matched_ref] += 1
+            parsed_cites.append((matched_ref, c, f"alias:{used}" if used else ""))
+        else:
+            parsed_cites.append(("", c, ""))
+
+    # Build c2r + missing
     c2r: List[Dict[str, Any]] = []
     missing_counter = Counter()
 
-    for key, c in parsed_cites:
-        if key in ref_map:
-            c2r.append({"status": "matched", "in_text": c, "matched_reference": ref_map[key], "flags": ""})
+    for matched_ref, c, flags in parsed_cites:
+        if matched_ref:
+            c2r.append({"status": "matched", "in_text": c, "matched_reference": matched_ref, "flags": flags})
         else:
             c2r.append({"status": "not_found", "in_text": c, "matched_reference": "", "flags": ""})
             missing_counter[c] += 1
 
+    # Build r2c + uncited
     r2c: List[Dict[str, Any]] = []
     uncited_refs: List[str] = []
 
-    cite_samples_by_key: Dict[str, List[str]] = defaultdict(list)
-    for key, c in parsed_cites:
-        if len(cite_samples_by_key[key]) < 6:
-            cite_samples_by_key[key].append(c)
+    cite_samples_by_ref: Dict[str, List[str]] = defaultdict(list)
+    for matched_ref, c, _flags in parsed_cites:
+        if matched_ref and len(cite_samples_by_ref[matched_ref]) < 6:
+            cite_samples_by_ref[matched_ref].append(c)
 
     for r in references:
-        times = int(cite_key_counts.get(r.key, 0))
+        ref_full = r.reference_full
+        times = int(cite_counts_by_ref.get(ref_full, 0))
         if times == 0:
-            uncited_refs.append(r.reference_full)
+            uncited_refs.append(ref_full)
         r2c.append({
             "times_cited": times,
-            "reference": r.reference_full,
-            "cited_by": cite_samples_by_key.get(r.key, []),
+            "reference": ref_full,
+            "cited_by": cite_samples_by_ref.get(ref_full, []),
         })
 
     missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
-    unique_intext_count = int(len(cite_key_counts))
+    unique_intext_count = int(len(set([c for c in citations if c])))
     return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
-
-
 def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
