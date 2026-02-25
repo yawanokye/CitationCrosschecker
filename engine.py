@@ -1,3 +1,4 @@
+from __future__ import annotations
 # engine.py
 __version__ = "1.3.0"
 
@@ -878,7 +879,7 @@ def _extract_ref_signature(ref_full: str) -> Tuple[str, str, str, str]:
     title_stub = " ".join(tokens[:12])  # short but stable
     return (year, first_author, title_stub, doi)
 
-def _cluster_references(references: List[RefEntry]) -> Dict[str, Dict[str, Any]]:
+def _cluster_references(references: List[Any]) -> Dict[str, Dict[str, Any]]:
     """
     Build clusters of near-duplicate references.
     Returns mapping: ref_full -> {cluster_id, canonical_ref, is_duplicate}
