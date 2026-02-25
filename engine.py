@@ -268,6 +268,141 @@ def _first_author_or_org_key(author_left: str) -> str:
     return strip_punct(toks[-1])
 
 
+def _extract_surname_list(author_text: str) -> List[str]:
+    """Extract probable surnames from an author string.
+    Works for 'Adam, A. M., & Tweneboah, G.' and 'Adam & Tweneboah' and similar.
+    """
+    s = norm_space(author_text or "")
+    if not s:
+        return []
+
+    # Remove leading numbering and discourse prefixes
+    s = _strip_leading_reference_number(s)
+    prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
+    if prefixes:
+        pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
+        for _ in range(3):
+            s2 = pref_re.sub("", s).strip(" ,;()")
+            if s2 == s:
+                break
+            s = s2
+
+    # Drop year-in-parens fragments
+    s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\)", "", s).strip()
+    s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I).strip()
+
+    # Split authors on common separators
+    parts = re.split(r"\s+(?:&|and|＆)\s+|;|\s*,\s*", s)
+    surnames: List[str] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # If "Surname Initials" or "Surname, Initials" keep surname token
+        if "," in p:
+            p = p.split(",", 1)[0].strip()
+        toks = [t for t in re.split(r"\s+", p) if t]
+        # remove initials
+        toks = [t for t in toks if not re.fullmatch(r"[A-Z]\.?", t)]
+        if not toks:
+            continue
+        # keep last token (surname) unless it's a stopword
+        cand = strip_punct(toks[-1])
+        if not cand:
+            continue
+        if cand.lower() in NON_NAME_AUTHOR_KEYS:
+            continue
+        # must look like a name/acronym
+        if not re.search(r"[A-Za-z]", cand):
+            continue
+        surnames.append(cand)
+
+    # de-duplicate while preserving order
+    seen = set()
+    out = []
+    for x in surnames:
+        xl = x.lower()
+        if xl in seen:
+            continue
+        seen.add(xl)
+        out.append(x)
+    return out
+
+
+def _candidate_author_year_keys_from_cite(cite: str) -> List[str]:
+    """Return candidate keys for matching citations to references."""
+    s = norm_space(cite or "")
+    if not s:
+        return []
+    ym = YEAR_RE.search(s)
+    if not ym:
+        return []
+    year = ym.group(1)
+    left = s[: ym.start()].strip(" ,;()")
+    names = _extract_surname_list(left)
+
+    keys: List[str] = []
+    # primary: first surname
+    if names:
+        keys.append(f"{names[0]}|{year}".lower())
+
+    # also allow second surname (handles swapped author order in refs)
+    if len(names) >= 2:
+        keys.append(f"{names[1]}|{year}".lower())
+        # composite for 2-author cases
+        a, b = sorted([names[0].lower(), names[1].lower()])
+        keys.append(f"{a}+{b}|{year}")
+
+    # acronym in parentheses e.g. World Health Organization (WHO)
+    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", left)
+    if m:
+        keys.append(f"{strip_punct(m.group(1))}|{year}".lower())
+
+    # de-dupe
+    out = []
+    seen = set()
+    for k in keys:
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(k)
+    return out
+
+
+def _reference_alias_keys(ref: 'RefAY') -> List[str]:
+    """Generate alias keys for a reference to improve reconciliation robustness."""
+    # existing canonical key
+    keys = [ref.key.lower()]
+
+    # Try to build composite two-author key from reference text
+    # Extract up to first 2 surnames from the left side of the year
+    s = norm_space(ref.reference_full or "")
+    ym = YEAR_RE.search(s)
+    if ym:
+        year = ym.group(1)
+        left = s[: ym.start()].strip(" ,;()")
+        names = _extract_surname_list(left)
+        if len(names) >= 2:
+            a, b = sorted([names[0].lower(), names[1].lower()])
+            keys.append(f"{a}+{b}|{year}")
+            keys.append(f"{names[1]}|{year}".lower())
+
+    # acronym key if present
+    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", s)
+    if m and ym:
+        keys.append(f"{strip_punct(m.group(1))}|{ym.group(1)}".lower())
+
+    # de-dupe
+    out = []
+    seen=set()
+    for k in keys:
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(k)
+    return out
+
+
 def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
     out: List[str] = []
     ref_like_seen = 0
@@ -595,156 +730,101 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
 
-    # 1) Balanced-parentheses blocks (depth=1), so we can handle nested "(2008)" inside "(...; ...)"
-    def _paren_blocks_balanced(s: str, max_len: int = 1600) -> List[str]:
-        blocks = []
-        buf = []
-        depth = 0
-        start_depth1 = False
-
-        for ch in s:
-            if ch == "(":
-                depth += 1
-                if depth == 1:
-                    start_depth1 = True
-                    buf = []
-                else:
-                    if start_depth1:
-                        buf.append(ch)
-                continue
-
-            if ch == ")":
-                if depth == 1 and start_depth1:
-                    content = "".join(buf).strip()
-                    if content and len(content) <= max_len:
-                        blocks.append(content)
-                    start_depth1 = False
-                    buf = []
-                else:
-                    if start_depth1:
-                        buf.append(ch)
-                depth = max(0, depth - 1)
-                continue
-
-            if start_depth1:
-                buf.append(ch)
-
-        return blocks
+    paren_pat = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
 
     NAME = r"[A-Z][A-Za-z'\-]+(?:'s)?"
     AMP = r"(?:&|and|＆)"
+    AUTHOR_LIST = rf"{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?"
 
-    # "Adam & Tweneboah (2008)" or "Kalam (2020)" including inside bigger parentheses
     narr_pat = re.compile(
         rf"\b("
-        rf"(?:{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?)"
+        rf"(?:{AUTHOR_LIST})"
         rf"|(?:{NAME}\s+{AMP}\s+{NAME})"
         rf"|(?:{NAME}\s+et\s+al\.)"
-        rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)"
+        rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)?"
     )
-
-    # Old parenthetical pattern still useful for "(Author, 2008; Author, 2020)" (no nested)
-    paren_pat_simple = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
 
     out: List[str] = []
 
-    # A) Balanced blocks (captures your exact case)
-    for inside in _paren_blocks_balanced(t):
-        # split clusters by semicolon, then run narrative regex inside each chunk
-        chunks = [c.strip() for c in inside.split(";") if c.strip()]
-
-        # 1) Try narrative matches inside the whole inside string (best for Adam & Tweneboah (2008))
-        for m in narr_pat.finditer(inside):
-            author = re.sub(r"(’s|'s)\b", "", m.group(1).strip()).strip()
-            year = m.group(2).strip()
-            out.append(norm_space(f"{author}, {year}"))
-
-        # 2) Also keep classic "(Author, 2008)" style if present in chunks
-        for ch in chunks:
-            ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
-            if YEAR_RE.search(ch2):
-                # Don’t add bare years
-                if YEAR_RE.fullmatch(ch2) and not re.search(r"[A-Za-z]", ch2):
-                    continue
-                out.append(norm_space(ch2))
-
-    # B) Simple parenthetical citations (fast path)
-    for m in paren_pat_simple.finditer(t):
+    for m in paren_pat.finditer(t):
         inside = (m.group(1) or "").strip()
+        # IMPORTANT FIX: ignore bare "(2008)" captured inside a bigger parenthesis
         if YEAR_RE.fullmatch(inside) and not re.search(r"[A-Za-z]", inside):
             continue
 
         chunks = [c.strip() for c in inside.split(";") if c.strip()]
         for ch in chunks:
-            ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
-            if YEAR_RE.search(ch2):
-                out.append(norm_space(ch2))
+            ch2 = re.sub(r"\b(p|pp)\.?\s*\ddef reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    # Build alias index: many real-world docs swap author order or use short forms
+    alias_to_ref: Dict[str, str] = {}
+    alias_to_canonical: Dict[str, str] = {}
+    for r in references:
+        for k in _reference_alias_keys(r):
+            if k not in alias_to_ref:
+                alias_to_ref[k] = r.reference_full
+                alias_to_canonical[k] = r.key.lower()
 
-    # C) Narrative citations anywhere in text (keep this)
-    for m in narr_pat.finditer(t):
-        author = re.sub(r"(’s|'s)\b", "", m.group(1).strip()).strip()
-        year = m.group(2).strip()
-        out.append(norm_space(f"{author}, {year}"))
+    # Count citations by CANONICAL reference key (not by raw cite key)
+    cite_counts_by_canonical = Counter()
+    cite_samples_by_canonical: Dict[str, List[str]] = defaultdict(list)
 
-    return [c for c in out if c]
+    # Keep per-citation resolution for C2R
+    parsed_cites: List[Tuple[str, str, str]] = []  # (resolved_status, in_text, matched_ref)
 
-def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
-    t = text or ""
-    out: List[str] = []
-    if bracketed:
-        pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\s*\]")
-    else:
-        pat = re.compile(r"\b(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?\b")
+    missing_counter = Counter()
 
-    for m in pat.finditer(t):
-        a = int(m.group(1))
-        b = m.group(2)
-        if b:
-            b2 = int(b)
-            lo, hi = (a, b2) if a <= b2 else (b2, a)
-            if hi - lo <= 50:
-                for k in range(lo, hi + 1):
-                    out.append(str(k))
-            else:
-                out.append(str(a))
-                out.append(str(b2))
+    for c in citations:
+        cand_keys = _candidate_author_year_keys_from_cite(c)
+        if not cand_keys:
+            continue
+
+        matched = False
+        matched_ref = ""
+        matched_canonical = ""
+
+        for ck in cand_keys:
+            if ck in alias_to_ref:
+                matched = True
+                matched_ref = alias_to_ref[ck]
+                matched_canonical = alias_to_canonical[ck]
+                break
+
+        if matched:
+            parsed_cites.append(("matched", c, matched_ref))
+            cite_counts_by_canonical[matched_canonical] += 1
+            if len(cite_samples_by_canonical[matched_canonical]) < 6:
+                cite_samples_by_canonical[matched_canonical].append(c)
         else:
-            out.append(str(a))
-    return out
+            parsed_cites.append(("not_found", c, ""))
+            missing_counter[c] += 1
+
+    # Build C2R rows
+    c2r: List[Dict[str, Any]] = []
+    for st, c, mr in parsed_cites:
+        c2r.append({"status": st, "in_text": c, "matched_reference": mr, "flags": ""})
+
+    # Build R2C and uncited using canonical keys
+    r2c: List[Dict[str, Any]] = []
+    uncited_refs: List[str] = []
+    for r in references:
+        canon = r.key.lower()
+        times = int(cite_counts_by_canonical.get(canon, 0))
+        if times == 0:
+            uncited_refs.append(r.reference_full)
+        r2c.append({
+            "times_cited": times,
+            "reference": r.reference_full,
+            "cited_by": cite_samples_by_canonical.get(canon, []),
+        })
+
+    missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
+    unique_intext_count = int(len(cite_counts_by_canonical))
+    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
 
 
-# -----------------------------
-# Reference parsers
-# -----------------------------
-@dataclass
-class RefAY:
-    reference_full: str
-    key: str
-
-
-@dataclass
-class RefNum:
-    reference_full: str
-    num: str
-
-
-def parse_reference_author_year(ref: str) -> Optional[RefAY]:
-    s = norm_space(ref)
-    if not s:
-        return None
-
-    s_clean = _strip_leading_reference_number(s)
-
-    if not _is_plausible_reference_entry(s_clean):
-        return None
-
-    m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s_clean)
-    if not m:
-        m2 = re.search(r"\b(" + YEAR + r")\b", s_clean)
-        if not m2:
-            return None
-        year = m2.group(1)
-        left = s_clean[: m2.start()].strip()
+ m2.start()].strip()
     else:
         year = m.group(1)
         left = s_clean[: m.start()].strip()
@@ -1007,4 +1087,3 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
-
