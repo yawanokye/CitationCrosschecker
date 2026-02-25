@@ -648,13 +648,23 @@ def extract_author_year_citations(text: str) -> List[str]:
         r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)"
     )
 
-    # Narrative: Bartlett, Kotrlik, and Higgins (2001); Adam's (2020); Bartlett & Higgins (2001); Bartlett et al. (2001)
-    S = r"[A-Z][A-Za-z'\-]+(?:'s)?"
+    # Narrative: supports "&", "and", and fullwidth ampersand "＆"
+    # Examples: "Yaw, Kofi & Ama (2020)", "Bartlett & Higgins (2001)", "Bartlett et al. (2001)"
+    NAME = r"[A-Z][A-Za-z'\-]+(?:'s)?"
+    AMP = r"(?:&|and|＆)"
+
+    # Author lists like: A, B & C  |  A, B, & C  |  A & B
+    AUTHOR_LIST = (
+        rf"{NAME}"
+        rf"(?:\s*,\s*{NAME}){{0,10}}"
+        rf"(?:\s*,?\s*{AMP}\s*{NAME})?"
+    )
+
     narr_pat = re.compile(
         rf"\b("
-        rf"(?:{S}(?:\s*,\s*{S}){{0,4}}(?:\s*,?\s*(?:&|and)\s*{S})?)"
-        rf"|(?:{S}\s+(?:&|and)\s+{S})"
-        rf"|(?:{S}\s+et\s+al\.)"
+        rf"(?:{AUTHOR_LIST})"
+        rf"|(?:{NAME}\s+{AMP}\s+{NAME})"
+        rf"|(?:{NAME}\s+et\s+al\.)"
         rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)"
     )
 
@@ -1012,3 +1022,4 @@ def run_crosscheck(
 
         "references_raw": references_raw,
     }
+
