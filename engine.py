@@ -5,6 +5,49 @@ __version__ = "1.3.0"
 import re
 import io
 import unicodedata
+
+
+def _base_year(y: str) -> str:
+    y = (y or "").strip()
+    m = re.match(r"^((?:19|20)\d{2})", y)
+    return m.group(1) if m else y
+
+
+
+def _surnames_from_author_blob(left: str) -> List[str]:
+    # Extract likely surnames / org tokens from author blob before the year.
+    s = (left or "").strip()
+    if not s:
+        return []
+    s = s.replace("&", " and ")
+    s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
+    # remove possessives and quotes
+    s = re.sub(r"(’s|'s)\b", "", s)
+    # split on ' and ' plus semicolons
+    parts = re.split(r"\band\b|;|/|\|", s, flags=re.I)
+    out: List[str] = []
+    for p in parts:
+        p = p.strip(" ,.;:()[]{}")
+        if not p:
+            continue
+        # If formatted "Surname, Initials", take before comma
+        if "," in p:
+            cand = p.split(",", 1)[0].strip()
+        else:
+            # take last word as surname-like token
+            cand = p.split()[-1].strip()
+        cand = re.sub(r"[^A-Za-z\-’' ]+", "", cand).strip()
+        cand = cand.replace("’", "'")
+        if len(cand) < 2:
+            continue
+        out.append(cand.lower())
+    # de-dup while preserving order
+    seen=set(); final=[]
+    for x in out:
+        if x not in seen:
+            seen.add(x); final.append(x)
+    return final
+
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
