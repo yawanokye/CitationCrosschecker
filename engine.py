@@ -22,7 +22,7 @@ def _surnames_from_author_blob(left: str) -> List[str]:
     s = s.replace("&", " and ")
     s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
     # remove possessives and quotes
-    s = re.sub(r"(’s|'s)\b", "", s)
+    left = re.sub(r"(’s|'s)\b", "", left).strip()
     # split on ' and ' plus semicolons
     parts = re.split(r"\band\b|;|/|\|", s, flags=re.I)
     out: List[str] = []
@@ -91,9 +91,8 @@ DISCOURSE_PREFIXES = {
     "like",
 
     # common prose lead-ins
-    "however", "similarly", "regrettably", "traditionally", "notably", "Africa", 
-    "Europe", "Asia", "Likely", "like", 
-    "therefore", "thus", "hence", "consequently", "Moreover", "furthermore",
+    "however", "similarly", "regrettably", "traditionally", "notably",
+    "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
 
@@ -125,10 +124,14 @@ NON_NAME_AUTHOR_KEYS = {
     "however", "similarly", "regrettably", "traditionally", "therefore", "thus", "hence",
     "consequently", "moreover", "furthermore", "additionally", "meanwhile", "nonetheless",
     "nevertheless", "overall", "generally", "specifically", "particularly", "importantly",
+    # continents / common geo words
+    "africa", "europe", "asia", "america", "oceania",
+    "world", "global", "international", "sub-saharan", "subsaharan",
+    "ghana", "nigeria", "kenya", "south_africa", "south", "african", "european", "asian",
     "indeed", "instance", "example",
+
+
 }
-
-
 # -----------------------------
 # Commercial-grade narrative filtering (avoid false "Missing")
 # -----------------------------
@@ -138,6 +141,21 @@ NARRATIVE_SINGLE_TOKENS = {
     "crisis", "war", "scandal", "revolution", "katrina",
     "pandemic", "covid", "covid19", "covid-19",
 }
+
+# Single-token false-positive authors that frequently appear before years in prose.
+_FALSE_AUTHOR_TOKENS = {
+    "africa","europe","asia","america","oceania","world","global","international",
+    "chapter","section","appendix","table","tables","figure","fig","figures",
+    "crisis","war","scandal","revolution","katrina","pandemic","covid","covid-19","covid19",
+    "moreover","however","therefore","thus","hence","consequently","additionally","overall",
+    "generally","specifically","particularly","importantly","indeed","first","second","finally",
+}
+
+def _is_false_author_token(tok: str) -> bool:
+    t = soft_lower(strip_punct(tok or ''))
+    t = t.replace('_', ' ').strip()
+    return bool(t) and t in _FALSE_AUTHOR_TOKENS
+
 
 NARRATIVE_PHRASE_PATTERNS = [
     r"\byear\s+on\s+year\b",
@@ -156,23 +174,32 @@ def _is_likely_narrative_citation(left: str, year: str, full_cite: str) -> bool:
     if not l:
         return True
 
-    s_full = (full_cite or "").lower()
+    s_full = (full_cite or "").strip()
+    s_low = s_full.lower()
+
+    # Very long 'author' blobs are almost never authors (usually narrative).
+    if len(l.split()) > 6:
+        return True
+
+    # Known narrative phrases that should never be treated as citations.
     for pat in NARRATIVE_PHRASE_PATTERNS:
-        if re.search(pat, s_full, flags=re.I):
+        if re.search(pat, s_low, flags=re.I):
             return True
 
     # decades like "Fisher, 1930s" are not standard author-year citations
-    if year and isinstance(year, str) and year.lower().endswith("s"):
-        if _DECADE_YEAR_RE.search(full_cite or ""):
-            return True
+    if s_full and _DECADE_YEAR_RE.search(s_full):
+        return True
 
-    # single-word narrative tokens
+    # single-word narrative tokens / geo/discourse tokens
     l_norm = soft_lower(l)
-    if re.fullmatch(r"[a-z\-']+", l_norm) and l_norm in NARRATIVE_SINGLE_TOKENS:
+    if re.fullmatch(r"[a-z\-']+", l_norm) and (l_norm in NARRATIVE_SINGLE_TOKENS or _is_false_author_token(l_norm)):
+        return True
+
+    # e.g., "Africa, 2019" or "Europe, 2016"
+    if _is_false_author_token(l):
         return True
 
     return False
-
 
 # -----------------------------
 # Small helpers
@@ -338,28 +365,58 @@ def _is_plausible_reference_entry(s: str) -> bool:
 # Author key extraction (improved)
 # -----------------------------
 def _first_author_or_org_key(author_left: str) -> str:
+    """Return a stable *first-author/org* key.
+
+    Commercial rule:
+    - Prefer acronym in parentheses: (IMF), (WHO), (AUC/OECD)
+    - For people: keep compound surnames (e.g., Kyereboah Coleman / Kyereboah-Coleman)
+    - Strip initials and punctuation, normalise hyphens/apostrophes/diacritics
+    """
     s = norm_space(author_left)
 
-    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", s)
+    # Acronyms / org keys in parentheses
+    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,25})\)", s)
     if m:
         return strip_punct(m.group(1))
 
     s = _strip_leading_reference_number(s)
     s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
-    s = re.sub(r"(’s|'s)\b", "", s)
+    left = re.sub(r"(’s|'s)\b", "", left).strip()
 
-    m_si = re.match(r"^\s*([A-Z][A-Za-z'\-]+)\s+[A-Z]{1,3}\b", s)
-    if m_si:
-        return strip_punct(m_si.group(1))
+    # Take just the first author chunk (before comma or before '&/and')
+    first_chunk = re.split(r"\s+(?:&|and|＆)\s+|,", s, maxsplit=1)[0].strip()
+    first_chunk = re.sub(r"\bet\s+al\.?\b", "", first_chunk, flags=re.I).strip()
 
-    s0 = re.split(r"\s+(?:&|and|＆)\s+|,", s, maxsplit=1)[0].strip()
-    s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
+    # Normalise punctuation/hyphens/diacritics for matching
+    first_chunk = _strip_accents(first_chunk)
+    first_chunk = first_chunk.replace("‐", "-").replace("‑", "-").replace("–", "-").replace("—", "-")
+    first_chunk = first_chunk.replace("'", " ")
+    first_chunk = re.sub(r"[-]+", " ", first_chunk)  # hyphenated -> spaced
+    first_chunk = norm_space(first_chunk)
 
-    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
+    toks = [t for t in re.split(r"\s+", first_chunk) if t]
     if not toks:
         return ""
-    return strip_punct(toks[-1])
 
+    # Drop trailing initials like 'A.', 'M', 'I.'
+    def _is_initial(t: str) -> bool:
+        tt = strip_punct(t)
+        return bool(re.fullmatch(r"[A-Z]{1,3}", tt))
+
+    toks2 = [t for t in toks if not _is_initial(t)]
+    toks2 = toks2 if toks2 else toks
+
+    # If last 2 tokens look like a compound surname, keep both
+    if len(toks2) >= 2:
+        a, b = toks2[-2], toks2[-1]
+        if (a[:1].isupper() and b[:1].isupper() and len(strip_punct(a)) >= 3 and len(strip_punct(b)) >= 3
+            and not _is_initial(a) and not _is_initial(b)):
+            key = f"{strip_punct(a)} {strip_punct(b)}"
+            if not _is_false_author_token(key.split()[-1]):
+                return strip_punct(key)
+
+    key = strip_punct(toks2[-1])
+    return key
 
 def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
     out: List[str] = []
@@ -767,6 +824,8 @@ def extract_author_year_citations(text: str) -> List[str]:
             continue
 
         chunks = [c.strip() for c in inside.split(";") if c.strip()]
+        # Skip obvious narrative captures like "Africa, 2019" inside large parentheses.
+        chunks = [c for c in chunks if not re.match(r"^\s*[A-Z][A-Za-z'\-]+\s*,\s*(?:19|20)\d{2}\b", c) or not _is_false_author_token(c.split(',',1)[0])]
         for ch in chunks:
             ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
             if YEAR_RE.search(ch2):
@@ -776,10 +835,12 @@ def extract_author_year_citations(text: str) -> List[str]:
         author = m.group(1).strip()
         year = m.group(2).strip()
         author = re.sub(r"(’s|'s)\b", "", author).strip()
+        # Guard: avoid discourse/geo words treated as authors, e.g., "Africa (2019)" or "Moreover (2003)".
+        if _is_false_author_token(author):
+            continue
         out.append(norm_space(f"{author}, {year}"))
 
     return [c for c in out if c]
-
 
 def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
     t = text or ""
@@ -910,7 +971,7 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
             break
         left = rest.strip(" ,;()")
 
-    left = re.sub(r"(’s|'s)", "", left).strip()
+    left = re.sub(r"(’s|'s)\b", "", left).strip()
 
     # commercial-grade: drop likely narrative/non-citation captures
     if _is_likely_narrative_citation(left, year, s):
@@ -1079,7 +1140,7 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
     def _surnames_from_author_blob(left: str) -> List[str]:
         # Extract likely surnames from the author part (before year).
         s = (left or "")
-        s = re.sub(r"(’s|'s)\b", "", s)
+        s = re.sub(r"(’s|'s)\b", "", s).strip()
         s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
         s = s.replace("&", " and ")
         s = re.sub(r"\b(and|for|instance|see|e\.g\.|i\.e\.)\b", " ", s, flags=re.I)
@@ -1397,6 +1458,50 @@ def run_crosscheck(
     if intext_count > 0:
         match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
 
+
+    # -----------------------------
+    # Commercial diagnostics / warnings
+    # -----------------------------
+    warnings: List[str] = []
+
+    # 1) High false-positive risk: many narrative-like items in missing list
+    try:
+        narr_like = 0
+        for row in (missing_rows or []):
+            txt = (row.get('citation_in_text') or '').strip()
+            if txt and _DECADE_YEAR_RE.search(txt):
+                narr_like += 1
+            else:
+                # crude: long phrases or starts with a false token
+                head = txt.split(',')[0].strip() if txt else ''
+                if len(head.split()) > 3 or _is_false_author_token(head):
+                    narr_like += 1
+        if narr_like >= 3:
+            warnings.append(f"Some 'missing' items look narrative (likely false positives): {narr_like} flagged.")
+    except Exception:
+        pass
+
+    # 2) Name consistency hints (hyphen vs space; compound surnames)
+    try:
+        # build a set of citation keys observed
+        cite_keys = set()
+        for c in (cites or []):
+            p = _parse_author_year_from_cite(c)
+            if p:
+                cite_keys.add(p[0].lower())
+        # look for compound reference keys where only tail is present in citations
+        compound_hits = 0
+        for r in (refs or []):
+            ak = (r.key.split('|',1)[0] if '|' in r.key else r.key).lower()
+            if ' ' in ak:
+                tail = ak.split()[-1]
+                if tail in cite_keys and ak not in cite_keys:
+                    compound_hits += 1
+        if compound_hits >= 2:
+            warnings.append("Some compound surnames appear in multiple forms (hyphen/space). Encourage consistent spelling in the document.")
+    except Exception:
+        pass
+
     return {
         "filename": filename,
         "style": style_s,
@@ -1416,5 +1521,5 @@ def run_crosscheck(
         "reconciliation_intext_to_reference": c2r,
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
+        "warnings": warnings,
     }
-
