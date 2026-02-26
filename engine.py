@@ -842,6 +842,52 @@ def extract_author_year_citations(text: str) -> List[str]:
 
     return [c for c in out if c]
 
+def extract_author_year_citations_loose(text: str) -> List[str]:
+    """Looser APA/Harvard extractor used for reconciliation only.
+
+    Keeps strict extractor as the primary count (for academic accuracy), then adds:
+    - comma-year forms without parentheses: "Newman, 1998"
+    - light narrative variants: "Adam & Tweneboah 2008"
+    Still blocks obvious discourse/geo words via _is_false_author_token.
+    """
+    t = (text or "").replace("\u2019", "'")
+    out: List[str] = []
+    # Start with strict detections
+    out.extend(extract_author_year_citations(t))
+
+    NAME = r"[A-Z][A-Za-z'\-]+"
+    AMP = r"(?:&|and|＆)"
+    # 1) "Surname, 2008" (no parentheses)
+    comma_year = re.compile(rf"\b({NAME}(?:\s+et\s+al\.)?)\s*,\s*((?:19|20)\d{{2}}[a-z]?)\b")
+    # 2) "Surname & Surname 2008" (no parentheses)
+    amp_year = re.compile(rf"\b({NAME})\s*{AMP}\s*({NAME})\s+((?:19|20)\d{{2}}[a-z]?)\b")
+
+    for m in comma_year.finditer(t):
+        a = m.group(1).strip()
+        y = m.group(2).strip()
+        if _is_false_author_token(a):
+            continue
+        out.append(norm_space(f"{a}, {y}"))
+
+    for m in amp_year.finditer(t):
+        a = m.group(1).strip()
+        b = m.group(2).strip()
+        y = m.group(3).strip()
+        if _is_false_author_token(a) or _is_false_author_token(b):
+            continue
+        out.append(norm_space(f"{a} & {b}, {y}"))
+
+    # de-dupe while preserving order
+    seen = set()
+    uniq: List[str] = []
+    for c in out:
+        k = c.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(c)
+    return uniq
+
 def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
     t = text or ""
     out: List[str] = []
@@ -1435,12 +1481,25 @@ def run_crosscheck(
     too_large = main_text_len > 2_000_000
 
     if style_hint == "apa":
-        cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
-        refs = [parse_reference_author_year(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
+        # Dual-stream design:
+        # - STRICT stream drives "Missing" (academic accuracy)
+        # - LOOSE stream drives reconciliation + "Uncited" (maximum matching power)
+        cites_strict = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
+        # For very large documents, keep loose equal to strict to stay fast and memory-safe
+        cites_loose = cites_strict if too_large else extract_author_year_citations_loose(main_text)
 
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
+        refs = [parse_reference_author_year(r) for r in ref_strings]
+        refs = [r for r in refs if r]
         ref_count = len(refs)
+
+        # Reconcile both streams
+        c2r_loose, r2c_loose, _missing_loose, uncited_refs, _intext_count_loose = reconcile_author_year(cites_loose, refs)
+        _c2r_strict, _r2c_strict, missing_rows, _uncited_strict, intext_count = reconcile_author_year(cites_strict, refs)
+
+        c2r = c2r_loose
+        r2c = r2c_loose
+        strict_intext_count = len(cites_strict)
+        loose_intext_count = len(cites_loose)
 
     else:
         cites_nums = _extract_numeric_citations_chunked(main_text, bracketed=True) if too_large else extract_numeric_citations(main_text, bracketed=True)
@@ -1510,6 +1569,8 @@ def run_crosscheck(
         "reference_detection_message": ref_msg,
         "summary": {
             "in_text_citations_found": int(intext_count),
+            "strict_intext_count": (int(strict_intext_count) if strict_intext_count is not None else None),
+            "loose_intext_count": (int(loose_intext_count) if loose_intext_count is not None else None),
             "reference_entries_found": int(ref_count),
             "missing_in_references": int(missing_unique),
             "uncited_references": int(len(uncited_refs)),
