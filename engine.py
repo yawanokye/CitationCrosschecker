@@ -381,7 +381,7 @@ def _first_author_or_org_key(author_left: str) -> str:
 
     s = _strip_leading_reference_number(s)
     s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
-    left = re.sub(r"(’s|'s)\b", "", left).strip()
+    s = re.sub(r"(’s|'s)\b", "", s).strip()
 
     # Take just the first author chunk (before comma or before '&/and')
     first_chunk = re.split(r"\s+(?:&|and|＆)\s+|,", s, maxsplit=1)[0].strip()
