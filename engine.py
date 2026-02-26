@@ -52,6 +52,8 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
+ENGINE_BUILD = "commercial-2026-02-26-02"
+
 try:
     from docx import Document
     DOCX_OK = True
@@ -452,6 +454,12 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
 
 
 def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
+    """Return (main_text, reference_lines, message).
+
+    Commercial-grade split:
+    - Avoid splitting on TOC/'References' mentions.
+    - Only split when the following block actually looks like a reference list.
+    """
     if not DOCX_OK:
         raise RuntimeError("python-docx not installed")
 
@@ -464,36 +472,86 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
         doc = Document(io.BytesIO(file_bytes))
         lines = list(_iter_docx_text(doc))
 
+    def _ref_like(line: str) -> bool:
+        s = (line or "").strip()
+        if not s:
+            return False
+        # numeric reference starters
+        if re.match(r"^\s*(\[\s*\d{1,4}\s*\]|\(\s*\d{1,4}\s*\)|\d{1,4}[\.)])\s+\S", s):
+            return True
+        # APA-ish: starts with capitalised word/org and has a year
+        if YEAR_RE.search(s) and re.match(r"^[A-Z][A-Za-z\-’'\.]+", s):
+            return True
+        # DOI line in refs
+        if "doi:" in s.lower() or "https://doi.org/" in s.lower():
+            return True
+        return False
+
+    def _lookahead_is_real_refs(idx: int) -> bool:
+        # Look at next 20 non-empty lines and count reference-like patterns.
+        seen = 0
+        checked = 0
+        j = idx + 1
+        while j < len(lines) and checked < 20:
+            s = (lines[j] or "").strip()
+            j += 1
+            if not s:
+                continue
+            checked += 1
+            if _ref_like(s):
+                seen += 1
+        # Require enough evidence that this is a real reference section.
+        return seen >= 6
+
     main_lines: List[str] = []
     ref_lines: List[str] = []
     in_refs = False
     heading_line = ""
 
-    for t in lines:
+    i = 0
+    while i < len(lines):
+        t = lines[i]
+
         if not in_refs:
+            # Strict headings
+            hit = False
             for pat in REF_HEADINGS:
                 if re.search(pat, t, flags=re.I):
-                    in_refs = True
-                    heading_line = t
+                    # reject TOC-like 'References .... 123'
+                    if _looks_like_toc_references_line(t, ""):
+                        break
+                    # only accept if lookahead confirms
+                    if _lookahead_is_real_refs(i):
+                        in_refs = True
+                        heading_line = t
+                        hit = True
                     break
+            if hit:
+                i += 1
+                continue
 
-            if not in_refs:
-                m = REF_HEADING_RELAXED.search(t)
-                if m and m.start() <= 4 and len(t) <= 160:
-                    tail = t[m.end() :].strip(" :-\t")
-                    if _looks_like_toc_references_line(t, tail):
-                        main_lines.append(t)
-                        continue
+            # Relaxed heading detection
+            m = REF_HEADING_RELAXED.search(t)
+            if m and m.start() <= 4 and len((t or "")) <= 160:
+                tail = t[m.end() :].strip(" :-\t")
+                if _looks_like_toc_references_line(t, tail):
+                    main_lines.append(t)
+                    i += 1
+                    continue
+                if _lookahead_is_real_refs(i):
                     in_refs = True
                     heading_line = t
                     if tail:
                         ref_lines.append(tail)
+                    i += 1
                     continue
 
         if in_refs:
             ref_lines.append(t)
         else:
             main_lines.append(t)
+
+        i += 1
 
     if in_refs:
         ref_lines = _truncate_reference_block(ref_lines, style_hint="apa")
@@ -1217,6 +1275,50 @@ def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
 # -----------------------------
 # Public API: run_crosscheck
 # -----------------------------
+
+# -----------------------------
+# Large-text handling (commercial mode)
+# - Never truncate DOCX aggressively (causes false 'uncited')
+# - If extremely large, scan in chunks and merge results
+# -----------------------------
+def _iter_text_chunks(text: str, chunk_size: int = 300_000, overlap: int = 2_000):
+    s = text or ""
+    n = len(s)
+    if n <= chunk_size:
+        yield s
+        return
+    step = max(1, chunk_size - overlap)
+    for i in range(0, n, step):
+        yield s[i : min(n, i + chunk_size)]
+        if i + chunk_size >= n:
+            break
+
+
+def _extract_author_year_citations_chunked(text: str):
+    seen = {}
+    total = []
+    for chunk in _iter_text_chunks(text):
+        for c in extract_author_year_citations(chunk):
+            k = (c.author_key, c.year, c.raw)
+            if k in seen:
+                continue
+            seen[k] = True
+            total.append(c)
+    return total
+
+
+def _extract_numeric_citations_chunked(text: str, bracketed: bool = True):
+    seen = {}
+    total = []
+    for chunk in _iter_text_chunks(text):
+        for c in extract_numeric_citations(chunk, bracketed=bracketed):
+            k = (c.numbers, c.raw)
+            if k in seen:
+                continue
+            seen[k] = True
+            total.append(c)
+    return total
+
 def run_crosscheck(
     file_bytes: bytes,
     filename: str,
@@ -1265,12 +1367,13 @@ def run_crosscheck(
     else:
         return {"error": "Upload a DOCX or PDF"}
 
-    if len(main_text) > 350_000:
-        half = 175_000
-        main_text = main_text[:half] + "\n... [TRUNCATED] ...\n" + main_text[-half:]
+    # NOTE: Truncating main_text causes false 'uncited' on long theses.
+    # Keep full text when possible. If extremely large, run citation extraction in chunks.
+    main_text_len = len(main_text or "")
+    too_large = main_text_len > 2_000_000
 
     if style_hint == "apa":
-        cites = extract_author_year_citations(main_text)
+        cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
         refs = [parse_reference_author_year(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
 
@@ -1278,9 +1381,9 @@ def run_crosscheck(
         ref_count = len(refs)
 
     else:
-        cites_nums = extract_numeric_citations(main_text, bracketed=True)
+        cites_nums = _extract_numeric_citations_chunked(main_text, bracketed=True) if too_large else extract_numeric_citations(main_text, bracketed=True)
         if "vancouver" in style_s and len(cites_nums) < 3:
-            cites_nums = extract_numeric_citations(main_text, bracketed=False)
+            cites_nums = _extract_numeric_citations_chunked(main_text, bracketed=False) if too_large else extract_numeric_citations(main_text, bracketed=False)
 
         refs = [parse_reference_numeric(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
@@ -1296,6 +1399,7 @@ def run_crosscheck(
     return {
         "filename": filename,
         "style": style_s,
+        "engine_build": ENGINE_BUILD,
         "verify_mode_used": (verify_mode or "all"),
         "reference_detection_message": ref_msg,
         "summary": {
@@ -1304,6 +1408,7 @@ def run_crosscheck(
             "missing_in_references": int(missing_unique),
             "uncited_references": int(len(uncited_refs)),
             "match_rate": float(round(match_rate, 1)),
+            "engine_build": ENGINE_BUILD,
         },
         "missing_in_references": missing_rows,
         "uncited_references": uncited_refs,
