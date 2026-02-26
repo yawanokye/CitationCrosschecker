@@ -1,755 +1,281 @@
-/* static/app.js - OPTIMIZED VERSION with Tab Navigation */
+/* static/app.js - commercial UI glue (Mode C compatible)
+   - Renders strict vs loose counts if present
+   - Robust against missing fields
+*/
 
 (() => {
   "use strict";
 
-  // ------------------------------
-  // Configuration
-  // ------------------------------
-  const CONFIG = {
-    POLL_INTERVAL: 1200,        // ms between status polls
-    MAX_C2R_DISPLAY: 500,        // max rows to show in c2r table
-    MAX_R2C_DISPLAY: 500,        // max rows to show in r2c table
-    MAX_VERIFY_DISPLAY: 500,     // max rows to show in verify table
-    CHUNK_WARNING_SIZE: 2_000_000 // show warning for files > 2MB
-  };
-
-  // ------------------------------
-  // Payload normalizer
-  // ------------------------------
-  function toNum(x, d = 0) {
-    const n = Number(x);
-    return Number.isFinite(n) ? n : d;
-  }
-
-  function asText(v) {
-    if (v == null) return "";
-    if (typeof v === "string") return v;
-    if (typeof v === "number") return String(v);
-    if (typeof v === "object") {
-      return (
-        v.reference || v.raw || v.text || v.label || v.display || v.citation || v.citation_in_text ||
-        (v.author && v.year ? `${v.author}, ${v.year}` : "") ||
-        (() => { try { return JSON.stringify(v); } catch { return ""; } })()
-      );
-    }
-    try { return String(v); } catch { return ""; }
-  }
-
-  function normalizeData(d) {
-    const data = d && typeof d === "object" ? d : {};
-    
-    if (data.summary && typeof data.summary === "object") {
-      return data;
-    }
-
-    const missingArr = Array.isArray(data.missing_in_references) ? data.missing_in_references : [];
-    const uncitedArr = Array.isArray(data.uncited_references) ? data.uncited_references : [];
-
-    data.summary = {
-      in_text_citations_found: toNum(data.in_text_citations_found ?? data.intext_citations_found ?? data.intext_count ?? 0),
-      reference_entries_found: toNum(data.reference_entries_found ?? data.ref_count ?? 0),
-      missing_in_references: toNum(data.missing_in_references_count ?? missingArr.length),
-      uncited_references: toNum(data.uncited_references_count ?? uncitedArr.length),
-      match_rate: toNum(data.match_rate ?? 0),
-    };
-    return data;
-  }
-
-  // ------------------------------
-  // DOM Elements
-  // ------------------------------
   const el = {
-    // File inputs
     file: document.getElementById("file"),
     style: document.getElementById("style"),
 
-    // Buttons
     btnCheck: document.getElementById("btnCheck"),
     btnVerify: document.getElementById("btnVerify"),
 
-    // Options
     verifyMode: document.getElementById("verifyMode"),
     throttle: document.getElementById("throttle"),
     maxVerify: document.getElementById("maxVerify"),
     useCrossref: document.getElementById("useCrossref"),
     useOpenAlex: document.getElementById("useOpenAlex"),
-    aiAssist: document.getElementById("aiAssist"),
 
-    // Status
     status: document.getElementById("status"),
-    progressBar: document.getElementById("progressBar"),
 
-    // Results container
     resultsCard: document.getElementById("resultsCard"),
     dash: document.getElementById("dash"),
     verifyDash: document.getElementById("verifyDash"),
     summaryTable: document.getElementById("summaryTable"),
     refMsg: document.getElementById("refMsg"),
 
-    // Tab containers
-    tabMissing: document.getElementById("tabMissing"),
-    tabUncited: document.getElementById("tabUncited"),
-    tabC2R: document.getElementById("tabC2R"),
-    tabR2C: document.getElementById("tabR2C"),
-    tabVerify: document.getElementById("tabVerify"),
-
-    // Tab content containers
-    missingContent: document.getElementById("missingContent"),
-    uncitedContent: document.getElementById("uncitedContent"),
-    c2rContent: document.getElementById("c2rContent"),
-    r2cContent: document.getElementById("r2cContent"),
-    verifyContent: document.getElementById("verifyContent"),
-
-    // Table bodies
     missingBody: document.getElementById("missingBody"),
     uncitedBody: document.getElementById("uncitedBody"),
-    c2rBody: document.getElementById("c2rBody"),
-    r2cBody: document.getElementById("r2cBody"),
+    it2refBody: document.getElementById("it2refBody"),
+    ref2itBody: document.getElementById("ref2itBody"),
     verifyBody: document.getElementById("verifyBody"),
 
-    // Export buttons
-    btnExportCsvTop: document.getElementById("btnExportCsvTop"),
-    btnExportWordTop: document.getElementById("btnExportWordTop"),
-    
-    // Additional UI elements
-    fileSizeWarning: document.getElementById("fileSizeWarning"),
-    engineVersion: document.getElementById("engineVersion"),
-    processingTime: document.getElementById("processingTime"),
-    lastUpdated: document.getElementById("lastUpdated"),
+    tabBtns: Array.from(document.querySelectorAll(".tab")),
   };
 
-  // ------------------------------
-  // State
-  // ------------------------------
-  let LAST_JOB_ID = null;
-  let POLL_TIMER = null;
-  let RUNNING = false;
-  let START_TIME = null;
-  let CURRENT_DATA = null;
-  let ACTIVE_TAB = "missing"; // default active tab
+  const setStatus = (msg, kind = "") => {
+    if (!el.status) return;
+    el.status.textContent = msg || "";
+    el.status.className = "status" + (kind ? ` status-${kind}` : "");
+  };
 
-  // ------------------------------
-  // Tab Navigation
-  // ------------------------------
-  function initTabs() {
-    // Define tabs and their content
-    const tabs = [
-      { id: "tabMissing", contentId: "missingContent", name: "missing" },
-      { id: "tabUncited", contentId: "uncitedContent", name: "uncited" },
-      { id: "tabC2R", contentId: "c2rContent", name: "c2r" },
-      { id: "tabR2C", contentId: "r2cContent", name: "r2c" },
-      { id: "tabVerify", contentId: "verifyContent", name: "verify" }
-    ];
-
-    // Add click handlers to each tab
-    tabs.forEach(tab => {
-      const tabEl = document.getElementById(tab.id);
-      if (!tabEl) return;
-
-      tabEl.addEventListener("click", (e) => {
-        e.preventDefault();
-        
-        // Remove active class from all tabs
-        tabs.forEach(t => {
-          const tEl = document.getElementById(t.id);
-          if (tEl) tEl.classList.remove("active");
-        });
-
-        // Hide all content
-        tabs.forEach(t => {
-          const cEl = document.getElementById(t.contentId);
-          if (cEl) cEl.classList.remove("active");
-        });
-
-        // Activate clicked tab
-        tabEl.classList.add("active");
-        const contentEl = document.getElementById(tab.contentId);
-        if (contentEl) contentEl.classList.add("active");
-        
-        ACTIVE_TAB = tab.name;
-        
-        // Store active tab in localStorage for persistence
-        try {
-          localStorage.setItem("citation_active_tab", tab.name);
-        } catch (e) {}
-      });
+  const disableTabs = () => {
+    el.tabBtns.forEach((b) => {
+      b.setAttribute("aria-disabled", "true");
+      b.classList.add("disabled");
     });
+  };
 
-    // Restore last active tab
-    try {
-      const savedTab = localStorage.getItem("citation_active_tab");
-      if (savedTab) {
-        const tabToActivate = tabs.find(t => t.name === savedTab);
-        if (tabToActivate) {
-          // Simulate click on saved tab
-          const tabEl = document.getElementById(tabToActivate.id);
-          if (tabEl) tabEl.click();
-        }
-      }
-    } catch (e) {}
-  }
+  const enableTabs = () => {
+    el.tabBtns.forEach((b) => {
+      b.removeAttribute("aria-disabled");
+      b.classList.remove("disabled");
+    });
+  };
 
-  // ------------------------------
-  // UI Helpers
-  // ------------------------------
-  function setRunning(on) {
-    RUNNING = !!on;
-    if (el.btnCheck) el.btnCheck.disabled = RUNNING;
-    if (el.btnVerify) el.btnVerify.disabled = RUNNING;
-    if (el.file) el.file.disabled = RUNNING;
-    
-    if (RUNNING) {
-      START_TIME = Date.now();
-      if (el.progressBar) {
-        el.progressBar.style.width = "0%";
-        el.progressBar.classList.add("active");
-      }
-    } else {
-      if (el.progressBar) {
-        el.progressBar.classList.remove("active");
-      }
+  const showTab = (id) => {
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.add("hidden"));
+    const panel = document.getElementById(id);
+    if (panel) panel.classList.remove("hidden");
+
+    el.tabBtns.forEach((b) => {
+      if (b.dataset.tab === id) b.classList.add("active");
+      else b.classList.remove("active");
+    });
+  };
+
+  const safeNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const addSummaryRow = (label, value) => {
+    const tr = document.createElement("tr");
+    const td1 = document.createElement("td");
+    const td2 = document.createElement("td");
+    td1.textContent = label;
+    td2.textContent = String(value);
+    tr.appendChild(td1);
+    tr.appendChild(td2);
+    el.summaryTable.appendChild(tr);
+  };
+
+  const renderSummary = (data) => {
+    const s = (data && data.summary) || {};
+
+    el.summaryTable.innerHTML = "";
+
+    // Always show these core fields
+    addSummaryRow("In-text citations found", safeNum(s.in_text_citations_found));
+    addSummaryRow("Reference entries found", safeNum(s.reference_entries_found));
+    addSummaryRow("Missing in references", safeNum(s.missing_in_references));
+    addSummaryRow("Uncited references", safeNum(s.uncited_references));
+    addSummaryRow("Match rate", `${safeNum(s.match_rate).toFixed(1)}%`);
+
+    // Optional diagnostics
+    if (s.strict_intext_count !== undefined) {
+      addSummaryRow("Strict in-text count", safeNum(s.strict_intext_count));
     }
-  }
-
-  function updateProgress(percent, message) {
-    if (el.progressBar) {
-      el.progressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    if (s.loose_intext_count !== undefined) {
+      addSummaryRow("Loose in-text count", safeNum(s.loose_intext_count));
     }
-    if (message) setStatus(message, "muted");
-  }
 
-  function esc(s) {
-    return String(s ?? "")
+    if (el.refMsg) {
+      el.refMsg.textContent = data.reference_detection_message || "";
+    }
+  };
+
+  const renderMissing = (data) => {
+    const rows = (data && data.missing_in_references) || [];
+    el.missingBody.innerHTML = "";
+    rows.forEach((r, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(r.citation_in_text || "")}</td>
+        <td>${safeNum(r.count_in_text)}</td>
+      `;
+      el.missingBody.appendChild(tr);
+    });
+  };
+
+  const renderUncited = (data) => {
+    const rows = (data && data.uncited_references) || [];
+    el.uncitedBody.innerHTML = "";
+
+    rows.forEach((ref, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(String(ref || ""))}</td>
+      `;
+      el.uncitedBody.appendChild(tr);
+    });
+  };
+
+  const renderIntextToRef = (data) => {
+    const rows = (data && data.reconciliation_intext_to_reference) || [];
+    el.it2refBody.innerHTML = "";
+    rows.forEach((r, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(r.in_text || "")}</td>
+        <td>${escapeHtml(r.matched_reference || "")}</td>
+        <td>${escapeHtml(r.status || "")}</td>
+      `;
+      el.it2refBody.appendChild(tr);
+    });
+  };
+
+  const renderRefToIntext = (data) => {
+    const rows = (data && data.reconciliation_reference_to_intext) || [];
+    el.ref2itBody.innerHTML = "";
+    rows.forEach((r, idx) => {
+      const citedBy = Array.isArray(r.cited_by) ? r.cited_by.join("; ") : "";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(r.reference || "")}</td>
+        <td>${safeNum(r.times_cited)}</td>
+        <td>${escapeHtml(citedBy)}</td>
+      `;
+      el.ref2itBody.appendChild(tr);
+    });
+  };
+
+  const renderVerify = (data) => {
+    const ov = (data && data.online_verification) || { rows: [] };
+    const rows = ov.rows || [];
+
+    el.verifyBody.innerHTML = "";
+    rows.forEach((r, idx) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(r.reference || "")}</td>
+        <td>${escapeHtml(r.status || "")}</td>
+        <td>${escapeHtml(r.source || "")}</td>
+        <td>${escapeHtml(r.note || "")}</td>
+      `;
+      el.verifyBody.appendChild(tr);
+    });
+  };
+
+  const escapeHtml = (s) =>
+    String(s)
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-  }
+      .replaceAll("'", "&#039;");
 
-  function setStatus(msg, tone = "muted") {
-    if (!el.status) return;
-    el.status.className = `status ${tone}`;
-    el.status.textContent = msg || "";
-    el.status.setAttribute("aria-live", "polite");
-  }
-
-  function fmtPct(x) {
-    const n = Number(x);
-    if (!Number.isFinite(n)) return "";
-    return `${n.toFixed(1)}%`;
-  }
-
-  function fmtTime(ms) {
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-  }
-
-  function checkFileSize() {
-    const f = el.file?.files?.[0];
-    if (!f || !el.fileSizeWarning) return;
-    
-    if (f.size > CONFIG.CHUNK_WARNING_SIZE) {
-      el.fileSizeWarning.style.display = "block";
-      el.fileSizeWarning.textContent = `⚠️ Large file (${(f.size / 1e6).toFixed(1)}MB). Processing may take longer.`;
-    } else {
-      el.fileSizeWarning.style.display = "none";
+  const postForm = async (url, formData) => {
+    const res = await fetch(url, {
+      method: "POST",
+      body: formData,
+    });
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    const payload = ct.includes("application/json") ? await res.json() : await res.text();
+    if (!res.ok) {
+      const msg = typeof payload === "string" ? payload : payload?.detail || "Request failed";
+      throw new Error(msg);
     }
-  }
+    return payload;
+  };
 
-  // ------------------------------
-  // Table Renderers
-  // ------------------------------
-  function clearTables() {
-    if (el.missingBody) el.missingBody.innerHTML = "";
-    if (el.uncitedBody) el.uncitedBody.innerHTML = "";
-    if (el.c2rBody) el.c2rBody.innerHTML = "";
-    if (el.r2cBody) el.r2cBody.innerHTML = "";
-    if (el.verifyBody) el.verifyBody.innerHTML = "";
-  }
-
-  function renderSummaryTable(data) {
-    const s = data?.summary || {};
-    if (!el.summaryTable) return;
-
-    const rows = [];
-    function addRow(k, v, tooltip = "") {
-      const tooltipAttr = tooltip ? ` title="${esc(tooltip)}"` : "";
-      rows.push(`<tr${tooltipAttr}><td>${esc(k)}</td><td class="num">${esc(v)}</td></tr>`);
-    }
-
-    addRow("In-text citations found", s.in_text_citations_found ?? "", "Unique citations in document text");
-    addRow("Reference entries found", s.reference_entries_found ?? "", "References in bibliography");
-    addRow("Missing in references", s.missing_in_references ?? "", "Citations not found in reference list");
-    addRow("Uncited references", s.uncited_references ?? "", "References never cited in text");
-    addRow("Match rate", fmtPct(s.match_rate), "Percentage of citations that matched references");
-
-    el.summaryTable.innerHTML = rows.join("");
-    
-    // Update engine version
-    if (el.engineVersion) {
-      el.engineVersion.textContent = data.engine_build || "v1.4.0";
-    }
-  }
-
-  function renderMissing(data) {
-    const rows = data?.missing_in_references || [];
-    if (!el.missingBody) return;
-    
-    if (!rows.length) {
-      el.missingBody.innerHTML = `<tr><td colspan="2" class="muted">✅ No missing citations</td></tr>`;
-      return;
-    }
-    
-    el.missingBody.innerHTML = rows
-      .map(
-        (r) => {
-          const count = r.count_in_text ?? r.count ?? 1;
-          return `<tr>
-            <td>${esc(r.citation_in_text || r.citation || "")}</td>
-            <td class="num">${esc(count)}</td>
-          </tr>`;
-        }
-      )
-      .join("");
-  }
-
-  function renderUncited(data) {
-    const rows = data?.uncited_references || [];
-    if (!el.uncitedBody) return;
-    
-    if (!rows.length) {
-      el.uncitedBody.innerHTML = `<tr><td class="muted">✅ No uncited references</td></tr>`;
-      return;
-    }
-    
-    el.uncitedBody.innerHTML = rows.map((r) => {
-      const text = asText(r);
-      return `<tr><td>${esc(text)}</td></tr>`;
-    }).join("");
-  }
-
-  function renderC2R(data) {
-    const rows = data?.reconciliation_intext_to_reference || [];
-    if (!el.c2rBody) return;
-    
-    if (!rows.length) {
-      el.c2rBody.innerHTML = `<tr><td colspan="3" class="muted">No citation data</td></tr>`;
-      return;
-    }
-    
-    const showRows = rows.slice(0, CONFIG.MAX_C2R_DISPLAY);
-    const remaining = rows.length - showRows.length;
-    
-    el.c2rBody.innerHTML = showRows
-      .map((r) => {
-        const st = r.status || "unknown";
-        const flags = r.flags ? ` <span class="flag">(${esc(r.flags)})</span>` : "";
-        return `<tr>
-          <td class="badge ${esc(st)}">${esc(st)}</td>
-          <td>${esc(r.in_text || "")}${flags}</td>
-          <td>${esc(r.matched_reference || "")}</td>
-        </tr>`;
-      })
-      .join("");
-    
-    if (remaining > 0) {
-      el.c2rBody.innerHTML += `<tr><td colspan="3" class="muted">... and ${remaining} more (truncated)</td></tr>`;
-    }
-  }
-
-  function renderR2C(data) {
-    const rows = data?.reconciliation_reference_to_intext || [];
-    if (!el.r2cBody) return;
-    
-    if (!rows.length) {
-      el.r2cBody.innerHTML = `<tr><td colspan="3" class="muted">No reference data</td></tr>`;
-      return;
-    }
-    
-    const showRows = rows.slice(0, CONFIG.MAX_R2C_DISPLAY);
-    const remaining = rows.length - showRows.length;
-    
-    el.r2cBody.innerHTML = showRows
-      .map((r) => {
-        const times = r.times_cited ?? 0;
-        const citedBy = Array.isArray(r.cited_by) ? r.cited_by.join("; ") : "";
-        const dupClass = r.duplicate_of_cited ? "duplicate" : "";
-        const clusterInfo = r.cluster_id ? ` <span class="badge">C${r.cluster_id}</span>` : "";
-        
-        return `<tr class="${dupClass}">
-          <td class="num">${esc(times)}</td>
-          <td>${esc(r.reference || "")}${clusterInfo}</td>
-          <td>${esc(citedBy)}</td>
-        </tr>`;
-      })
-      .join("");
-    
-    if (remaining > 0) {
-      el.r2cBody.innerHTML += `<tr><td colspan="3" class="muted">... and ${remaining} more (truncated)</td></tr>`;
-    }
-  }
-
-  function renderVerify(data) {
-    const ov = data?.online_verification || {};
-    const rows = ov?.rows || [];
-    const sum = ov?.summary || {};
-
-    if (el.verifyDash) {
-      const total = sum.total ?? rows.length ?? 0;
-      el.verifyDash.innerHTML = `
-        <div class="kpi"><div class="k">Verified</div><div class="v">${esc(sum.verified ?? 0)}</div></div>
-        <div class="kpi"><div class="k">Likely</div><div class="v">${esc(sum.likely ?? 0)}</div></div>
-        <div class="kpi"><div class="k">Needs review</div><div class="v">${esc(sum.needs_review ?? 0)}</div></div>
-        <div class="kpi"><div class="k">Not found</div><div class="v">${esc(sum.not_found ?? 0)}</div></div>
-        <div class="kpi"><div class="k">Offline</div><div class="v">${esc(sum.offline ?? 0)}</div></div>
-        <div class="kpi"><div class="k">Total</div><div class="v">${esc(total)}</div></div>
-      `;
-    }
-
-    if (!el.verifyBody) return;
-    if (!rows.length) {
-      el.verifyBody.innerHTML = `<tr><td colspan="5" class="muted">No online verification data yet.</td></tr>`;
-      return;
-    }
-    
-    const showRows = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY);
-    const remaining = rows.length - showRows.length;
-    
-    el.verifyBody.innerHTML = showRows
-      .map((r) => {
-        const st = r.status || "";
-        return `<tr>
-          <td class="badge ${esc(st)}">${esc(st)}</td>
-          <td>${esc(r.reference_full || "")}</td>
-          <td>${esc(r.found_title || "")}</td>
-          <td>${esc(r.found_doi || "")}</td>
-          <td class="num">${esc(r.score ?? "")}</td>
-        </tr>`;
-      })
-      .join("");
-    
-    if (remaining > 0) {
-      el.verifyBody.innerHTML += `<tr><td colspan="5" class="muted">... and ${remaining} more (truncated)</td></tr>`;
-    }
-  }
-
-  function renderAll(data) {
-    if (!data) return;
-    CURRENT_DATA = normalizeData(data);
-    clearTables();
-
-    if (el.resultsCard) el.resultsCard.style.display = "block";
-    if (el.refMsg) el.refMsg.textContent = data.reference_detection_message || "";
-
-    renderSummaryTable(CURRENT_DATA);
-    renderMissing(CURRENT_DATA);
-    renderUncited(CURRENT_DATA);
-    renderC2R(CURRENT_DATA);
-    renderR2C(CURRENT_DATA);
-    renderVerify(CURRENT_DATA);
-
-    // Update processing time
-    if (el.processingTime && START_TIME) {
-      el.processingTime.textContent = fmtTime(Date.now() - START_TIME);
-    }
-
-    // Update last updated timestamp
-    if (el.lastUpdated) {
-      el.lastUpdated.textContent = new Date().toLocaleTimeString();
-    }
-
-    // Enable export buttons
-    if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = !LAST_JOB_ID;
-    if (el.btnExportWordTop) el.btnExportWordTop.disabled = !LAST_JOB_ID;
-  }
-
-  // ------------------------------
-  // API Calls
-  // ------------------------------
-  async function postVerify(verifyOnline) {
-    if (RUNNING) return;
+  const runCheck = async (verifyOnline) => {
+    disableTabs();
+    setStatus("Working...", "busy");
 
     const f = el.file?.files?.[0];
     if (!f) {
-      setStatus("📁 Choose a DOCX or PDF file first.", "warn");
+      setStatus("Choose a file first.", "warn");
       return;
     }
 
-    if (f.size > 10 * 1024 * 1024) {
-      if (!confirm(`File size is ${(f.size / 1e6).toFixed(1)}MB. Large files may take longer. Continue?`)) {
-        return;
-      }
-    }
+    const fd = new FormData();
+    fd.append("file", f);
+    if (el.style) fd.append("style", el.style.value || "apa");
 
-    setRunning(true);
-    updateProgress(5, "Uploading file...");
+    // Keep stable: backend accepts verify_online even if false
+    fd.append("verify_online", verifyOnline ? "1" : "0");
 
-    try {
-      const fd = new FormData();
-      fd.append("file", f);
-      fd.append("style", el.style?.value || "apa");
-      fd.append("verify_online", verifyOnline ? "true" : "false");
+    if (verifyOnline) {
       fd.append("verify_mode", el.verifyMode?.value || "all");
-
-      const throttleVal = Number(el.throttle?.value || 0.12);
-      fd.append("throttle_s", String(throttleVal));
-      fd.append("max_verify", String(Number(el.maxVerify?.value || 0)));
-
-      fd.append("use_crossref", el.useCrossref?.checked ? "true" : "false");
-      fd.append("use_openalex", el.useOpenAlex?.checked ? "true" : "false");
-      fd.append("ai_assist", el.aiAssist?.checked ? "true" : "false");
-
-      const aiOn = !!el.aiAssist?.checked;
-      const modeMsg = verifyOnline ? "online verification" : "";
-      const aiMsg = aiOn ? "AI assist" : "";
-      const statusMsg = [modeMsg, aiMsg].filter(Boolean).join(" and ");
-      
-      setStatus(statusMsg ? `Running with ${statusMsg}...` : "Running check...", "muted");
-
-      updateProgress(20, "Processing document...");
-
-      const res = await fetch("/verify", { 
-        method: "POST", 
-        body: fd,
-        signal: AbortSignal.timeout(300000)
-      });
-      
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`Server error (${res.status}): ${txt.slice(0, 200)}`);
-      }
-
-      updateProgress(60, "Parsing results...");
-
-      const js = await res.json();
-      if (!js || js.ok !== true) {
-        throw new Error(js?.data?.error || "Unexpected server response.");
-      }
-
-      LAST_JOB_ID = js.job_id || null;
-      updateProgress(80, "Rendering results...");
-      renderAll(js.data);
-
-      if (verifyOnline || aiOn) {
-        setStatus("✅ Initial check complete. Background tasks running...", "success");
-        startPollingOnline();
-      } else {
-        updateProgress(100, "✅ Complete!");
-        setStatus("✅ Done.", "success");
-        setTimeout(() => setRunning(false), 500);
-      }
-    } catch (e) {
-      console.error(e);
-      setStatus(`❌ Error: ${e?.message || String(e)}`, "warn");
-      setRunning(false);
-      updateProgress(0, "");
+      fd.append("throttle_s", el.throttle?.value || "0.12");
+      fd.append("max_verify", el.maxVerify?.value || "0");
+      fd.append("use_crossref", el.useCrossref?.checked ? "1" : "0");
+      fd.append("use_openalex", el.useOpenAlex?.checked ? "1" : "0");
     }
-  }
 
-  // ------------------------------
-  // Polling
-  // ------------------------------
-  function stopPollingOnline() {
-    if (POLL_TIMER) {
-      clearInterval(POLL_TIMER);
-      POLL_TIMER = null;
-    }
-  }
+    const data = await postForm("/verify", fd);
 
-  function startPollingOnline() {
-    stopPollingOnline();
-    if (!LAST_JOB_ID) return;
+    renderSummary(data);
+    renderMissing(data);
+    renderUncited(data);
+    renderIntextToRef(data);
+    renderRefToIntext(data);
+    renderVerify(data);
 
-    let pollCount = 0;
-    const MAX_POLLS = 300;
+    if (el.resultsCard) el.resultsCard.classList.remove("hidden");
 
-    POLL_TIMER = setInterval(async () => {
-      pollCount++;
-      
-      if (pollCount > MAX_POLLS) {
-        setStatus("⚠️ Polling timeout - tasks may still be running", "warn");
-        stopPollingOnline();
-        return;
-      }
+    enableTabs();
+    showTab("tab-summary");
+    setStatus("Done.", "ok");
+  };
 
+  el.tabBtns.forEach((b) => {
+    b.addEventListener("click", () => {
+      if (b.classList.contains("disabled")) return;
+      showTab(b.dataset.tab);
+    });
+  });
+
+  if (el.btnCheck) {
+    el.btnCheck.addEventListener("click", async () => {
       try {
-        const res = await fetch(
-          `/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}&include_result=1`
-        );
-        if (!res.ok) return;
-
-        const js = await res.json();
-        if (!js || js.ok !== true) return;
-
-        let progress = 80;
-        let statusMsg = "";
-
-        if (js.ai && js.ai.state) {
-          if (js.ai.state === "running") {
-            progress = 85 + (js.ai.progress || 0) * 10;
-            statusMsg = js.ai.message || "AI assist running...";
-          } else if (js.ai.state === "done") {
-            progress = 95;
-            statusMsg = "AI assist complete";
-          }
-        }
-
-        const online = js.online || {};
-        if (online.state === "running") {
-          progress = 85 + (online.progress || 0) * 10;
-          statusMsg = online.message || "Online verification running...";
-        } else if (online.state === "done") {
-          progress = 98;
-          statusMsg = "Online verification complete";
-        }
-
-        updateProgress(progress, statusMsg);
-
-        if (js.result && Object.keys(js.result).length) {
-          renderAll(js.result);
-        }
-
-        const aiState = (js.ai || {}).state || "idle";
-        const onlineState = (online || {}).state || "idle";
-        const aiFinished = ["done", "error", "skipped", "idle"].includes(aiState);
-        const onlineFinished = ["done", "error", "idle"].includes(onlineState);
-
-        if (aiFinished && onlineFinished) {
-          updateProgress(100, "✅ All tasks complete!");
-          setStatus("✅ Complete.", "success");
-          stopPollingOnline();
-          setTimeout(() => setRunning(false), 500);
-        }
+        await runCheck(false);
       } catch (e) {
-        console.debug("Polling error:", e);
-      }
-    }, CONFIG.POLL_INTERVAL);
-  }
-
-  // ------------------------------
-  // Export functions
-  // ------------------------------
-  async function exportCsv() {
-    if (!LAST_JOB_ID) return;
-    
-    try {
-      setStatus("Exporting CSV...", "muted");
-      const res = await fetch("/export/csv", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: LAST_JOB_ID }),
-      });
-      
-      if (!res.ok) throw new Error("Export failed");
-      
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `citation_check_${new Date().toISOString().slice(0,10)}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setStatus("✅ CSV exported", "success");
-    } catch (e) {
-      setStatus(`❌ Export failed: ${e.message}`, "warn");
-    }
-  }
-
-  async function exportWord() {
-    if (!LAST_JOB_ID) return;
-    
-    try {
-      setStatus("Exporting Word document...", "muted");
-      const res = await fetch("/export/word", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: LAST_JOB_ID }),
-      });
-      
-      if (!res.ok) throw new Error("Export failed");
-      
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `citation_check_${new Date().toISOString().slice(0,10)}.docx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setStatus("✅ Word document exported", "success");
-    } catch (e) {
-      setStatus(`❌ Export failed: ${e.message}`, "warn");
-    }
-  }
-
-  // ------------------------------
-  // Event Listeners
-  // ------------------------------
-  function initEventListeners() {
-    if (el.btnCheck) el.btnCheck.addEventListener("click", () => postVerify(false));
-    if (el.btnVerify) el.btnVerify.addEventListener("click", () => postVerify(true));
-    if (el.btnExportCsvTop) el.btnExportCsvTop.addEventListener("click", exportCsv);
-    if (el.btnExportWordTop) el.btnExportWordTop.addEventListener("click", exportWord);
-    
-    if (el.file) {
-      el.file.addEventListener("change", checkFileSize);
-    }
-
-    document.addEventListener("keydown", (e) => {
-      if (e.ctrlKey && e.key === "Enter" && !RUNNING) {
-        e.preventDefault();
-        postVerify(false);
-      }
-      if (e.ctrlKey && e.shiftKey && e.key === "Enter" && !RUNNING) {
-        e.preventDefault();
-        postVerify(true);
+        setStatus(String(e?.message || e), "err");
       }
     });
   }
 
-  // ------------------------------
-  // Initialize
-  // ------------------------------
-  function init() {
-    initTabs(); // Initialize tab navigation first
-    initEventListeners();
-    setStatus("✅ Ready. Select a file and click Check.", "muted");
-    checkFileSize();
-    
-    if (el.throttle && !el.throttle.value) el.throttle.value = "0.12";
-    if (el.maxVerify && !el.maxVerify.value) el.maxVerify.value = "0";
-    
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.has('job')) {
-      LAST_JOB_ID = urlParams.get('job');
-      if (LAST_JOB_ID) {
-        setStatus("🔄 Resuming previous job...", "muted");
-        startPollingOnline();
+  if (el.btnVerify) {
+    el.btnVerify.addEventListener("click", async () => {
+      try {
+        await runCheck(true);
+      } catch (e) {
+        setStatus(String(e?.message || e), "err");
       }
-    }
+    });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-  } else {
-    init();
-  }
-
-  window.__citationApp = {
-    getJobId: () => LAST_JOB_ID,
-    getData: () => CURRENT_DATA,
-    refresh: () => renderAll(CURRENT_DATA),
-    setTab: (tabName) => {
-      const tabs = ["missing", "uncited", "c2r", "r2c", "verify"];
-      if (tabs.includes(tabName)) {
-        const tabEl = document.getElementById(`tab${tabName.charAt(0).toUpperCase() + tabName.slice(1)}`);
-        if (tabEl) tabEl.click();
-      }
-    }
-  };
+  // initial
+  disableTabs();
+  showTab("tab-summary");
 })();
