@@ -91,8 +91,9 @@ DISCOURSE_PREFIXES = {
     "like",
 
     # common prose lead-ins
-    "however", "similarly", "regrettably", "traditionally", "notably",
-    "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
+    "however", "similarly", "regrettably", "traditionally", "notably", "Africa", 
+    "Europe", "Asia", "Likely", "like", 
+    "therefore", "thus", "hence", "consequently", "Moreover", "furthermore",
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
 
@@ -1416,3 +1417,4 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+
