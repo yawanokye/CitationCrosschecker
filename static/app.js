@@ -1,4 +1,4 @@
-/* static/app.js - OPTIMIZED VERSION for engine v1.4.0 */
+/* static/app.js - OPTIMIZED VERSION with Tab Navigation */
 
 (() => {
   "use strict";
@@ -15,7 +15,7 @@
   };
 
   // ------------------------------
-  // Payload normalizer (supports v1.4.0 features)
+  // Payload normalizer
   // ------------------------------
   function toNum(x, d = 0) {
     const n = Number(x);
@@ -39,12 +39,7 @@
   function normalizeData(d) {
     const data = d && typeof d === "object" ? d : {};
     
-    // Handle nested summary (v1.4.0 style)
     if (data.summary && typeof data.summary === "object") {
-      // Add cluster info if present
-      if (data.uncited_references_clusters) {
-        data.summary.uncited_clusters = data.uncited_references_clusters.length;
-      }
       return data;
     }
 
@@ -57,7 +52,6 @@
       missing_in_references: toNum(data.missing_in_references_count ?? missingArr.length),
       uncited_references: toNum(data.uncited_references_count ?? uncitedArr.length),
       match_rate: toNum(data.match_rate ?? 0),
-      uncited_clusters: toNum(data.uncited_clusters ?? 0),
     };
     return data;
   }
@@ -66,12 +60,15 @@
   // DOM Elements
   // ------------------------------
   const el = {
+    // File inputs
     file: document.getElementById("file"),
     style: document.getElementById("style"),
 
+    // Buttons
     btnCheck: document.getElementById("btnCheck"),
     btnVerify: document.getElementById("btnVerify"),
 
+    // Options
     verifyMode: document.getElementById("verifyMode"),
     throttle: document.getElementById("throttle"),
     maxVerify: document.getElementById("maxVerify"),
@@ -79,32 +76,47 @@
     useOpenAlex: document.getElementById("useOpenAlex"),
     aiAssist: document.getElementById("aiAssist"),
 
+    // Status
     status: document.getElementById("status"),
     progressBar: document.getElementById("progressBar"),
 
+    // Results container
     resultsCard: document.getElementById("resultsCard"),
     dash: document.getElementById("dash"),
     verifyDash: document.getElementById("verifyDash"),
     summaryTable: document.getElementById("summaryTable"),
     refMsg: document.getElementById("refMsg"),
 
+    // Tab containers
+    tabMissing: document.getElementById("tabMissing"),
+    tabUncited: document.getElementById("tabUncited"),
+    tabC2R: document.getElementById("tabC2R"),
+    tabR2C: document.getElementById("tabR2C"),
+    tabVerify: document.getElementById("tabVerify"),
+
+    // Tab content containers
+    missingContent: document.getElementById("missingContent"),
+    uncitedContent: document.getElementById("uncitedContent"),
+    c2rContent: document.getElementById("c2rContent"),
+    r2cContent: document.getElementById("r2cContent"),
+    verifyContent: document.getElementById("verifyContent"),
+
+    // Table bodies
     missingBody: document.getElementById("missingBody"),
     uncitedBody: document.getElementById("uncitedBody"),
-    uncitedClustersBody: document.getElementById("uncitedClustersBody"),
-
     c2rBody: document.getElementById("c2rBody"),
     r2cBody: document.getElementById("r2cBody"),
-
     verifyBody: document.getElementById("verifyBody"),
 
+    // Export buttons
     btnExportCsvTop: document.getElementById("btnExportCsvTop"),
     btnExportWordTop: document.getElementById("btnExportWordTop"),
     
-    // New elements for enhanced UI
+    // Additional UI elements
     fileSizeWarning: document.getElementById("fileSizeWarning"),
     engineVersion: document.getElementById("engineVersion"),
     processingTime: document.getElementById("processingTime"),
-    clusterInfo: document.getElementById("clusterInfo"),
+    lastUpdated: document.getElementById("lastUpdated"),
   };
 
   // ------------------------------
@@ -115,6 +127,68 @@
   let RUNNING = false;
   let START_TIME = null;
   let CURRENT_DATA = null;
+  let ACTIVE_TAB = "missing"; // default active tab
+
+  // ------------------------------
+  // Tab Navigation
+  // ------------------------------
+  function initTabs() {
+    // Define tabs and their content
+    const tabs = [
+      { id: "tabMissing", contentId: "missingContent", name: "missing" },
+      { id: "tabUncited", contentId: "uncitedContent", name: "uncited" },
+      { id: "tabC2R", contentId: "c2rContent", name: "c2r" },
+      { id: "tabR2C", contentId: "r2cContent", name: "r2c" },
+      { id: "tabVerify", contentId: "verifyContent", name: "verify" }
+    ];
+
+    // Add click handlers to each tab
+    tabs.forEach(tab => {
+      const tabEl = document.getElementById(tab.id);
+      if (!tabEl) return;
+
+      tabEl.addEventListener("click", (e) => {
+        e.preventDefault();
+        
+        // Remove active class from all tabs
+        tabs.forEach(t => {
+          const tEl = document.getElementById(t.id);
+          if (tEl) tEl.classList.remove("active");
+        });
+
+        // Hide all content
+        tabs.forEach(t => {
+          const cEl = document.getElementById(t.contentId);
+          if (cEl) cEl.classList.remove("active");
+        });
+
+        // Activate clicked tab
+        tabEl.classList.add("active");
+        const contentEl = document.getElementById(tab.contentId);
+        if (contentEl) contentEl.classList.add("active");
+        
+        ACTIVE_TAB = tab.name;
+        
+        // Store active tab in localStorage for persistence
+        try {
+          localStorage.setItem("citation_active_tab", tab.name);
+        } catch (e) {}
+      });
+    });
+
+    // Restore last active tab
+    try {
+      const savedTab = localStorage.getItem("citation_active_tab");
+      if (savedTab) {
+        const tabToActivate = tabs.find(t => t.name === savedTab);
+        if (tabToActivate) {
+          // Simulate click on saved tab
+          const tabEl = document.getElementById(tabToActivate.id);
+          if (tabEl) tabEl.click();
+        }
+      }
+    } catch (e) {}
+  }
 
   // ------------------------------
   // UI Helpers
@@ -158,8 +232,6 @@
     if (!el.status) return;
     el.status.className = `status ${tone}`;
     el.status.textContent = msg || "";
-    
-    // Update ARIA for accessibility
     el.status.setAttribute("aria-live", "polite");
   }
 
@@ -192,7 +264,6 @@
   function clearTables() {
     if (el.missingBody) el.missingBody.innerHTML = "";
     if (el.uncitedBody) el.uncitedBody.innerHTML = "";
-    if (el.uncitedClustersBody) el.uncitedClustersBody.innerHTML = "";
     if (el.c2rBody) el.c2rBody.innerHTML = "";
     if (el.r2cBody) el.r2cBody.innerHTML = "";
     if (el.verifyBody) el.verifyBody.innerHTML = "";
@@ -209,25 +280,16 @@
     }
 
     addRow("In-text citations found", s.in_text_citations_found ?? "", "Unique citations in document text");
-    addRow("Reference entries found", s.reference_entries_found ?? "", "Unique references in bibliography");
+    addRow("Reference entries found", s.reference_entries_found ?? "", "References in bibliography");
     addRow("Missing in references", s.missing_in_references ?? "", "Citations not found in reference list");
     addRow("Uncited references", s.uncited_references ?? "", "References never cited in text");
-    
-    if (s.uncited_clusters) {
-      addRow("Uncited clusters", s.uncited_clusters ?? "", "Groups of duplicate uncited references");
-    }
-    
     addRow("Match rate", fmtPct(s.match_rate), "Percentage of citations that matched references");
-
-    if (data?.engine_build) {
-      addRow("Engine", data.engine_build, "Engine version");
-    }
 
     el.summaryTable.innerHTML = rows.join("");
     
-    // Update engine version display
-    if (el.engineVersion && data?.engine_build) {
-      el.engineVersion.textContent = data.engine_build;
+    // Update engine version
+    if (el.engineVersion) {
+      el.engineVersion.textContent = data.engine_build || "v1.4.0";
     }
   }
 
@@ -265,24 +327,6 @@
     el.uncitedBody.innerHTML = rows.map((r) => {
       const text = asText(r);
       return `<tr><td>${esc(text)}</td></tr>`;
-    }).join("");
-  }
-
-  function renderUncitedClusters(data) {
-    // This requires backend to provide cluster data
-    const clusters = data?.uncited_references_clusters || [];
-    if (!el.uncitedClustersBody || !clusters.length) return;
-    
-    el.uncitedClustersBody.innerHTML = clusters.map((cluster, idx) => {
-      const members = cluster.members || [];
-      return `
-        <tr>
-          <td class="num">${idx + 1}</td>
-          <td>${esc(cluster.canonical || "")}</td>
-          <td class="num">${members.length}</td>
-          <td><button class="btn-small" onclick="toggleCluster(${idx})">Show</button></td>
-        </tr>
-      `;
     }).join("");
   }
 
@@ -345,13 +389,6 @@
     if (remaining > 0) {
       el.r2cBody.innerHTML += `<tr><td colspan="3" class="muted">... and ${remaining} more (truncated)</td></tr>`;
     }
-    
-    // Update cluster info display
-    if (el.clusterInfo) {
-      const clustered = rows.filter(r => r.cluster_id).length;
-      const duplicates = rows.filter(r => r.duplicate_of_cited).length;
-      el.clusterInfo.textContent = `Clustered: ${clustered} | Duplicates merged: ${duplicates}`;
-    }
   }
 
   function renderVerify(data) {
@@ -409,7 +446,6 @@
     renderSummaryTable(CURRENT_DATA);
     renderMissing(CURRENT_DATA);
     renderUncited(CURRENT_DATA);
-    renderUncitedClusters(CURRENT_DATA);
     renderC2R(CURRENT_DATA);
     renderR2C(CURRENT_DATA);
     renderVerify(CURRENT_DATA);
@@ -417,6 +453,11 @@
     // Update processing time
     if (el.processingTime && START_TIME) {
       el.processingTime.textContent = fmtTime(Date.now() - START_TIME);
+    }
+
+    // Update last updated timestamp
+    if (el.lastUpdated) {
+      el.lastUpdated.textContent = new Date().toLocaleTimeString();
     }
 
     // Enable export buttons
@@ -436,8 +477,7 @@
       return;
     }
 
-    // Check file size
-    if (f.size > 10 * 1024 * 1024) { // 10MB
+    if (f.size > 10 * 1024 * 1024) {
       if (!confirm(`File size is ${(f.size / 1e6).toFixed(1)}MB. Large files may take longer. Continue?`)) {
         return;
       }
@@ -466,17 +506,14 @@
       const aiMsg = aiOn ? "AI assist" : "";
       const statusMsg = [modeMsg, aiMsg].filter(Boolean).join(" and ");
       
-      setStatus(
-        statusMsg ? `Running check with ${statusMsg}...` : "Running check...",
-        "muted"
-      );
+      setStatus(statusMsg ? `Running with ${statusMsg}...` : "Running check...", "muted");
 
       updateProgress(20, "Processing document...");
 
       const res = await fetch("/verify", { 
         method: "POST", 
         body: fd,
-        signal: AbortSignal.timeout(300000) // 5 minute timeout
+        signal: AbortSignal.timeout(300000)
       });
       
       if (!res.ok) {
@@ -526,13 +563,13 @@
     if (!LAST_JOB_ID) return;
 
     let pollCount = 0;
-    const MAX_POLLS = 300; // 5 minutes at 1s interval
+    const MAX_POLLS = 300;
 
     POLL_TIMER = setInterval(async () => {
       pollCount++;
       
       if (pollCount > MAX_POLLS) {
-        setStatus("⚠️ Polling timeout - background tasks may still be running", "warn");
+        setStatus("⚠️ Polling timeout - tasks may still be running", "warn");
         stopPollingOnline();
         return;
       }
@@ -546,11 +583,9 @@
         const js = await res.json();
         if (!js || js.ok !== true) return;
 
-        // Update progress based on state
         let progress = 80;
         let statusMsg = "";
 
-        // AI status
         if (js.ai && js.ai.state) {
           if (js.ai.state === "running") {
             progress = 85 + (js.ai.progress || 0) * 10;
@@ -561,7 +596,6 @@
           }
         }
 
-        // Online verification status
         const online = js.online || {};
         if (online.state === "running") {
           progress = 85 + (online.progress || 0) * 10;
@@ -573,26 +607,23 @@
 
         updateProgress(progress, statusMsg);
 
-        // Update results if available
         if (js.result && Object.keys(js.result).length) {
           renderAll(js.result);
         }
 
-        // Determine if done
         const aiState = (js.ai || {}).state || "idle";
         const onlineState = (online || {}).state || "idle";
         const aiFinished = ["done", "error", "skipped", "idle"].includes(aiState);
         const onlineFinished = ["done", "error", "idle"].includes(onlineState);
 
         if (aiFinished && onlineFinished) {
-          updateProgress(100, "✅ All background tasks complete!");
+          updateProgress(100, "✅ All tasks complete!");
           setStatus("✅ Complete.", "success");
           stopPollingOnline();
           setTimeout(() => setRunning(false), 500);
         }
       } catch (e) {
-        // Silent fail for polling errors
-        console.debug("Polling error (non-critical):", e);
+        console.debug("Polling error:", e);
       }
     }, CONFIG.POLL_INTERVAL);
   }
@@ -669,14 +700,11 @@
       el.file.addEventListener("change", checkFileSize);
     }
 
-    // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
-      // Ctrl+Enter to run check
       if (e.ctrlKey && e.key === "Enter" && !RUNNING) {
         e.preventDefault();
         postVerify(false);
       }
-      // Ctrl+Shift+Enter to run with verification
       if (e.ctrlKey && e.shiftKey && e.key === "Enter" && !RUNNING) {
         e.preventDefault();
         postVerify(true);
@@ -688,15 +716,14 @@
   // Initialize
   // ------------------------------
   function init() {
+    initTabs(); // Initialize tab navigation first
     initEventListeners();
     setStatus("✅ Ready. Select a file and click Check.", "muted");
     checkFileSize();
     
-    // Set default values if not present
     if (el.throttle && !el.throttle.value) el.throttle.value = "0.12";
     if (el.maxVerify && !el.maxVerify.value) el.maxVerify.value = "0";
     
-    // Check for URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.has('job')) {
       LAST_JOB_ID = urlParams.get('job');
@@ -707,17 +734,22 @@
     }
   }
 
-  // Start when DOM ready
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
     init();
   }
 
-  // Expose some functions globally for debugging
   window.__citationApp = {
     getJobId: () => LAST_JOB_ID,
     getData: () => CURRENT_DATA,
     refresh: () => renderAll(CURRENT_DATA),
+    setTab: (tabName) => {
+      const tabs = ["missing", "uncited", "c2r", "r2c", "verify"];
+      if (tabs.includes(tabName)) {
+        const tabEl = document.getElementById(`tab${tabName.charAt(0).toUpperCase() + tabName.slice(1)}`);
+        if (tabEl) tabEl.click();
+      }
+    }
   };
 })();
