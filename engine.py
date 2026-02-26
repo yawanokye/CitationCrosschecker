@@ -1123,6 +1123,10 @@ def _cluster_references(references: List[Any]) -> Dict[str, Dict[str, Any]]:
 
     # Title-based clusters within bucket
     for (y, a1), items in by_bucket.items():
+        # Performance guard: avoid O(n^2) fuzzy clustering on huge buckets
+        if len(items) > 60:
+            clusters.append(items)
+            continue
         if len(items) <= 1:
             clusters.append(items)
             continue
@@ -1446,141 +1450,160 @@ def run_crosscheck(
     style_hint = "numeric" if is_numeric else "apa"
 
     if name.endswith(".docx"):
-        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines(ref_block_lines)
-        if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
-
-    elif name.endswith(".pdf"):
-        full_text = read_pdf_text(file_bytes)
-        lines = full_text.splitlines()
-
-        idx, tail = _find_reference_heading(lines, style_hint=style_hint)
-        if idx == -1:
-            main_text = full_text
-            references_raw = []
-            ref_msg = "No References heading found."
-        else:
-            main_text = "\n".join(lines[:idx]).strip()
-            ref_msg = f"Found References heading: {lines[idx].strip()}"
-            ref_block_lines: List[str] = []
-            if tail:
-                ref_block_lines.append(tail)
-            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
-            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
+    try:
+            main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
             references_raw = _merge_reference_lines(ref_block_lines)
             if style_hint == "numeric":
                 references_raw = _split_embedded_numeric_refs(references_raw)
 
-    else:
-        return {"error": "Upload a DOCX or PDF"}
+        elif name.endswith(".pdf"):
+            full_text = read_pdf_text(file_bytes)
+            lines = full_text.splitlines()
 
-    # NOTE: Truncating main_text causes false 'uncited' on long theses.
-    # Keep full text when possible. If extremely large, run citation extraction in chunks.
-    main_text_len = len(main_text or "")
-    too_large = main_text_len > 2_000_000
-
-    if style_hint == "apa":
-        # Dual-stream design:
-        # - STRICT stream drives "Missing" (academic accuracy)
-        # - LOOSE stream drives reconciliation + "Uncited" (maximum matching power)
-        cites_strict = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
-        # For very large documents, keep loose equal to strict to stay fast and memory-safe
-        cites_loose = cites_strict if too_large else extract_author_year_citations_loose(main_text)
-
-        refs = [parse_reference_author_year(r) for r in ref_strings]
-        refs = [r for r in refs if r]
-        ref_count = len(refs)
-
-        # Reconcile both streams
-        c2r_loose, r2c_loose, _missing_loose, uncited_refs, _intext_count_loose = reconcile_author_year(cites_loose, refs)
-        _c2r_strict, _r2c_strict, missing_rows, _uncited_strict, intext_count = reconcile_author_year(cites_strict, refs)
-
-        c2r = c2r_loose
-        r2c = r2c_loose
-        strict_intext_count = len(cites_strict)
-        loose_intext_count = len(cites_loose)
-
-    else:
-        cites_nums = _extract_numeric_citations_chunked(main_text, bracketed=True) if too_large else extract_numeric_citations(main_text, bracketed=True)
-        if "vancouver" in style_s and len(cites_nums) < 3:
-            cites_nums = _extract_numeric_citations_chunked(main_text, bracketed=False) if too_large else extract_numeric_citations(main_text, bracketed=False)
-
-        refs = [parse_reference_numeric(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites_nums, refs)
-        ref_count = len(refs)
-
-    missing_unique = int(len(missing_rows or []))
-    match_rate = 0.0
-    if intext_count > 0:
-        match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
-
-
-    # -----------------------------
-    # Commercial diagnostics / warnings
-    # -----------------------------
-    warnings: List[str] = []
-
-    # 1) High false-positive risk: many narrative-like items in missing list
-    try:
-        narr_like = 0
-        for row in (missing_rows or []):
-            txt = (row.get('citation_in_text') or '').strip()
-            if txt and _DECADE_YEAR_RE.search(txt):
-                narr_like += 1
+            idx, tail = _find_reference_heading(lines, style_hint=style_hint)
+            if idx == -1:
+                main_text = full_text
+                references_raw = []
+                ref_msg = "No References heading found."
             else:
-                # crude: long phrases or starts with a false token
-                head = txt.split(',')[0].strip() if txt else ''
-                if len(head.split()) > 3 or _is_false_author_token(head):
-                    narr_like += 1
-        if narr_like >= 3:
-            warnings.append(f"Some 'missing' items look narrative (likely false positives): {narr_like} flagged.")
-    except Exception:
-        pass
+                main_text = "\n".join(lines[:idx]).strip()
+                ref_msg = f"Found References heading: {lines[idx].strip()}"
+                ref_block_lines: List[str] = []
+                if tail:
+                    ref_block_lines.append(tail)
+                ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
+                ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
+                references_raw = _merge_reference_lines(ref_block_lines)
+                if style_hint == "numeric":
+                    references_raw = _split_embedded_numeric_refs(references_raw)
 
-    # 2) Name consistency hints (hyphen vs space; compound surnames)
+        else:
+            return {"error": "Upload a DOCX or PDF"}
+
+        # NOTE: Truncating main_text causes false 'uncited' on long theses.
+        # Keep full text when possible. If extremely large, run citation extraction in chunks.
+        main_text_len = len(main_text or "")
+        too_large = main_text_len > 2_000_000
+
+        if style_hint == "apa":
+            # Dual-stream design:
+            # - STRICT stream drives "Missing" (academic accuracy)
+            # - LOOSE stream drives reconciliation + "Uncited" (maximum matching power)
+            cites_strict = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
+            # For very large documents, keep loose equal to strict to stay fast and memory-safe
+            cites_loose = cites_strict if too_large else extract_author_year_citations_loose(main_text)
+
+            refs = [parse_reference_author_year(r) for r in ref_strings]
+            refs = [r for r in refs if r]
+            ref_count = len(refs)
+
+            # Reconcile both streams
+            c2r_loose, r2c_loose, _missing_loose, uncited_refs, _intext_count_loose = reconcile_author_year(cites_loose, refs)
+            _c2r_strict, _r2c_strict, missing_rows, _uncited_strict, intext_count = reconcile_author_year(cites_strict, refs)
+
+            c2r = c2r_loose
+            r2c = r2c_loose
+            strict_intext_count = len(cites_strict)
+            loose_intext_count = len(cites_loose)
+
+        else:
+            cites_nums = _extract_numeric_citations_chunked(main_text, bracketed=True) if too_large else extract_numeric_citations(main_text, bracketed=True)
+            if "vancouver" in style_s and len(cites_nums) < 3:
+                cites_nums = _extract_numeric_citations_chunked(main_text, bracketed=False) if too_large else extract_numeric_citations(main_text, bracketed=False)
+
+            refs = [parse_reference_numeric(r) for r in references_raw]
+            refs = [r for r in refs if r is not None]
+
+            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites_nums, refs)
+            ref_count = len(refs)
+
+        missing_unique = int(len(missing_rows or []))
+        match_rate = 0.0
+        if intext_count > 0:
+            match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
+
+
+        # -----------------------------
+        # Commercial diagnostics / warnings
+        # -----------------------------
+        warnings: List[str] = []
+
+        # 1) High false-positive risk: many narrative-like items in missing list
     try:
-        # build a set of citation keys observed
-        cite_keys = set()
-        for c in (cites or []):
-            p = _parse_author_year_from_cite(c)
-            if p:
-                cite_keys.add(p[0].lower())
-        # look for compound reference keys where only tail is present in citations
-        compound_hits = 0
-        for r in (refs or []):
-            ak = (r.key.split('|',1)[0] if '|' in r.key else r.key).lower()
-            if ' ' in ak:
-                tail = ak.split()[-1]
-                if tail in cite_keys and ak not in cite_keys:
-                    compound_hits += 1
-        if compound_hits >= 2:
-            warnings.append("Some compound surnames appear in multiple forms (hyphen/space). Encourage consistent spelling in the document.")
+            narr_like = 0
+            for row in (missing_rows or []):
+                txt = (row.get('citation_in_text') or '').strip()
+                if txt and _DECADE_YEAR_RE.search(txt):
+                    narr_like += 1
+                else:
+                    # crude: long phrases or starts with a false token
+                    head = txt.split(',')[0].strip() if txt else ''
+                    if len(head.split()) > 3 or _is_false_author_token(head):
+                        narr_like += 1
+            if narr_like >= 3:
+                warnings.append(f"Some 'missing' items look narrative (likely false positives): {narr_like} flagged.")
     except Exception:
-        pass
+            pass
 
-    return {
-        "filename": filename,
-        "style": style_s,
-        "engine_build": ENGINE_BUILD,
-        "verify_mode_used": (verify_mode or "all"),
-        "reference_detection_message": ref_msg,
-        "summary": {
-            "in_text_citations_found": int(intext_count),
-            "strict_intext_count": (int(strict_intext_count) if strict_intext_count is not None else None),
-            "loose_intext_count": (int(loose_intext_count) if loose_intext_count is not None else None),
-            "reference_entries_found": int(ref_count),
-            "missing_in_references": int(missing_unique),
-            "uncited_references": int(len(uncited_refs)),
-            "match_rate": float(round(match_rate, 1)),
+        # 2) Name consistency hints (hyphen vs space; compound surnames)
+    try:
+            # build a set of citation keys observed
+            cite_keys = set()
+            for c in (cites or []):
+                p = _parse_author_year_from_cite(c)
+                if p:
+                    cite_keys.add(p[0].lower())
+            # look for compound reference keys where only tail is present in citations
+            compound_hits = 0
+            for r in (refs or []):
+                ak = (r.key.split('|',1)[0] if '|' in r.key else r.key).lower()
+                if ' ' in ak:
+                    tail = ak.split()[-1]
+                    if tail in cite_keys and ak not in cite_keys:
+                        compound_hits += 1
+            if compound_hits >= 2:
+                warnings.append("Some compound surnames appear in multiple forms (hyphen/space). Encourage consistent spelling in the document.")
+    except Exception:
+            pass
+
+        return {
+            "filename": filename,
+            "style": style_s,
             "engine_build": ENGINE_BUILD,
-        },
-        "missing_in_references": missing_rows,
-        "uncited_references": uncited_refs,
-        "reconciliation_intext_to_reference": c2r,
-        "reconciliation_reference_to_intext": r2c,
-        "references_raw": references_raw,
-        "warnings": warnings,
-    }
+            "verify_mode_used": (verify_mode or "all"),
+            "reference_detection_message": ref_msg,
+            "summary": {
+                "in_text_citations_found": int(intext_count),
+                "strict_intext_count": (int(strict_intext_count) if strict_intext_count is not None else None),
+                "loose_intext_count": (int(loose_intext_count) if loose_intext_count is not None else None),
+                "reference_entries_found": int(ref_count),
+                "missing_in_references": int(missing_unique),
+                "uncited_references": int(len(uncited_refs)),
+                "match_rate": float(round(match_rate, 1)),
+                "engine_build": ENGINE_BUILD,
+            },
+            "missing_in_references": missing_rows,
+            "uncited_references": uncited_refs,
+            "reconciliation_intext_to_reference": c2r,
+            "reconciliation_reference_to_intext": r2c,
+            "references_raw": references_raw,
+            "warnings": warnings,
+        }
+    except Exception as e:
+        # Never crash the API. Return a minimal, debuggable payload.
+        return {
+            'ok': False,
+            'error': str(e),
+            'summary': {
+                'intext_count': 0,
+                'reference_count': 0,
+                'missing_count': 0,
+                'uncited_count': 0,
+                'match_rate': 0.0,
+            },
+            'missing': [],
+            'uncited': [],
+            'intext_to_ref': [],
+            'ref_to_intext': [],
+            'notes': ['engine recovered from exception; check server logs for details'],
+        }
