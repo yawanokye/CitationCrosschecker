@@ -56,8 +56,8 @@ DISCOURSE_PREFIXES = {
     "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
-    "for instance", "instance", "for example", "example",
-    "for instance,", "for example,",
+    "for instance", "instance", "for example", "example", "likely", 
+    "for instance,", "for example,", "uncertainty", "likewise", "Moreover,",
 }
 
 REF_END_HEADINGS = [
@@ -1354,3 +1354,4 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+
