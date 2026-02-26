@@ -3,6 +3,50 @@
 (() => {
   "use strict";
 
+  // ------------------------------
+  // Payload compatibility
+  // Some engine versions return a nested {summary:{...}}.
+  // Others return summary fields at the top level.
+  // This normalizer keeps the UI working across versions.
+  // ------------------------------
+  function toNum(x, d = 0) {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : d;
+  }
+
+  function asText(v) {
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    if (typeof v === "number") return String(v);
+    if (typeof v === "object") {
+      return (
+        v.reference || v.raw || v.text || v.label || v.display || v.citation || v.citation_in_text ||
+        (v.author && v.year ? `${v.author}, ${v.year}` : "") ||
+        (() => { try { return JSON.stringify(v); } catch { return ""; } })()
+      );
+    }
+    try { return String(v); } catch { return ""; }
+  }
+
+  function normalizeData(d) {
+    const data = d && typeof d === "object" ? d : {};
+    if (data.summary && typeof data.summary === "object") return data;
+
+    const missingArr = Array.isArray(data.missing_in_references) ? data.missing_in_references : [];
+    const uncitedArr = Array.isArray(data.uncited_references) ? data.uncited_references : [];
+
+    data.summary = {
+      in_text_citations_found: toNum(data.in_text_citations_found ?? data.intext_citations_found ?? data.intext_count ?? 0),
+      reference_entries_found: toNum(data.reference_entries_found ?? data.ref_count ?? 0),
+      missing_in_references: toNum(data.missing_in_references_count ?? missingArr.length),
+      uncited_references: toNum(data.uncited_references_count ?? uncitedArr.length),
+      match_rate: toNum(data.match_rate ?? 0),
+      strict_intext_count: toNum(data.strict_intext_count ?? 0),
+      loose_intext_count: toNum(data.loose_intext_count ?? 0),
+    };
+    return data;
+  }
+
   const el = {
     file: document.getElementById("file"),
     style: document.getElementById("style"),
@@ -86,9 +130,6 @@
     }
 
     addRow("In-text citations found", s.in_text_citations_found ?? "");
-
-    if (s.strict_intext_count !== undefined) addRow("Strict in-text (matched-grade)", s.strict_intext_count);
-    if (s.loose_intext_count !== undefined) addRow("Loose in-text (narrative-comma)", s.loose_intext_count);
     addRow("Reference entries found", s.reference_entries_found ?? "");
     addRow("Missing in references", s.missing_in_references ?? "");
     addRow("Uncited references", s.uncited_references ?? "");
@@ -124,7 +165,7 @@
       el.uncitedBody.innerHTML = `<tr><td class="muted">None</td></tr>`;
       return;
     }
-    el.uncitedBody.innerHTML = rows.map((r) => `<tr><td>${esc(r)}</td></tr>`).join("");
+    el.uncitedBody.innerHTML = rows.map((r) => `<tr><td>${esc(asText(r))}</td></tr>`).join("");
   }
 
   function renderC2R(data) {
@@ -207,6 +248,7 @@
 
   function renderAll(data) {
     if (!data) return;
+    data = normalizeData(data);
     clearTables();
 
     if (el.resultsCard) el.resultsCard.style.display = "block";
