@@ -1,790 +1,659 @@
 # engine.py
-# Commercial-grade citation detection + reconciliation (APA/Harvard primary)
-# Design goals:
-# - Missing_in_references computed from STRICT citations only (prevents false missing inflation)
-# - Uncited_references reduced using STRICT + LOOSE citations (max matching power)
-# - Plausibility / narrative classifier to suppress "Africa, ..." "War, 2003" etc.
-# - Weighted fuzzy fallback (author+year+title) for tough cases
-#
-# Exposes: run_crosscheck(...) used by main.py
+# Commercial-grade citation detection + reconciliation (Author-Date)
+# Focus: robust extraction, TOC/headers suppression, plausibility scoring, weighted fuzzy matching.
 
 from __future__ import annotations
+
+__version__ = "1.4.3-commercial"
 
 import io
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from collections import Counter, defaultdict
+from collections import defaultdict, Counter
 
 # Optional dependencies
 try:
-    from docx import Document  # python-docx
+    from docx import Document
     DOCX_OK = True
 except Exception:
-    Document = None
     DOCX_OK = False
+    Document = None
 
 try:
     import pdfplumber
     PDF_OK = True
 except Exception:
-    pdfplumber = None
     PDF_OK = False
+    pdfplumber = None
 
-# Fuzzy matching (prefer rapidfuzz)
 try:
     from rapidfuzz import fuzz
-    FUZZ_OK = True
+    FUZZY_OK = True
 except Exception:
+    FUZZY_OK = False
     fuzz = None
-    FUZZ_OK = False
 
 
-# -----------------------------
-# Constants / Heuristics
-# -----------------------------
-
+# -------------------------
+# Normalisation
+# -------------------------
 YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
 YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
 
-REF_HEADINGS = [
-    r"^\s*references?\s*(?:list)?\s*$",
-    r"^\s*bibliograph(?:y|ies)\s*$",
-    r"^\s*works\s+cited\s*$",
-    r"^\s*literature\s+cited\s*$",
-]
+REF_HEADINGS_RE = re.compile(
+    r"^\s*(references?|bibliograph(?:y|ies)|works\s+cited|literature\s+cited)\b",
+    re.I,
+)
 
-# If these appear at the beginning of a captured "citation",
-# it is almost always narrative text, not an author.
-NARRATIVE_PREFIXES = {
-    "according", "see", "e.g", "eg", "for", "for instance", "for example", "example",
-    "instance", "as", "as reported", "as noted", "as shown", "as suggested",
-    "in", "on", "at", "by", "from", "to", "the", "a", "an", "this", "that",
-    "like", "such", "including", "includes", "notably", "moreover",
-}
+TOC_HEADINGS_RE = re.compile(r"^\s*(table\s+of\s+contents|contents)\s*$", re.I)
+TOC_LINE_RE = re.compile(r"\.{3,}\s*\d+\s*$")
 
-# Common “false author” nouns we saw in your logs/screens
-FALSE_AUTHOR_NOUNS = {
-    "war", "crisis", "scandal", "revolution", "coup", "estimates", "statistics",
-    "figure", "table", "appendix", "chapter", "section", "model", "equation",
-}
+REF_BULLET_RE = re.compile(r"^\s*(?:\[\d+\]|\(?\d+\)?[.)]|\d+\s+)\s*")
 
-# Continents + common regions (keep small; you can expand later)
-REGIONS = {
-    "africa", "europe", "asia", "america", "oceania",
-    "sub-saharan", "sub saharan", "middle east", "gulf", "gcc",
-}
-
-# “Country-like” tokens frequently causing false hits when preceding commas
-# (keep small, high-impact; don’t try to list the world)
-COUNTRY_TOKENS = {
-    "ghana", "nigeria", "kenya", "south africa", "malaysia", "china", "wuhan",
-    "turkey", "pakistan", "romania", "ireland", "brics", "emu", "us", "usa", "uk",
-}
-
-# Organization alias normalization (minimal, high-value)
-ORG_ALIASES = {
-    "world health organisation": "world health organization",
-    "who": "world health organization",
-    "imf": "international monetary fund",
-    "ecb": "european central bank",
-    "bis": "bank for international settlements",
-    "oecd": "oecd",
-    "auc/oecd": "auc oecd",
-    "auc oecd": "auc oecd",
-}
-
-
-# -----------------------------
-# Helpers: text normalization
-# -----------------------------
 
 def _strip_accents(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s or "")
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
     return "".join(ch for ch in s if not unicodedata.combining(ch))
+
 
 def _norm_space(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
 
-def _norm_basic(s: str) -> str:
-    s = _strip_accents(s or "")
-    s = s.replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
-    s = s.replace("\u00a0", " ")
-    return _norm_space(s)
 
-def _norm_key_token(s: str) -> str:
-    # Lowercase and keep letters only for matching surnames robustly
-    s = _strip_accents(s or "").lower()
-    s = re.sub(r"[^a-z]+", "", s)
+def _norm_text(s: str) -> str:
+    s = _strip_accents((s or "")).lower()
+    s = s.replace("’", "'")
+    s = re.sub(r"[\u2010\u2011\u2012\u2013\u2014]", "-", s)
+    s = re.sub(r"[^a-z0-9\-'/& ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
     return s
 
-def _norm_author_blob(s: str) -> str:
-    s = _norm_basic(s).lower()
-    s = s.replace("&", " and ")
-    s = re.sub(r"\bet al\.?\b", " etal ", s)
-    s = re.sub(r"[^a-z0-9\s\-\/]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    # normalize org aliases
-    s2 = s
-    for k, v in ORG_ALIASES.items():
-        if s2 == k:
-            s2 = v
-    return s2
 
-def _title_hint(s: str, max_len: int = 60) -> str:
-    s = _norm_basic(s)
-    s = re.sub(r"\s+", " ", s).strip()
-    if len(s) <= max_len:
-        return s
-    return s[:max_len].rstrip()
-
-def _safe_int(x: Any, default: int = 0) -> int:
-    try:
-        return int(x)
-    except Exception:
-        return default
+def _base_year(y: str) -> str:
+    y = (y or "").strip()
+    m = re.match(r"^((?:19|20)\d{2})", y)
+    return m.group(1) if m else y
 
 
-# -----------------------------
+# -------------------------
+# TOC suppression
+# -------------------------
+
+def _remove_toc(lines: List[str]) -> List[str]:
+    """Remove TOC blocks that create large false-positive citation counts."""
+    out: List[str] = []
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        ln = (lines[i] or "").strip()
+        if TOC_HEADINGS_RE.match(ln):
+            i += 1
+            skipped = 0
+            while i < n and skipped < 1200:
+                x = (lines[i] or "").strip()
+                if not x:
+                    i += 1
+                    skipped += 1
+                    continue
+                if TOC_LINE_RE.search(x) or re.fullmatch(r"\d+", x):
+                    i += 1
+                    skipped += 1
+                    continue
+                # typical TOC entry: short + ends with page number
+                if len(x) < 40 and re.search(r"\s\d+\s*$", x):
+                    i += 1
+                    skipped += 1
+                    continue
+                # stop skipping when real content begins
+                if re.match(r"^\s*(chapter|abstract|introduction)\b", x, re.I):
+                    break
+                if len(x) > 80 and re.search(r"[.!?]", x):
+                    break
+                i += 1
+                skipped += 1
+            continue
+
+        out.append(lines[i])
+        i += 1
+
+    return out
+
+
+def _split_body_and_references(lines: List[str]) -> Tuple[List[str], List[str], str]:
+    ref_idx = None
+    ref_heading = ""
+    for i, ln in enumerate(lines):
+        if REF_HEADINGS_RE.match(ln):
+            ref_idx = i
+            ref_heading = ln.strip()
+            break
+    if ref_idx is None:
+        return lines, [], ""
+    return lines[:ref_idx], lines[ref_idx + 1 :], ref_heading
+
+
+# -------------------------
 # File extraction
-# -----------------------------
+# -------------------------
 
-def _extract_text_from_docx(file_bytes: bytes) -> str:
-    if not DOCX_OK:
-        return ""
+def _extract_lines_from_docx(file_bytes: bytes) -> List[str]:
+    if not DOCX_OK or Document is None:
+        return []
+
     doc = Document(io.BytesIO(file_bytes))
-    parts: List[str] = []
+    lines: List[str] = []
 
-    # paragraphs
     for p in doc.paragraphs:
-        t = _norm_basic(p.text)
+        t = _norm_space(p.text)
         if t:
-            parts.append(t)
+            lines.append(t)
 
-    # tables (important for “hanging indent” / broken reference lines)
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            row_txt = []
+    # Tables often contain references
+    for table in doc.tables:
+        for row in table.rows:
             for cell in row.cells:
-                ct = _norm_basic(cell.text)
-                if ct:
-                    row_txt.append(ct)
-            if row_txt:
-                parts.append(" | ".join(row_txt))
+                t = _norm_space(cell.text)
+                if t:
+                    lines.append(t)
 
-    return "\n".join(parts)
+    return lines
 
-def _extract_text_from_pdf(file_bytes: bytes) -> str:
-    if not PDF_OK:
-        return ""
-    text_parts: List[str] = []
+
+def _extract_lines_from_pdf(file_bytes: bytes) -> List[str]:
+    if not PDF_OK or pdfplumber is None:
+        return []
+
+    lines: List[str] = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
-            try:
-                t = page.extract_text() or ""
-            except Exception:
-                t = ""
-            t = _norm_basic(t)
-            if t:
-                text_parts.append(t)
-    return "\n".join(text_parts)
+            txt = page.extract_text() or ""
+            for ln in txt.splitlines():
+                ln = _norm_space(ln)
+                if ln:
+                    lines.append(ln)
 
-def _extract_full_text(file_bytes: bytes, filename: str) -> str:
-    fn = (filename or "").lower()
-    if fn.endswith(".docx"):
-        return _extract_text_from_docx(file_bytes)
-    if fn.endswith(".pdf"):
-        return _extract_text_from_pdf(file_bytes)
-    # fallback: try docx then pdf
-    t = _extract_text_from_docx(file_bytes)
-    if t:
-        return t
-    return _extract_text_from_pdf(file_bytes)
+    return lines
 
 
-# -----------------------------
-# Reference section detection + parsing
-# -----------------------------
+# -------------------------
+# Reference parsing
+# -------------------------
 
-def _find_references_start(lines: List[str]) -> int:
-    heading_res = [re.compile(pat, re.I) for pat in REF_HEADINGS]
-    for i, ln in enumerate(lines):
-        s = ln.strip()
-        if not s:
+def _split_authors_blob(left: str) -> List[str]:
+    """Extract probable surnames/org tokens from the author part."""
+    s = _norm_text(left)
+    if not s:
+        return []
+
+    # normalise conjunctions
+    s = s.replace("&", " and ")
+    s = re.sub(r"\bet\s+al\b\.?", "", s)
+
+    # split authors
+    parts = re.split(r"\band\b|;|/|\|", s)
+
+    out: List[str] = []
+    for p in parts:
+        p = p.strip(" ,.;:()[]{}")
+        if not p:
             continue
-        for hre in heading_res:
-            if hre.match(s):
-                return i
-    return -1
+        # remove initials
+        p = re.sub(r"\b[a-z]\b", " ", p)
+        p = _norm_space(p)
+        if not p:
+            continue
+        toks = p.split()
+        cand = toks[-1] if toks else ""
+        cand = cand.strip("-' ")
+        if len(cand) < 2:
+            continue
+        out.append(cand)
 
-def _slice_reference_lines(full_text: str) -> Tuple[str, List[str]]:
-    lines = full_text.splitlines()
-    idx = _find_references_start(lines)
-    if idx < 0:
-        return "", []
-    # everything after heading
-    ref_lines = lines[idx + 1 :]
-    return lines[idx].strip(), ref_lines
+    # de-dup, preserve order
+    seen = set()
+    final: List[str] = []
+    for x in out:
+        k = _norm_text(x).replace(" ", "")
+        if k in seen:
+            continue
+        seen.add(k)
+        final.append(x)
 
-def _is_probable_ref_line(line: str) -> bool:
-    # Must contain a year or a DOI/URL-ish marker
-    if YEAR_RE.search(line):
-        return True
-    if "doi" in line.lower() or "http://" in line.lower() or "https://" in line.lower():
-        return True
-    return False
+    return final
 
-def _split_reference_entries(ref_lines: List[str]) -> List[str]:
-    """
-    Robustly merge broken lines into reference entries.
-    Handles:
-    - numbering like "1." "2)" "[3]"
-    - hanging indents where continuation line doesn’t start with a number
-    """
-    entries: List[str] = []
-    buf: List[str] = []
 
-    start_re = re.compile(r"^\s*(\[\d+\]|\d+\s*[\.\)]|\(\d+\))\s+")
-    for raw in ref_lines:
-        ln = _norm_basic(raw)
+def _make_key(surnames: List[str], year: str) -> str:
+    year = _base_year(year)
+    surn = [_norm_text(x).replace(" ", "") for x in surnames if x]
+    surn = [x for x in surn if x]
+    surn.sort()  # order-invariant for matching
+    return "|".join(surn) + "|" + year
+
+
+def _candidate_reference_lines(ref_lines: List[str]) -> List[str]:
+    """Merge wrapped reference lines."""
+    merged: List[str] = []
+    buf = ""
+
+    def looks_like_new(line: str) -> bool:
+        if REF_BULLET_RE.match(line):
+            return True
+        # common: Author, A. (2018). ...
+        return bool(re.match(r"^[A-Z].{1,80}\b" + YEAR, line))
+
+    for ln in ref_lines:
+        ln = _norm_space(ln)
         if not ln:
             continue
-
-        starts_new = bool(start_re.match(ln))
-        # also start new if line looks like a new author line and buffer already has a plausible ref
-        looks_new_author = bool(re.match(r"^[A-Z][A-Za-z\-\']+(?:\s+[A-Z][A-Za-z\-\']+)?\s*,", ln))
-
-        if buf and (starts_new or (looks_new_author and _is_probable_ref_line(ln) and _is_probable_ref_line(" ".join(buf)))):
-            entries.append(_norm_space(" ".join(buf)))
-            buf = []
-
-        # strip numbering token
-        ln = start_re.sub("", ln).strip()
-        buf.append(ln)
+        if looks_like_new(ln):
+            if buf:
+                merged.append(buf.strip())
+            buf = ln
+        else:
+            buf = (buf + " " + ln).strip() if buf else ln
 
     if buf:
-        entries.append(_norm_space(" ".join(buf)))
+        merged.append(buf.strip())
 
-    # keep only plausible refs
-    out = []
-    for e in entries:
-        if _is_probable_ref_line(e) and len(e) >= 12:
-            out.append(e)
-    return out
+    return [x for x in merged if not REF_HEADINGS_RE.match(x)]
 
-def _extract_year(s: str) -> Optional[str]:
-    m = YEAR_RE.search(s or "")
+
+def _parse_reference_entry(raw: str) -> Optional[Dict[str, Any]]:
+    s = _norm_space(raw)
+    if not s:
+        return None
+    s = REF_BULLET_RE.sub("", s).strip()
+
+    m = YEAR_RE.search(s)
     if not m:
         return None
-    return m.group(1)
 
-def _extract_author_blob(ref: str) -> str:
-    """
-    Try to capture author portion: from start up to year token.
-    Works even if year is like "1998." without parentheses.
-    """
-    ref = _norm_basic(ref)
-    y = _extract_year(ref)
-    if not y:
-        # fallback: up to first period
-        parts = ref.split(".", 1)
-        return parts[0].strip() if parts else ref.strip()
+    year = _base_year(m.group(1))
+    left = s[: m.start()].strip(" ,.;:()[]{}")
+    if not left:
+        return None
 
-    # take everything before year occurrence
-    pos = ref.lower().find(y.lower())
-    if pos <= 0:
-        parts = ref.split(".", 1)
-        return parts[0].strip() if parts else ref.strip()
+    surnames = _split_authors_blob(left)
+    if not surnames:
+        return None
 
-    blob = ref[:pos].strip(" ,.;:-")
-    # remove leading editors markers if any
-    blob = re.sub(r"^\s*(eds?|editor(?:s)?)\b[:\s\-]*", "", blob, flags=re.I).strip()
-    return blob
-
-def _extract_title_blob(ref: str) -> str:
-    """
-    Rough title hint: after year token to next period.
-    """
-    ref = _norm_basic(ref)
-    y = _extract_year(ref)
-    if not y:
-        return ""
-    # split around year
-    parts = re.split(rf"\b{re.escape(y)}\b", ref, maxsplit=1, flags=re.I)
-    if len(parts) < 2:
-        return ""
-    tail = parts[1]
-    tail = tail.lstrip(" )].,;:-")
-    # title usually up to next period
-    t = tail.split(".", 1)[0].strip()
-    return t
-
-def _surnames_from_author_blob(blob: str) -> List[str]:
-    """
-    Extract surname tokens robustly:
-    - handles "Kyereboah‐Coleman" vs "Kyereboah Coleman"
-    - handles "&", "and", commas
-    - handles org authors (AUC/OECD etc.)
-    """
-    b = _norm_author_blob(blob)
-
-    # Org style: if it is mostly uppercase or contains '/', keep as a single token
-    if "/" in b or (b.isupper() and len(b) <= 12):
-        tok = _norm_key_token(b.replace("/", " "))
-        return [tok] if tok else []
-
-    # Split by separators
-    b = b.replace("/", " ")
-    b = re.sub(r"\betal\b", " etal ", b)
-    b = re.sub(r"\band\b", " ", b)
-    b = b.replace(",", " ")
-    b = b.replace("&", " ")
-    tokens = [t for t in re.split(r"\s+", b) if t]
-
-    # Heuristic: surnames are usually alphabetic tokens, keep the “strong” ones
-    surnames: List[str] = []
-    for t in tokens:
-        if t in {"etal"}:
-            continue
-        if len(t) < 2:
-            continue
-        # remove hyphens, apostrophes already mostly removed by normalization
-        key = _norm_key_token(t)
-        if not key:
-            continue
-        surnames.append(key)
-
-    # Prefer first 3 strong tokens (avoid huge org blobs)
-    if len(surnames) > 5:
-        surnames = surnames[:5]
-    return surnames
-
-@dataclass
-class ReferenceEntry:
-    raw: str
-    year: str
-    author_blob: str
-    surnames: Tuple[str, ...]
-    title_hint: str
-
-    @property
-    def key(self) -> str:
-        return f"{'|'.join(self.surnames)}::{self.year}"
-
-@dataclass
-class InTextCitation:
-    raw: str
-    year: str
-    surnames: Tuple[str, ...]
-    strict: bool  # strict vs loose capture
-    context_hint: str = ""
-
-    @property
-    def key(self) -> str:
-        return f"{'|'.join(self.surnames)}::{self.year}"
+    key = _make_key(surnames[:3], year)
+    return {"raw": s, "year": year, "surnames": surnames, "key": key}
 
 
-def _parse_reference_entries(entries: List[str]) -> List[ReferenceEntry]:
-    out: List[ReferenceEntry] = []
-    for e in entries:
-        y = _extract_year(e)
-        if not y:
-            continue
-        author_blob = _extract_author_blob(e)
-        surn = tuple(_surnames_from_author_blob(author_blob))
-        if not surn:
-            continue
-        title = _title_hint(_extract_title_blob(e))
-        out.append(ReferenceEntry(raw=e, year=y, author_blob=author_blob, surnames=surn, title_hint=title))
-    return out
+def extract_references(lines: List[str]) -> Tuple[List[Dict[str, Any]], str]:
+    body, ref_lines, ref_heading = _split_body_and_references(lines)
+
+    ref_lines = _remove_toc(ref_lines)
+    cand = _candidate_reference_lines(ref_lines)
+
+    refs: List[Dict[str, Any]] = []
+    for r in cand:
+        ent = _parse_reference_entry(r)
+        if ent:
+            refs.append(ent)
+
+    # de-dup by key, keep longest raw
+    best: Dict[str, Dict[str, Any]] = {}
+    for ent in refs:
+        k = ent["key"]
+        if k not in best or len(ent["raw"]) > len(best[k]["raw"]):
+            best[k] = ent
+
+    return list(best.values()), ref_heading
 
 
-# -----------------------------
-# Citation extraction (STRICT + LOOSE)
-# -----------------------------
+# -------------------------
+# In-text extraction + plausibility
+# -------------------------
 
-def _looks_like_false_author(name_blob: str) -> bool:
-    nb = _norm_basic(name_blob).strip()
-    if not nb:
-        return True
+PAREN_GROUP_RE = re.compile(r"\((?P<inside>[^()]{0,260}?\b" + YEAR + r"\b[^()]*)\)")
 
-    low = nb.lower().strip(" ,.;:-")
-    # narrative prefixes
-    for p in sorted(NARRATIVE_PREFIXES, key=len, reverse=True):
-        if low.startswith(p + " "):
-            return True
+NARRATIVE_RE = re.compile(
+    r"(?P<auth>[A-Z][A-Za-z'’\-]+(?:\s*(?:&|and)\s*[A-Z][A-Za-z'’\-]+){0,3}|[A-Z][A-Za-z'’\-]+\s+et\s+al\.)\s*\(\s*(?P<year>"
+    + YEAR
+    + r")\s*\)",
+    re.I,
+)
 
-    # region/country tokens at start
-    low2 = low.strip(",")
-    if low2 in REGIONS or low2 in COUNTRY_TOKENS:
-        return True
+SURNAME_COMMA_YEAR_RE = re.compile(
+    r"\b(?P<surname>[A-Z][A-Za-z'’\-]{2,})\s*,\s*(?P<year>" + YEAR + r")\b"
+)
 
-    # single common noun (war, crisis, etc.)
-    if low2 in FALSE_AUTHOR_NOUNS:
-        return True
+DISCOURSE_PREFIXES = [
+    "for instance",
+    "for example",
+    "e.g",
+    "eg",
+    "i.e",
+    "ie",
+    "see",
+    "cf",
+    "according to",
+]
 
-    # too long narrative string
-    if len(low2.split()) >= 8 and "," in low2 and not any(ch.isdigit() for ch in low2):
-        return True
-
-    return False
-
-def _plausible_surname_tokens(tokens: List[str], ref_surname_vocab: Optional[set] = None) -> List[str]:
-    """
-    Keep surname tokens that look real:
-    - appear in reference vocab OR look like name-like tokens
-    """
-    out = []
-    for t in tokens:
-        if not t:
-            continue
-        if t in {"etal"}:
-            continue
-        if ref_surname_vocab and t in ref_surname_vocab:
-            out.append(t)
-            continue
-        # heuristic: 3+ letters tends to be more surname-like
-        if len(t) >= 3 and t.isalpha():
-            out.append(t)
-    return out
-
-def _extract_intext_strict(full_text: str, ref_surname_vocab: Optional[set]) -> List[InTextCitation]:
-    """
-    STRICT patterns only:
-    - (Surname, 2010)
-    - (Surname & Surname, 2010)
-    - Surname (2010)
-    - (Surname et al., 2010)
-    - Multiple citations inside parentheses separated by ; are split.
-    """
-    text = _norm_basic(full_text)
-
-    # parenthetical groups: ( ... 2010 ... )
-    paren_group_re = re.compile(r"\(([^()]{0,220}?\b" + YEAR + r"\b[^()]{0,60}?)\)")
-    # narrative: Surname (2010)
-    narrative_re = re.compile(r"\b([A-Z][A-Za-z\-\']+(?:\s+(?:&|and)\s+[A-Z][A-Za-z\-\']+|\s+et\s+al\.?)?)\s*\(\s*(" + YEAR + r")\s*\)")
-
-    out: List[InTextCitation] = []
-
-    for m in paren_group_re.finditer(text):
-        group = m.group(1)
-        # split on ; for multiple citations
-        parts = [p.strip() for p in group.split(";") if p.strip()]
-        for p in parts:
-            y = _extract_year(p)
-            if not y:
-                continue
-            # try to take author portion before year
-            pre = p.lower().split(str(y).lower(), 1)[0]
-            pre = _norm_basic(pre).strip(" ,.;:-")
-            if not pre:
-                continue
-            if _looks_like_false_author(pre):
-                continue
-            # remove leading connectors
-            pre = re.sub(r"^\s*(?:see|e\.g\.|eg|cf\.?)\s+", "", pre, flags=re.I).strip()
-            tokens = _surnames_from_author_blob(pre)
-            tokens = _plausible_surname_tokens(tokens, ref_surname_vocab)
-            if not tokens:
-                continue
-            out.append(InTextCitation(raw=_norm_space(p), year=y, surnames=tuple(tokens), strict=True))
-
-    for m in narrative_re.finditer(text):
-        author_blob = m.group(1)
-        y = m.group(2)
-        if _looks_like_false_author(author_blob):
-            continue
-        tokens = _surnames_from_author_blob(author_blob)
-        tokens = _plausible_surname_tokens(tokens, ref_surname_vocab)
-        if not tokens:
-            continue
-        out.append(InTextCitation(raw=_norm_space(m.group(0)), year=y, surnames=tuple(tokens), strict=True))
-
-    return out
-
-def _extract_intext_loose(full_text: str, ref_surname_vocab: set) -> List[InTextCitation]:
-    """
-    LOOSE patterns to help reconcile references without inflating Missing:
-    - "Surname, 2010" (without parentheses)
-    - "Surname & Surname, 2010"
-    - "Surname et al., 2010"
-    But only if surname token exists in reference surname vocab (key commercial trick).
-    """
-    text = _norm_basic(full_text)
-
-    # This is intentionally conservative: require at least one known reference surname
-    # This prevents “Africa, 2019” nonsense if Africa is not a ref surname.
-    loose_re = re.compile(
-        r"\b([A-Z][A-Za-z\-\']+"
-        r"(?:\s+(?:&|and)\s+[A-Z][A-Za-z\-\']+|\s+et\s+al\.?)?)\s*,\s*(" + YEAR + r")\b"
-    )
-
-    out: List[InTextCitation] = []
-    for m in loose_re.finditer(text):
-        author_blob = m.group(1)
-        y = m.group(2)
-
-        if _looks_like_false_author(author_blob):
-            continue
-
-        tokens = _surnames_from_author_blob(author_blob)
-        if not tokens:
-            continue
-
-        # Key filter: at least one token must appear in ref vocab
-        if not any(t in ref_surname_vocab for t in tokens):
-            continue
-
-        out.append(InTextCitation(raw=_norm_space(m.group(0)), year=y, surnames=tuple(tokens), strict=False))
-    return out
+# Block common false positives (countries/continents + narrative words)
+BLOCKED_TOKENS = set(
+    _norm_text(x).replace(" ", "")
+    for x in [
+        "africa",
+        "europe",
+        "asia",
+        "america",
+        "australia",
+        "ghana",
+        "nigeria",
+        "kenya",
+        "war",
+        "revolution",
+        "crisis",
+        "scandal",
+        "coup",
+        "estimates",
+        "moreover",
+        "chapter",
+        "section",
+        "appendix",
+        "table",
+        "figure",
+        "source",
+        "data",
+    ]
+)
 
 
-# -----------------------------
-# Matching (exact + weighted fuzzy)
-# -----------------------------
+def _build_ref_lexicons(refs: List[Dict[str, Any]]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, List[str]], set]:
+    ref_by_key = {r["key"]: r for r in refs}
+    ref_by_year: Dict[str, List[str]] = defaultdict(list)
+    surn_lex = set()
 
-def _token_overlap(a: Tuple[str, ...], b: Tuple[str, ...]) -> float:
-    sa, sb = set(a), set(b)
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / max(1, len(sa | sb))
-
-def _weighted_fuzzy_score(cit: InTextCitation, ref: ReferenceEntry) -> float:
-    """
-    Weighted score in [0, 100]
-    - year match is mandatory for high score
-    - author overlap dominates
-    - slight bonus if title hint shares words with citation raw (rare, but helps)
-    """
-    if cit.year.lower() != ref.year.lower():
-        # allow letter suffix differences e.g., 2020a vs 2020
-        cy = re.sub(r"[a-z]$", "", cit.year.lower())
-        ry = re.sub(r"[a-z]$", "", ref.year.lower())
-        if cy != ry:
-            return 0.0
-
-    overlap = _token_overlap(cit.surnames, ref.surnames)  # 0..1
-
-    # author string fuzz
-    a1 = " ".join(cit.surnames)
-    a2 = " ".join(ref.surnames)
-    if FUZZ_OK:
-        f1 = fuzz.token_set_ratio(a1, a2)
-    else:
-        # small fallback
-        f1 = 100.0 * overlap
-
-    # title bonus if citation raw includes a rare title word (light weight)
-    bonus = 0.0
-    if ref.title_hint:
-        words = [w.lower() for w in re.findall(r"[A-Za-z]{5,}", ref.title_hint)]
-        raw_low = cit.raw.lower()
-        hits = sum(1 for w in words[:6] if w in raw_low)
-        bonus = min(6.0, hits * 2.0)
-
-    score = (overlap * 55.0) + (0.40 * float(f1)) + bonus
-    if score > 100:
-        score = 100.0
-    return score
-
-def _build_ref_index(refs: List[ReferenceEntry]) -> Dict[str, List[int]]:
-    idx = defaultdict(list)
-    for i, r in enumerate(refs):
-        idx[r.year.lower()].append(i)
-    return idx
-
-def _match_citations_to_refs(
-    citations: List[InTextCitation],
-    refs: List[ReferenceEntry],
-    fuzzy_threshold: float = 82.0,
-) -> Tuple[Dict[int, int], Dict[int, List[int]]]:
-    """
-    Returns:
-      - best_match: citation_index -> ref_index
-      - ref_to_citations: ref_index -> [citation_indices]
-    """
-    ref_by_year = _build_ref_index(refs)
-
-    best_match: Dict[int, int] = {}
-    ref_to_citations: Dict[int, List[int]] = defaultdict(list)
-
-    # 1) Exact-ish match: token overlap + same year
-    for ci, c in enumerate(citations):
-        candidates = ref_by_year.get(c.year.lower(), [])
-        # also try year without suffix
-        if not candidates:
-            cys = re.sub(r"[a-z]$", "", c.year.lower())
-            candidates = []
-            for y, idxs in ref_by_year.items():
-                if re.sub(r"[a-z]$", "", y) == cys:
-                    candidates.extend(idxs)
-
-        best_r = None
-        best_score = -1.0
-        for ri in candidates:
-            r = refs[ri]
-            ov = _token_overlap(c.surnames, r.surnames)
-            if ov >= 0.60:  # strong overlap, accept immediately
-                best_r = ri
-                best_score = 100.0
-                break
-            # else keep for fuzzy
-            sc = _weighted_fuzzy_score(c, r)
-            if sc > best_score:
-                best_score = sc
-                best_r = ri
-
-        if best_r is not None and best_score >= fuzzy_threshold:
-            best_match[ci] = best_r
-            ref_to_citations[best_r].append(ci)
-
-    return best_match, ref_to_citations
-
-
-# -----------------------------
-# Public API
-# -----------------------------
-
-def run_crosscheck(
-    file_bytes: bytes,
-    filename: str,
-    style: str = "apa",
-    verify_online: bool = False,
-    verify_mode: str = "all",
-    max_verify: int = 0,
-    throttle_s: float = 0.12,
-    use_crossref: bool = True,
-    use_openalex: bool = True,
-) -> Dict[str, Any]:
-    """
-    Offline extraction + matching used by /verify (online verification handled elsewhere).
-    Returns structure expected by static/app.js:
-      summary
-      missing_in_references (list dict)
-      uncited_references (list str)
-      reconciliation_intext_to_reference (list dict)
-      reconciliation_reference_to_intext (list dict)
-      (ai_assist handled in main.py, not here)
-    """
-
-    full_text = _extract_full_text(file_bytes, filename)
-    heading, ref_lines = _slice_reference_lines(full_text)
-    raw_refs = _split_reference_entries(ref_lines)
-    refs = _parse_reference_entries(raw_refs)
-
-    # build reference surname vocab (powerful filter for loose citations)
-    ref_surname_vocab = set()
     for r in refs:
-        for s in r.surnames:
-            if s:
-                ref_surname_vocab.add(s)
+        ref_by_year[r["year"]].append(r["key"])
+        for s in r.get("surnames", [])[:3]:
+            surn_lex.add(_norm_text(s).replace(" ", ""))
 
-    strict_cits = _extract_intext_strict(full_text, ref_surname_vocab)
-    loose_cits = _extract_intext_loose(full_text, ref_surname_vocab)
+    return ref_by_key, ref_by_year, surn_lex
 
-    # Deduplicate citations (same key + same raw)
-    def _dedupe(cits: List[InTextCitation]) -> List[InTextCitation]:
+
+def _plausible_surname(surname: str, surn_lex: set) -> bool:
+    t = _norm_text(surname).replace(" ", "")
+    if not t or len(t) < 3:
+        return False
+    if t in BLOCKED_TOKENS:
+        return False
+    # If we have refs, require either known surname OR surname is hyphenated/apostrophe (often real)
+    if surn_lex:
+        if t in surn_lex:
+            return True
+        if "-" in t or "'" in t:
+            return True
+        return False
+    return True
+
+
+def _strip_discourse_prefix(s: str) -> str:
+    s_norm = _norm_text(s)
+    for dp in DISCOURSE_PREFIXES:
+        d = _norm_text(dp)
+        if s_norm.startswith(d + " "):
+            return s[len(dp) :].lstrip(" ,")
+    return s
+
+
+def extract_intext_citations(body_lines: List[str], surn_lex: set) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Return (strict, loose) citations. Loose is only for debugging, never used to mark refs uncited."""
+
+    text = "\n".join(body_lines)
+
+    strict: List[Dict[str, Any]] = []
+    loose: List[Dict[str, Any]] = []
+
+    # Narrative citations: Surname (Year)
+    for m in NARRATIVE_RE.finditer(text):
+        auth = m.group("auth") or ""
+        year = _base_year(m.group("year") or "")
+        surnames = _split_authors_blob(auth)
+
+        # Strict filter
+        strict_surn = [s for s in surnames if _plausible_surname(s, surn_lex)]
+        if strict_surn:
+            strict.append(
+                {
+                    "raw": m.group(0),
+                    "year": year,
+                    "surnames": strict_surn,
+                    "key": _make_key(strict_surn[:3], year),
+                    "type": "narrative",
+                }
+            )
+
+        # Loose record
+        if surnames:
+            loose.append(
+                {
+                    "raw": m.group(0),
+                    "year": year,
+                    "surnames": surnames,
+                    "key": _make_key(surnames[:3], year),
+                    "type": "narrative_loose",
+                }
+            )
+
+    # Parenthetical groups: (Surname, Year; ...)
+    for m in PAREN_GROUP_RE.finditer(text):
+        inside = (m.group("inside") or "").strip()
+        if len(inside) < 6:
+            continue
+
+        parts = re.split(r"\s*;\s*", inside)
+        for part in parts:
+            part = _strip_discourse_prefix(part.strip())
+            if not part:
+                continue
+
+            # Prefer comma-year pattern
+            m2 = SURNAME_COMMA_YEAR_RE.search(part)
+            if m2:
+                year = _base_year(m2.group("year"))
+                left = part[: m2.start("year")].strip().rstrip(",")
+                surnames = _split_authors_blob(left)
+            else:
+                ym = YEAR_RE.search(part)
+                if not ym:
+                    continue
+                year = _base_year(ym.group(1))
+                left = part[: ym.start()].strip(" ,.;:").rstrip(",")
+                surnames = _split_authors_blob(left)
+
+            strict_surn = [s for s in surnames if _plausible_surname(s, surn_lex)]
+            if strict_surn:
+                strict.append(
+                    {
+                        "raw": "(" + part + ")",
+                        "year": year,
+                        "surnames": strict_surn,
+                        "key": _make_key(strict_surn[:3], year),
+                        "type": "parenthetical",
+                    }
+                )
+
+            if surnames:
+                loose.append(
+                    {
+                        "raw": "(" + part + ")",
+                        "year": year,
+                        "surnames": surnames,
+                        "key": _make_key(surnames[:3], year),
+                        "type": "parenthetical_loose",
+                    }
+                )
+
+    # De-dup
+    def dedupe(lst: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen = set()
-        out = []
-        for c in cits:
-            k = (c.key, c.raw.lower())
+        out: List[Dict[str, Any]] = []
+        for c in lst:
+            k = (c.get("key"), c.get("raw"))
             if k in seen:
                 continue
             seen.add(k)
             out.append(c)
         return out
 
-    strict_cits = _dedupe(strict_cits)
-    loose_cits = _dedupe(loose_cits)
+    return dedupe(strict), dedupe(loose)
 
-    # IMPORTANT COMMERCIAL RULE:
-    # - Missing is computed from STRICT ONLY (prevents missing inflation)
-    # - Uncited is reduced using STRICT + LOOSE (max matching power)
-    strict_match, strict_ref_to_cits = _match_citations_to_refs(strict_cits, refs, fuzzy_threshold=82.0)
-    all_cits = strict_cits + [c for c in loose_cits if c.raw.lower() not in {x.raw.lower() for x in strict_cits}]
-    all_match, all_ref_to_cits = _match_citations_to_refs(all_cits, refs, fuzzy_threshold=80.0)
 
-    # Build “Missing in references” list from STRICT citations not matched to any reference
-    missing_counter = Counter()
-    for i, c in enumerate(strict_cits):
-        if i not in strict_match:
-            # display in concise form "Surname et al., YEAR" like your UI
-            disp = _norm_space(re.sub(r"\s*\(\s*", ", ", c.raw).replace(")", ""))
-            missing_counter[disp] += 1
+# -------------------------
+# Matching
+# -------------------------
 
-    missing_in_refs_rows = [
-        {"citation_in_text": k, "count_in_text": v}
-        for k, v in missing_counter.most_common()
-    ]
+def _weighted_fuzzy_match(cit: Dict[str, Any], ref_by_key: Dict[str, Dict[str, Any]], ref_by_year: Dict[str, List[str]]) -> Optional[Tuple[str, float]]:
+    if not FUZZY_OK or fuzz is None:
+        return None
 
-    # Build “Uncited references” list: refs that never matched any STRICT+LOOSE citation
-    uncited_refs: List[str] = []
-    for ri, r in enumerate(refs):
-        if ri not in all_ref_to_cits:
-            # must be a string for app.js (prevents [object Object])
-            uncited_refs.append(r.raw)
+    year = cit.get("year") or ""
+    cand_keys = ref_by_year.get(year) or list(ref_by_key.keys())
+    if not cand_keys:
+        return None
 
-    # Build reconciliation tables
-    recon_c2r = []
-    for i, c in enumerate(strict_cits):
-        if i in strict_match:
-            r = refs[strict_match[i]]
-            recon_c2r.append({
-                "citation_in_text": c.raw,
-                "matched_reference": r.raw,
-                "status": "matched",
-            })
-        else:
-            recon_c2r.append({
-                "citation_in_text": c.raw,
-                "matched_reference": "",
-                "status": "missing_in_references",
-            })
+    c_auth = " ".join(cit.get("surnames", [])[:3])
+    best_key = None
+    best_score = -1.0
 
-    recon_r2c = []
-    for ri, r in enumerate(refs):
-        if ri in all_ref_to_cits:
-            # show first matched citation (any)
-            ci = all_ref_to_cits[ri][0]
-            recon_r2c.append({
-                "reference": r.raw,
-                "matched_citation_in_text": all_cits[ci].raw,
-                "status": "matched",
-            })
-        else:
-            recon_r2c.append({
-                "reference": r.raw,
-                "matched_citation_in_text": "",
-                "status": "uncited_reference",
-            })
+    for rk in cand_keys:
+        ref = ref_by_key[rk]
+        r_auth = " ".join(ref.get("surnames", [])[:3])
 
-    # summary
-    in_text_found = len(strict_cits) + len(loose_cits)  # informational
-    ref_found = len(refs)
-    missing_count = len(missing_in_refs_rows)
-    uncited_count = len(uncited_refs)
-    matched_refs = ref_found - uncited_count
-    match_rate = (matched_refs / ref_found) if ref_found else 0.0
+        s1 = fuzz.token_set_ratio(_norm_text(c_auth), _norm_text(r_auth))
+        s2 = fuzz.ratio(_norm_text(c_auth + " " + year), _norm_text(r_auth + " " + (ref.get("year") or "")))
+        score = 0.8 * s1 + 0.2 * s2
 
-    summary = {
-        "in_text_citations_found": in_text_found,
-        "reference_entries_found": ref_found,
-        "missing_in_references": missing_count,
-        "uncited_references": uncited_count,
-        "match_rate": round(match_rate * 100.0, 1),
+        if score > best_score:
+            best_score = score
+            best_key = rk
 
-        # diagnostics that help you tune without guessing
-        "strict_intext_count": len(strict_cits),
-        "loose_intext_count": len(loose_cits),
-        "references_heading": heading or "",
-    }
+    if best_key is None:
+        return None
+
+    return best_key, float(best_score)
+
+
+def reconcile(strict_intexts: List[Dict[str, Any]], refs: List[Dict[str, Any]], mode: str = "commercial") -> Dict[str, Any]:
+    ref_by_key, ref_by_year, surn_lex = _build_ref_lexicons(refs)
+
+    matched_intext_to_ref: Dict[str, str] = {}
+    matched_refs: set = set()
+
+    # exact
+    for c in strict_intexts:
+        k = c.get("key")
+        if k and k in ref_by_key:
+            matched_intext_to_ref[k] = k
+            matched_refs.add(k)
+
+    # fuzzy fallback
+    thresh = 92.0 if mode == "academic" else 88.0
+    for c in strict_intexts:
+        k = c.get("key")
+        if not k or k in matched_intext_to_ref:
+            continue
+        hit = _weighted_fuzzy_match(c, ref_by_key, ref_by_year)
+        if not hit:
+            continue
+        rk, sc = hit
+        if sc >= thresh:
+            matched_intext_to_ref[k] = rk
+            matched_refs.add(rk)
+
+    # missing in references (strict only)
+    miss_counter = Counter()
+    for c in strict_intexts:
+        if c.get("key") not in matched_intext_to_ref:
+            label = f"{', '.join(c.get('surnames', [])[:2])}, {c.get('year','')}".strip(" ,")
+            miss_counter[label] += 1
+
+    missing_rows = [{"citation": k, "count": v} for k, v in miss_counter.most_common()]
+
+    # uncited references (strict only)
+    uncited = [ref_by_key[k] for k in ref_by_key.keys() if k not in matched_refs]
+
+    match_rate = 0.0
+    if refs:
+        match_rate = 100.0 * (len(refs) - len(uncited)) / len(refs)
 
     return {
-        "summary": summary,
-        "missing_in_references": missing_in_refs_rows,
-        "uncited_references": uncited_refs,
-        "reconciliation_intext_to_reference": recon_c2r,
-        "reconciliation_reference_to_intext": recon_r2c,
-        "online_verification": [],  # filled by verify.py pipeline in your stack
+        "missing_rows": missing_rows,
+        "uncited": uncited,
+        "matched_intext": matched_intext_to_ref,
+        "match_rate": match_rate,
     }
+
+
+# -------------------------
+# Public API expected by main.py
+# -------------------------
+
+def run_crosscheck(file_bytes: bytes, filename: str, style: str = "apa", mode: str = "commercial") -> Dict[str, Any]:
+    filename = filename or "document"
+    style = (style or "apa").lower()
+    mode = (mode or "commercial").lower()
+
+    if filename.lower().endswith(".docx"):
+        lines = _extract_lines_from_docx(file_bytes)
+    else:
+        lines = _extract_lines_from_pdf(file_bytes)
+
+    lines = _remove_toc(lines)
+    body_lines, _, ref_heading = _split_body_and_references(lines)
+
+    refs, ref_heading2 = extract_references(lines)
+    if not ref_heading:
+        ref_heading = ref_heading2
+
+    _, _, surn_lex = _build_ref_lexicons(refs)
+    strict_intexts, loose_intexts = extract_intext_citations(body_lines, surn_lex)
+
+    rec = reconcile(strict_intexts, refs, mode=mode)
+
+    # UI expects list-of-rows and numeric fields
+    out: Dict[str, Any] = {
+        "intext_citations_found": len(strict_intexts),
+        "reference_entries_found": len(refs),
+        "missing_in_references": len(rec["missing_rows"]),
+        "uncited_references": len(rec["uncited"]),
+        "match_rate": round(rec["match_rate"], 1),
+        "ref_heading": ref_heading or "",
+        "missing_rows": rec["missing_rows"],
+        "uncited_rows": [
+            {
+                "raw": r.get("raw", ""),
+                "year": r.get("year", ""),
+                "key": r.get("key", ""),
+            }
+            for r in rec["uncited"]
+        ],
+        # Optional, for debugging and commercial support
+        "strict_intext_count": len(strict_intexts),
+        "loose_intext_count": len(loose_intexts),
+        "debug": {
+            "style": style,
+            "mode": mode,
+            "version": __version__,
+        },
+    }
+
+    return out
+
+
+# Backwards-compatible helpers
+def extract_text_from_docx(file_bytes: bytes) -> str:
+    return "\n".join(_extract_lines_from_docx(file_bytes))
+
+
+def extract_text_from_pdf(file_bytes: bytes) -> str:
+    return "\n".join(_extract_lines_from_pdf(file_bytes))
