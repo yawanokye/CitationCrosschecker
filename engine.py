@@ -1005,7 +1005,7 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 
 
 # -----------------------------
-# Citation extractors - Enhanced for academic papers
+# Citation extractors - Enhanced for academic papers with Vancouver filtering
 # -----------------------------
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
@@ -1046,8 +1046,247 @@ def extract_author_year_citations(text: str) -> List[str]:
     return [c for c in out if c]
 
 
+def is_likely_citation_number(num: str, context: str, prev_context: str = "", next_context: str = "") -> bool:
+    """Sophisticated detection of whether a number is a genuine citation."""
+    num_int = int(num) if num.isdigit() else 0
+    
+    # ===== ABSOLUTE EXCLUSIONS =====
+    
+    # 1. Page numbers
+    page_patterns = [
+        r'p\.?\s*' + re.escape(num) + r'\b',
+        r'pp\.?\s*' + re.escape(num) + r'\b',
+        r'page\s+' + re.escape(num) + r'\b',
+        r'pages?\s+' + re.escape(num) + r'\b',
+        r'pg\.?\s*' + re.escape(num) + r'\b',
+    ]
+    # Only apply page patterns if NOT in a citation context
+    if not re.search(r'[\(\[]\s*\d+\s*[\)\]]', context):
+        for pattern in page_patterns:
+            if re.search(pattern, context, re.I):
+                return False
+    
+    # 2. Table/Figure references
+    if re.search(r'(?:table|figure|fig|eq|equation|exhibit|appendix|annex)\s+[\d\.]+', context, re.I):
+        return False
+    
+    # 3. Section numbers (like "Section 2" or "2.1")
+    if re.search(r'(?:section|chapter|part|volume|issue|no\.?)\s+' + re.escape(num), context, re.I):
+        return False
+    
+    # 4. Decimal numbers (like 2.5, 3.14)
+    if '.' in context and re.search(r'\b' + re.escape(num) + r'\.\d+', context):
+        return False
+    
+    # 5. Years (1900-2099) - but only if they appear in year contexts
+    if 1900 <= num_int <= 2099:
+        year_context = context.lower()
+        # These are clear year contexts
+        year_indicators = [
+            r'\b(in|during|since|before|after|year)\s+' + re.escape(num) + r'\b',
+            r'\b' + re.escape(num) + r'\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)',
+            r'\b(19|20)\d{2}\s*[-–]\s*(19|20)\d{2}\b',  # date ranges
+        ]
+        for pattern in year_indicators:
+            if re.search(pattern, year_context, re.I):
+                return False
+        # If it's a standalone year, check if it's in a bibliographic context
+        if re.match(r'^\s*' + re.escape(num) + r'\s*$', context) or \
+           re.search(r'\b' + re.escape(num) + r'\b\s*[\.\)\]]', context):
+            # If it's alone with brackets/parentheses, it might be a citation
+            if re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]', context):
+                return True  # This is a citation like (2015)
+            return False  # This is likely a year in text
+    
+    # 6. Currency amounts
+    currency_patterns = [
+        r'[₵¢$€£¥]?\s*' + re.escape(num) + r'\s*(?:\.00)?',
+        r'(?:ghs|gh¢|usd|eur|gbp)\s*' + re.escape(num),
+    ]
+    for pattern in currency_patterns:
+        if re.search(pattern, context, re.I):
+            return False
+    
+    # 7. Statistical numbers (percentages, ratios)
+    if re.search(r'\b' + re.escape(num) + r'\s*%', context) or \
+       re.search(r'\b' + re.escape(num) + r'\s*(?:percent|percentage)\b', context, re.I):
+        return False
+    
+    # 8. Numbers that are part of a larger numeric expression
+    if re.search(r'\b' + re.escape(num) + r'[-–]\d+\b', context) or \
+       re.search(r'\b\d+[-–]' + re.escape(num) + r'\b', context):
+        # Check if it's a citation range like [1-5]
+        if re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[-–]\s*\d+\s*[\)\]]', context):
+            return True  # It's a citation range
+        return False  # It's something else
+    
+    # 9. Numbers that are too high to be citations (over 500 is suspicious)
+    if num_int > 500 and not re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]', context):
+        # Check if it's in a list of reference numbers
+        if re.search(r'[\(\[]\s*\d+\s*,\s*' + re.escape(num) + r'\s*[\)\]]', context):
+            return True  # It's in a citation list
+        return False
+    
+    # ===== POSITIVE INDICATORS =====
+    
+    # 1. Inside square brackets or parentheses (classic citation format)
+    if re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]', context):
+        # Check that it's not a year in parentheses (like "(2023)")
+        if not (1900 <= num_int <= 2099 and 
+                re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]', context) and
+                not re.search(r'[A-Za-z]', context[max(0, context.find(num)-20):context.find(num)])):
+            return True
+    
+    # 2. Part of a citation list like [1,2,3] or [1-5]
+    if re.search(r'[\(\[]\s*\d+\s*,\s*' + re.escape(num) + r'\s*[\)\]]', context) or \
+       re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*,\s*\d+\s*[\)\]]', context):
+        return True
+    
+    # 3. Preceded by author names (Smith et al. [1])
+    author_pattern = r'[A-Z][a-z]+(?:\s+et al\.?)?\s*[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]'
+    if re.search(author_pattern, prev_context + context, re.I):
+        return True
+    
+    # 4. In a reference section context (like "[1] Author...")
+    if re.match(r'^\[\s*' + re.escape(num) + r'\s*\]', context):
+        return True
+    
+    return False
+
+
+def extract_vancouver_citations(text: str) -> List[Dict[str, Any]]:
+    """Extract Vancouver citations with sophisticated context analysis."""
+    t = text or ""
+    citations = []
+    
+    # Pattern 1: Standard citations with brackets/parentheses
+    # Matches: (1), [1], (1,2), [1,2], (1-5), [1-5], (1,2,4-7,9)
+    citation_pattern = re.compile(
+        r'([\(\[])\s*'  # Opening bracket or parenthesis
+        r'(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*'  # Numbers with separators
+        r'(?:\s*[pP]\.?\s*\d+(?:\s*[-–]\s*\d+)?)?'  # Optional page numbers
+        r')\s*([\)\]])',  # Closing bracket or parenthesis
+        re.VERBOSE
+    )
+    
+    for match in citation_pattern.finditer(t):
+        full_match = match.group(0)
+        open_bracket = match.group(1)
+        content = match.group(2)
+        close_bracket = match.group(3)
+        
+        # Get surrounding context (100 chars before and after)
+        start = max(0, match.start() - 100)
+        end = min(len(t), match.end() + 100)
+        context = t[start:end]
+        
+        # Get previous context for author detection
+        prev_context = t[max(0, match.start()-200):match.start()]
+        
+        # Extract citation numbers, ignoring page numbers
+        numbers = []
+        
+        # Split by comma first
+        parts = re.split(r'\s*,\s*', content)
+        for part in parts:
+            # Check if this part contains a page reference
+            if re.search(r'[pP]\.?\s*\d+', part):
+                # Extract just the citation number before page
+                num_match = re.match(r'^(\d{1,4})', part)
+                if num_match:
+                    num = num_match.group(1)
+                    if is_likely_citation_number(num, context, prev_context):
+                        numbers.append(num)
+            elif '-' in part or '–' in part:
+                # Range like 3-5
+                range_parts = re.split(r'[-–]', part)
+                if len(range_parts) == 2:
+                    start_num, end_num = range_parts[0].strip(), range_parts[1].strip()
+                    if start_num.isdigit() and end_num.isdigit():
+                        s, e = int(start_num), int(end_num)
+                        if 1 <= s <= e <= 9999 and (e - s) <= 50:
+                            for i in range(s, e + 1):
+                                if is_likely_citation_number(str(i), context, prev_context):
+                                    numbers.append(str(i))
+            elif part.strip().isdigit():
+                num = part.strip()
+                if is_likely_citation_number(num, context, prev_context):
+                    numbers.append(num)
+        
+        if numbers:
+            citations.append({
+                'numbers': list(dict.fromkeys(numbers)),  # Deduplicate
+                'raw_text': full_match,
+                'context': context,
+                'type': 'citation',
+                'bracket_type': open_bracket
+            })
+    
+    # Pattern 2: Author + citation like "Smith et al. (1)"
+    author_cite_pattern = re.compile(
+        r'([A-Z][a-z]+(?:\s+et al\.?)?)\s*[\(\[]\s*(\d{1,4})\s*[\)\]]',
+        re.I
+    )
+    
+    for match in author_cite_pattern.finditer(t):
+        author = match.group(1)
+        number = match.group(2)
+        
+        start = max(0, match.start() - 50)
+        end = min(len(t), match.end() + 50)
+        context = t[start:end]
+        
+        if is_likely_citation_number(number, context):
+            citations.append({
+                'numbers': [number],
+                'raw_text': match.group(0),
+                'context': context,
+                'type': 'author_citation'
+            })
+    
+    return citations
+
+
+def extract_numeric_citations_vancouver(text: str) -> List[str]:
+    """Extract only valid Vancouver citation numbers, filtering out false positives."""
+    citations_data = extract_vancouver_citations(text)
+    
+    valid_numbers = []
+    
+    for cite_data in citations_data:
+        for num in cite_data['numbers']:
+            valid_numbers.append(num)
+    
+    # Also check for standalone numbers in brackets/parentheses that might have been missed
+    standalone_pattern = re.compile(r'[\(\[]\s*(\d{1,4})\s*[\)\]]')
+    for match in standalone_pattern.finditer(text):
+        num = match.group(1)
+        start = max(0, match.start() - 50)
+        end = min(len(text), match.end() + 50)
+        context = text[start:end]
+        
+        # Special handling for years in brackets (they might be citations)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            # Check if it's in a bibliographic context
+            if re.search(r'(?:et al\.?|and|&|pp?\.?)\s*' + re.escape(num), context, re.I):
+                valid_numbers.append(num)
+        elif is_likely_citation_number(num, context):
+            valid_numbers.append(num)
+    
+    # Deduplicate while preserving order
+    seen = set()
+    deduped = []
+    for num in valid_numbers:
+        if num not in seen:
+            seen.add(num)
+            deduped.append(num)
+    
+    return deduped
+
+
 def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
-    """Extract numeric citations from academic papers with IEEE/Vancouver styles.
+    """Extract numeric citations based on citation style.
     
     Args:
         text: Document text
@@ -1057,13 +1296,16 @@ def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
         List of citation numbers as strings
     
     IEEE: Strictly [1], [1,2,3], [1-5] - only square brackets
-    Vancouver: [1], (1), 1, [1,2,3], [1-5], etc. - more flexible
+    Vancouver: Uses specialized extractor with context filtering
     """
+    style = style.lower()
+    
+    if style == "vancouver":
+        return extract_numeric_citations_vancouver(text)
+    
+    # IEEE or generic numeric
     t = text or ""
     out: List[str] = []
-    
-    style = style.lower()
-    is_ieee = style == "ieee"
     
     # Remove common false positives first
     t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+(\d{1,4})", "", t, flags=re.I)
@@ -1071,75 +1313,30 @@ def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
     # Fix line breaks between citations (common in PDFs)
     t = re.sub(r'\]\s*\n\s*\[', '][', t)
     
-    if is_ieee:
-        # IEEE: STRICTLY square brackets only [1], [1,2,3], [1-5]
-        # Pattern for IEEE citations
-        ieee_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
-        
-        for m in ieee_pat.finditer(t):
-            nums = _expand_citation_range(m)
-            out.extend(nums)
-        
-        # If we found very few citations, try a more aggressive approach for academic papers
-        if len(out) < 10:
-            # Look for any number in square brackets
-            all_citations = re.findall(r'\[(\d{1,4}(?:[-–,\s]+\d{1,4})*)\]', t)
-            for cite_group in all_citations:
-                # Split by commas and expand ranges
-                parts = re.split(r'[,\s]+', cite_group)
-                for part in parts:
-                    if part.strip():
-                        if '-' in part or '–' in part:
-                            range_parts = re.split(r'[-–]', part)
-                            if len(range_parts) == 2 and range_parts[0].strip().isdigit() and range_parts[1].strip().isdigit():
-                                start, end = int(range_parts[0].strip()), int(range_parts[1].strip())
-                                if start <= end and (end - start) <= 50:
-                                    out.extend([str(i) for i in range(start, end + 1)])
-                        elif part.strip().isdigit():
-                            out.append(part.strip())
+    # IEEE: STRICTLY square brackets only [1], [1,2,3], [1-5]
+    ieee_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
     
-    else:
-        # Vancouver: More flexible - brackets, parentheses, or standalone numbers
-        # Pattern for bracketed citations [1], [2,3], [2-5]
-        bracketed_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
-        
-        # Pattern for parenthetical citations (1), (2), (1,2), (2-5)
-        paren_pat = re.compile(r"\(\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\)")
-        
-        # Pattern for standalone numbers (but avoid years 1900-2099)
-        standalone_pat = re.compile(r"(?<!\d)(\d{1,4})(?!\d)")
-        
-        # Extract bracketed citations
-        for m in bracketed_pat.finditer(t):
-            nums = _expand_citation_range(m)
-            out.extend(nums)
-        
-        # Extract parenthetical citations
-        for m in paren_pat.finditer(t):
-            nums = _expand_citation_range(m)
-            out.extend(nums)
-        
-        # If we found very few bracketed/parenthetical citations, try standalone numbers
-        if len(out) < 3:
-            for m in standalone_pat.finditer(t):
-                num = m.group(1)
-                num_int = int(num)
-                
-                # Skip if it looks like a year (1900-2099)
-                if 1900 <= num_int <= 2099:
-                    # Check context - if preceded by author-like text, might be APA year
-                    context_before = t[max(0, m.start()-30):m.start()]
-                    if re.search(r"[A-Z][a-z]+(?:\s+et al\.?)?\s*[,\(]?\s*$", context_before):
-                        continue
-                
-                # Skip if it's a list item number (1. Introduction)
-                line_start = t[max(0, m.start()-10):m.start()]
-                if re.search(r"^\s*$", line_start) and m.end() < len(t) and t[m.end():m.end()+1] in ('.', ')', ' '):
-                    next_char = t[m.end():m.end()+10] if m.end() < len(t) else ""
-                    if re.match(r"^[\.\)]\s+[A-Z]", next_char):
-                        continue
-                
-                out.append(num)
+    for m in ieee_pat.finditer(t):
+        nums = _expand_citation_range(m)
+        out.extend(nums)
+    
+    # If we found very few citations, try a more aggressive approach for academic papers
+    if len(out) < 10:
+        # Look for any number in square brackets
+        all_citations = re.findall(r'\[(\d{1,4}(?:[-–,\s]+\d{1,4})*)\]', t)
+        for cite_group in all_citations:
+            # Split by commas and expand ranges
+            parts = re.split(r'[,\s]+', cite_group)
+            for part in parts:
+                if part.strip():
+                    if '-' in part or '–' in part:
+                        range_parts = re.split(r'[-–]', part)
+                        if len(range_parts) == 2 and range_parts[0].strip().isdigit() and range_parts[1].strip().isdigit():
+                            start, end = int(range_parts[0].strip()), int(range_parts[1].strip())
+                            if start <= end and (end - start) <= 50:
+                                out.extend([str(i) for i in range(start, end + 1)])
+                    elif part.strip().isdigit():
+                        out.append(part.strip())
     
     # Deduplicate while preserving order
     seen = set()
@@ -1317,6 +1514,28 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
                     return RefNum(reference_full=s, num=num)
         
         return None
+
+
+def clean_reference_text(ref: str) -> str:
+    """Clean up reference text for better matching."""
+    # Remove common artifacts
+    ref = re.sub(r'\s+', ' ', ref).strip()
+    
+    # Extract just the reference number and first part for matching
+    m = re.match(r'^(\d+)\.?\s+(.+)$', ref)
+    if m:
+        num = m.group(1)
+        body = m.group(2)
+        # Take first 100 chars for matching
+        return f"{num}. {body[:100]}"
+    
+    m = re.match(r'^\[\s*(\d+)\s*\]\s*(.+)$', ref)
+    if m:
+        num = m.group(1)
+        body = m.group(2)
+        return f"[{num}] {body[:100]}"
+    
+    return ref[:150]  # Limit length for matching
 
 
 # -----------------------------
@@ -1994,24 +2213,55 @@ def run_crosscheck(
             )
             ref_count = len(refs)
             
-        else:  # Vancouver or generic numeric
-            # Vancouver: More flexible
-            cites_nums = []
+        elif style_s == "vancouver":
+            # Vancouver: Context-aware extraction with filtering
             if too_large:
-                cites_nums = _extract_numeric_citations_chunked(main_text, style="vancouver")
+                cites_nums = []
+                for chunk in _iter_text_chunks(main_text):
+                    cites_nums.extend(extract_numeric_citations_vancouver(chunk))
+                # Deduplicate
+                seen = set()
+                deduped = []
+                for num in cites_nums:
+                    if num not in seen:
+                        seen.add(num)
+                        deduped.append(num)
+                cites_nums = deduped
             else:
-                cites_nums = extract_numeric_citations(main_text, style="vancouver")
+                cites_nums = extract_numeric_citations_vancouver(main_text)
             
             # Parse references with Vancouver flexibility
             refs = []
             for r in references_raw:
                 parsed = parse_reference_numeric(r, style="vancouver")
                 if parsed:
+                    # Clean reference text for better matching
+                    parsed.reference_full = clean_reference_text(parsed.reference_full)
                     refs.append(parsed)
             
             # Reconcile with Vancouver flexibility
             c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
                 cites_nums, refs, style="vancouver"
+            )
+            ref_count = len(refs)
+            
+        else:  # generic numeric
+            # Generic numeric extraction
+            cites_nums = []
+            if too_large:
+                cites_nums = _extract_numeric_citations_chunked(main_text, style="numeric")
+            else:
+                cites_nums = extract_numeric_citations(main_text, style="numeric")
+            
+            # Parse references with generic numeric parsing
+            refs = []
+            for r in references_raw:
+                parsed = parse_reference_numeric(r, style="numeric")
+                if parsed:
+                    refs.append(parsed)
+            
+            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+                cites_nums, refs, style="numeric"
             )
             ref_count = len(refs)
 
