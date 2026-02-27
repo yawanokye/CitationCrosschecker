@@ -42,6 +42,7 @@ REF_HEADINGS = [
     r"^\s*REFERENCES\s*$",
     r"^\s*BIBLIOGRAPHY\s*$",
     r"^\s*REFERENCES\s*\[.*\]\s*$",
+    r"^\s*REFERENCES AND NOTES\s*$",
 ]
 
 REF_HEADING_RELAXED = re.compile(
@@ -667,51 +668,260 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
     return -1, ""
 
 
-def extract_references_from_pdf(text: str) -> List[str]:
-    """Extract references from PDF text with improved detection."""
+# -----------------------------
+# Generalized Reference Extraction (Works with multiple paper formats)
+# -----------------------------
+
+def detect_reference_format(lines: List[str], start_idx: int) -> str:
+    """Detect the reference format used in the document."""
+    sample_lines = []
+    for i in range(start_idx + 1, min(start_idx + 20, len(lines))):
+        line = lines[i].strip()
+        if line:
+            sample_lines.append(line)
+    
+    # Count pattern matches
+    ieee_count = sum(1 for l in sample_lines if re.match(r'^\[\d+\]', l))
+    numbered_count = sum(1 for l in sample_lines if re.match(r'^\d+\.', l) and not re.match(r'^\d{4}\.', l))
+    apa_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', l))
+    harvard_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', l))
+    
+    # Return the most common format
+    formats = {
+        'ieee': ieee_count,
+        'numbered': numbered_count,
+        'apa': apa_count,
+        'harvard': harvard_count
+    }
+    
+    best_format = max(formats, key=formats.get)
+    return best_format if formats[best_format] > 0 else "unknown"
+
+
+def join_reference_lines(current: str, next_line: str) -> str:
+    """Intelligently join reference lines, handling hyphens and spaces."""
+    if current.endswith('-'):
+        # Hyphenated word break
+        return current[:-1] + next_line
+    elif re.search(r'[a-z]$', current) and re.search(r'^[a-z]', next_line):
+        # Likely continuation of same word
+        return current + next_line
+    else:
+        # Normal space separation
+        return current + " " + next_line
+
+
+def clean_reference(ref: str) -> str:
+    """Clean up a reference string."""
+    # Normalize spaces
+    ref = re.sub(r'\s+', ' ', ref).strip()
+    
+    # Fix common PDF extraction artifacts
+    ref = re.sub(r'-\s+', '', ref)  # Remove hyphens with following space
+    ref = re.sub(r'\s+-\s+', '-', ref)  # Fix spaced hyphens
+    
+    # Remove leading/trailing punctuation
+    ref = ref.strip('.,;:')
+    
+    return ref
+
+
+def extract_references_generalized(text: str) -> List[str]:
+    """Generalized reference extraction that works with multiple academic paper formats."""
     lines = text.splitlines()
     
-    # Look for reference section
+    # Strategy 1: Find standard reference headings (multiple formats)
     ref_start = -1
+    heading_patterns = [
+        r'^\s*REFERENCES\s*$',
+        r'^\s*BIBLIOGRAPHY\s*$',
+        r'^\s*WORKS\s+CITED\s*$',
+        r'^\s*LITERATURE\s+CITED\s*$',
+        r'^\s*REFERENCES\s*\[.*\]\s*$',
+        r'^\s*REFERENCES AND NOTES\s*$',
+    ]
+    
     for i, line in enumerate(lines):
-        if re.search(r'^\s*(?:REFERENCES|BIBLIOGRAPHY|WORKS CITED)\s*$', line, re.I):
-            ref_start = i
+        for pattern in heading_patterns:
+            if re.search(pattern, line, re.I):
+                # Verify this is near the end of document (usually references are at the end)
+                if i > len(lines) * 0.6:  # After 60% of document
+                    ref_start = i
+                    break
+        if ref_start != -1:
             break
+    
+    # Strategy 2: If no heading found, look for reference-like patterns
+    if ref_start == -1:
+        ref_candidates = []
+        for i, line in enumerate(lines):
+            # Only check latter part of document
+            if i > len(lines) * 0.6:
+                line = line.strip()
+                # Pattern 1: [1] Author (IEEE)
+                if re.match(r'^\[\d+\]\s+[A-Z]\.?\s+[A-Z][a-z]', line):
+                    ref_candidates.append((i, line))
+                # Pattern 2: 1. Author (Numbered)
+                elif re.match(r'^\d+\.\s+[A-Z][a-z]', line) and not re.match(r'^\d{4}\.', line):
+                    ref_candidates.append((i, line))
+                # Pattern 3: Author (Year). Title (APA)
+                elif re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line):
+                    ref_candidates.append((i, line))
+        
+        # If we found reference-like lines, start from the first one
+        if ref_candidates:
+            ref_start = ref_candidates[0][0] - 1  # Include potential heading line
     
     if ref_start == -1:
         return []
     
-    # Extract reference lines
-    ref_lines = []
+    # Extract references using multiple format detectors
+    references = []
     current_ref = ""
-    in_refs = True
     
-    for i in range(ref_start + 1, len(lines)):
+    # Detect reference format type
+    ref_format = detect_reference_format(lines, ref_start)
+    
+    for i in range(ref_start + 1, min(ref_start + 500, len(lines))):  # Limit to 500 lines
         line = lines[i].strip()
-        if not line and current_ref:
-            ref_lines.append(current_ref)
-            current_ref = ""
+        
+        # Skip empty lines at beginning
+        if not line and not current_ref:
             continue
         
-        if line:
-            # Check if this starts a new reference
-            if re.match(r'^\[\d+\]', line):  # [1] format
-                if current_ref:
-                    ref_lines.append(current_ref)
-                current_ref = line
-            elif re.match(r'^\d+\.', line) and not (1900 <= int(line.split('.')[0]) <= 2099):  # 1. format (not a year)
-                if current_ref:
-                    ref_lines.append(current_ref)
-                current_ref = line
-            elif current_ref:
-                current_ref += " " + line
-            else:
-                current_ref = line
+        if not line:
+            # Empty line might separate references
+            if current_ref:
+                references.append(clean_reference(current_ref))
+                current_ref = ""
+            continue
+        
+        # Check if this starts a new reference based on format
+        is_new_ref = False
+        
+        if ref_format == "ieee":
+            is_new_ref = bool(re.match(r'^\[\d+\]', line))
+        elif ref_format == "numbered":
+            is_new_ref = bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)
+        elif ref_format == "apa":
+            is_new_ref = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
+        elif ref_format == "harvard":
+            is_new_ref = bool(re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', line[:100]))
+        else:
+            # Auto-detect: look for patterns
+            is_new_ref = (
+                bool(re.match(r'^\[\d+\]', line)) or
+                (bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)) or
+                bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
+            )
+        
+        if is_new_ref:
+            if current_ref:
+                references.append(clean_reference(current_ref))
+            current_ref = line
+        elif current_ref:
+            # Continuation of previous reference
+            current_ref = join_reference_lines(current_ref, line)
     
+    # Add last reference
     if current_ref:
-        ref_lines.append(current_ref)
+        references.append(clean_reference(current_ref))
     
-    return ref_lines
+    # Post-process: filter out non-references and clean
+    cleaned_refs = []
+    for ref in references:
+        # Basic validation: should contain author names and year/number
+        if len(ref) > 30 and (
+            re.search(r'\d{4}', ref) or  # Has year
+            re.search(r'\[\d+\]', ref) or  # Has reference number
+            re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', ref)  # Has author format
+        ):
+            cleaned_refs.append(ref)
+    
+    return cleaned_refs
+
+
+def extract_references_pattern_based(text: str) -> List[str]:
+    """Extract references using pattern matching on the whole text."""
+    # Look for common reference patterns in the text
+    patterns = [
+        # IEEE: [1] Author. Title...
+        (r'\[\d+\]\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
+        # Numbered: 1. Author. Title...
+        (r'^\d+\.\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
+        # APA: Author, A. (Year). Title...
+        (r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)\.\s+[A-Z][a-zA-Z\s]+\.', re.MULTILINE | re.DOTALL),
+    ]
+    
+    references = []
+    for pattern, flags in patterns:
+        matches = re.findall(pattern, text, flags)
+        references.extend([clean_reference(m) for m in matches if len(m) > 30])
+    
+    return references
+
+
+def extract_references_heuristic(text: str) -> List[str]:
+    """Extract references using heuristics when patterns fail."""
+    lines = text.splitlines()
+    references = []
+    current_ref = ""
+    
+    # Heuristic: references usually appear in the last 30% of the document
+    # and contain years or author names
+    start_idx = int(len(lines) * 0.7)  # Start at 70% through document
+    
+    for i in range(start_idx, len(lines)):
+        line = lines[i].strip()
+        if not line:
+            if current_ref and len(current_ref) > 30:
+                references.append(clean_reference(current_ref))
+                current_ref = ""
+            continue
+        
+        # Check if line looks like a reference
+        has_year = bool(re.search(r'\b(19|20)\d{2}\b', line))
+        has_bracket_num = bool(re.search(r'\[\d+\]', line))
+        has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', line))
+        has_caps_words = len(re.findall(r'\b[A-Z][a-z]{2,}\b', line)) >= 2
+        
+        if has_year or has_bracket_num or (has_author and has_caps_words):
+            if not current_ref:
+                current_ref = line
+            else:
+                # Check if this is a new reference or continuation
+                if (has_bracket_num or 
+                    (re.match(r'^\d+\.', line) and not re.match(r'^\d{4}\.', line)) or
+                    (has_author and len(current_ref) > 50)):
+                    if current_ref:
+                        references.append(clean_reference(current_ref))
+                    current_ref = line
+                else:
+                    current_ref += " " + line
+        elif current_ref:
+            current_ref += " " + line
+    
+    if current_ref and len(current_ref) > 30:
+        references.append(clean_reference(current_ref))
+    
+    return references
+
+
+def extract_references_enhanced(text: str) -> List[str]:
+    """Enhanced reference extraction using multiple strategies."""
+    
+    # Strategy 1: Try generalized extraction
+    refs = extract_references_generalized(text)
+    
+    # Strategy 2: If that fails, try pattern-based extraction
+    if len(refs) < 5:
+        refs = extract_references_pattern_based(text)
+    
+    # Strategy 3: If still failing, try heuristic extraction
+    if len(refs) < 5:
+        refs = extract_references_heuristic(text)
+    
+    return refs
 
 
 # -----------------------------
@@ -1730,10 +1940,10 @@ def run_crosscheck(
         idx, tail = _find_reference_heading(lines, style_hint=style_hint)
         
         if idx == -1:
-            # If not found, try more aggressive reference extraction
-            references_raw = extract_references_from_pdf(full_text)
+            # Try enhanced reference extraction (works with multiple formats)
+            references_raw = extract_references_enhanced(full_text)
             main_text = full_text
-            ref_msg = f"Found {len(references_raw)} references using aggressive extraction."
+            ref_msg = f"Found {len(references_raw)} references using enhanced extraction."
         else:
             main_text = "\n".join(lines[:idx]).strip()
             ref_msg = f"Found References heading: {lines[idx].strip()}"
