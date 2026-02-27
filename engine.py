@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-ENGINE_BUILD = "commercial-2026-02-27-optimized"
+ENGINE_BUILD = "commercial-2026-02-27-final"
 
 # Fuzzy matching (optional)
 try:
@@ -41,13 +41,20 @@ REF_HEADINGS = [
     r"^\s*literature\s+cited\s*$",
     r"^\s*REFERENCES\s*$",
     r"^\s*BIBLIOGRAPHY\s*$",
+    r"^\s*REFERENCES\s*$",
 ]
+
+REF_HEADING_RELAXED = re.compile(
+    r"^\s*(references?|bibliography|works\s+cited|literature\s+cited|REFERENCES|BIBLIOGRAPHY)\b",
+    re.I,
+)
 
 # Words/phrases that often precede citations in prose
 DISCOURSE_PREFIXES = {
     "see", "e.g", "eg", "i.e", "ie",
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
     "according", "adapted", "based", "cited", "citing", "reported",
+    "like",
 }
 
 REF_END_HEADINGS = [
@@ -62,6 +69,21 @@ NON_NAME_AUTHOR_KEYS = {
     "chapter", "section", "appendix", "equation", "model", "analysis",
     "study", "paper", "thesis", "report", "source", "author",
 }
+
+# Commercial-grade narrative filtering
+NARRATIVE_SINGLE_TOKENS = {
+    "crisis", "war", "scandal", "revolution",
+    "pandemic", "covid", "covid19", "covid-19",
+}
+
+NARRATIVE_PHRASE_PATTERNS = [
+    r"\byear\s+on\s+year\b",
+    r"\bgrowth\s+rate\b",
+    r"\baccording\s+to\b",
+]
+
+_DECADE_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})s\b", re.I)
+
 
 # -----------------------------
 # Small helpers
@@ -99,6 +121,9 @@ def _surnames_from_author_blob(left: str) -> List[str]:
     s = s.replace("&", " and ")
     s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
     s = re.sub(r"(’s|'s)\b", "", s)
+    s = re.sub(r"\b(and|for|instance|see|e\.g\.|i\.e\.)\b", " ", s, flags=re.I)
+    s = re.sub(r"\b[A-Z]\.\b", " ", s)
+    s = re.sub(r"\b[A-Z]\b", " ", s)
     parts = re.split(r"\band\b|;|/", s, flags=re.I)
     out = []
     for p in parts:
@@ -110,8 +135,12 @@ def _surnames_from_author_blob(left: str) -> List[str]:
         else:
             cand = p.split()[-1].strip()
         cand = re.sub(r"[^A-Za-z\-']+", "", cand).strip()
-        if len(cand) >= 2:
-            out.append(cand.lower())
+        cand = cand.replace("’", "'")
+        if len(cand) < 2:
+            continue
+        if cand.lower() in {"available", "ssrn", "university", "press", "journal"}:
+            continue
+        out.append(cand.lower())
     seen = set()
     return [x for x in out if not (x in seen or seen.add(x))][:4]
 
@@ -128,6 +157,23 @@ def _looks_like_heading_line(s: str) -> bool:
     letters = re.sub(r"[^A-Za-z]", "", s0)
     return bool((letters and letters.isupper() and len(letters) >= 6) or
                 re.match(r"^[A-Z][A-Za-z0-9\s\-,:]{3,}$", s0))
+
+
+def _is_likely_narrative_citation(left: str, year: str, full_cite: str) -> bool:
+    l = (left or "").strip()
+    if not l:
+        return True
+    s_full = (full_cite or "").lower()
+    for pat in NARRATIVE_PHRASE_PATTERNS:
+        if re.search(pat, s_full, flags=re.I):
+            return True
+    if year and isinstance(year, str) and year.lower().endswith("s"):
+        if _DECADE_YEAR_RE.search(full_cite or ""):
+            return True
+    l_norm = soft_lower(l)
+    if re.fullmatch(r"[a-z\-']+", l_norm) and l_norm in NARRATIVE_SINGLE_TOKENS:
+        return True
+    return False
 
 
 # -----------------------------
@@ -197,8 +243,32 @@ def _first_author_or_org_key(author_left: str) -> str:
     return strip_punct(toks[-1]) if toks else ""
 
 
+def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
+    out = []
+    ref_like_seen = 0
+
+    def _is_ref_like(ln: str) -> bool:
+        if style_hint == "numeric":
+            return _looks_like_new_numeric_reference_start(ln)
+        return _looks_like_new_apa_reference_start(ln)
+
+    for i, ln in enumerate(lines):
+        s = (ln or "").strip()
+        if not s:
+            continue
+        if _is_ref_like(s):
+            ref_like_seen += 1
+        if ref_like_seen >= 3 and (REF_END_HEADING_RE.search(s) or
+            (_looks_like_heading_line(s) and re.search(r"\b(appendix|supplement)\b", s, re.I))):
+            look = [x for x in lines[i:i+25] if (x or "").strip()]
+            if sum(1 for x in look if _is_ref_like((x or "").strip())) <= 1:
+                break
+        out.append(ln)
+    return out
+
+
 # -----------------------------
-# DOCX extraction
+# DOCX extraction - FIXED
 # -----------------------------
 def _iter_docx_text(doc):
     for p in doc.paragraphs:
@@ -240,22 +310,36 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
         lines = []
         for t in targets:
             if t in names:
-                lines.extend(_extract(z.read(t)))
+                try:
+                    lines.extend(_extract(z.read(t)))
+                except Exception:
+                    continue
     return lines
 
 
 def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
+    """Read DOCX and split main text from references - FIXED error handling."""
     if not DOCX_OK:
         raise RuntimeError("python-docx not installed")
 
+    lines = []
+    
+    # Try XML extraction first
     try:
         lines = _docx_xml_text(file_bytes)
-    except Exception:
-        lines = []
+    except Exception as e:
+        print(f"XML extraction failed: {e}, falling back to python-docx")
+    
+    # Fall back to python-docx
+    if not lines:
+        try:
+            doc = Document(io.BytesIO(file_bytes))
+            lines = list(_iter_docx_text(doc))
+        except Exception as e:
+            return "", [], f"Error reading DOCX: {e}"
 
     if not lines:
-        doc = Document(io.BytesIO(file_bytes))
-        lines = list(_iter_docx_text(doc))
+        return "", [], "No text found in DOCX"
 
     def _ref_like(line: str) -> bool:
         s = line.strip()
@@ -290,7 +374,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
 
 # -----------------------------
-# PDF extraction - COMPLETELY REWRITTEN
+# PDF extraction - COMPLETELY REWRITTEN for better reference detection
 # -----------------------------
 def read_pdf_text(file_bytes: bytes) -> str:
     """Extract text from PDF with better formatting preservation."""
@@ -301,8 +385,13 @@ def read_pdf_text(file_bytes: bytes) -> str:
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page in pdf.pages:
             try:
-                text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
-                # Preserve line breaks better
+                # Use better parameters for text extraction
+                text = page.extract_text(
+                    x_tolerance=3, 
+                    y_tolerance=3,
+                    layout=True,  # Preserve layout
+                    keep_blank_chars=False
+                ) or ""
                 text = text.replace("\x00", " ")
                 text = re.sub(r"-\n", "", text)  # Fix hyphenation
                 out.append(text)
@@ -313,73 +402,56 @@ def read_pdf_text(file_bytes: bytes) -> str:
 
 def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
     """
-    Extract references from PDF text with multiple strategies.
+    Extract references from PDF text with robust pattern matching.
     Returns (main_text, references_list, message)
     """
     lines = text.splitlines()
     
-    # First, try to find the references section
+    # Find the references section
     ref_start = -1
     ref_heading = ""
     
-    # Strategy 1: Look for common reference headings
+    # Look for reference headings
     heading_patterns = [
         r'^\s*REFERENCES\s*$',
         r'^\s*BIBLIOGRAPHY\s*$',
         r'^\s*WORKS\s+CITED\s*$',
         r'^\s*LITERATURE\s+CITED\s*$',
-        r'^\s*REFERENCES\s*$',
     ]
     
     for i, line in enumerate(lines):
-        line_clean = line.strip()
+        line_clean = line.strip().upper()
         for pattern in heading_patterns:
             if re.search(pattern, line_clean, re.I):
-                # Verify this is near the end of document
-                if i > len(lines) * 0.6:  # After 60% of document
+                if i > len(lines) * 0.5:  # After 50% of document
                     ref_start = i
-                    ref_heading = line_clean
+                    ref_heading = line
                     break
         if ref_start != -1:
             break
     
-    # Strategy 2: If no heading found, look for reference-like patterns
+    # If no heading found, look for reference patterns
     if ref_start == -1:
-        ref_candidates = []
         for i, line in enumerate(lines):
-            if i > len(lines) * 0.6:  # Only check latter part
+            if i > len(lines) * 0.5:
                 line = line.strip()
-                # Look for patterns like [1] Author or 1. Author
+                # Look for patterns like [1] or 1. at start of line
                 if re.match(r'^\[\d+\]\s+[A-Z]', line) or \
                    (re.match(r'^\d+\.\s+[A-Z]', line) and not re.match(r'^\d{4}\.', line)):
-                    ref_candidates.append(i)
-        
-        if ref_candidates:
-            ref_start = ref_candidates[0]
-            ref_heading = "REFERENCES (detected)"
+                    ref_start = i
+                    ref_heading = "REFERENCES (detected)"
+                    break
     
     if ref_start == -1:
-        # No references found
         return text, [], "No references section found."
     
     # Extract main text (everything before references)
     main_text = "\n".join(lines[:ref_start]).strip()
     
-    # Extract references using robust pattern matching
+    # Extract references - this is the critical part
     references = []
     current_ref = ""
-    in_refs = True
-    
-    # Detect reference format
-    sample_line = ""
-    for i in range(ref_start + 1, min(ref_start + 10, len(lines))):
-        if lines[i].strip():
-            sample_line = lines[i].strip()
-            break
-    
-    # Determine format
-    is_ieee = bool(re.match(r'^\[\d+\]', sample_line))
-    is_numbered = bool(re.match(r'^\d+\.', sample_line)) and not re.match(r'^\d{4}\.', sample_line)
+    ref_pattern = re.compile(r'^(\[\d+\]|\d+\.)\s+')
     
     for i in range(ref_start + 1, len(lines)):
         line = lines[i].rstrip()
@@ -388,27 +460,13 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
         if not line and not current_ref:
             continue
         
-        if not line:
-            # Empty line might separate references
-            if current_ref and len(current_ref) > 20:
-                references.append(clean_reference_text(current_ref))
-                current_ref = ""
-            continue
-        
-        # Check if this starts a new reference
-        is_new_ref = False
-        if is_ieee:
-            is_new_ref = bool(re.match(r'^\[\d+\]', line))
-        elif is_numbered:
-            is_new_ref = bool(re.match(r'^\d+\.', line))
-        else:
-            # Auto-detect
-            is_new_ref = bool(re.match(r'^\[\d+\]', line)) or \
-                        (bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line))
-        
-        if is_new_ref:
+        # Check if this line starts a new reference
+        if ref_pattern.match(line.strip()):
             if current_ref:
-                references.append(clean_reference_text(current_ref))
+                # Clean and add the previous reference
+                clean_ref = clean_reference_text(current_ref)
+                if is_valid_reference(clean_ref):
+                    references.append(clean_ref)
             current_ref = line
         elif current_ref:
             # Continuation of previous reference
@@ -416,48 +474,90 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
                 current_ref = current_ref[:-1] + line
             else:
                 current_ref += " " + line
+        elif line.strip() and not current_ref and len(line) > 30:
+            # Might be a reference without a number (rare)
+            if is_valid_reference(line):
+                references.append(clean_reference_text(line))
     
-    # Add last reference
-    if current_ref and len(current_ref) > 20:
-        references.append(clean_reference_text(current_ref))
+    # Add the last reference
+    if current_ref:
+        clean_ref = clean_reference_text(current_ref)
+        if is_valid_reference(clean_ref):
+            references.append(clean_ref)
     
-    # Filter out false positives (table numbers, figure captions, etc.)
-    filtered_refs = []
-    for ref in references:
-        # Must have at least one author-like name or year
-        has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', ref))
-        has_year = bool(re.search(r'\b(19|20)\d{2}\b', ref))
-        has_doi = bool(re.search(r'10\.\d{4,9}/', ref))
-        has_journal = bool(re.search(r'Journal|Review|Letters|Proceedings', ref, re.I))
-        
-        # Must be reasonably long
-        if len(ref) < 30:
-            continue
-            
-        # Must not be a table/figure reference
-        if re.search(r'Table\s+\d+|Figure\s+\d+', ref, re.I):
-            continue
-            
-        if has_author or has_year or has_doi or has_journal:
-            filtered_refs.append(ref)
+    # Post-process to merge any references that were split incorrectly
+    merged_refs = merge_split_references(references)
     
-    msg = f"Found {len(filtered_refs)} references using enhanced extraction."
-    return main_text, filtered_refs, msg
+    # Filter out false positives
+    final_refs = []
+    for ref in merged_refs:
+        if len(ref) > 30 and is_valid_reference(ref):
+            final_refs.append(ref)
+    
+    msg = f"Found {len(final_refs)} references."
+    return main_text, final_refs, msg
 
 
 def clean_reference_text(ref: str) -> str:
-    """Clean up reference text."""
+    """Clean up reference text by normalizing spaces and fixing common issues."""
     # Normalize spaces
     ref = re.sub(r'\s+', ' ', ref).strip()
     
     # Fix common PDF artifacts
-    ref = re.sub(r'-\s+', '', ref)
-    ref = re.sub(r'\s+-\s+', '-', ref)
+    ref = re.sub(r'-\s+', '', ref)  # Remove hyphens with following space
+    ref = re.sub(r'\s+-\s+', '-', ref)  # Fix spaced hyphens
+    ref = re.sub(r'\s+\.', '.', ref)  # Fix spaces before periods
     
-    # Remove leading/trailing punctuation
-    ref = ref.strip('.,;:')
+    # Remove page breaks or stray characters
+    ref = re.sub(r'[_-]{2,}', '', ref)
     
     return ref
+
+
+def is_valid_reference(ref: str) -> bool:
+    """Check if a string is a valid reference."""
+    if len(ref) < 30:
+        return False
+    
+    # Must have at least one of these indicators
+    has_year = bool(re.search(r'\b(19|20)\d{2}\b', ref))
+    has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', ref))
+    has_doi = bool(re.search(r'10\.\d{4,9}/', ref))
+    has_journal = bool(re.search(r'Journal|Review|Letters|Proceedings|Conference', ref, re.I))
+    has_publisher = bool(re.search(r'Press|University|Institute|Publisher', ref, re.I))
+    
+    # Must not be a table/figure reference
+    if re.search(r'Table\s+\d+|Figure\s+\d+', ref, re.I):
+        return False
+    
+    # Must not be a page number only
+    if re.match(r'^\d+\s*$', ref):
+        return False
+    
+    return has_year or has_author or has_doi or has_journal or has_publisher
+
+
+def merge_split_references(refs: List[str]) -> List[str]:
+    """Merge references that were incorrectly split."""
+    if len(refs) <= 1:
+        return refs
+    
+    merged = []
+    i = 0
+    while i < len(refs):
+        current = refs[i]
+        
+        # Check if this reference ends abruptly (no period, incomplete)
+        if i < len(refs) - 1 and not current.rstrip().endswith('.'):
+            next_ref = refs[i + 1]
+            # If next reference doesn't start with a number pattern, merge them
+            if not re.match(r'^(\[\d+\]|\d+\.)', next_ref.strip()):
+                current += " " + next_ref
+                i += 1  # Skip the next one
+        merged.append(current)
+        i += 1
+    
+    return merged
 
 
 def _looks_like_new_numeric_reference_start(s: str) -> bool:
@@ -576,7 +676,7 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 
 
 # -----------------------------
-# Citation extractors - with year filtering
+# Citation extractors
 # -----------------------------
 def extract_author_year_citations(text: str) -> List[str]:
     t = text.replace("\u2019", "'")
@@ -608,16 +708,11 @@ def is_valid_citation_number(num: str, context: str) -> bool:
     """Determine if a number is a genuine citation vs year/page number."""
     num_int = int(num) if num.isdigit() else 0
     
-    # Years (1900-2099) are NOT citations
+    # Years (1900-2099) are NOT citations unless in specific contexts
     if 1900 <= num_int <= 2099:
-        # Check if it's in a year context
-        if re.search(r'\b(?:in|during|since|year)\s+' + re.escape(num), context, re.I):
-            return False
-        # If it's alone in brackets, it might be a citation like (2015)
-        if re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]', context):
-            # But only if preceded by author-like text
-            if re.search(r'[A-Z][a-z]+(?:\s+et al\.?)?\s*[\(\[]\s*' + re.escape(num), context, re.I):
-                return True
+        # If it's in brackets with author, might be citation
+        if re.search(r'[A-Z][a-z]+(?:\s+et al\.?)?\s*[\(\[]\s*' + re.escape(num), context, re.I):
+            return True
         return False
     
     # Page numbers
@@ -626,10 +721,6 @@ def is_valid_citation_number(num: str, context: str) -> bool:
     
     # Table/figure references
     if re.search(r'(?:table|figure|fig|eq|equation)\s+' + re.escape(num), context, re.I):
-        return False
-    
-    # Section numbers
-    if re.search(r'(?:section|chapter|part)\s+' + re.escape(num), context, re.I):
         return False
     
     # Numbers in brackets/parentheses are likely citations
@@ -653,14 +744,15 @@ def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
             content = m.group(1)
             context = t[max(0, m.start()-30):min(len(t), m.end()+30)]
             
-            # Parse numbers
             for part in re.split(r'\s*,\s*', content):
                 if '-' in part or '–' in part:
-                    start, end = map(int, re.split(r'[-–]', part)[:2])
-                    if 1 <= start <= end <= 9999 and (end - start) <= 50:
-                        for i in range(start, end + 1):
-                            if is_valid_citation_number(str(i), context):
-                                out.append(str(i))
+                    parts = re.split(r'[-–]', part)
+                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                        start, end = int(parts[0]), int(parts[1])
+                        if 1 <= start <= end <= 9999 and (end - start) <= 50:
+                            for i in range(start, end + 1):
+                                if is_valid_citation_number(str(i), context):
+                                    out.append(str(i))
                 elif part.isdigit():
                     if is_valid_citation_number(part, context):
                         out.append(part)
@@ -673,11 +765,13 @@ def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
             
             for part in re.split(r'\s*,\s*', content):
                 if '-' in part or '–' in part:
-                    start, end = map(int, re.split(r'[-–]', part)[:2])
-                    if 1 <= start <= end <= 9999 and (end - start) <= 50:
-                        for i in range(start, end + 1):
-                            if is_valid_citation_number(str(i), context):
-                                out.append(str(i))
+                    parts = re.split(r'[-–]', part)
+                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                        start, end = int(parts[0]), int(parts[1])
+                        if 1 <= start <= end <= 9999 and (end - start) <= 50:
+                            for i in range(start, end + 1):
+                                if is_valid_citation_number(str(i), context):
+                                    out.append(str(i))
                 elif part.isdigit():
                     if is_valid_citation_number(part, context):
                         out.append(part)
@@ -790,6 +884,49 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
 # -----------------------------
 # Reconciliation
 # -----------------------------
+def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
+    s = norm_space(cite)
+    if not s:
+        return None
+
+    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
+    ym = YEAR_RE.search(s)
+    if not ym:
+        return None
+    year = ym.group(1)
+
+    left = s[: ym.start()].strip(" ,;()")
+
+    if left:
+        prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
+        pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
+        while True:
+            new_left = pref_re.sub("", left).strip(" ,;()")
+            if new_left == left:
+                break
+            left = new_left
+
+    for _ in range(3):
+        if "," not in left:
+            break
+        first, rest = left.split(",", 1)
+        if re.search(r"\b[A-Z][A-Za-z'\-]+\b", first):
+            break
+        left = rest.strip(" ,;()")
+
+    left = re.sub(r"(’s|'s)\b", "", left).strip()
+
+    if _is_likely_narrative_citation(left, year, s):
+        return None
+
+    author_key = _first_author_or_org_key(left)
+    if not author_key:
+        return None
+    if author_key.lower() in NON_NAME_AUTHOR_KEYS:
+        return None
+    return author_key, year
+
+
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple:
     ref_map = {r.key: r.reference_full for r in references}
     alias_map = dict(ref_map)
@@ -797,24 +934,18 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
     parsed_cites = []
 
     for c in citations:
-        # Simplified parsing for demo - in real code would be more robust
-        ym = YEAR_RE.search(c)
-        if not ym:
+        parsed = _parse_author_year_from_cite(c)
+        if not parsed:
             continue
-        year = ym.group(1)
-        left = c[:ym.start()].strip(" ,;()")
-        author_key = _first_author_or_org_key(left)
-        if not author_key:
-            continue
+        auth, year = parsed
+        key = f"{auth}|{year}".lower()
         
-        key = f"{author_key}|{year}".lower()
         if key in alias_map:
             cite_counts[alias_map[key]] += 1
             parsed_cites.append((alias_map[key], c, ""))
         else:
             parsed_cites.append(("", c, ""))
 
-    # Build results
     c2r = []
     missing = Counter()
     for ref, c, flags in parsed_cites:
@@ -917,20 +1048,24 @@ def run_crosscheck(
     is_numeric = any(x in style_s for x in ["ieee", "vancouver", "numeric"])
     style_hint = "numeric" if is_numeric else "apa"
 
-    if name.endswith(".docx"):
-        main_text, ref_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        refs_raw = _merge_reference_lines(ref_lines)
-        if style_hint == "numeric":
-            refs_raw = _split_embedded_numeric_refs(refs_raw)
+    try:
+        if name.endswith(".docx"):
+            main_text, ref_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
+            refs_raw = _merge_reference_lines(ref_lines)
+            if style_hint == "numeric":
+                refs_raw = _split_embedded_numeric_refs(refs_raw)
 
-    elif name.endswith(".pdf"):
-        full_text = read_pdf_text(file_bytes)
-        main_text, refs_raw, ref_msg = extract_references_from_pdf(full_text)
-        if style_hint == "numeric":
-            refs_raw = _split_embedded_numeric_refs(refs_raw)
+        elif name.endswith(".pdf"):
+            full_text = read_pdf_text(file_bytes)
+            main_text, refs_raw, ref_msg = extract_references_from_pdf(full_text)
+            if style_hint == "numeric":
+                refs_raw = _split_embedded_numeric_refs(refs_raw)
 
-    else:
-        return {"error": "Upload a DOCX or PDF"}
+        else:
+            return {"error": "Upload a DOCX or PDF"}
+
+    except Exception as e:
+        return {"error": f"Error processing file: {str(e)}"}
 
     too_large = len(main_text) > 2_000_000
 
