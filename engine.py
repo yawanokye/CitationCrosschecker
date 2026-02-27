@@ -741,7 +741,7 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 
 
 # -----------------------------
-# Citation extractors
+# Citation extractors - UPDATED for IEEE/Vancouver
 # -----------------------------
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
@@ -782,68 +782,79 @@ def extract_author_year_citations(text: str) -> List[str]:
     return [c for c in out if c]
 
 
-def extract_numeric_citations(text: str, bracketed: bool = True) -> List[str]:
-    """Extract numeric citations in various formats.
+def extract_numeric_citations(text: str, style: str = "vancouver") -> List[str]:
+    """Extract numeric citations based on citation style.
     
-    Handles:
-    - [1], [1], [2,3], [2-5]
-    - (1), (2), (1,2), (2-5)
-    - 1, 2, 3 (standalone numbers)
-    - 1., 2. (numbered lists - but careful with years)
+    Args:
+        text: Document text
+        style: "ieee", "vancouver", or "numeric"
+    
+    Returns:
+        List of citation numbers as strings
+    
+    IEEE: Strictly [1], [1,2,3], [1-5] - only square brackets
+    Vancouver: [1], (1), 1, [1,2,3], [1-5], etc. - more flexible
     """
     t = text or ""
     out: List[str] = []
     
-    # Pattern for bracketed citations [1], [2,3], [2-5], [2-5,7]
-    bracketed_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
+    style = style.lower()
+    is_ieee = style == "ieee"
     
-    # Pattern for parenthetical citations (1), (2), (1,2), (2-5)
-    paren_pat = re.compile(r"\(\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\)")
-    
-    # Pattern for standalone numbers (but avoid years 1900-2099)
-    # Only match if NOT a year (between 1900-2099) and NOT part of a larger number
-    standalone_pat = re.compile(r"(?<!\d)(\d{1,4})(?!\d)")
-    
-    # Pattern for numbered list items (1. Introduction) - but these are not citations
-    # We'll use this to filter out false positives
-    list_item_pat = re.compile(r"^\s*\d{1,4}[\.)]\s+[A-Z]", re.MULTILINE)
-    
-    # First, remove common false positives
-    # Remove table/figure references
+    # Remove common false positives first
     t = re.sub(r"(?:table|figure|fig|eq|equation)\s+\d{1,4}", "", t, flags=re.I)
     
-    # Extract bracketed citations
-    for m in bracketed_pat.finditer(t):
-        nums = _expand_citation_range(m)
-        out.extend(nums)
+    if is_ieee:
+        # IEEE: STRICTLY square brackets only [1], [1,2,3], [1-5]
+        # Pattern for IEEE citations
+        ieee_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
+        
+        for m in ieee_pat.finditer(t):
+            nums = _expand_citation_range(m)
+            out.extend(nums)
     
-    # Extract parenthetical citations
-    for m in paren_pat.finditer(t):
-        nums = _expand_citation_range(m)
-        out.extend(nums)
-    
-    # If we found very few bracketed/parenthetical citations, try standalone numbers
-    if len(out) < 3:
-        # Get all potential number matches
-        for m in standalone_pat.finditer(t):
-            num = m.group(1)
-            num_int = int(num)
-            
-            # Skip if it looks like a year (1900-2099)
-            if 1900 <= num_int <= 2099:
-                # Check context - if preceded by author-like text, might be APA year
-                context_before = t[max(0, m.start()-30):m.start()]
-                if re.search(r"[A-Z][a-z]+(?:\s+et al\.?)?\s*[,\(]?\s*$", context_before):
-                    continue  # This is likely an APA year, not a numeric citation
-            
-            # Skip if it's a list item number (1. Introduction)
-            line_start = t[max(0, m.start()-10):m.start()]
-            if re.search(r"^\s*$", line_start) and m.end() < len(t) and t[m.end():m.end()+1] in ('.', ')', ' '):
-                next_char = t[m.end():m.end()+10] if m.end() < len(t) else ""
-                if re.match(r"^[\.\)]\s+[A-Z]", next_char):
-                    continue  # This is a list item heading
-            
-            out.append(num)
+    else:
+        # Vancouver: More flexible - brackets, parentheses, or standalone numbers
+        # Pattern for bracketed citations [1], [2,3], [2-5]
+        bracketed_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
+        
+        # Pattern for parenthetical citations (1), (2), (1,2), (2-5)
+        paren_pat = re.compile(r"\(\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\)")
+        
+        # Pattern for standalone numbers (but avoid years 1900-2099)
+        standalone_pat = re.compile(r"(?<!\d)(\d{1,4})(?!\d)")
+        
+        # Extract bracketed citations
+        for m in bracketed_pat.finditer(t):
+            nums = _expand_citation_range(m)
+            out.extend(nums)
+        
+        # Extract parenthetical citations
+        for m in paren_pat.finditer(t):
+            nums = _expand_citation_range(m)
+            out.extend(nums)
+        
+        # If we found very few bracketed/parenthetical citations, try standalone numbers
+        if len(out) < 3:
+            for m in standalone_pat.finditer(t):
+                num = m.group(1)
+                num_int = int(num)
+                
+                # Skip if it looks like a year (1900-2099)
+                if 1900 <= num_int <= 2099:
+                    # Check context - if preceded by author-like text, might be APA year
+                    context_before = t[max(0, m.start()-30):m.start()]
+                    if re.search(r"[A-Z][a-z]+(?:\s+et al\.?)?\s*[,\(]?\s*$", context_before):
+                        continue
+                
+                # Skip if it's a list item number (1. Introduction)
+                line_start = t[max(0, m.start()-10):m.start()]
+                if re.search(r"^\s*$", line_start) and m.end() < len(t) and t[m.end():m.end()+1] in ('.', ')', ' '):
+                    next_char = t[m.end():m.end()+10] if m.end() < len(t) else ""
+                    if re.match(r"^[\.\)]\s+[A-Z]", next_char):
+                        continue
+                
+                out.append(num)
     
     # Deduplicate while preserving order
     seen = set()
@@ -861,21 +872,20 @@ def _expand_citation_range(match) -> List[str]:
     nums = []
     groups = match.groups()
     
-    if not groups:
+    if not groups or not groups[0]:
         return nums
     
     # Process first number and potential range
-    if groups[0]:
-        start = int(groups[0])
-        if groups[1]:  # Has range (e.g., 2-5)
-            end = int(groups[1])
-            if start <= end and (end - start) <= 50:  # Sanity check
-                nums.extend([str(i) for i in range(start, end + 1)])
-            else:
-                nums.append(str(start))
-                nums.append(str(end))
+    start = int(groups[0])
+    if groups[1]:  # Has range (e.g., 2-5)
+        end = int(groups[1])
+        if start <= end and (end - start) <= 50:  # Sanity check
+            nums.extend([str(i) for i in range(start, end + 1)])
         else:
             nums.append(str(start))
+            nums.append(str(end))
+    else:
+        nums.append(str(start))
     
     # Process additional numbers after comma
     if groups[2]:
@@ -894,7 +904,7 @@ def _expand_citation_range(match) -> List[str]:
 
 
 # -----------------------------
-# Reference parsers
+# Reference parsers - UPDATED for IEEE/Vancouver
 # -----------------------------
 @dataclass
 class RefAY:
@@ -937,71 +947,90 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
     return RefAY(reference_full=s_clean, key=key)
 
 
-def parse_reference_numeric(ref: str) -> Optional[RefNum]:
-    """Parse numeric references in various formats.
+def parse_reference_numeric(ref: str, style: str = "vancouver") -> Optional[RefNum]:
+    """Parse numeric references based on citation style.
     
-    Handles:
-    - [1] Author. Title...
-    - 1. Author. Title...
-    - (1) Author. Title...
-    - 1 Author. Title...
+    Args:
+        ref: Reference string
+        style: "ieee", "vancouver", or "numeric"
+    
+    Returns:
+        RefNum object if valid, None otherwise
+    
+    IEEE: Strictly [1] Author. Title... (only square brackets)
+    Vancouver: [1] Author, 1. Author, (1) Author, 1 Author (multiple formats)
     """
     s = norm_space(ref)
     if not s:
         return None
     
-    # Try different patterns in order of specificity
+    style = style.lower()
+    is_ieee = style == "ieee"
     
-    # Pattern 1: [1] Rest of reference
-    m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
-    if m:
-        num = m.group(1)
-        body = norm_space(m.group(2))
-        body = _strip_leading_reference_number(body)
-        if _is_plausible_reference_entry(body):
-            return RefNum(reference_full=s, num=num)
-    
-    # Pattern 2: 1. Rest of reference (but ensure it's not a year)
-    m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
-    if m:
-        num = m.group(1)
-        num_int = int(num)
-        # Skip if it looks like a year (1900-2099)
-        if 1900 <= num_int <= 2099:
-            # Check if the rest looks like a reference
+    if is_ieee:
+        # IEEE: STRICTLY [1] format only
+        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
+        if m:
+            num = m.group(1)
             body = norm_space(m.group(2))
-            if _is_plausible_reference_entry(body) and not YEAR_RE.fullmatch(num):
-                return RefNum(reference_full=s, num=num)
-        else:
-            body = norm_space(m.group(2))
+            body = _strip_leading_reference_number(body)
             if _is_plausible_reference_entry(body):
                 return RefNum(reference_full=s, num=num)
+        return None
     
-    # Pattern 3: (1) Rest of reference
-    m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*(.+)$", s)
-    if m:
-        num = m.group(1)
-        body = norm_space(m.group(2))
-        body = _strip_leading_reference_number(body)
-        if _is_plausible_reference_entry(body):
-            return RefNum(reference_full=s, num=num)
-    
-    # Pattern 4: 1 Rest of reference (no punctuation)
-    m = re.match(r"^(\d{1,4})\s+(.+)$", s)
-    if m:
-        num = m.group(1)
-        num_int = int(num)
-        # Skip if it looks like a year (1900-2099)
-        if 1900 <= num_int <= 2099:
+    else:
+        # Vancouver: Try multiple formats in order of specificity
+        
+        # Pattern 1: [1] Rest of reference
+        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
+        if m:
+            num = m.group(1)
             body = norm_space(m.group(2))
-            if _is_plausible_reference_entry(body) and not YEAR_RE.fullmatch(num):
-                return RefNum(reference_full=s, num=num)
-        else:
-            body = norm_space(m.group(2))
+            body = _strip_leading_reference_number(body)
             if _is_plausible_reference_entry(body):
                 return RefNum(reference_full=s, num=num)
-    
-    return None
+        
+        # Pattern 2: 1. Rest of reference (but ensure it's not a year)
+        m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
+        if m:
+            num = m.group(1)
+            num_int = int(num)
+            # Skip if it looks like a year (1900-2099)
+            if 1900 <= num_int <= 2099:
+                # Check if the rest looks like a reference
+                body = norm_space(m.group(2))
+                if _is_plausible_reference_entry(body) and not YEAR_RE.fullmatch(num):
+                    return RefNum(reference_full=s, num=num)
+            else:
+                body = norm_space(m.group(2))
+                if _is_plausible_reference_entry(body):
+                    return RefNum(reference_full=s, num=num)
+        
+        # Pattern 3: (1) Rest of reference
+        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*(.+)$", s)
+        if m:
+            num = m.group(1)
+            body = norm_space(m.group(2))
+            body = _strip_leading_reference_number(body)
+            if _is_plausible_reference_entry(body):
+                return RefNum(reference_full=s, num=num)
+        
+        # Pattern 4: 1 Rest of reference (no punctuation)
+        m = re.match(r"^(\d{1,4})\s+(.+)$", s)
+        if m:
+            num = m.group(1)
+            num_int = int(num)
+            # Skip if it looks like a year (1900-2099)
+            if 1900 <= num_int <= 2099:
+                body = norm_space(m.group(2))
+                if _is_plausible_reference_entry(body) and not YEAR_RE.fullmatch(num):
+                    return RefNum(reference_full=s, num=num)
+            else:
+                body = norm_space(m.group(2))
+                if _is_plausible_reference_entry(body):
+                    return RefNum(reference_full=s, num=num)
+        
+        return None
 
 
 # -----------------------------
@@ -1117,7 +1146,7 @@ def _cluster_references(references: List[Any]) -> Dict[str, Dict[str, Any]]:
 
 
 # -----------------------------
-# Reconciliation
+# Reconciliation - UPDATED for IEEE/Vancouver
 # -----------------------------
 def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     s = norm_space(cite)
@@ -1334,59 +1363,79 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
     return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
 
 
-def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
+def reconcile_numeric(citations: List[str], references: List[RefNum], style: str = "vancouver") -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
-    """Reconcile numeric citations with references.
+    """Reconcile numeric citations with references based on style.
     
-    Handles:
-    - Direct number matching
-    - Different formats ([1] vs 1 vs (1))
-    - Multiple citations in one bracket [1,2,3]
-    - Citation ranges [1-5]
+    Args:
+        citations: List of citation numbers from text
+        references: List of parsed references
+        style: "ieee" or "vancouver"
+    
+    Returns:
+        Tuple of reconciliation results
     """
-    # Build reference map with multiple key formats
+    style = style.lower()
+    is_ieee = style == "ieee"
+    
+    # Build reference map with appropriate formats based on style
     ref_map: Dict[str, str] = {}
     
     for r in references:
         # Store with original number
         ref_map[r.num] = r.reference_full
         
-        # Also store with bracket format
-        ref_map[f"[{r.num}]"] = r.reference_full
-        ref_map[f"({r.num})"] = r.reference_full
-        ref_map[f"{r.num}."] = r.reference_full
+        if is_ieee:
+            # IEEE: Only square bracket format for matching
+            ref_map[f"[{r.num}]"] = r.reference_full
+        else:
+            # Vancouver: Multiple formats for matching
+            ref_map[f"[{r.num}]"] = r.reference_full
+            ref_map[f"({r.num})"] = r.reference_full
+            ref_map[f"{r.num}."] = r.reference_full
     
     # Count citations
     cite_counts = Counter()
-    
-    # Track which references were matched
     matched_refs = set()
     
     # Process each citation
     for cite in citations:
         cite_str = str(cite).strip()
         
-        # Try direct match
-        if cite_str in ref_map:
-            cite_counts[ref_map[cite_str]] += 1
-            matched_refs.add(ref_map[cite_str])
-            continue
-        
-        # Try as number (if it's just digits)
-        if cite_str.isdigit():
+        if is_ieee:
+            # IEEE: Strict matching - must be exact format
             if cite_str in ref_map:
                 cite_counts[ref_map[cite_str]] += 1
                 matched_refs.add(ref_map[cite_str])
                 continue
+            
+            # Try to extract number from square brackets only
+            m = re.match(r'^\[\s*(\d{1,4})\s*\]$', cite_str)
+            if m and m.group(1) in ref_map:
+                cite_counts[ref_map[m.group(1)]] += 1
+                matched_refs.add(ref_map[m.group(1)])
+                continue
         
-        # Try to extract number from bracket/parentheses
-        m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?$', cite_str)
-        if m:
-            num = m.group(1)
-            if num in ref_map:
-                cite_counts[ref_map[num]] += 1
-                matched_refs.add(ref_map[num])
+        else:
+            # Vancouver: Flexible matching
+            # Try direct match
+            if cite_str in ref_map:
+                cite_counts[ref_map[cite_str]] += 1
+                matched_refs.add(ref_map[cite_str])
+                continue
+            
+            # Try as number (if it's just digits)
+            if cite_str.isdigit() and cite_str in ref_map:
+                cite_counts[ref_map[cite_str]] += 1
+                matched_refs.add(ref_map[cite_str])
+                continue
+            
+            # Try to extract number from bracket/parentheses
+            m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?$', cite_str)
+            if m and m.group(1) in ref_map:
+                cite_counts[ref_map[m.group(1)]] += 1
+                matched_refs.add(ref_map[m.group(1)])
                 continue
     
     # Build c2r (citations to references)
@@ -1397,33 +1446,55 @@ def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
         cite_str = str(cite).strip()
         matched = False
         
-        # Try to find match
-        if cite_str in ref_map:
-            c2r.append({
-                "status": "matched", 
-                "in_text": cite_str, 
-                "matched_reference": ref_map[cite_str], 
-                "flags": ""
-            })
-            matched = True
-        elif cite_str.isdigit() and cite_str in ref_map:
-            c2r.append({
-                "status": "matched", 
-                "in_text": cite_str, 
-                "matched_reference": ref_map[cite_str], 
-                "flags": ""
-            })
-            matched = True
-        else:
-            m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?$', cite_str)
-            if m and m.group(1) in ref_map:
+        if is_ieee:
+            # IEEE matching logic
+            if cite_str in ref_map:
                 c2r.append({
                     "status": "matched", 
                     "in_text": cite_str, 
-                    "matched_reference": ref_map[m.group(1)], 
-                    "flags": "format_variation"
+                    "matched_reference": ref_map[cite_str], 
+                    "flags": ""
                 })
                 matched = True
+            else:
+                m = re.match(r'^\[\s*(\d{1,4})\s*\]$', cite_str)
+                if m and m.group(1) in ref_map:
+                    c2r.append({
+                        "status": "matched", 
+                        "in_text": cite_str, 
+                        "matched_reference": ref_map[m.group(1)], 
+                        "flags": "format_normalized"
+                    })
+                    matched = True
+        
+        else:
+            # Vancouver matching logic
+            if cite_str in ref_map:
+                c2r.append({
+                    "status": "matched", 
+                    "in_text": cite_str, 
+                    "matched_reference": ref_map[cite_str], 
+                    "flags": ""
+                })
+                matched = True
+            elif cite_str.isdigit() and cite_str in ref_map:
+                c2r.append({
+                    "status": "matched", 
+                    "in_text": cite_str, 
+                    "matched_reference": ref_map[cite_str], 
+                    "flags": "standalone_number"
+                })
+                matched = True
+            else:
+                m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?$', cite_str)
+                if m and m.group(1) in ref_map:
+                    c2r.append({
+                        "status": "matched", 
+                        "in_text": cite_str, 
+                        "matched_reference": ref_map[m.group(1)], 
+                        "flags": "format_variation"
+                    })
+                    matched = True
         
         if not matched:
             c2r.append({
@@ -1440,19 +1511,34 @@ def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
     
     # Group citations by reference
     cite_samples_by_ref: Dict[str, List[str]] = defaultdict(list)
+    
     for cite in citations:
         cite_str = str(cite).strip()
-        if cite_str in ref_map:
-            if len(cite_samples_by_ref[ref_map[cite_str]]) < 6:
-                cite_samples_by_ref[ref_map[cite_str]].append(cite_str)
-        elif cite_str.isdigit() and cite_str in ref_map:
-            if len(cite_samples_by_ref[ref_map[cite_str]]) < 6:
-                cite_samples_by_ref[ref_map[cite_str]].append(cite_str)
+        
+        if is_ieee:
+            # IEEE grouping
+            if cite_str in ref_map:
+                if len(cite_samples_by_ref[ref_map[cite_str]]) < 6:
+                    cite_samples_by_ref[ref_map[cite_str]].append(cite_str)
+            else:
+                m = re.match(r'^\[\s*(\d{1,4})\s*\]$', cite_str)
+                if m and m.group(1) in ref_map:
+                    if len(cite_samples_by_ref[ref_map[m.group(1)]]) < 6:
+                        cite_samples_by_ref[ref_map[m.group(1)]].append(cite_str)
+        
         else:
-            m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?$', cite_str)
-            if m and m.group(1) in ref_map:
-                if len(cite_samples_by_ref[ref_map[m.group(1)]]) < 6:
-                    cite_samples_by_ref[ref_map[m.group(1)]].append(cite_str)
+            # Vancouver grouping
+            if cite_str in ref_map:
+                if len(cite_samples_by_ref[ref_map[cite_str]]) < 6:
+                    cite_samples_by_ref[ref_map[cite_str]].append(cite_str)
+            elif cite_str.isdigit() and cite_str in ref_map:
+                if len(cite_samples_by_ref[ref_map[cite_str]]) < 6:
+                    cite_samples_by_ref[ref_map[cite_str]].append(cite_str)
+            else:
+                m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?$', cite_str)
+                if m and m.group(1) in ref_map:
+                    if len(cite_samples_by_ref[ref_map[m.group(1)]]) < 6:
+                        cite_samples_by_ref[ref_map[m.group(1)]].append(cite_str)
     
     for r in references:
         ref_full = r.reference_full
@@ -1500,11 +1586,12 @@ def _extract_author_year_citations_chunked(text: str) -> List[str]:
     return total
 
 
-def _extract_numeric_citations_chunked(text: str, bracketed: bool = True) -> List[str]:
+def _extract_numeric_citations_chunked(text: str, style: str = "vancouver") -> List[str]:
+    """Chunked version of numeric citation extraction with style parameter."""
     seen = set()
     total = []
     for chunk in _iter_text_chunks(text):
-        for c in extract_numeric_citations(chunk, bracketed=bracketed):
+        for c in extract_numeric_citations(chunk, style=style):
             if c not in seen:
                 seen.add(c)
                 total.append(c)
@@ -1574,43 +1661,48 @@ def run_crosscheck(
         ref_count = len(refs)
 
     else:
-        # Improved numeric citation extraction
-        cites_nums = []
-        
-        # Always try both bracketed and unbracketed
-        if too_large:
-            cites_nums_bracketed = _extract_numeric_citations_chunked(main_text, bracketed=True)
-            cites_nums_unbracketed = _extract_numeric_citations_chunked(main_text, bracketed=False)
-        else:
-            cites_nums_bracketed = extract_numeric_citations(main_text, bracketed=True)
-            cites_nums_unbracketed = extract_numeric_citations(main_text, bracketed=False)
-        
-        # Combine both methods, giving preference to bracketed
-        cites_nums = list(dict.fromkeys(cites_nums_bracketed + cites_nums_unbracketed))
-        
-        # If still very few citations, try more aggressive extraction
-        if len(cites_nums) < 5:
-            # Look for any numbers that might be citations
-            all_numbers = re.findall(r'\b(\d{1,4})\b', main_text)
-            # Filter out years and common false positives
-            filtered = []
-            for num in all_numbers:
-                num_int = int(num)
-                if 1900 <= num_int <= 2099:
-                    continue  # Skip years
-                if num_int > 2100:
-                    continue  # Skip unlikely years
-                filtered.append(num)
-            cites_nums.extend(filtered[:len(filtered)])  # Add but don't overdo it
-        
-        # Deduplicate
-        cites_nums = list(dict.fromkeys(cites_nums))
-        
-        refs = [parse_reference_numeric(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites_nums, refs)
-        ref_count = len(refs)
+        # Style-specific numeric handling
+        if style_s == "ieee":
+            # IEEE: Strict square brackets only
+            cites_nums = []
+            if too_large:
+                cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
+            else:
+                cites_nums = extract_numeric_citations(main_text, style="ieee")
+            
+            # Parse references with IEEE strictness
+            refs = []
+            for r in references_raw:
+                parsed = parse_reference_numeric(r, style="ieee")
+                if parsed:
+                    refs.append(parsed)
+            
+            # Reconcile with IEEE strictness
+            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+                cites_nums, refs, style="ieee"
+            )
+            ref_count = len(refs)
+            
+        else:  # Vancouver or generic numeric
+            # Vancouver: More flexible
+            cites_nums = []
+            if too_large:
+                cites_nums = _extract_numeric_citations_chunked(main_text, style="vancouver")
+            else:
+                cites_nums = extract_numeric_citations(main_text, style="vancouver")
+            
+            # Parse references with Vancouver flexibility
+            refs = []
+            for r in references_raw:
+                parsed = parse_reference_numeric(r, style="vancouver")
+                if parsed:
+                    refs.append(parsed)
+            
+            # Reconcile with Vancouver flexibility
+            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+                cites_nums, refs, style="vancouver"
+            )
+            ref_count = len(refs)
 
     missing_unique = int(len(missing_rows or []))
     match_rate = 0.0
