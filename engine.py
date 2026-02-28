@@ -1,6 +1,7 @@
 # engine.py
-__version__ = "1.4.2"
+__version__ = "1.5.0"
 
+import os
 import re
 import io
 import json
@@ -10,11 +11,15 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-ENGINE_BUILD = "commercial-2026-02-28-reference-fixed"
+ENGINE_BUILD = "commercial-2026-03-01-final"
 
-# ==================== DEEPSEEK CONFIGURATION ====================
-# Only used for Vancouver style
-DEEPSEEK_API_KEY = "sk-267f05e8f67b4fefa5189320eac5554f"
+# ==================== CONFIGURATION ====================
+# API keys should be set as environment variables for security
+# NEVER hardcode API keys in source code
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+if not DEEPSEEK_API_KEY:
+    print("WARNING: DEEPSEEK_API_KEY environment variable not set. Vancouver style will use fallback mode.")
+
 DEEPSEEK_CONFIG = {
     "api_url": "https://api.deepseek.com/v1/chat/completions",
     "model": "deepseek-chat",
@@ -24,14 +29,14 @@ DEEPSEEK_CONFIG = {
     "fallback_to_rule_based": True
 }
 
-# Debug flag
+# Debug flag - set to False in production
 DEBUG = True
 
 def log_debug(msg: str):
     """Print debug messages if DEBUG is enabled."""
     if DEBUG:
         print(f"[DEBUG] {msg}")
-# ================================================================
+# ======================================================
 
 # Fuzzy matching (optional)
 try:
@@ -419,7 +424,7 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
 
 
 # -----------------------------
-# DOCX extraction (optimized)
+# DOCX extraction
 # -----------------------------
 def _iter_docx_text(doc: "Document"):
     for p in doc.paragraphs:
@@ -571,7 +576,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
 
 # -----------------------------
-# PDF extraction with enhanced reference detection - FIXED
+# PDF extraction
 # -----------------------------
 def read_pdf_text(file_bytes: bytes) -> str:
     if not PDF_OK:
@@ -692,7 +697,7 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 
 
 # -----------------------------
-# FIXED Reference Extraction Functions
+# Reference Extraction Functions
 # -----------------------------
 
 def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
@@ -1180,36 +1185,43 @@ def extract_references_heuristic(text: str) -> List[str]:
 # Reference merging/splitting
 # -----------------------------
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
+    """Improved reference merging for DOCX files."""
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
         return []
 
-    merged: List[str] = []
-    cur = ""
-    for ln in raw_lines:
-        s = ln.strip()
-        if not s:
-            continue
-
-        is_new = _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s)
-        if is_new:
-            if cur:
-                merged.append(norm_space(cur))
-            cur = s
+    merged = []
+    current_ref = ""
+    
+    for line in raw_lines:
+        # Check if this line starts a new reference (starts with [number] or number.)
+        if re.match(r'^\[\d+\]', line) or re.match(r'^\d+\.', line):
+            if current_ref:
+                merged.append(current_ref)
+            current_ref = line
+        elif current_ref:
+            # Continue previous reference
+            current_ref += " " + line
         else:
-            if not cur:
-                cur = s
-            else:
-                joiner = " "
-                if cur.endswith("-"):
-                    cur = cur[:-1]
-                    joiner = ""
-                cur = cur + joiner + s
-
-    if cur:
-        merged.append(norm_space(cur))
-
-    return [m for m in merged if m and len(m) >= 8]
+            # First reference
+            current_ref = line
+    
+    if current_ref:
+        merged.append(current_ref)
+    
+    # Post-process to fix incorrectly merged references
+    final_refs = []
+    for ref in merged:
+        # Check if this reference contains multiple reference numbers
+        # Pattern like "... [9]. [10] ..." indicates multiple references merged
+        if re.search(r'\[\d+\]\.\s*\[\d+\]', ref):
+            # Split on the pattern
+            parts = re.split(r'(?<=\]\.)\s*(?=\[\d+\])', ref)
+            final_refs.extend(parts)
+        else:
+            final_refs.append(ref)
+    
+    return final_refs
 
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
@@ -1330,11 +1342,12 @@ def extract_ieee_citations(text: str) -> List[str]:
             seen.add(num)
             deduped.append(num)
     
+    log_debug(f"IEEE extracted {len(deduped)} citations")
     return deduped
 
 
 # -----------------------------
-# Citation extractors - Vancouver (AI-ASSISTED)
+# Citation extractors - Vancouver (AI-ASSISTED) - with API key check
 # -----------------------------
 def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
     """Split text into chunks at sentence boundaries."""
@@ -1360,6 +1373,11 @@ def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
 
 def call_deepseek_for_citations(text: str) -> List[str]:
     """Call DeepSeek API to extract Vancouver citations."""
+    
+    # Check if API key is available
+    if not DEEPSEEK_API_KEY:
+        log_debug("No DeepSeek API key found, using fallback mode")
+        return []
     
     prompt = f"""You are an expert at identifying Vancouver-style citations in academic text.
 
@@ -1436,9 +1454,6 @@ Return ONLY the JSON array, no other text."""
         
     except Exception as e:
         log_debug(f"DeepSeek call failed: {e}")
-        # Fallback to rule-based if configured
-        if DEEPSEEK_CONFIG["fallback_to_rule_based"]:
-            return extract_vancouver_citations_fallback(text)
         return []
 
 
@@ -1471,8 +1486,14 @@ def extract_vancouver_citations_fallback(text: str) -> List[str]:
 
 
 def extract_vancouver_citations(text: str) -> List[str]:
-    """Extract Vancouver citations using AI, with fallback to rule-based."""
-    log_debug("Starting Vancouver citation extraction with DeepSeek")
+    """Extract Vancouver citations using AI (if API key available), with fallback to rule-based."""
+    log_debug("Starting Vancouver citation extraction")
+    
+    # If API key is not available, use fallback immediately
+    if not DEEPSEEK_API_KEY:
+        log_debug("No API key, using rule-based fallback")
+        return extract_vancouver_citations_fallback(text)
+    
     chunks = split_into_chunks(text, max_chars=3000)
     all_citations = []
     
@@ -1482,6 +1503,11 @@ def extract_vancouver_citations(text: str) -> List[str]:
         log_debug(f"Chunk {i+1}/{len(chunks)}")
         citations = call_deepseek_for_citations(chunk)
         all_citations.extend(citations)
+    
+    # If API returned no results, fall back to rule-based
+    if not all_citations and DEEPSEEK_CONFIG["fallback_to_rule_based"]:
+        log_debug("API returned no results, using rule-based fallback")
+        return extract_vancouver_citations_fallback(text)
     
     # Deduplicate while preserving order
     seen = set()
@@ -1501,7 +1527,7 @@ def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
         List of citation numbers as strings
     
     IEEE: Strictly rule-based, only square brackets
-    Vancouver: AI-assisted, handles multiple formats
+    Vancouver: AI-assisted (with fallback), handles multiple formats
     """
     style = style.lower()
     
@@ -1551,7 +1577,7 @@ def _expand_citation_range(match) -> List[str]:
 
 
 # -----------------------------
-# Reference parsers - Enhanced for academic papers
+# Reference parsers - FIXED to handle multiple formats
 # -----------------------------
 @dataclass
 class RefAY:
@@ -1599,86 +1625,69 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
     
     Args:
         ref: Reference string
-        style: "ieee", "vancouver", or "numeric"
+        style: "ieee", "vancouver", or "numeric" - primarily used for logging
     
     Returns:
         RefNum object if valid, None otherwise
     
-    IEEE: Strictly [1] Author. Title... (only square brackets)
-    Vancouver: [1] Author, 1. Author, (1) Author, 1 Author (multiple formats)
+    This function tries multiple formats regardless of style parameter:
+    - [1] Author. Title...
+    - 1. Author. Title...
+    - 1 Author. Title...
+    - (1) Author. Title...
     """
     s = norm_space(ref)
     if not s:
         return None
     
-    style = style.lower()
-    is_ieee = style == "ieee"
+    log_debug(f"Parsing reference: {s[:100]}...")
     
-    if is_ieee:
-        # IEEE: STRICTLY [1] format only
-        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
-        if m:
-            num = m.group(1)
-            body = norm_space(m.group(2))
-            body = _strip_leading_reference_number(body)
-            # Check if it looks like a real reference (has author names, title, etc.)
-            if len(body) > 20 and re.search(r'[A-Z][a-z]+', body):
-                return RefNum(reference_full=s, num=num)
-        return None
+    # Try multiple formats in order of specificity
     
-    else:
-        # Vancouver: Try multiple formats in order of specificity
-        
-        # Pattern 1: [1] Rest of reference
-        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
-        if m:
-            num = m.group(1)
+    # Pattern 1: [1] Rest of reference
+    m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
+    if m:
+        num = m.group(1)
+        body = norm_space(m.group(2))
+        if len(body) > 20:
+            log_debug(f"Matched [n] format: {num}")
+            return RefNum(reference_full=s, num=num)
+    
+    # Pattern 2: 1. Rest of reference (but ensure it's not a year)
+    m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        # Skip if it looks like a year (1900-2099)
+        if not (1900 <= num_int <= 2099):
             body = norm_space(m.group(2))
-            body = _strip_leading_reference_number(body)
             if len(body) > 20:
+                log_debug(f"Matched n. format: {num}")
                 return RefNum(reference_full=s, num=num)
-        
-        # Pattern 2: 1. Rest of reference (but ensure it's not a year)
-        m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
-        if m:
-            num = m.group(1)
-            num_int = int(num)
-            # Skip if it looks like a year (1900-2099)
-            if 1900 <= num_int <= 2099:
-                # Check if the rest looks like a reference
-                body = norm_space(m.group(2))
-                if len(body) > 20 and not YEAR_RE.fullmatch(num):
-                    return RefNum(reference_full=s, num=num)
-            else:
-                body = norm_space(m.group(2))
-                if len(body) > 20:
-                    return RefNum(reference_full=s, num=num)
-        
-        # Pattern 3: (1) Rest of reference
-        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*(.+)$", s)
-        if m:
-            num = m.group(1)
+    
+    # Pattern 3: (1) Rest of reference
+    m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*(.+)$", s)
+    if m:
+        num = m.group(1)
+        body = norm_space(m.group(2))
+        if len(body) > 20:
+            log_debug(f"Matched (n) format: {num}")
+            return RefNum(reference_full=s, num=num)
+    
+    # Pattern 4: 1 Rest of reference (no punctuation)
+    m = re.match(r"^(\d{1,4})\s+(.+)$", s)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        # Skip if it looks like a year (1900-2099)
+        if not (1900 <= num_int <= 2099):
             body = norm_space(m.group(2))
-            body = _strip_leading_reference_number(body)
             if len(body) > 20:
+                log_debug(f"Matched n format: {num}")
                 return RefNum(reference_full=s, num=num)
-        
-        # Pattern 4: 1 Rest of reference (no punctuation)
-        m = re.match(r"^(\d{1,4})\s+(.+)$", s)
-        if m:
-            num = m.group(1)
-            num_int = int(num)
-            # Skip if it looks like a year (1900-2099)
-            if 1900 <= num_int <= 2099:
-                body = norm_space(m.group(2))
-                if len(body) > 20 and not YEAR_RE.fullmatch(num):
-                    return RefNum(reference_full=s, num=num)
-            else:
-                body = norm_space(m.group(2))
-                if len(body) > 20:
-                    return RefNum(reference_full=s, num=num)
-        
-        return None
+    
+    log_debug("No match found")
+    return None
 
 
 # -----------------------------
@@ -2345,7 +2354,7 @@ def run_crosscheck(
     else:
         # Style-specific numeric handling
         if style_s == "ieee":
-            # IEEE: Strict rule-based, square brackets only
+            # IEEE: Strict rule-based for citations
             log_debug("Using IEEE rule-based extraction")
             cites_nums = []
             if too_large:
@@ -2353,14 +2362,27 @@ def run_crosscheck(
             else:
                 cites_nums = extract_numeric_citations(main_text, style="ieee")
             
-            # Parse references with IEEE strictness
+            log_debug(f"IEEE extracted {len(cites_nums)} citations")
+            
+            # Parse references - use generic parsing that handles multiple formats
             refs = []
             for r in references_raw:
+                # Try parsing regardless of style - the function handles multiple formats
                 parsed = parse_reference_numeric(r, style="ieee")
                 if parsed:
                     refs.append(parsed)
+                else:
+                    # Try with explicit number pattern as last resort
+                    m = re.match(r"^(\d+)", r.strip())
+                    if m:
+                        num = m.group(1)
+                        if len(r) > 30 and not (1900 <= int(num) <= 2099):
+                            log_debug(f"Extracted number {num} from reference using simple pattern")
+                            refs.append(RefNum(reference_full=r, num=num))
             
-            # Reconcile with IEEE strictness
+            log_debug(f"Parsed {len(refs)} references")
+            
+            # Reconcile with IEEE matching logic
             c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
                 cites_nums, refs, style="ieee"
             )
