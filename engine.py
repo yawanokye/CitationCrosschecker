@@ -1,14 +1,58 @@
 # engine.py
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 import re
 import io
+import os
+import json
+import requests
 import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-ENGINE_BUILD = "commercial-2026-02-27-final"
+ENGINE_BUILD = "commercial-2026-02-28-llm-enhanced"
+
+# ==================== CONFIGURATION ====================
+# Your API key - replace with your actual key
+YOUR_API_KEY = "sk-267f05e8f67b4fefa5189320eac5554f"
+
+# LLM Configuration - supports multiple providers
+LLM_CONFIG = {
+    "provider": "openai",  # or "anthropic", "deepseek", "ollama", "custom"
+    "api_key": YOUR_API_KEY,
+    "api_url": "https://api.openai.com/v1/chat/completions",  # OpenAI endpoint
+    "model": "gpt-3.5-turbo",  # or "gpt-4", "claude-3-haiku-20240307", etc.
+    "timeout": 15,
+    "max_tokens": 1000,
+    "temperature": 0,
+    "fallback_to_rule_based": True  # Use rule-based if LLM fails
+}
+
+# Alternative configurations (uncomment if using different provider)
+# LLM_CONFIG = {
+#     "provider": "anthropic",
+#     "api_key": YOUR_API_KEY,
+#     "api_url": "https://api.anthropic.com/v1/messages",
+#     "model": "claude-3-haiku-20240307",
+#     "timeout": 15,
+#     "max_tokens": 1000,
+#     "temperature": 0,
+#     "fallback_to_rule_based": True
+# }
+
+# LLM_CONFIG = {
+#     "provider": "deepseek",
+#     "api_key": YOUR_API_KEY,
+#     "api_url": "https://api.deepseek.com/v1/chat/completions",
+#     "model": "deepseek-chat",
+#     "timeout": 15,
+#     "max_tokens": 1000,
+#     "temperature": 0,
+#     "fallback_to_rule_based": True
+# }
+
+# ======================================================
 
 # Fuzzy matching (optional)
 try:
@@ -268,7 +312,7 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
 
 
 # -----------------------------
-# DOCX extraction - FIXED
+# DOCX extraction
 # -----------------------------
 def _iter_docx_text(doc):
     for p in doc.paragraphs:
@@ -318,7 +362,7 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
 
 
 def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
-    """Read DOCX and split main text from references - FIXED error handling."""
+    """Read DOCX and split main text from references."""
     if not DOCX_OK:
         raise RuntimeError("python-docx not installed")
 
@@ -374,7 +418,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
 
 # -----------------------------
-# PDF extraction - COMPLETELY REWRITTEN for better reference detection
+# PDF extraction
 # -----------------------------
 def read_pdf_text(file_bytes: bytes) -> str:
     """Extract text from PDF with better formatting preservation."""
@@ -389,7 +433,7 @@ def read_pdf_text(file_bytes: bytes) -> str:
                 text = page.extract_text(
                     x_tolerance=3, 
                     y_tolerance=3,
-                    layout=True,  # Preserve layout
+                    layout=True,
                     keep_blank_chars=False
                 ) or ""
                 text = text.replace("\x00", " ")
@@ -423,7 +467,7 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
         line_clean = line.strip().upper()
         for pattern in heading_patterns:
             if re.search(pattern, line_clean, re.I):
-                if i > len(lines) * 0.5:  # After 50% of document
+                if i > len(lines) * 0.5:
                     ref_start = i
                     ref_heading = line
                     break
@@ -435,7 +479,6 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
         for i, line in enumerate(lines):
             if i > len(lines) * 0.5:
                 line = line.strip()
-                # Look for patterns like [1] or 1. at start of line
                 if re.match(r'^\[\d+\]\s+[A-Z]', line) or \
                    (re.match(r'^\d+\.\s+[A-Z]', line) and not re.match(r'^\d{4}\.', line)):
                     ref_start = i
@@ -445,10 +488,10 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
     if ref_start == -1:
         return text, [], "No references section found."
     
-    # Extract main text (everything before references)
+    # Extract main text
     main_text = "\n".join(lines[:ref_start]).strip()
     
-    # Extract references - this is the critical part
+    # Extract references
     references = []
     current_ref = ""
     ref_pattern = re.compile(r'^(\[\d+\]|\d+\.)\s+')
@@ -456,39 +499,31 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
     for i in range(ref_start + 1, len(lines)):
         line = lines[i].rstrip()
         
-        # Skip empty lines at the beginning
         if not line and not current_ref:
             continue
         
-        # Check if this line starts a new reference
         if ref_pattern.match(line.strip()):
             if current_ref:
-                # Clean and add the previous reference
                 clean_ref = clean_reference_text(current_ref)
                 if is_valid_reference(clean_ref):
                     references.append(clean_ref)
             current_ref = line
         elif current_ref:
-            # Continuation of previous reference
             if current_ref.endswith('-'):
                 current_ref = current_ref[:-1] + line
             else:
                 current_ref += " " + line
         elif line.strip() and not current_ref and len(line) > 30:
-            # Might be a reference without a number (rare)
             if is_valid_reference(line):
                 references.append(clean_reference_text(line))
     
-    # Add the last reference
     if current_ref:
         clean_ref = clean_reference_text(current_ref)
         if is_valid_reference(clean_ref):
             references.append(clean_ref)
     
-    # Post-process to merge any references that were split incorrectly
     merged_refs = merge_split_references(references)
     
-    # Filter out false positives
     final_refs = []
     for ref in merged_refs:
         if len(ref) > 30 and is_valid_reference(ref):
@@ -499,18 +534,12 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
 
 
 def clean_reference_text(ref: str) -> str:
-    """Clean up reference text by normalizing spaces and fixing common issues."""
-    # Normalize spaces
+    """Clean up reference text."""
     ref = re.sub(r'\s+', ' ', ref).strip()
-    
-    # Fix common PDF artifacts
-    ref = re.sub(r'-\s+', '', ref)  # Remove hyphens with following space
-    ref = re.sub(r'\s+-\s+', '-', ref)  # Fix spaced hyphens
-    ref = re.sub(r'\s+\.', '.', ref)  # Fix spaces before periods
-    
-    # Remove page breaks or stray characters
+    ref = re.sub(r'-\s+', '', ref)
+    ref = re.sub(r'\s+-\s+', '-', ref)
+    ref = re.sub(r'\s+\.', '.', ref)
     ref = re.sub(r'[_-]{2,}', '', ref)
-    
     return ref
 
 
@@ -519,18 +548,15 @@ def is_valid_reference(ref: str) -> bool:
     if len(ref) < 30:
         return False
     
-    # Must have at least one of these indicators
     has_year = bool(re.search(r'\b(19|20)\d{2}\b', ref))
     has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', ref))
     has_doi = bool(re.search(r'10\.\d{4,9}/', ref))
     has_journal = bool(re.search(r'Journal|Review|Letters|Proceedings|Conference', ref, re.I))
     has_publisher = bool(re.search(r'Press|University|Institute|Publisher', ref, re.I))
     
-    # Must not be a table/figure reference
     if re.search(r'Table\s+\d+|Figure\s+\d+', ref, re.I):
         return False
     
-    # Must not be a page number only
     if re.match(r'^\d+\s*$', ref):
         return False
     
@@ -547,13 +573,11 @@ def merge_split_references(refs: List[str]) -> List[str]:
     while i < len(refs):
         current = refs[i]
         
-        # Check if this reference ends abruptly (no period, incomplete)
         if i < len(refs) - 1 and not current.rstrip().endswith('.'):
             next_ref = refs[i + 1]
-            # If next reference doesn't start with a number pattern, merge them
             if not re.match(r'^(\[\d+\]|\d+\.)', next_ref.strip()):
                 current += " " + next_ref
-                i += 1  # Skip the next one
+                i += 1
         merged.append(current)
         i += 1
     
@@ -676,6 +700,203 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 
 
 # -----------------------------
+# LLM-based Vancouver Citation Extraction
+# -----------------------------
+
+def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
+    """Split text into chunks at sentence boundaries."""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    
+    for sentence in sentences:
+        if current_length + len(sentence) > max_chars and current_chunk:
+            chunks.append(' '.join(current_chunk))
+            current_chunk = [sentence]
+            current_length = len(sentence)
+        else:
+            current_chunk.append(sentence)
+            current_length += len(sentence)
+    
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+    
+    return chunks
+
+
+def call_llm_for_citations(text: str) -> List[str]:
+    """Call LLM API to extract citations from text."""
+    
+    prompt = f"""You are an expert at identifying Vancouver-style citations in academic text.
+
+Vancouver citation style uses numbers in various formats:
+- (1), [1], ¹ (superscript), or just 1
+- Multiple citations: (1,2,3), [1-5], (1,2,4-7,9)
+- Author + citation: Smith et al. (1) found that...
+- With page numbers: (1 p23), [2 pp45-67]
+
+IMPORTANT: Do NOT extract:
+- Years (like 2022, 1999) unless they're clearly citations
+- Page numbers (like p. 23, pp. 45-67)
+- Table/figure numbers (Table 1, Figure 2)
+- Section numbers (Section 3, Chapter 4)
+- Statistical numbers (50%, 100 participants)
+- Currency amounts ($100, GHS 2,650)
+
+Extract ONLY genuine citation numbers from the text.
+
+If you see ranges like "1-5", expand them to individual numbers: 1,2,3,4,5.
+If you see multiple citations like "1,2,3", list each number separately.
+
+Return a JSON array of strings, each being a citation number.
+Example: ["1","2","3","4","5"]
+
+Text: {text}
+
+Return ONLY the JSON array, no other text."""
+    
+    try:
+        config = LLM_CONFIG
+        
+        if config["provider"] == "openai":
+            response = requests.post(
+                config["api_url"],
+                headers={
+                    "Authorization": f"Bearer {config['api_key']}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": config["model"],
+                    "messages": [
+                        {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": config["temperature"],
+                    "max_tokens": config["max_tokens"]
+                },
+                timeout=config["timeout"]
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+                
+                # Extract JSON array
+                json_match = re.search(r'\[.*\]', content, re.DOTALL)
+                if json_match:
+                    citations = json.loads(json_match.group())
+                    # Ensure all items are strings and look like citation numbers
+                    return [str(c) for c in citations if str(c).isdigit()]
+        
+        elif config["provider"] == "anthropic":
+            response = requests.post(
+                config["api_url"],
+                headers={
+                    "x-api-key": config["api_key"],
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": config["model"],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": config["max_tokens"],
+                    "temperature": config["temperature"]
+                },
+                timeout=config["timeout"]
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['content'][0]['text']
+                json_match = re.search(r'\[.*\]', content, re.DOTALL)
+                if json_match:
+                    citations = json.loads(json_match.group())
+                    return [str(c) for c in citations if str(c).isdigit()]
+        
+        elif config["provider"] == "deepseek":
+            response = requests.post(
+                config["api_url"],
+                headers={
+                    "Authorization": f"Bearer {config['api_key']}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": config["model"],
+                    "messages": [
+                        {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": config["temperature"],
+                    "max_tokens": config["max_tokens"]
+                },
+                timeout=config["timeout"]
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+                json_match = re.search(r'\[.*\]', content, re.DOTALL)
+                if json_match:
+                    citations = json.loads(json_match.group())
+                    return [str(c) for c in citations if str(c).isdigit()]
+        
+        return []
+        
+    except Exception as e:
+        print(f"LLM call failed: {e}")
+        if LLM_CONFIG["fallback_to_rule_based"]:
+            return extract_vancouver_citations_fallback(text)
+        return []
+
+
+def extract_vancouver_citations_fallback(text: str) -> List[str]:
+    """Fallback rule-based Vancouver citation extraction."""
+    citations = []
+    
+    # Pattern for bracketed citations
+    for match in re.finditer(r'[\(\[]\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*[\)\]]', text):
+        content = match.group(1)
+        for part in re.split(r'\s*,\s*', content):
+            if '-' in part or '–' in part:
+                parts = re.split(r'[-–]', part)
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    start, end = int(parts[0]), int(parts[1])
+                    if 1 <= start <= end <= 9999 and (end - start) <= 50:
+                        citations.extend([str(i) for i in range(start, end + 1)])
+            elif part.isdigit():
+                num = int(part)
+                if not (1900 <= num <= 2099):  # Filter out years
+                    citations.append(part)
+    
+    # Author + citation pattern
+    for match in re.finditer(r'([A-Z][a-z]+(?:\s+et al\.?)?)\s*[\(\[]\s*(\d+)\s*[\)\]]', text, re.I):
+        citations.append(match.group(2))
+    
+    # Deduplicate
+    seen = set()
+    return [x for x in citations if not (x in seen or seen.add(x))]
+
+
+def extract_vancouver_citations_llm(text: str) -> List[str]:
+    """
+    Use LLM to extract Vancouver citations intelligently.
+    Returns list of citation numbers.
+    """
+    # Split text into chunks
+    chunks = split_into_chunks(text, max_chars=3000)
+    all_citations = []
+    
+    for chunk in chunks:
+        citations = call_llm_for_citations(chunk)
+        all_citations.extend(citations)
+    
+    # Deduplicate while preserving order
+    seen = set()
+    return [x for x in all_citations if not (x in seen or seen.add(x))]
+
+
+# -----------------------------
 # Citation extractors
 # -----------------------------
 def extract_author_year_citations(text: str) -> List[str]:
@@ -704,85 +925,30 @@ def extract_author_year_citations(text: str) -> List[str]:
     return [c for c in out if c]
 
 
-def is_valid_citation_number(num: str, context: str) -> bool:
-    """Determine if a number is a genuine citation vs year/page number."""
-    num_int = int(num) if num.isdigit() else 0
-    
-    # Years (1900-2099) are NOT citations unless in specific contexts
-    if 1900 <= num_int <= 2099:
-        # If it's in brackets with author, might be citation
-        if re.search(r'[A-Z][a-z]+(?:\s+et al\.?)?\s*[\(\[]\s*' + re.escape(num), context, re.I):
-            return True
-        return False
-    
-    # Page numbers
-    if re.search(r'[pP]\.?\s*' + re.escape(num) + r'\b', context):
-        return False
-    
-    # Table/figure references
-    if re.search(r'(?:table|figure|fig|eq|equation)\s+' + re.escape(num), context, re.I):
-        return False
-    
-    # Numbers in brackets/parentheses are likely citations
-    if re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]', context):
-        return True
-    
-    return False
-
-
 def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
-    """Extract numeric citations with filtering for years and false positives."""
+    """Extract numeric citations based on style."""
+    
+    if style == "vancouver":
+        return extract_vancouver_citations_llm(text)
+    
+    # IEEE or generic numeric
     t = text or ""
     out = []
     
-    # Remove false positive contexts first
     t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+\d+", " ", t, flags=re.I)
     
-    if style == "ieee":
-        # IEEE: square brackets only
-        for m in re.finditer(r"\[\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\]", t):
-            content = m.group(1)
-            context = t[max(0, m.start()-30):min(len(t), m.end()+30)]
-            
-            for part in re.split(r'\s*,\s*', content):
-                if '-' in part or '–' in part:
-                    parts = re.split(r'[-–]', part)
-                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                        start, end = int(parts[0]), int(parts[1])
-                        if 1 <= start <= end <= 9999 and (end - start) <= 50:
-                            for i in range(start, end + 1):
-                                if is_valid_citation_number(str(i), context):
-                                    out.append(str(i))
-                elif part.isdigit():
-                    if is_valid_citation_number(part, context):
-                        out.append(part)
+    for m in re.finditer(r"\[\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\]", t):
+        content = m.group(1)
+        for part in re.split(r'\s*,\s*', content):
+            if '-' in part or '–' in part:
+                parts = re.split(r'[-–]', part)
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    start, end = int(parts[0]), int(parts[1])
+                    if 1 <= start <= end <= 9999 and (end - start) <= 50:
+                        out.extend([str(i) for i in range(start, end + 1)])
+            elif part.isdigit():
+                out.append(part)
     
-    else:  # Vancouver or generic numeric
-        # Bracketed citations
-        for m in re.finditer(r"[\(\[]\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*[\)\]]", t):
-            content = m.group(1)
-            context = t[max(0, m.start()-30):min(len(t), m.end()+30)]
-            
-            for part in re.split(r'\s*,\s*', content):
-                if '-' in part or '–' in part:
-                    parts = re.split(r'[-–]', part)
-                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                        start, end = int(parts[0]), int(parts[1])
-                        if 1 <= start <= end <= 9999 and (end - start) <= 50:
-                            for i in range(start, end + 1):
-                                if is_valid_citation_number(str(i), context):
-                                    out.append(str(i))
-                elif part.isdigit():
-                    if is_valid_citation_number(part, context):
-                        out.append(part)
-        
-        # Author + citation
-        for m in re.finditer(r'([A-Z][a-z]+(?:\s+et al\.?)?)\s*[\(\[]\s*(\d+)\s*[\)\]]', t, re.I):
-            num = m.group(2)
-            if is_valid_citation_number(num, m.group(0)):
-                out.append(num)
-    
-    # Deduplicate
     seen = set()
     return [x for x in out if not (x in seen or seen.add(x))]
 
@@ -858,7 +1024,6 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
     if not s:
         return None
     
-    # Try different patterns
     patterns = [
         (r"^\[\s*(\d+)\s*\]\s*(.+)$", "bracket"),
         (r"^(\d+)\.\s*(.+)$", "dot"),
@@ -871,7 +1036,6 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
         if m:
             num = m.group(1)
             num_int = int(num)
-            # Skip if it looks like a year
             if 1900 <= num_int <= 2099:
                 continue
             body = norm_space(m.group(2))
@@ -1017,14 +1181,25 @@ def _extract_author_year_citations_chunked(text: str) -> List[str]:
 
 
 def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[str]:
-    seen = set()
-    out = []
-    for chunk in _iter_text_chunks(text):
-        for c in extract_numeric_citations(chunk, style):
-            if c not in seen:
-                seen.add(c)
-                out.append(c)
-    return out
+    if style == "vancouver":
+        # For Vancouver, use smaller chunks for LLM
+        seen = set()
+        out = []
+        for chunk in _iter_text_chunks(text, chunk_size=3000):
+            for c in extract_numeric_citations(chunk, style):
+                if c not in seen:
+                    seen.add(c)
+                    out.append(c)
+        return out
+    else:
+        seen = set()
+        out = []
+        for chunk in _iter_text_chunks(text):
+            for c in extract_numeric_citations(chunk, style):
+                if c not in seen:
+                    seen.add(c)
+                    out.append(c)
+        return out
 
 
 # -----------------------------
