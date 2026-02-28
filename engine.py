@@ -1,42 +1,14 @@
 # engine.py
-__version__ = "1.5.0"
+__version__ = "1.4.0"
 
-import os
 import re
 import io
-import json
-import requests
 import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-ENGINE_BUILD = "commercial-2026-03-01-final"
-
-# ==================== CONFIGURATION ====================
-# API keys should be set as environment variables for security
-# NEVER hardcode API keys in source code
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-if not DEEPSEEK_API_KEY:
-    print("WARNING: DEEPSEEK_API_KEY environment variable not set. Vancouver style will use fallback mode.")
-
-DEEPSEEK_CONFIG = {
-    "api_url": "https://api.deepseek.com/v1/chat/completions",
-    "model": "deepseek-chat",
-    "timeout": 30,
-    "max_tokens": 1000,
-    "temperature": 0,
-    "fallback_to_rule_based": True
-}
-
-# Debug flag - set to False in production
-DEBUG = True
-
-def log_debug(msg: str):
-    """Print debug messages if DEBUG is enabled."""
-    if DEBUG:
-        print(f"[DEBUG] {msg}")
-# ======================================================
+ENGINE_BUILD = "commercial-2026-02-26-optimized"
 
 # Fuzzy matching (optional)
 try:
@@ -88,7 +60,7 @@ DISCOURSE_PREFIXES = {
     "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
-    "for instance", "instance", "for example", "example", "likely", 
+    "for instance", "instance", "for example", "example", "likely",
     "for instance,", "for example,", "uncertainty", "likewise", "Moreover,",
 }
 
@@ -104,10 +76,10 @@ REF_END_HEADINGS = [
 REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
 
 NON_NAME_AUTHOR_KEYS = {
-    "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", 
-    "figure", "fig", "figures", "chapter", "section", "appendix", "appendices", 
-    "annex", "equation", "eq", "model", "models", "analysis", "results", "method", 
-    "methods", "discussion", "introduction", "conclusion", "study", "paper", "thesis", 
+    "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables",
+    "figure", "fig", "figures", "chapter", "section", "appendix", "appendices",
+    "annex", "equation", "eq", "model", "models", "analysis", "results", "method",
+    "methods", "discussion", "introduction", "conclusion", "study", "paper", "thesis",
     "report", "source", "sources", "author", "authors",
     "however", "similarly", "regrettably", "traditionally", "therefore", "thus", "hence",
     "consequently", "moreover", "furthermore", "additionally", "meanwhile", "nonetheless",
@@ -424,7 +396,7 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
 
 
 # -----------------------------
-# DOCX extraction
+# DOCX extraction (optimized)
 # -----------------------------
 def _iter_docx_text(doc: "Document"):
     for p in doc.paragraphs:
@@ -576,7 +548,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
 
 # -----------------------------
-# PDF extraction
+# PDF extraction with enhanced reference detection
 # -----------------------------
 def read_pdf_text(file_bytes: bytes) -> str:
     if not PDF_OK:
@@ -587,10 +559,9 @@ def read_pdf_text(file_bytes: bytes) -> str:
         for page in pdf.pages:
             try:
                 text = page.extract_text() or ""
-                # Fix common PDF extraction issues
                 text = text.replace("\x00", " ")
-                text = re.sub(r"-\n", "", text)  # Fix hyphenated line breaks
-                text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)  # Join broken lines
+                text = re.sub(r"-\n", "", text)
+                text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
             except Exception:
                 text = ""
             out.append(text)
@@ -598,43 +569,30 @@ def read_pdf_text(file_bytes: bytes) -> str:
 
 
 def _looks_like_new_numeric_reference_start(s: str) -> bool:
-    """Detect if a line starts a new numeric reference."""
     s0 = (s or "").strip()
     if not s0:
         return False
-    
-    # Pattern: [1] text (IEEE standard)
     if re.match(r"^\[\s*\d{1,4}\s*\]\s+\S", s0):
         return True
-    
-    # Pattern: (1) text
     if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
         return True
-    
-    # Pattern: 1. text (but not a year like 2008.)
     m = re.match(r"^(\d{1,4})[\.)]\s+(.+)$", s0)
     if m:
         num = m.group(1)
         num_int = int(num)
-        # Skip if it's a year (1900-2099)
         if 1900 <= num_int <= 2099:
-            # Check if the text after looks like a reference
             rest = m.group(2)
             if YEAR_RE.search(rest) or len(rest) > 30:
                 return True
             return False
         return True
-    
-    # Pattern: 1 text (no punctuation, but ensure it's not a year)
     m = re.match(r"^(\d{1,4})\s+([A-Z].+)$", s0)
     if m:
         num = m.group(1)
         num_int = int(num)
-        # Skip if it's a year (1900-2099)
         if 1900 <= num_int <= 2099:
             return False
         return True
-    
     return False
 
 
@@ -697,531 +655,39 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 
 
 # -----------------------------
-# Reference Extraction Functions
-# -----------------------------
-
-def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
-    """
-    Extract references from PDF text with robust pattern matching.
-    Returns (main_text, references_list, message)
-    """
-    lines = text.splitlines()
-    
-    # Find the references section
-    ref_start = -1
-    ref_heading = ""
-    
-    # Look for reference headings (case insensitive)
-    heading_patterns = [
-        r'^\s*references?\s*$',
-        r'^\s*bibliography\s*$',
-        r'^\s*works\s+cited\s*$',
-        r'^\s*literature\s+cited\s*$',
-        r'^\s*REFERENCES\s*$',
-        r'^\s*BIBLIOGRAPHY\s*$',
-    ]
-    
-    for i, line in enumerate(lines):
-        line_lower = line.strip().lower()
-        for pattern in heading_patterns:
-            if re.match(pattern, line_lower):
-                # Verify this is near the end of document
-                if i > len(lines) * 0.5:  # After 50% of document
-                    ref_start = i
-                    ref_heading = line
-                    break
-        if ref_start != -1:
-            break
-    
-    # If no heading found, look for reference patterns
-    if ref_start == -1:
-        for i, line in enumerate(lines):
-            if i > len(lines) * 0.6:
-                line = line.strip()
-                # Look for patterns like [1] Author or 1. Author
-                if re.match(r'^\[\d+\]\s+[A-Z]', line) or \
-                   (re.match(r'^\d+\.\s+[A-Z]', line) and not re.match(r'^\d{4}\.', line)):
-                    ref_start = i
-                    ref_heading = "REFERENCES (detected)"
-                    break
-    
-    if ref_start == -1:
-        # If still not found, assume last 30% of document is references
-        ref_start = int(len(lines) * 0.7)
-        ref_heading = "REFERENCES (assumed)"
-        log_debug(f"No heading found, assuming references start at line {ref_start}")
-    
-    # Extract main text (everything before references)
-    main_text = "\n".join(lines[:ref_start]).strip()
-    
-    # Extract references
-    references = []
-    current_ref = ""
-    ref_pattern = re.compile(r'^(\[\d+\]|\d+\.)\s+')
-    
-    # Start from the reference section
-    for i in range(ref_start + 1, len(lines)):
-        line = lines[i].rstrip()
-        
-        # Skip very short lines that are likely page numbers or headers
-        if len(line.strip()) < 10 and not current_ref:
-            continue
-        
-        # Check if this line starts a new reference
-        if ref_pattern.match(line.strip()):
-            if current_ref:
-                # Clean and add the previous reference
-                clean_ref = clean_reference_text(current_ref)
-                if len(clean_ref) > 30:  # Basic length check
-                    references.append(clean_ref)
-            current_ref = line
-        elif current_ref:
-            # Continuation of previous reference
-            if current_ref.endswith('-'):
-                current_ref = current_ref[:-1] + line
-            else:
-                current_ref += " " + line
-        elif line.strip() and not current_ref and len(line) > 30:
-            # Might be a reference without a number (rare)
-            if is_likely_reference(line):
-                current_ref = line
-    
-    # Add the last reference
-    if current_ref:
-        clean_ref = clean_reference_text(current_ref)
-        if len(clean_ref) > 30:
-            references.append(clean_ref)
-    
-    # Post-process to fix split references and filter
-    final_refs = []
-    i = 0
-    while i < len(references):
-        ref = references[i]
-        
-        # If this reference seems incomplete (no year, no author pattern)
-        if i < len(references) - 1 and not is_complete_reference(ref):
-            # Try to merge with next reference
-            next_ref = references[i + 1]
-            merged = ref + " " + next_ref
-            if is_complete_reference(merged):
-                final_refs.append(merged)
-                i += 2
-                continue
-            else:
-                final_refs.append(ref)
-                i += 1
-        else:
-            final_refs.append(ref)
-            i += 1
-    
-    log_debug(f"Extracted {len(final_refs)} references")
-    msg = f"Found {len(final_refs)} references."
-    return main_text, final_refs, msg
-
-
-def clean_reference_text(ref: str) -> str:
-    """Clean up reference text."""
-    # Normalize spaces
-    ref = re.sub(r'\s+', ' ', ref).strip()
-    
-    # Fix common PDF artifacts
-    ref = re.sub(r'-\s+', '', ref)  # Remove hyphens with following space
-    ref = re.sub(r'\s+-\s+', '-', ref)  # Fix spaced hyphens
-    ref = re.sub(r'\s+\.', '.', ref)  # Fix spaces before periods
-    
-    # Remove page breaks or stray characters
-    ref = re.sub(r'[_-]{2,}', '', ref)
-    
-    return ref
-
-
-def is_likely_reference(text: str) -> bool:
-    """Check if text is likely a reference."""
-    if len(text) < 30:
-        return False
-    
-    # Must have at least one of these indicators
-    has_year = bool(re.search(r'\b(19|20)\d{2}\b', text))
-    has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', text))
-    has_doi = bool(re.search(r'10\.\d{4,9}/', text))
-    has_journal = bool(re.search(r'Journal|Review|Letters|Proceedings|Conference', text, re.I))
-    has_publisher = bool(re.search(r'Press|University|Institute|Publisher', text, re.I))
-    has_brackets = bool(re.search(r'\[\d+\]', text))
-    
-    # Must not be a table/figure reference
-    if re.search(r'Table\s+\d+|Figure\s+\d+', text, re.I):
-        return False
-    
-    return has_year or has_author or has_doi or has_journal or has_publisher or has_brackets
-
-
-def is_complete_reference(ref: str) -> bool:
-    """Check if a reference appears complete."""
-    # Should have either a year or a reference number
-    has_year = bool(re.search(r'\b(19|20)\d{2}\b', ref))
-    has_ref_num = bool(re.search(r'^\[\d+\]|^\d+\.', ref))
-    
-    # Should be reasonably long
-    if len(ref) < 50:
-        return False
-    
-    # Should end with a period or similar
-    if not ref.rstrip().endswith(('.', ']', ')')):
-        return False
-    
-    return has_year or has_ref_num
-
-
-def extract_references_from_text(text: str) -> List[str]:
-    """Extract references from a block of text."""
-    lines = text.splitlines()
-    references = []
-    current_ref = ""
-    ref_pattern = re.compile(r'^(\[\d+\]|\d+\.)\s+')
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            if current_ref:
-                if is_likely_reference(current_ref):
-                    references.append(clean_reference_text(current_ref))
-                current_ref = ""
-            continue
-        
-        if ref_pattern.match(line):
-            if current_ref and is_likely_reference(current_ref):
-                references.append(clean_reference_text(current_ref))
-            current_ref = line
-        elif current_ref:
-            current_ref += " " + line
-        elif is_likely_reference(line):
-            current_ref = line
-    
-    if current_ref and is_likely_reference(current_ref):
-        references.append(clean_reference_text(current_ref))
-    
-    return references
-
-
-def extract_references_enhanced(text: str) -> List[str]:
-    """Enhanced reference extraction using multiple strategies."""
-    
-    # First try: Find references section by heading
-    lines = text.splitlines()
-    ref_start = -1
-    
-    for i, line in enumerate(lines):
-        if re.search(r'^\s*(?:REFERENCES|BIBLIOGRAPHY|WORKS CITED)\s*$', line, re.I):
-            if i > len(lines) * 0.5:
-                ref_start = i
-                break
-    
-    if ref_start != -1:
-        # Extract from this point onward
-        ref_text = "\n".join(lines[ref_start + 1:])
-        refs = extract_references_from_text(ref_text)
-        if len(refs) > 10:
-            log_debug(f"Found {len(refs)} references via heading detection")
-            return refs
-    
-    # Second try: Pattern-based extraction on whole document
-    refs = extract_references_pattern_based(text)
-    if len(refs) > 10:
-        log_debug(f"Found {len(refs)} references via pattern-based extraction")
-        return refs
-    
-    # Third try: Heuristic extraction
-    refs = extract_references_heuristic(text)
-    if len(refs) > 5:
-        log_debug(f"Found {len(refs)} references via heuristic extraction")
-        return refs
-    
-    # Final try: Take everything after a certain point
-    lines = text.splitlines()
-    start_idx = int(len(lines) * 0.7)
-    ref_text = "\n".join(lines[start_idx:])
-    refs = extract_references_from_text(ref_text)
-    log_debug(f"Found {len(refs)} references via fallback extraction")
-    
-    return refs
-
-
-def detect_reference_format(lines: List[str], start_idx: int) -> str:
-    """Detect the reference format used in the document."""
-    sample_lines = []
-    for i in range(start_idx + 1, min(start_idx + 20, len(lines))):
-        line = lines[i].strip()
-        if line:
-            sample_lines.append(line)
-    
-    # Count pattern matches
-    ieee_count = sum(1 for l in sample_lines if re.match(r'^\[\d+\]', l))
-    numbered_count = sum(1 for l in sample_lines if re.match(r'^\d+\.', l) and not re.match(r'^\d{4}\.', l))
-    apa_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', l))
-    harvard_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', l))
-    
-    # Return the most common format
-    formats = {
-        'ieee': ieee_count,
-        'numbered': numbered_count,
-        'apa': apa_count,
-        'harvard': harvard_count
-    }
-    
-    best_format = max(formats, key=formats.get)
-    return best_format if formats[best_format] > 0 else "unknown"
-
-
-def join_reference_lines(current: str, next_line: str) -> str:
-    """Intelligently join reference lines, handling hyphens and spaces."""
-    if current.endswith('-'):
-        # Hyphenated word break
-        return current[:-1] + next_line
-    elif re.search(r'[a-z]$', current) and re.search(r'^[a-z]', next_line):
-        # Likely continuation of same word
-        return current + next_line
-    else:
-        # Normal space separation
-        return current + " " + next_line
-
-
-def clean_reference(ref: str) -> str:
-    """Clean up a reference string."""
-    # Normalize spaces
-    ref = re.sub(r'\s+', ' ', ref).strip()
-    
-    # Fix common PDF extraction artifacts
-    ref = re.sub(r'-\s+', '', ref)  # Remove hyphens with following space
-    ref = re.sub(r'\s+-\s+', '-', ref)  # Fix spaced hyphens
-    
-    # Remove leading/trailing punctuation
-    ref = ref.strip('.,;:')
-    
-    return ref
-
-
-def extract_references_generalized(text: str) -> List[str]:
-    """Generalized reference extraction that works with multiple academic paper formats."""
-    lines = text.splitlines()
-    
-    # Strategy 1: Find standard reference headings (multiple formats)
-    ref_start = -1
-    heading_patterns = [
-        r'^\s*REFERENCES\s*$',
-        r'^\s*BIBLIOGRAPHY\s*$',
-        r'^\s*WORKS\s+CITED\s*$',
-        r'^\s*LITERATURE\s+CITED\s*$',
-        r'^\s*REFERENCES\s*\[.*\]\s*$',
-        r'^\s*REFERENCES AND NOTES\s*$',
-    ]
-    
-    for i, line in enumerate(lines):
-        for pattern in heading_patterns:
-            if re.search(pattern, line, re.I):
-                # Verify this is near the end of document (usually references are at the end)
-                if i > len(lines) * 0.6:  # After 60% of document
-                    ref_start = i
-                    break
-        if ref_start != -1:
-            break
-    
-    # Strategy 2: If no heading found, look for reference-like patterns
-    if ref_start == -1:
-        ref_candidates = []
-        for i, line in enumerate(lines):
-            # Only check latter part of document
-            if i > len(lines) * 0.6:
-                line = line.strip()
-                # Pattern 1: [1] Author (IEEE)
-                if re.match(r'^\[\d+\]\s+[A-Z]\.?\s+[A-Z][a-z]', line):
-                    ref_candidates.append((i, line))
-                # Pattern 2: 1. Author (Numbered)
-                elif re.match(r'^\d+\.\s+[A-Z][a-z]', line) and not re.match(r'^\d{4}\.', line):
-                    ref_candidates.append((i, line))
-                # Pattern 3: Author (Year). Title (APA)
-                elif re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line):
-                    ref_candidates.append((i, line))
-        
-        # If we found reference-like lines, start from the first one
-        if ref_candidates:
-            ref_start = ref_candidates[0][0] - 1  # Include potential heading line
-    
-    if ref_start == -1:
-        return []
-    
-    # Extract references using multiple format detectors
-    references = []
-    current_ref = ""
-    
-    # Detect reference format type
-    ref_format = detect_reference_format(lines, ref_start)
-    
-    for i in range(ref_start + 1, min(ref_start + 500, len(lines))):  # Limit to 500 lines
-        line = lines[i].strip()
-        
-        # Skip empty lines at beginning
-        if not line and not current_ref:
-            continue
-        
-        if not line:
-            # Empty line might separate references
-            if current_ref:
-                references.append(clean_reference(current_ref))
-                current_ref = ""
-            continue
-        
-        # Check if this starts a new reference based on format
-        is_new_ref = False
-        
-        if ref_format == "ieee":
-            is_new_ref = bool(re.match(r'^\[\d+\]', line))
-        elif ref_format == "numbered":
-            is_new_ref = bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)
-        elif ref_format == "apa":
-            is_new_ref = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
-        elif ref_format == "harvard":
-            is_new_ref = bool(re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', line[:100]))
-        else:
-            # Auto-detect: look for patterns
-            is_new_ref = (
-                bool(re.match(r'^\[\d+\]', line)) or
-                (bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)) or
-                bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
-            )
-        
-        if is_new_ref:
-            if current_ref:
-                references.append(clean_reference(current_ref))
-            current_ref = line
-        elif current_ref:
-            # Continuation of previous reference
-            current_ref = join_reference_lines(current_ref, line)
-    
-    # Add last reference
-    if current_ref:
-        references.append(clean_reference(current_ref))
-    
-    # Post-process: filter out non-references and clean
-    cleaned_refs = []
-    for ref in references:
-        # Basic validation: should contain author names and year/number
-        if len(ref) > 30 and (
-            re.search(r'\d{4}', ref) or  # Has year
-            re.search(r'\[\d+\]', ref) or  # Has reference number
-            re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', ref)  # Has author format
-        ):
-            cleaned_refs.append(ref)
-    
-    return cleaned_refs
-
-
-def extract_references_pattern_based(text: str) -> List[str]:
-    """Extract references using pattern matching on the whole text."""
-    # Look for common reference patterns in the text
-    patterns = [
-        # IEEE: [1] Author. Title...
-        (r'\[\d+\]\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
-        # Numbered: 1. Author. Title...
-        (r'^\d+\.\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
-        # APA: Author, A. (Year). Title...
-        (r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)\.\s+[A-Z][a-zA-Z\s]+\.', re.MULTILINE | re.DOTALL),
-    ]
-    
-    references = []
-    for pattern, flags in patterns:
-        matches = re.findall(pattern, text, flags)
-        references.extend([clean_reference(m) for m in matches if len(m) > 30])
-    
-    return references
-
-
-def extract_references_heuristic(text: str) -> List[str]:
-    """Extract references using heuristics when patterns fail."""
-    lines = text.splitlines()
-    references = []
-    current_ref = ""
-    
-    # Heuristic: references usually appear in the last 30% of the document
-    # and contain years or author names
-    start_idx = int(len(lines) * 0.7)  # Start at 70% through document
-    
-    for i in range(start_idx, len(lines)):
-        line = lines[i].strip()
-        if not line:
-            if current_ref and len(current_ref) > 30:
-                references.append(clean_reference(current_ref))
-                current_ref = ""
-            continue
-        
-        # Check if line looks like a reference
-        has_year = bool(re.search(r'\b(19|20)\d{2}\b', line))
-        has_bracket_num = bool(re.search(r'\[\d+\]', line))
-        has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', line))
-        has_caps_words = len(re.findall(r'\b[A-Z][a-z]{2,}\b', line)) >= 2
-        
-        if has_year or has_bracket_num or (has_author and has_caps_words):
-            if not current_ref:
-                current_ref = line
-            else:
-                # Check if this is a new reference or continuation
-                if (has_bracket_num or 
-                    (re.match(r'^\d+\.', line) and not re.match(r'^\d{4}\.', line)) or
-                    (has_author and len(current_ref) > 50)):
-                    if current_ref:
-                        references.append(clean_reference(current_ref))
-                    current_ref = line
-                else:
-                    current_ref += " " + line
-        elif current_ref:
-            current_ref += " " + line
-    
-    if current_ref and len(current_ref) > 30:
-        references.append(clean_reference(current_ref))
-    
-    return references
-
-
-# -----------------------------
 # Reference merging/splitting
 # -----------------------------
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
-    """Improved reference merging for DOCX files."""
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
         return []
 
-    merged = []
-    current_ref = ""
-    
-    for line in raw_lines:
-        # Check if this line starts a new reference (starts with [number] or number.)
-        if re.match(r'^\[\d+\]', line) or re.match(r'^\d+\.', line):
-            if current_ref:
-                merged.append(current_ref)
-            current_ref = line
-        elif current_ref:
-            # Continue previous reference
-            current_ref += " " + line
+    merged: List[str] = []
+    cur = ""
+    for ln in raw_lines:
+        s = ln.strip()
+        if not s:
+            continue
+
+        is_new = _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s)
+        if is_new:
+            if cur:
+                merged.append(norm_space(cur))
+            cur = s
         else:
-            # First reference
-            current_ref = line
-    
-    if current_ref:
-        merged.append(current_ref)
-    
-    # Post-process to fix incorrectly merged references
-    final_refs = []
-    for ref in merged:
-        # Check if this reference contains multiple reference numbers
-        # Pattern like "... [9]. [10] ..." indicates multiple references merged
-        if re.search(r'\[\d+\]\.\s*\[\d+\]', ref):
-            # Split on the pattern
-            parts = re.split(r'(?<=\]\.)\s*(?=\[\d+\])', ref)
-            final_refs.extend(parts)
-        else:
-            final_refs.append(ref)
-    
-    return final_refs
+            if not cur:
+                cur = s
+            else:
+                joiner = " "
+                if cur.endswith("-"):
+                    cur = cur[:-1]
+                    joiner = ""
+                cur = cur + joiner + s
+
+    if cur:
+        merged.append(norm_space(cur))
+
+    return [m for m in merged if m and len(m) >= 8]
 
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
@@ -1269,10 +735,9 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 
 
 # -----------------------------
-# Citation extractors - APA/Harvard (UNCHANGED)
+# Citation extractors
 # -----------------------------
 def extract_author_year_citations(text: str) -> List[str]:
-    """Extract APA/Harvard citations - RULE BASED, NO AI."""
     t = (text or "").replace("\u2019", "'")
 
     paren_pat = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
@@ -1311,273 +776,83 @@ def extract_author_year_citations(text: str) -> List[str]:
     return [c for c in out if c]
 
 
-# -----------------------------
-# Citation extractors - IEEE (UNCHANGED)
-# -----------------------------
-def extract_ieee_citations(text: str) -> List[str]:
-    """Extract IEEE citations - RULE BASED, NO AI.
-    IEEE strictly uses square brackets: [1], [1,2,3], [1-5]
+def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
+    """Extract numeric in-text citations.
+
+    - IEEE: only square brackets, e.g. [1], [1,4,6], [1-3]
+    - Vancouver: square brackets or parentheses, e.g. [1], (1), [1-3], (1, 2, 3)
+
+    Returns a list of citation numbers as strings, expanded for ranges, with duplicates preserved.
     """
     t = text or ""
+    style_s = (style or "ieee").strip().lower()
+    is_ieee = ("ieee" in style_s)
+
+    # Reduce common false positives early
+    t = re.sub(r"\b(?:table|figure|fig\.?|equation|eq\.?|appendix|section|chap(?:ter)?|page|pp\.)\s+\d{1,4}\b", " ", t, flags=re.I)
+    t = re.sub(r"\]\s*\n\s*\[", "][", t)
+
     out: List[str] = []
-    
-    # Remove common false positives first
-    t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+(\d{1,4})", "", t, flags=re.I)
-    
-    # Fix line breaks between citations (common in PDFs)
-    t = re.sub(r'\]\s*\n\s*\[', '][', t)
-    
-    # IEEE: STRICTLY square brackets only [1], [1,2,3], [1-5]
-    ieee_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
-    
-    for m in ieee_pat.finditer(t):
-        nums = _expand_citation_range(m)
-        out.extend(nums)
-    
-    # Deduplicate while preserving order
-    seen = set()
-    deduped = []
-    for num in out:
-        if num not in seen:
-            seen.add(num)
-            deduped.append(num)
-    
-    log_debug(f"IEEE extracted {len(deduped)} citations")
-    return deduped
 
-
-# -----------------------------
-# Citation extractors - Vancouver (AI-ASSISTED) - with API key check
-# -----------------------------
-def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
-    """Split text into chunks at sentence boundaries."""
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    
-    for sentence in sentences:
-        if current_length + len(sentence) > max_chars and current_chunk:
-            chunks.append(' '.join(current_chunk))
-            current_chunk = [sentence]
-            current_length = len(sentence)
-        else:
-            current_chunk.append(sentence)
-            current_length += len(sentence)
-    
-    if current_chunk:
-        chunks.append(' '.join(current_chunk))
-    
-    return chunks
-
-
-def call_deepseek_for_citations(text: str) -> List[str]:
-    """Call DeepSeek API to extract Vancouver citations."""
-    
-    # Check if API key is available
-    if not DEEPSEEK_API_KEY:
-        log_debug("No DeepSeek API key found, using fallback mode")
-        return []
-    
-    prompt = f"""You are an expert at identifying Vancouver-style citations in academic text.
-
-Vancouver citation style uses numbers in various formats:
-- (1), [1], ¹ (superscript), or just 1
-- Multiple citations: (1,2,3), [1-5], (1,2,4-7,9)
-- Author + citation: Smith et al. (1) found that...
-- With page numbers: (1 p23), [2 pp45-67]
-
-IMPORTANT: Do NOT extract:
-- Years (like 2022, 1999) unless they're clearly citations
-- Page numbers (like p. 23, pp. 45-67)
-- Table/figure numbers (Table 1, Figure 2)
-- Section numbers (Section 3, Chapter 4)
-- Statistical numbers (50%, 100 participants)
-- Currency amounts ($100, GHS 2,650)
-
-Extract ONLY genuine citation numbers from the text.
-
-If you see ranges like "1-5", expand them to individual numbers: 1,2,3,4,5.
-If you see multiple citations like "1,2,3", list each number separately.
-
-Return a JSON array of strings, each being a citation number.
-Example: ["1","2","3","4","5"]
-
-Text: {text}
-
-Return ONLY the JSON array, no other text."""
-    
-    try:
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": DEEPSEEK_CONFIG["model"],
-            "messages": [
-                {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": DEEPSEEK_CONFIG["temperature"],
-            "max_tokens": DEEPSEEK_CONFIG["max_tokens"]
-        }
-        
-        log_debug(f"Calling DeepSeek API with {len(text)} chars")
-        
-        response = requests.post(
-            DEEPSEEK_CONFIG["api_url"],
-            headers=headers,
-            json=payload,
-            timeout=DEEPSEEK_CONFIG["timeout"]
-        )
-        
-        log_debug(f"DeepSeek response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            result = response.json()
-            content = result['choices'][0]['message']['content']
-            log_debug(f"DeepSeek response content: {content[:200]}...")
-            
-            # Extract JSON array
-            json_match = re.search(r'\[.*\]', content, re.DOTALL)
-            if json_match:
-                citations = json.loads(json_match.group())
-                # Ensure all items are strings and look like citation numbers
-                valid_citations = [str(c) for c in citations if str(c).isdigit()]
-                log_debug(f"Extracted {len(valid_citations)} citations")
-                return valid_citations
-        else:
-            log_debug(f"DeepSeek API error: {response.text}")
-        
-        return []
-        
-    except Exception as e:
-        log_debug(f"DeepSeek call failed: {e}")
-        return []
-
-
-def extract_vancouver_citations_fallback(text: str) -> List[str]:
-    """Fallback rule-based Vancouver citation extraction."""
-    citations = []
-    
-    # Pattern for bracketed citations
-    for match in re.finditer(r'[\(\[]\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*[\)\]]', text):
-        content = match.group(1)
-        for part in re.split(r'\s*,\s*', content):
-            if '-' in part or '–' in part:
-                parts = re.split(r'[-–]', part)
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    start, end = int(parts[0]), int(parts[1])
-                    if 1 <= start <= end <= 9999 and (end - start) <= 50:
-                        citations.extend([str(i) for i in range(start, end + 1)])
-            elif part.isdigit():
-                num = int(part)
-                if not (1900 <= num <= 2099):  # Filter out years
-                    citations.append(part)
-    
-    # Author + citation pattern
-    for match in re.finditer(r'([A-Z][a-z]+(?:\s+et al\.?)?)\s*[\(\[]\s*(\d+)\s*[\)\]]', text, re.I):
-        citations.append(match.group(2))
-    
-    # Deduplicate
-    seen = set()
-    return [x for x in citations if not (x in seen or seen.add(x))]
-
-
-def extract_vancouver_citations(text: str) -> List[str]:
-    """Extract Vancouver citations using AI (if API key available), with fallback to rule-based."""
-    log_debug("Starting Vancouver citation extraction")
-    
-    # If API key is not available, use fallback immediately
-    if not DEEPSEEK_API_KEY:
-        log_debug("No API key, using rule-based fallback")
-        return extract_vancouver_citations_fallback(text)
-    
-    chunks = split_into_chunks(text, max_chars=3000)
-    all_citations = []
-    
-    log_debug(f"Processing {len(chunks)} chunks with DeepSeek")
-    
-    for i, chunk in enumerate(chunks):
-        log_debug(f"Chunk {i+1}/{len(chunks)}")
-        citations = call_deepseek_for_citations(chunk)
-        all_citations.extend(citations)
-    
-    # If API returned no results, fall back to rule-based
-    if not all_citations and DEEPSEEK_CONFIG["fallback_to_rule_based"]:
-        log_debug("API returned no results, using rule-based fallback")
-        return extract_vancouver_citations_fallback(text)
-    
-    # Deduplicate while preserving order
-    seen = set()
-    result = [x for x in all_citations if not (x in seen or seen.add(x))]
-    log_debug(f"Total unique citations found: {len(result)}")
-    return result
-
-
-def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
-    """Extract numeric citations based on style.
-    
-    Args:
-        text: Document text
-        style: "ieee", "vancouver", or "numeric"
-    
-    Returns:
-        List of citation numbers as strings
-    
-    IEEE: Strictly rule-based, only square brackets
-    Vancouver: AI-assisted (with fallback), handles multiple formats
-    """
-    style = style.lower()
-    
-    if style == "ieee":
-        return extract_ieee_citations(text)
-    elif style == "vancouver":
-        return extract_vancouver_citations(text)
-    else:
-        # Generic numeric (fallback)
-        return extract_ieee_citations(text)  # Use IEEE as default
-
-
-def _expand_citation_range(match) -> List[str]:
-    """Expand citation ranges like [2-5] or [2,3] into individual numbers."""
-    nums = []
-    groups = match.groups()
-    
-    if not groups or not groups[0]:
-        return nums
-    
-    # Process first number and potential range
-    start = int(groups[0])
-    if groups[1]:  # Has range (e.g., 2-5)
-        end = int(groups[1])
-        if start <= end and (end - start) <= 50:  # Sanity check
-            nums.extend([str(i) for i in range(start, end + 1)])
-        else:
-            nums.append(str(start))
-            nums.append(str(end))
-    else:
-        nums.append(str(start))
-    
-    # Process additional numbers after comma
-    if groups[2]:
-        start2 = int(groups[2])
-        if groups[3]:  # Has second range
-            end2 = int(groups[3])
-            if start2 <= end2 and (end2 - start2) <= 50:
-                nums.extend([str(i) for i in range(start2, end2 + 1)])
+    def _expand_group(group: str) -> List[str]:
+        g = (group or "").strip()
+        if not g:
+            return []
+        nums: List[str] = []
+        parts = [p for p in re.split(r"[\s,]+", g) if p]
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part or "–" in part:
+                a, b = re.split(r"[-–]", part, maxsplit=1)
+                a = a.strip()
+                b = b.strip()
+                if a.isdigit() and b.isdigit():
+                    lo = int(a)
+                    hi = int(b)
+                    if lo <= hi and (hi - lo) <= 100:
+                        nums.extend([str(i) for i in range(lo, hi + 1)])
+                    elif hi < lo and (lo - hi) <= 100:
+                        nums.extend([str(i) for i in range(hi, lo + 1)])
+                    else:
+                        nums.extend([a, b])
+                else:
+                    digs = re.findall(r"\d{1,4}", part)
+                    nums.extend(digs)
             else:
-                nums.append(str(start2))
-                nums.append(str(end2))
-        else:
-            nums.append(str(start2))
-    
-    return nums
+                if part.isdigit():
+                    nums.append(part)
+                else:
+                    nums.extend(re.findall(r"\d{1,4}", part))
+        return nums
+
+    bracket_group_re = re.compile(r"\[\s*(\d{1,4}(?:\s*[-–]\s*\d{1,4})?(?:\s*(?:,|\s)\s*\d{1,4}(?:\s*[-–]\s*\d{1,4})?)*)\s*\]")
+    for m in bracket_group_re.finditer(t):
+        out.extend(_expand_group(m.group(1)))
+
+    if not is_ieee:
+        paren_group_re = re.compile(r"\(\s*(\d{1,4}(?:\s*[-–]\s*\d{1,4})?(?:\s*(?:,|\s)\s*\d{1,4}(?:\s*[-–]\s*\d{1,4})?)*)\s*\)")
+        for m in paren_group_re.finditer(t):
+            out.extend(_expand_group(m.group(1)))
+
+    cleaned: List[str] = []
+    for n in out:
+        if not n:
+            continue
+        try:
+            ni = int(n)
+        except Exception:
+            continue
+        if 1900 <= ni <= 2099:
+            continue
+        cleaned.append(str(ni))
+
+    return cleaned
 
 
 # -----------------------------
-# Reference parsers - FIXED to handle multiple formats
+# Reference parsers
 # -----------------------------
 @dataclass
 class RefAY:
@@ -1621,189 +896,78 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
 
 
 def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
-    """Parse numeric references from academic papers.
-    
-    Args:
-        ref: Reference string
-        style: "ieee", "vancouver", or "numeric" - primarily used for logging
-    
-    Returns:
-        RefNum object if valid, None otherwise
-    
-    This function tries multiple formats regardless of style parameter:
-    - [1] Author. Title...
-    - 1. Author. Title...
-    - 1 Author. Title...
-    - (1) Author. Title...
+    """Parse numeric references.
+
+    IEEE expects: [1] ...
+    Vancouver allows: [1] ..., (1) ..., 1. ..., 1) ..., 1 ...
     """
     s = norm_space(ref)
     if not s:
         return None
-    
-    log_debug(f"Parsing reference: {s[:100]}...")
-    
-    # Try multiple formats in order of specificity
-    
-    # Pattern 1: [1] Rest of reference
+
+    style_s = (style or "ieee").strip().lower()
+    is_ieee = ("ieee" in style_s)
+
+    if is_ieee:
+        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
+        if not m:
+            return None
+        num = m.group(1)
+        body = norm_space(m.group(2))
+        if len(body) < 10:
+            return None
+        return RefNum(reference_full=s, num=num)
+
+    # Vancouver (flexible)
     m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
     if m:
         num = m.group(1)
         body = norm_space(m.group(2))
-        if len(body) > 20:
-            log_debug(f"Matched [n] format: {num}")
-            return RefNum(reference_full=s, num=num)
-    
-    # Pattern 2: 1. Rest of reference (but ensure it's not a year)
-    m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
-    if m:
-        num = m.group(1)
-        num_int = int(num)
-        # Skip if it looks like a year (1900-2099)
-        if not (1900 <= num_int <= 2099):
-            body = norm_space(m.group(2))
-            if len(body) > 20:
-                log_debug(f"Matched n. format: {num}")
-                return RefNum(reference_full=s, num=num)
-    
-    # Pattern 3: (1) Rest of reference
+        if len(body) < 10:
+            return None
+        return RefNum(reference_full=s, num=num)
+
     m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*(.+)$", s)
     if m:
         num = m.group(1)
         body = norm_space(m.group(2))
-        if len(body) > 20:
-            log_debug(f"Matched (n) format: {num}")
-            return RefNum(reference_full=s, num=num)
-    
-    # Pattern 4: 1 Rest of reference (no punctuation)
+        if len(body) < 10:
+            return None
+        return RefNum(reference_full=s, num=num)
+
+    m = re.match(r"^(\d{1,4})\s*[\.)\]]\s*(.+)$", s)
+    if m:
+        num = m.group(1)
+        body = norm_space(m.group(2))
+        try:
+            ni = int(num)
+            if 1900 <= ni <= 2099:
+                return None
+        except Exception:
+            pass
+        if len(body) < 10:
+            return None
+        return RefNum(reference_full=s, num=num)
+
     m = re.match(r"^(\d{1,4})\s+(.+)$", s)
     if m:
         num = m.group(1)
-        num_int = int(num)
-        # Skip if it looks like a year (1900-2099)
-        if not (1900 <= num_int <= 2099):
-            body = norm_space(m.group(2))
-            if len(body) > 20:
-                log_debug(f"Matched n format: {num}")
-                return RefNum(reference_full=s, num=num)
-    
-    log_debug("No match found")
+        body = norm_space(m.group(2))
+        try:
+            ni = int(num)
+            if 1900 <= ni <= 2099:
+                return None
+        except Exception:
+            pass
+        if len(body) < 15:
+            return None
+        return RefNum(reference_full=s, num=num)
+
     return None
 
 
 # -----------------------------
-# Reference clustering
-# -----------------------------
-_REF_STOPWORDS = {
-    "the","a","an","and","or","of","in","on","for","to","with","from","at","by","as",
-    "ed","eds","edition","vol","volume","no","number","pp","pages","page",
-}
-
-def _strip_accents(s: str) -> str:
-    s = s or ""
-    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
-
-def _norm_ref_text(s: str) -> str:
-    s = _strip_accents(s.lower())
-    s = s.replace("&", " and ")
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
-
-_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)]+", re.I)
-
-def _extract_ref_signature(ref_full: str) -> Tuple[str, str, str, str]:
-    s = ref_full or ""
-    doi = ""
-    mdoi = _DOI_RE.search(s)
-    if mdoi:
-        doi = mdoi.group(0).rstrip(".,;")
-
-    m = YEAR_RE.search(s)
-    if not m:
-        t = _norm_ref_text(s)[:80]
-        return ("", t[:24], t[24:60], doi)
-
-    year = _base_year(m.group(1))
-    left = (s[:m.start()] or "").strip(" ,;()")
-    right = (s[m.end():] or "").strip()
-
-    surnames = _surnames_from_author_blob(left)
-    first_author = surnames[0] if surnames else _norm_ref_text(left)[:24]
-    first_author = re.sub(r"[^a-z0-9\- ]+", "", _norm_ref_text(first_author))
-
-    right = right.lstrip(" .,:;)-–—\"'[]")
-    right2 = re.split(r"\.\s+|\.?$|\s+https?://|\s+doi:\s*", right, maxsplit=1, flags=re.I)[0]
-    tokens = [re.sub(r"[^a-z0-9\-]+", "", t) for t in _norm_ref_text(right2).split()]
-    tokens = [t for t in tokens if t and t not in _REF_STOPWORDS]
-    title_stub = " ".join(tokens[:12])
-    return (year, first_author, title_stub, doi)
-
-def _cluster_references(references: List[Any]) -> Dict[str, Dict[str, Any]]:
-    by_doi: Dict[str, List[str]] = defaultdict(list)
-    by_bucket: Dict[Tuple[str, str], List[str]] = defaultdict(list)
-    sigs: Dict[str, Tuple[str, str, str, str]] = {}
-
-    for r in references:
-        rf = r.reference_full
-        y, a1, t, doi = _extract_ref_signature(rf)
-        sigs[rf] = (y, a1, t, doi)
-        if doi:
-            by_doi[doi.lower()].append(rf)
-        else:
-            by_bucket[(y, a1)].append(rf)
-
-    clusters: List[List[str]] = []
-
-    for _doi, items in by_doi.items():
-        clusters.append(items)
-
-    for (y, a1), items in by_bucket.items():
-        if len(items) <= 1:
-            clusters.append(items)
-            continue
-
-        used = set()
-        for i, rf_i in enumerate(items):
-            if rf_i in used:
-                continue
-            used.add(rf_i)
-            _, _, ti, _ = sigs[rf_i]
-            cluster = [rf_i]
-
-            for rf_j in items[i+1:]:
-                if rf_j in used:
-                    continue
-                _, _, tj, _ = sigs[rf_j]
-
-                if not ti or not tj:
-                    continue
-
-                if FUZZ_OK and fuzz:
-                    score = max(fuzz.token_set_ratio(ti, tj), fuzz.partial_ratio(ti, tj))
-                else:
-                    si = set(ti.split())
-                    sj = set(tj.split())
-                    score = int(round(100 * (len(si & sj) / max(1, len(si), len(sj)))))
-
-                if score >= 88:
-                    used.add(rf_j)
-                    cluster.append(rf_j)
-
-            clusters.append(cluster)
-
-    mapping: Dict[str, Dict[str, Any]] = {}
-    for cid, members in enumerate(clusters, start=1):
-        canonical = max(members, key=lambda x: len(x or ""))
-        for rf in members:
-            mapping[rf] = {
-                "cluster_id": cid,
-                "canonical_ref": canonical,
-                "is_duplicate": (rf != canonical),
-            }
-    return mapping
-
-
-# -----------------------------
-# Reconciliation - Enhanced for academic papers
+# Reconciliation
 # -----------------------------
 def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     s = norm_space(cite)
@@ -1924,12 +1088,10 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
                         cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
 
         matched_ref = ""
-        matched_key = ""
         used = ""
         for k in cand_keys:
             if k in alias_map:
                 matched_ref = alias_map[k]
-                matched_key = k
                 used = k
                 break
 
@@ -1991,28 +1153,16 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         if matched_ref and len(cite_samples_by_ref[matched_ref]) < 6:
             cite_samples_by_ref[matched_ref].append(c)
 
-    ref_cluster_map = _cluster_references(references)
-
     for r in references:
         ref_full = r.reference_full
         times = int(cite_counts_by_ref.get(ref_full, 0))
-
-        meta = ref_cluster_map.get(ref_full) or {}
-        canonical = meta.get("canonical_ref", ref_full)
-        is_dup = bool(meta.get("is_duplicate", False))
-        cid = meta.get("cluster_id", 0)
-
-        canonical_times = int(cite_counts_by_ref.get(canonical, 0))
-        if times == 0 and not (is_dup and canonical_times > 0):
+        if times == 0:
             uncited_refs.append(ref_full)
 
         r2c.append({
             "times_cited": times,
             "reference": ref_full,
             "cited_by": cite_samples_by_ref.get(ref_full, []),
-            "cluster_id": cid,
-            "canonical_reference": canonical,
-            "duplicate_of_cited": bool(is_dup and canonical_times > 0),
         })
 
     missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
@@ -2020,274 +1170,33 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
     return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
 
 
-def reconcile_numeric(citations: List[str], references: List[RefNum], style: str = "ieee") -> Tuple[
+def reconcile_numeric(citations: List[str], references: List[RefNum]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
-    """Reconcile numeric citations with references for academic papers.
-    
-    Args:
-        citations: List of citation numbers from text (as strings, e.g., "1", "2", etc.)
-        references: List of parsed references
-        style: "ieee" or "vancouver"
-    
-    Returns:
-        Tuple of reconciliation results
-    """
-    style = style.lower()
-    is_ieee = style == "ieee"
-    
-    log_debug(f"Reconcile numeric with style: {style}, is_ieee: {is_ieee}")
-    
-    # Build reference map with appropriate formats based on style
-    ref_map: Dict[str, str] = {}
-    ref_by_num: Dict[str, str] = {}  # For direct number matching
-    
-    for r in references:
-        # Store with original number
-        ref_map[r.num] = r.reference_full
-        ref_by_num[r.num] = r.reference_full
-        
-        if is_ieee:
-            # IEEE: Only square bracket format for matching
-            ref_map[f"[{r.num}]"] = r.reference_full
-        else:
-            # Vancouver: Multiple formats for matching
-            ref_map[f"[{r.num}]"] = r.reference_full
-            ref_map[f"({r.num})"] = r.reference_full
-            ref_map[f"{r.num}."] = r.reference_full
-    
-    log_debug(f"Reference map has {len(ref_map)} entries")
-    
-    # Count citations
-    cite_counts = Counter()
-    matched_refs = set()
-    
-    # Process each citation
-    for cite in citations:
-        cite_str = str(cite).strip()
-        
-        if is_ieee:
-            # IEEE: Try direct match first
-            if cite_str in ref_map:
-                cite_counts[ref_map[cite_str]] += 1
-                matched_refs.add(ref_map[cite_str])
-                continue
-            
-            # Try as number (if it's just digits)
-            if cite_str.isdigit() and cite_str in ref_by_num:
-                cite_counts[ref_by_num[cite_str]] += 1
-                matched_refs.add(ref_by_num[cite_str])
-                continue
-            
-            # Try to extract number from square brackets only
-            m = re.match(r'^\[\s*(\d{1,4})\s*\]$', cite_str)
-            if m and m.group(1) in ref_by_num:
-                cite_counts[ref_by_num[m.group(1)]] += 1
-                matched_refs.add(ref_by_num[m.group(1)])
-                continue
-        
-        else:
-            # Vancouver: Flexible matching
-            # Try direct match
-            if cite_str in ref_map:
-                cite_counts[ref_map[cite_str]] += 1
-                matched_refs.add(ref_map[cite_str])
-                continue
-            
-            # Try as number (if it's just digits)
-            if cite_str.isdigit() and cite_str in ref_by_num:
-                cite_counts[ref_by_num[cite_str]] += 1
-                matched_refs.add(ref_by_num[cite_str])
-                continue
-            
-            # Try to extract number from bracket/parentheses
-            m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?\.?$', cite_str)
-            if m and m.group(1) in ref_by_num:
-                cite_counts[ref_by_num[m.group(1)]] += 1
-                matched_refs.add(ref_by_num[m.group(1)])
-                continue
-    
-    # Build c2r (citations to references)
-    c2r: List[Dict[str, Any]] = []
+    ref_map = {r.num: r.reference_full for r in references}
+
+    cite_counts = Counter(citations)
+
+    c2r = []
     missing_counter = Counter()
-    
-    for cite in citations:
-        cite_str = str(cite).strip()
-        matched = False
-        
-        if is_ieee:
-            # IEEE matching logic
-            if cite_str in ref_map:
-                c2r.append({
-                    "status": "matched", 
-                    "in_text": cite_str, 
-                    "matched_reference": ref_map[cite_str], 
-                    "flags": ""
-                })
-                matched = True
-            elif cite_str.isdigit() and cite_str in ref_by_num:
-                c2r.append({
-                    "status": "matched", 
-                    "in_text": cite_str, 
-                    "matched_reference": ref_by_num[cite_str], 
-                    "flags": "number_only"
-                })
-                matched = True
-            else:
-                m = re.match(r'^\[\s*(\d{1,4})\s*\]$', cite_str)
-                if m and m.group(1) in ref_by_num:
-                    c2r.append({
-                        "status": "matched", 
-                        "in_text": cite_str, 
-                        "matched_reference": ref_by_num[m.group(1)], 
-                        "flags": "format_normalized"
-                    })
-                    matched = True
-        
+    for c in citations:
+        if c in ref_map:
+            c2r.append({"status": "matched", "in_text": f"[{c}]", "matched_reference": ref_map[c], "flags": ""})
         else:
-            # Vancouver matching logic
-            if cite_str in ref_map:
-                c2r.append({
-                    "status": "matched", 
-                    "in_text": cite_str, 
-                    "matched_reference": ref_map[cite_str], 
-                    "flags": ""
-                })
-                matched = True
-            elif cite_str.isdigit() and cite_str in ref_by_num:
-                c2r.append({
-                    "status": "matched", 
-                    "in_text": cite_str, 
-                    "matched_reference": ref_by_num[cite_str], 
-                    "flags": "standalone_number"
-                })
-                matched = True
-            else:
-                m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?\.?$', cite_str)
-                if m and m.group(1) in ref_by_num:
-                    c2r.append({
-                        "status": "matched", 
-                        "in_text": cite_str, 
-                        "matched_reference": ref_by_num[m.group(1)], 
-                        "flags": "format_variation"
-                    })
-                    matched = True
-        
-        if not matched:
-            c2r.append({
-                "status": "not_found", 
-                "in_text": cite_str, 
-                "matched_reference": "", 
-                "flags": ""
-            })
-            missing_counter[cite_str] += 1
-    
-    log_debug(f"c2r: {len(c2r)} entries, missing: {len(missing_counter)}")
-    
-    # Build r2c (references to citations)
-    r2c: List[Dict[str, Any]] = []
-    uncited_refs: List[str] = []
-    
-    # Group citations by reference
-    cite_samples_by_ref: Dict[str, List[str]] = defaultdict(list)
-    
-    for cite in citations:
-        cite_str = str(cite).strip()
-        
-        if is_ieee:
-            # IEEE grouping
-            if cite_str in ref_map:
-                if len(cite_samples_by_ref[ref_map[cite_str]]) < 6:
-                    cite_samples_by_ref[ref_map[cite_str]].append(cite_str)
-            elif cite_str.isdigit() and cite_str in ref_by_num:
-                if len(cite_samples_by_ref[ref_by_num[cite_str]]) < 6:
-                    cite_samples_by_ref[ref_by_num[cite_str]].append(cite_str)
-            else:
-                m = re.match(r'^\[\s*(\d{1,4})\s*\]$', cite_str)
-                if m and m.group(1) in ref_by_num:
-                    if len(cite_samples_by_ref[ref_by_num[m.group(1)]]) < 6:
-                        cite_samples_by_ref[ref_by_num[m.group(1)]].append(cite_str)
-        
-        else:
-            # Vancouver grouping
-            if cite_str in ref_map:
-                if len(cite_samples_by_ref[ref_map[cite_str]]) < 6:
-                    cite_samples_by_ref[ref_map[cite_str]].append(cite_str)
-            elif cite_str.isdigit() and cite_str in ref_by_num:
-                if len(cite_samples_by_ref[ref_by_num[cite_str]]) < 6:
-                    cite_samples_by_ref[ref_by_num[cite_str]].append(cite_str)
-            else:
-                m = re.match(r'^[\(\[]?\s*(\d{1,4})\s*[\)\]]?\.?$', cite_str)
-                if m and m.group(1) in ref_by_num:
-                    if len(cite_samples_by_ref[ref_by_num[m.group(1)]]) < 6:
-                        cite_samples_by_ref[ref_by_num[m.group(1)]].append(cite_str)
-    
+            c2r.append({"status": "not_found", "in_text": f"[{c}]", "matched_reference": "", "flags": ""})
+            missing_counter[c] += 1
+
+    r2c = []
+    uncited = []
     for r in references:
-        ref_full = r.reference_full
-        times = int(cite_counts.get(ref_full, 0))
-        
+        times = int(cite_counts.get(r.num, 0))
         if times == 0:
-            uncited_refs.append(ref_full)
-            log_debug(f"Uncited reference {r.num}: {ref_full[:100]}...")
-        
-        r2c.append({
-            "times_cited": times,
-            "reference": ref_full,
-            "cited_by": cite_samples_by_ref.get(ref_full, []),
-        })
-    
-    missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
-    unique_intext_count = int(len(set([str(c) for c in citations if c])))
-    
-    log_debug(f"Reconciliation complete: {unique_intext_count} unique citations, {len(references)} references, {len(uncited_refs)} uncited")
-    
-    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
+            uncited.append(r.reference_full)
+        r2c.append({"times_cited": times, "reference": r.reference_full, "cited_by": [f"[{r.num}]"] if times else []})
 
-
-# -----------------------------
-# Chunked text processing
-# -----------------------------
-def _iter_text_chunks(text: str, chunk_size: int = 300_000, overlap: int = 2_000):
-    s = text or ""
-    n = len(s)
-    if n <= chunk_size:
-        yield s
-        return
-    step = max(1, chunk_size - overlap)
-    for i in range(0, n, step):
-        yield s[i: min(n, i + chunk_size)]
-        if i + chunk_size >= n:
-            break
-
-
-def _extract_author_year_citations_chunked(text: str) -> List[str]:
-    seen = set()
-    total = []
-    for chunk in _iter_text_chunks(text):
-        for c in extract_author_year_citations(chunk):
-            if c not in seen:
-                seen.add(c)
-                total.append(c)
-    return total
-
-
-def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[str]:
-    """Chunked version of numeric citation extraction with style parameter."""
-    seen = set()
-    total = []
-    
-    # For Vancouver, use smaller chunks
-    if style == "vancouver":
-        chunk_size = 3000
-    else:
-        chunk_size = 300_000
-    
-    for chunk in _iter_text_chunks(text, chunk_size=chunk_size):
-        for c in extract_numeric_citations(chunk, style=style):
-            if c not in seen:
-                seen.add(c)
-                total.append(c)
-    return total
+    missing_rows = [{"citation_in_text": f"[{k}]", "count_in_text": int(v)} for k, v in missing_counter.most_common()]
+    unique_intext_count = int(len(set([c for c in citations if c])))
+    return c2r, r2c, missing_rows, uncited, unique_intext_count
 
 
 # -----------------------------
@@ -2319,32 +1228,31 @@ def run_crosscheck(
 
     elif name.endswith(".pdf"):
         full_text = read_pdf_text(file_bytes)
-        
-        # Use the improved reference extraction
-        main_text, references_raw, ref_msg = extract_references_from_pdf(full_text)
-        
-        # Also try enhanced extraction if we got very few references
-        if len(references_raw) < 10:
-            log_debug(f"Only found {len(references_raw)} references, trying enhanced extraction")
-            enhanced_refs = extract_references_enhanced(full_text)
-            if len(enhanced_refs) > len(references_raw):
-                references_raw = enhanced_refs
-                main_text = full_text  # Use full text as main text
-                ref_msg = f"Found {len(references_raw)} references using enhanced extraction."
-        
+        lines = full_text.splitlines()
+
+        idx, tail = _find_reference_heading(lines, style_hint=style_hint)
+        if idx == -1:
+            main_text = full_text
+            references_raw = []
+            ref_msg = "No References heading found."
+        else:
+            main_text = "\n".join(lines[:idx]).strip()
+            ref_msg = f"Found References heading: {lines[idx].strip()}"
+            ref_block_lines: List[str] = []
+            if tail:
+                ref_block_lines.append(tail)
+            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
+            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
+            references_raw = _merge_reference_lines(ref_block_lines)
+
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
 
     else:
         return {"error": "Upload a DOCX or PDF"}
 
-    log_debug(f"Final reference count: {len(references_raw)}")
-    main_text_len = len(main_text or "")
-    too_large = main_text_len > 2_000_000
-
     if style_hint == "apa":
-        # APA/Harvard - rule based, no AI
-        cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
+        cites = extract_author_year_citations(main_text)
         refs = [parse_reference_author_year(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
 
@@ -2352,94 +1260,29 @@ def run_crosscheck(
         ref_count = len(refs)
 
     else:
-        # Style-specific numeric handling
-        if style_s == "ieee":
-            # IEEE: Strict rule-based for citations
-            log_debug("Using IEEE rule-based extraction")
-            cites_nums = []
-            if too_large:
-                cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
-            else:
-                cites_nums = extract_numeric_citations(main_text, style="ieee")
-            
-            log_debug(f"IEEE extracted {len(cites_nums)} citations")
-            
-            # Parse references - use generic parsing that handles multiple formats
-            refs = []
-            for r in references_raw:
-                # Try parsing regardless of style - the function handles multiple formats
-                parsed = parse_reference_numeric(r, style="ieee")
-                if parsed:
-                    refs.append(parsed)
-                else:
-                    # Try with explicit number pattern as last resort
-                    m = re.match(r"^(\d+)", r.strip())
-                    if m:
-                        num = m.group(1)
-                        if len(r) > 30 and not (1900 <= int(num) <= 2099):
-                            log_debug(f"Extracted number {num} from reference using simple pattern")
-                            refs.append(RefNum(reference_full=r, num=num))
-            
-            log_debug(f"Parsed {len(refs)} references")
-            
-            # Reconcile with IEEE matching logic
-            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
-                cites_nums, refs, style="ieee"
-            )
-            ref_count = len(refs)
-            
-        elif style_s == "vancouver":
-            # Vancouver: AI-assisted for messy citations
-            log_debug("Using Vancouver AI-assisted extraction")
-            cites_nums = []
-            if too_large:
-                cites_nums = _extract_numeric_citations_chunked(main_text, style="vancouver")
-            else:
-                cites_nums = extract_numeric_citations(main_text, style="vancouver")
-            
-            log_debug(f"Vancouver extracted {len(cites_nums)} citations")
-            
-            # Parse references with Vancouver flexibility
-            refs = []
-            for r in references_raw:
-                parsed = parse_reference_numeric(r, style="vancouver")
-                if parsed:
-                    refs.append(parsed)
-            
-            log_debug(f"Vancouver parsed {len(refs)} references")
-            
-            # Reconcile with Vancouver flexibility
-            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
-                cites_nums, refs, style="vancouver"
-            )
-            ref_count = len(refs)
-            
-        else:  # generic numeric
-            # Default to IEEE
-            log_debug(f"Using default numeric (IEEE) extraction for style: {style_s}")
-            cites_nums = []
-            if too_large:
-                cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
-            else:
-                cites_nums = extract_numeric_citations(main_text, style="ieee")
-            
-            refs = []
-            for r in references_raw:
-                parsed = parse_reference_numeric(r, style="ieee")
-                if parsed:
-                    refs.append(parsed)
-            
-            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
-                cites_nums, refs, style="ieee"
-            )
-            ref_count = len(refs)
+        # Numeric styles
+        if "ieee" in style_s:
+            cite_style = "ieee"
+        else:
+            # treat vancouver / numeric as flexible vancouver-style extraction
+            cite_style = "vancouver"
+
+        cites_nums = extract_numeric_citations(main_text, style=cite_style)
+
+        refs = [parse_reference_numeric(r, style=cite_style) for r in references_raw]
+        refs = [r for r in refs if r is not None]
+
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites_nums, refs)
+        ref_count = len(refs)
 
     missing_unique = int(len(missing_rows or []))
     match_rate = 0.0
     if intext_count > 0:
         match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
 
-    log_debug(f"Final results: intext={intext_count}, refs={ref_count}, missing={missing_unique}, uncited={len(uncited_refs)}")
+    # strict vs loose counts (kept stable)
+    strict_intext_count = int(intext_count)
+    loose_intext_count = int(intext_count)
 
     return {
         "filename": filename,
@@ -2453,7 +1296,11 @@ def run_crosscheck(
             "missing_in_references": int(missing_unique),
             "uncited_references": int(len(uncited_refs)),
             "match_rate": float(round(match_rate, 1)),
+            "strict_intext_count": strict_intext_count,
+            "loose_intext_count": loose_intext_count,
         },
+        "strict_intext_count": strict_intext_count,
+        "loose_intext_count": loose_intext_count,
         "missing_in_references": missing_rows,
         "uncited_references": uncited_refs,
         "reconciliation_intext_to_reference": c2r,
