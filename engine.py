@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 import re
 import io
@@ -11,47 +11,29 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-ENGINE_BUILD = "commercial-2026-02-28-llm-enhanced"
+ENGINE_BUILD = "commercial-2026-02-28-deepseek-integrated"
 
 # ==================== CONFIGURATION ====================
-# Your API key - replace with your actual key
-YOUR_API_KEY = "sk-267f05e8f67b4fefa5189320eac5554f"
+# Your DeepSeek API key
+DEEPSEEK_API_KEY = "sk-267f05e8f67b4fefa5189320eac5554f"
 
-# LLM Configuration - supports multiple providers
-LLM_CONFIG = {
-    "provider": "openai",  # or "anthropic", "deepseek", "ollama", "custom"
-    "api_key": YOUR_API_KEY,
-    "api_url": "https://api.openai.com/v1/chat/completions",  # OpenAI endpoint
-    "model": "gpt-3.5-turbo",  # or "gpt-4", "claude-3-haiku-20240307", etc.
-    "timeout": 15,
+# DeepSeek Configuration
+DEEPSEEK_CONFIG = {
+    "api_url": "https://api.deepseek.com/v1/chat/completions",  # DeepSeek API endpoint
+    "model": "deepseek-chat",  # DeepSeek model
+    "timeout": 30,
     "max_tokens": 1000,
     "temperature": 0,
-    "fallback_to_rule_based": True  # Use rule-based if LLM fails
+    "fallback_to_rule_based": True
 }
 
-# Alternative configurations (uncomment if using different provider)
-# LLM_CONFIG = {
-#     "provider": "anthropic",
-#     "api_key": YOUR_API_KEY,
-#     "api_url": "https://api.anthropic.com/v1/messages",
-#     "model": "claude-3-haiku-20240307",
-#     "timeout": 15,
-#     "max_tokens": 1000,
-#     "temperature": 0,
-#     "fallback_to_rule_based": True
-# }
+# Enable debug logging
+DEBUG = True
 
-# LLM_CONFIG = {
-#     "provider": "deepseek",
-#     "api_key": YOUR_API_KEY,
-#     "api_url": "https://api.deepseek.com/v1/chat/completions",
-#     "model": "deepseek-chat",
-#     "timeout": 15,
-#     "max_tokens": 1000,
-#     "temperature": 0,
-#     "fallback_to_rule_based": True
-# }
-
+def log_debug(msg: str):
+    """Print debug messages if DEBUG is enabled."""
+    if DEBUG:
+        print(f"[DEEPSEEK DEBUG] {msg}")
 # ======================================================
 
 # Fuzzy matching (optional)
@@ -85,7 +67,6 @@ REF_HEADINGS = [
     r"^\s*literature\s+cited\s*$",
     r"^\s*REFERENCES\s*$",
     r"^\s*BIBLIOGRAPHY\s*$",
-    r"^\s*REFERENCES\s*$",
 ]
 
 REF_HEADING_RELAXED = re.compile(
@@ -372,7 +353,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
     try:
         lines = _docx_xml_text(file_bytes)
     except Exception as e:
-        print(f"XML extraction failed: {e}, falling back to python-docx")
+        log_debug(f"XML extraction failed: {e}, falling back to python-docx")
     
     # Fall back to python-docx
     if not lines:
@@ -522,13 +503,19 @@ def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
         if is_valid_reference(clean_ref):
             references.append(clean_ref)
     
+    # Post-process to fix split references
     merged_refs = merge_split_references(references)
     
+    # Filter out false positives
     final_refs = []
     for ref in merged_refs:
         if len(ref) > 30 and is_valid_reference(ref):
+            # Remove any trailing "https://" or DOIs that got split
+            ref = re.sub(r'\s+https?://\S+$', '', ref)
+            ref = re.sub(r'\s+doi:\S+$', '', ref, flags=re.I)
             final_refs.append(ref)
     
+    log_debug(f"Extracted {len(final_refs)} references")
     msg = f"Found {len(final_refs)} references."
     return main_text, final_refs, msg
 
@@ -560,6 +547,10 @@ def is_valid_reference(ref: str) -> bool:
     if re.match(r'^\d+\s*$', ref):
         return False
     
+    # Exclude standalone URLs or DOIs
+    if re.match(r'^https?://', ref) or re.match(r'^10\.\d{4,9}/', ref):
+        return False
+    
     return has_year or has_author or has_doi or has_journal or has_publisher
 
 
@@ -573,11 +564,16 @@ def merge_split_references(refs: List[str]) -> List[str]:
     while i < len(refs):
         current = refs[i]
         
-        if i < len(refs) - 1 and not current.rstrip().endswith('.'):
+        # If this looks like a fragment (starts with lowercase, no year, etc.)
+        if i < len(refs) - 1 and (
+            not re.search(r'\b(19|20)\d{2}\b', current) or
+            re.match(r'^[a-z]', current) or
+            current.endswith('-') or
+            re.match(r'^(Available|Retrieved|Accessed|In:|Vol\.|No\.|pp\.)', current, re.I)
+        ):
             next_ref = refs[i + 1]
-            if not re.match(r'^(\[\d+\]|\d+\.)', next_ref.strip()):
-                current += " " + next_ref
-                i += 1
+            current += " " + next_ref
+            i += 1
         merged.append(current)
         i += 1
     
@@ -700,7 +696,7 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 
 
 # -----------------------------
-# LLM-based Vancouver Citation Extraction
+# DeepSeek-based Vancouver Citation Extraction
 # -----------------------------
 
 def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
@@ -725,8 +721,8 @@ def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
     return chunks
 
 
-def call_llm_for_citations(text: str) -> List[str]:
-    """Call LLM API to extract citations from text."""
+def call_deepseek_for_citations(text: str) -> List[str]:
+    """Call DeepSeek API to extract citations from text."""
     
     prompt = f"""You are an expert at identifying Vancouver-style citations in academic text.
 
@@ -757,95 +753,53 @@ Text: {text}
 Return ONLY the JSON array, no other text."""
     
     try:
-        config = LLM_CONFIG
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        }
         
-        if config["provider"] == "openai":
-            response = requests.post(
-                config["api_url"],
-                headers={
-                    "Authorization": f"Bearer {config['api_key']}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": config["model"],
-                    "messages": [
-                        {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": config["temperature"],
-                    "max_tokens": config["max_tokens"]
-                },
-                timeout=config["timeout"]
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                
-                # Extract JSON array
-                json_match = re.search(r'\[.*\]', content, re.DOTALL)
-                if json_match:
-                    citations = json.loads(json_match.group())
-                    # Ensure all items are strings and look like citation numbers
-                    return [str(c) for c in citations if str(c).isdigit()]
+        payload = {
+            "model": DEEPSEEK_CONFIG["model"],
+            "messages": [
+                {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": DEEPSEEK_CONFIG["temperature"],
+            "max_tokens": DEEPSEEK_CONFIG["max_tokens"]
+        }
         
-        elif config["provider"] == "anthropic":
-            response = requests.post(
-                config["api_url"],
-                headers={
-                    "x-api-key": config["api_key"],
-                    "anthropic-version": "2023-06-01",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": config["model"],
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": config["max_tokens"],
-                    "temperature": config["temperature"]
-                },
-                timeout=config["timeout"]
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result['content'][0]['text']
-                json_match = re.search(r'\[.*\]', content, re.DOTALL)
-                if json_match:
-                    citations = json.loads(json_match.group())
-                    return [str(c) for c in citations if str(c).isdigit()]
+        log_debug(f"Calling DeepSeek API with {len(text)} chars")
         
-        elif config["provider"] == "deepseek":
-            response = requests.post(
-                config["api_url"],
-                headers={
-                    "Authorization": f"Bearer {config['api_key']}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": config["model"],
-                    "messages": [
-                        {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": config["temperature"],
-                    "max_tokens": config["max_tokens"]
-                },
-                timeout=config["timeout"]
-            )
+        response = requests.post(
+            DEEPSEEK_CONFIG["api_url"],
+            headers=headers,
+            json=payload,
+            timeout=DEEPSEEK_CONFIG["timeout"]
+        )
+        
+        log_debug(f"DeepSeek response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            log_debug(f"DeepSeek response content: {content[:200]}...")
             
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                json_match = re.search(r'\[.*\]', content, re.DOTALL)
-                if json_match:
-                    citations = json.loads(json_match.group())
-                    return [str(c) for c in citations if str(c).isdigit()]
+            # Extract JSON array
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                citations = json.loads(json_match.group())
+                # Ensure all items are strings and look like citation numbers
+                valid_citations = [str(c) for c in citations if str(c).isdigit()]
+                log_debug(f"Extracted {len(valid_citations)} citations")
+                return valid_citations
+        else:
+            log_debug(f"DeepSeek API error: {response.text}")
         
         return []
         
     except Exception as e:
-        print(f"LLM call failed: {e}")
-        if LLM_CONFIG["fallback_to_rule_based"]:
+        log_debug(f"DeepSeek call failed: {e}")
+        if DEEPSEEK_CONFIG["fallback_to_rule_based"]:
             return extract_vancouver_citations_fallback(text)
         return []
 
@@ -878,22 +832,27 @@ def extract_vancouver_citations_fallback(text: str) -> List[str]:
     return [x for x in citations if not (x in seen or seen.add(x))]
 
 
-def extract_vancouver_citations_llm(text: str) -> List[str]:
+def extract_vancouver_citations_deepseek(text: str) -> List[str]:
     """
-    Use LLM to extract Vancouver citations intelligently.
+    Use DeepSeek to extract Vancouver citations intelligently.
     Returns list of citation numbers.
     """
     # Split text into chunks
     chunks = split_into_chunks(text, max_chars=3000)
     all_citations = []
     
-    for chunk in chunks:
-        citations = call_llm_for_citations(chunk)
+    log_debug(f"Processing {len(chunks)} chunks with DeepSeek")
+    
+    for i, chunk in enumerate(chunks):
+        log_debug(f"Chunk {i+1}/{len(chunks)}")
+        citations = call_deepseek_for_citations(chunk)
         all_citations.extend(citations)
     
     # Deduplicate while preserving order
     seen = set()
-    return [x for x in all_citations if not (x in seen or seen.add(x))]
+    result = [x for x in all_citations if not (x in seen or seen.add(x))]
+    log_debug(f"Total unique citations found: {len(result)}")
+    return result
 
 
 # -----------------------------
@@ -929,7 +888,7 @@ def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
     """Extract numeric citations based on style."""
     
     if style == "vancouver":
-        return extract_vancouver_citations_llm(text)
+        return extract_vancouver_citations_deepseek(text)
     
     # IEEE or generic numeric
     t = text or ""
@@ -1182,7 +1141,7 @@ def _extract_author_year_citations_chunked(text: str) -> List[str]:
 
 def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[str]:
     if style == "vancouver":
-        # For Vancouver, use smaller chunks for LLM
+        # For Vancouver, use smaller chunks for DeepSeek
         seen = set()
         out = []
         for chunk in _iter_text_chunks(text, chunk_size=3000):
@@ -1242,6 +1201,7 @@ def run_crosscheck(
     except Exception as e:
         return {"error": f"Error processing file: {str(e)}"}
 
+    log_debug(f"Style: {style_s}, References found: {len(refs_raw)}")
     too_large = len(main_text) > 2_000_000
 
     if style_hint == "apa":
@@ -1257,6 +1217,8 @@ def run_crosscheck(
         else:
             cites = extract_numeric_citations(main_text, style_s)
         
+        log_debug(f"Citations extracted: {len(cites)}")
+        
         # Parse references
         refs = []
         for r in refs_raw:
@@ -1264,11 +1226,15 @@ def run_crosscheck(
             if parsed:
                 refs.append(parsed)
         
+        log_debug(f"References parsed: {len(refs)}")
+        
         c2r, r2c, missing, uncited, intext_count = reconcile_numeric(cites, refs, style_s)
         ref_count = len(refs)
 
     missing_unique = len(missing)
     match_rate = 100.0 * (intext_count - missing_unique) / intext_count if intext_count > 0 else 0.0
+
+    log_debug(f"Results: intext={intext_count}, refs={ref_count}, missing={missing_unique}, uncited={len(uncited)}")
 
     return {
         "filename": filename,
