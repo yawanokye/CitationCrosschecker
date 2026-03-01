@@ -16,6 +16,14 @@ import requests
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
+# Load environment variables from .env file (for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✓ Loaded .env file")
+except ImportError:
+    print("! python-dotenv not installed, using system environment variables only")
+
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,9 +37,11 @@ from starlette.concurrency import run_in_threadpool
 try:
     from engine import run_crosscheck
     ENGINE_OK = True
-except Exception:
+    print("✓ Engine imported successfully")
+except Exception as e:
     ENGINE_OK = False
     run_crosscheck = None
+    print(f"✗ Engine import failed: {e}")
 
 try:
     # Optional: used for AI-assisted re-reconciliation (safe if missing)
@@ -46,15 +56,19 @@ try:
         read_pdf_text,
     )
     ENGINE_AI_OK = True
-except Exception:
+    print("✓ Engine AI helpers imported successfully")
+except Exception as e:
     ENGINE_AI_OK = False
+    print(f"! Engine AI helpers not available: {e}")
 
 try:
     from verify import verify_references_batch
     VERIFY_OK = True
-except Exception:
+    print("✓ Verify module imported successfully")
+except Exception as e:
     VERIFY_OK = False
     verify_references_batch = None
+    print(f"! Verify module not available: {e}")
 
 try:
     import pandas as pd
@@ -180,6 +194,13 @@ def _normalize_verify_status(s: str) -> str:
 DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
 DEEPSEEK_URL = (os.getenv("DEEPSEEK_API_BASE") or "https://api.deepseek.com/v1/chat/completions").strip()
 
+# Show API key status (without revealing the full key)
+if DEEPSEEK_API_KEY:
+    masked_key = DEEPSEEK_API_KEY[:5] + "..." + DEEPSEEK_API_KEY[-5:] if len(DEEPSEEK_API_KEY) > 10 else "***"
+    print(f"✓ DeepSeek API key loaded: {masked_key}")
+else:
+    print("! DeepSeek API key not set - Vancouver style will use rule-based fallback")
+
 # keep it strict to avoid hallucinations
 _AI_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", re.I)
 
@@ -244,10 +265,12 @@ def _deepseek_chat(messages: List[Dict[str, str]], timeout_s: float = 25.0) -> s
             timeout=timeout_s,
         )
         if r.status_code != 200:
+            print(f"DeepSeek API error: {r.status_code} - {r.text[:200]}")
             return ""
         data = r.json()
         return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-    except Exception:
+    except Exception as e:
+        print(f"DeepSeek API call failed: {e}")
         return ""
 
 
