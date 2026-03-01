@@ -97,7 +97,336 @@ def _doi_equal(a: str, b: str) -> bool:
     return a == b
 
 
-# ---------- parsing: title + authors ----------
+# ============================================================================
+# APA FORMAT CONVERSION - Convert any reference style to APA format
+# ============================================================================
+
+_STOP_AUTHOR_KEYS = {
+    # common false positives from narrative text
+    "survey","surveys","field","fields","fieldwork","work","works","study","studies","table","figure",
+    "chapter","section","appendix","appendices","supplementary","supporting","information","data",
+    "analysis","method","methods","results","discussion","conclusion","reference","references",
+    "available", "retrieved", "accessed", "archive", "repository"
+}
+
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})(?:[a-z])?\b")
+
+
+def _convert_to_apa(ref: str) -> Dict[str, Any]:
+    """
+    Convert any reference style to APA format and extract key components.
+    Returns dict with: authors, year, title, journal, volume, issue, pages, doi
+    """
+    ref = _safe_strip(ref)
+    if not ref:
+        return {}
+    
+    result = {
+        "authors": [],
+        "year": "",
+        "title": "",
+        "journal": "",
+        "volume": "",
+        "issue": "",
+        "pages": "",
+        "doi": "",
+        "apa_string": ""
+    }
+    
+    # Extract DOI first (most reliable)
+    result["doi"] = _extract_doi(ref)
+    
+    # Remove leading numbering
+    clean_ref = _strip_leading_numbering(ref)
+    
+    # Extract year
+    year_match = _YEAR_RE.search(clean_ref)
+    if year_match:
+        result["year"] = year_match.group(1)
+    
+    # Split into parts based on common patterns
+    parts = []
+    
+    # Try to split by year with parentheses (APA style)
+    if result["year"]:
+        year_pattern = r'[\(\[]?\s*' + re.escape(result["year"]) + r'\s*[\)\]]?'
+        split_parts = re.split(year_pattern, clean_ref, maxsplit=1)
+        if len(split_parts) >= 2:
+            # Everything before year is author block
+            author_block = split_parts[0].strip(" .,;:")
+            # Everything after year is title + journal + etc
+            after_year = split_parts[1].strip(" .,;:")
+            parts = [author_block, after_year]
+    
+    # If no year-based split, try to find author block by looking for comma + year
+    if not parts:
+        # Look for pattern: Author, A. (Year).
+        m = re.search(r'^(.+?)[,\.]\s+[\(\[]?(\d{4})[\)\]]?\.?\s+(.+)$', clean_ref, re.I)
+        if m:
+            parts = [m.group(1).strip(), m.group(3).strip()]
+            if not result["year"]:
+                result["year"] = m.group(2)
+    
+    # If still no split, try IEEE/Vancouver pattern
+    if not parts:
+        # Look for: Author, A., "Title", Journal, vol, no, pp, year
+        m = re.search(r'^(.+?)[,\.]\s+["“](.+?)["”][,\.]\s+(.+?)[,\.]\s+vol\.?\s*(\d+)[,\.]\s*(?:no\.?\s*(\d+))?[,\.]\s*(?:pp?\.?\s*(\d+(?:-\d+)?))?[,\.]\s*(?:[\(\[]?(\d{4})[\)\]]?)?', clean_ref, re.I)
+        if m:
+            parts = [m.group(1).strip(), m.group(2).strip(), m.group(3).strip()]
+            result["volume"] = m.group(4) if m.group(4) else ""
+            result["issue"] = m.group(5) if m.group(5) else ""
+            result["pages"] = m.group(6) if m.group(6) else ""
+            if not result["year"] and m.group(7):
+                result["year"] = m.group(7)
+    
+    # Extract authors from author block
+    if parts and parts[0]:
+        author_block = parts[0]
+        
+        # Split authors by '&', 'and', ','
+        author_parts = re.split(r'\s+(?:&|and|＆)\s+|\s*,\s*', author_block, flags=re.I)
+        
+        for auth in author_parts:
+            auth = auth.strip(" .,;:")
+            if not auth or auth.lower() in _STOP_AUTHOR_KEYS:
+                continue
+            
+            # Handle "Surname, Initials" format
+            if ',' in auth:
+                surname_part = auth.split(',')[0].strip()
+                # Take last word of surname part (handle compound surnames)
+                surname_words = surname_part.split()
+                if surname_words:
+                    surname = surname_words[-1].strip(" .,")
+                else:
+                    surname = surname_part
+            else:
+                # Handle "Initials Surname" format - take last word
+                name_parts = auth.split()
+                if name_parts:
+                    surname = name_parts[-1].strip(" .,")
+                else:
+                    surname = auth
+            
+            # Clean surname
+            surname = re.sub(r"[^A-Za-z\-']", "", surname).lower().strip()
+            if surname and len(surname) >= 2 and surname not in _STOP_AUTHOR_KEYS:
+                result["authors"].append(surname)
+        
+        # Limit to first 3 authors for query
+        result["authors"] = result["authors"][:3]
+    
+    # Extract title
+    if len(parts) >= 2:
+        title_candidate = parts[1]
+        # Remove trailing journal info if present
+        title_parts = re.split(r'[\.!?]\s+(?:In|Journal|Proceedings|Conference|\(|$)', title_candidate, maxsplit=1, flags=re.I)
+        result["title"] = title_parts[0].strip(" .,;:\"'")
+    
+    # Extract journal from remaining parts
+    if len(parts) >= 3:
+        result["journal"] = parts[2].strip(" .,;:")
+    elif len(parts) >= 2 and not result["journal"]:
+        # Check if second part contains journal indicators
+        if re.search(r'\b(?:Journal|Review|Letters|Proceedings|Conference|Trans\.|Ann\.|Int\.|J\.|Rev\.|Res\.|BMC|PLOS|Nature|Science|Cell|Elsevier|Springer|Wiley|Taylor|Sage)\b', parts[1], re.I):
+            result["journal"] = parts[1].strip(" .,;:")
+    
+    # Clean up extracted fields
+    result["title"] = re.sub(r'\s+', ' ', result["title"]).strip()
+    result["journal"] = re.sub(r'\s+', ' ', result["journal"]).strip()
+    
+    # Build APA string for query
+    apa_parts = []
+    
+    # Add authors (APA format: Last, A., & Last, B.)
+    if result["authors"]:
+        apa_authors = []
+        for i, auth in enumerate(result["authors"]):
+            if i == 0:
+                apa_authors.append(auth.capitalize())
+            elif i == len(result["authors"]) - 1 and len(result["authors"]) > 1:
+                apa_authors.append(f"& {auth.capitalize()}")
+            else:
+                apa_authors.append(auth.capitalize())
+        
+        if len(apa_authors) == 1:
+            apa_parts.append(f"{apa_authors[0]}.")
+        elif len(apa_authors) == 2:
+            apa_parts.append(f"{apa_authors[0]} & {apa_authors[1]}.")
+        elif len(apa_authors) >= 3:
+            apa_parts.append(f"{apa_authors[0]}, {apa_authors[1]}, & {apa_authors[2]}.")
+    
+    # Add year
+    if result["year"]:
+        apa_parts.append(f"({result['year']}).")
+    
+    # Add title
+    if result["title"]:
+        # Capitalize first letter of title
+        title = result["title"].capitalize()
+        apa_parts.append(f"{title}.")
+    
+    # Add journal
+    if result["journal"]:
+        journal = result["journal"]
+        apa_parts.append(f"*{journal}*")
+    
+    # Add volume/issue/pages
+    vol_issue = []
+    if result["volume"]:
+        vol_issue.append(result["volume"])
+    if result["issue"]:
+        vol_issue.append(f"({result['issue']})")
+    if vol_issue:
+        apa_parts.append("".join(vol_issue))
+    
+    if result["pages"]:
+        apa_parts.append(result["pages"])
+    
+    # Add DOI
+    if result["doi"]:
+        apa_parts.append(f"https://doi.org/{result['doi']}")
+    
+    result["apa_string"] = " ".join(apa_parts)
+    
+    return result
+
+
+def _build_apa_query(apa_data: Dict[str, Any]) -> str:
+    """Build optimal query from APA-converted data."""
+    query_parts = []
+    
+    # Add title (most important)
+    if apa_data.get("title"):
+        query_parts.append(apa_data["title"])
+    
+    # Add author surnames
+    if apa_data.get("authors"):
+        query_parts.append(" ".join(apa_data["authors"]))
+    
+    # Add year
+    if apa_data.get("year"):
+        query_parts.append(apa_data["year"])
+    
+    # Add journal if available
+    if apa_data.get("journal") and len(apa_data["journal"]) > 5:
+        query_parts.append(apa_data["journal"])
+    
+    query = " ".join(query_parts)
+    return _clean_query_string(query)
+
+
+# ---------- canonical parsing (kept for backward compatibility) ----------
+def _pick_year(s: str) -> str:
+    m = _YEAR_RE.search(s or "")
+    return m.group(1) if m else ""
+
+def _strip_urls_and_doi_tail(s: str) -> str:
+    s = re.sub(r"https?://\S+", " ", s, flags=re.I)
+    s = re.sub(r"\bdoi\s*[:]?\s*\S+", " ", s, flags=re.I)
+    return re.sub(r"\s+", " ", s).strip()
+
+def _extract_title_numbered_or_ieee(ref: str) -> str:
+    s = _safe_strip(ref)
+    if not s:
+        return ""
+    # remove leading numbering
+    s = re.sub(r"^\s*\[\s*\d{1,4}\s*\]\s*", "", s)
+    s = re.sub(r"^\s*\d{1,4}[.)]\s*", "", s)
+
+    # prefer quoted title (IEEE often)
+    m = re.search(r"[\"“](.+?)[\"”]", s)
+    if m:
+        t = m.group(1).strip()
+        return t
+
+    # Vancouver-like: try to find the best 'sentence chunk' that looks like a title
+    s2 = _strip_urls_and_doi_tail(s)
+    # split on period+space. Keep a few early chunks.
+    parts = [p.strip() for p in re.split(r"\.\s+", s2) if p.strip()]
+    if not parts:
+        return ""
+    # heuristic: title is usually the longest early chunk with >=4 words and few digits
+    def score(p: str) -> int:
+        w = p.split()
+        if len(w) < 4:
+            return -10
+        if sum(ch.isdigit() for ch in p) > 2:
+            return -5
+        # penalize very short chunks and journal-like abbreviations
+        if len(p) < 25:
+            return -2
+        if re.search(r"\b(j|vol|no|pp|pages|ed|edition)\b", p, flags=re.I):
+            return -1
+        return len(p)
+    # skip first chunk if it looks like an author list (many commas/initials)
+    cand_parts = parts[:6]
+    if cand_parts and (cand_parts[0].count(",") >= 2 or re.search(r"\b[A-Z]{1,3}\b", cand_parts[0])):
+        cand_parts = cand_parts[1:6]
+    best = max(cand_parts, key=score)
+    return best if score(best) > 0 else ""
+
+def _extract_authors_numbered_or_ieee(ref: str, max_authors: int = 8) -> List[str]:
+    s = _safe_strip(ref)
+    if not s:
+        return []
+    s = re.sub(r"^\s*\[\s*\d{1,4}\s*\]\s*", "", s)
+    s = re.sub(r"^\s*\d{1,4}[.)]\s*", "", s)
+
+    # if quoted title, authors are before first quote
+    q = re.search(r"[\"“]", s)
+    prefix = s[: q.start()].strip() if q else ""
+    if not prefix:
+        # else try before first period-space as authors prefix
+        m = re.search(r"\.\s+", s)
+        prefix = s[: m.start()].strip() if m else s[:120]
+
+    # split authors on commas and conjunctions
+    bits = re.split(r"\s*(?:,|\band\b|\&|;)\s*", prefix, flags=re.I)
+    surnames: List[str] = []
+    for b in bits:
+        b = b.strip()
+        if not b:
+            continue
+        # vancouver: "Button KS" -> surname is first token; IEEE: "J. Tan" -> surname last token
+        toks = [t for t in re.split(r"\s+", b) if t]
+        if not toks:
+            continue
+        # choose token that contains letters and is not just initials
+        cand1 = re.sub(r"[^A-Za-z\-']", "", toks[0]).lower()
+        candN = re.sub(r"[^A-Za-z\-']", "", toks[-1]).lower()
+        cand = cand1 if (len(cand1) >= 2 and not re.fullmatch(r"[a-z]{1,2}", cand1)) else candN
+        cand = cand.strip("-'").strip()
+        if not cand or cand in _STOP_AUTHOR_KEYS:
+            continue
+        if cand not in surnames:
+            surnames.append(cand)
+        if len(surnames) >= max_authors:
+            break
+    return surnames
+
+
+def _canonical_fields(ref_raw: str) -> Tuple[str, List[str], str, str]:
+    """Return (title, authors_surnames, year, doi) using style-agnostic heuristics."""
+    ref_raw = _safe_strip(ref_raw)
+    doi = _extract_doi(ref_raw)
+    year = _extract_year(ref_raw) or _pick_year(ref_raw)
+
+    # title
+    title = _extract_title_guess(ref_raw)
+    if not title or len(title) < 8:
+        title = _extract_title_numbered_or_ieee(ref_raw)
+
+    # authors
+    authors = _extract_author_surnames(ref_raw, max_authors=8)
+    if not authors:
+        authors = _extract_authors_numbered_or_ieee(ref_raw, max_authors=8)
+
+    # final cleanup stopwords
+    authors = [a for a in authors if a and a not in _STOP_AUTHOR_KEYS]
+    return title, authors, year, doi
+
+
 def _extract_title_guess(ref: str) -> str:
     """
     Best-effort title guess:
@@ -178,37 +507,6 @@ def _extract_author_surnames(ref: str, max_authors: int = 8) -> List[str]:
             break
 
     return surnames
-
-
-def _authors_to_query(authors: List[str], max_join: int = 3) -> str:
-    authors = [a for a in (authors or []) if _safe_strip(a)]
-    if not authors:
-        return ""
-    return " ".join(authors[:max_join]).strip()
-
-
-def _build_query(title: str, authors: List[str], year: str, raw_ref: str) -> str:
-    """Build a robust bibliographic query across APA/Harvard, IEEE, and Vancouver.
-
-    Priority:
-    1) DOI lookup handled elsewhere.
-    2) Title + up to 2 surnames + year token.
-    3) If title missing, fall back to cleaned raw reference.
-    """
-    title_s = _safe_str(title).strip()
-    base = title_s if len(title_s) >= 6 else _safe_str(raw_ref)
-    base = _clean_query_string(base)
-
-    y4 = _safe_str(year)[:4] if _safe_str(year)[:4].isdigit() else ""
-    a = _authors_to_query(authors, max_join=2)
-
-    bits = [base]
-    if a:
-        bits.append(a)
-    if y4:
-        bits.append(y4)
-
-    return _clean_query_string(" ".join(bits))
 
 
 # ---------- queries ----------
@@ -454,126 +752,6 @@ def _pick_best_candidate(
 
 
 # ---------- public function ----------
-
-# ---------- canonical parsing (style-agnostic) ----------
-_STOP_AUTHOR_KEYS = {
-    # common false positives from narrative text
-    "survey","surveys","field","fields","fieldwork","work","works","study","studies","table","figure",
-    "chapter","section","appendix","appendices","supplementary","supporting","information","data",
-    "analysis","method","methods","results","discussion","conclusion","reference","references"
-}
-
-_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})(?:[a-z])?\b")
-
-def _pick_year(s: str) -> str:
-    m = _YEAR_RE.search(s or "")
-    return m.group(1) if m else ""
-
-def _strip_urls_and_doi_tail(s: str) -> str:
-    s = re.sub(r"https?://\S+", " ", s, flags=re.I)
-    s = re.sub(r"\bdoi\s*[:]?\s*\S+", " ", s, flags=re.I)
-    return re.sub(r"\s+", " ", s).strip()
-
-def _extract_title_numbered_or_ieee(ref: str) -> str:
-    s = _safe_strip(ref)
-    if not s:
-        return ""
-    # remove leading numbering
-    s = re.sub(r"^\s*\[\s*\d{1,4}\s*\]\s*", "", s)
-    s = re.sub(r"^\s*\d{1,4}[.)]\s*", "", s)
-
-    # prefer quoted title (IEEE often)
-    m = re.search(r"[\"“](.+?)[\"”]", s)
-    if m:
-        t = m.group(1).strip()
-        return t
-
-    # Vancouver-like: try to find the best 'sentence chunk' that looks like a title
-    s2 = _strip_urls_and_doi_tail(s)
-    # split on period+space. Keep a few early chunks.
-    parts = [p.strip() for p in re.split(r"\.\s+", s2) if p.strip()]
-    if not parts:
-        return ""
-    # heuristic: title is usually the longest early chunk with >=4 words and few digits
-    def score(p: str) -> int:
-        w = p.split()
-        if len(w) < 4:
-            return -10
-        if sum(ch.isdigit() for ch in p) > 2:
-            return -5
-        # penalize very short chunks and journal-like abbreviations
-        if len(p) < 25:
-            return -2
-        if re.search(r"\b(j|vol|no|pp|pages|ed|edition)\b", p, flags=re.I):
-            return -1
-        return len(p)
-    # skip first chunk if it looks like an author list (many commas/initials)
-    cand_parts = parts[:6]
-    if cand_parts and (cand_parts[0].count(",") >= 2 or re.search(r"\b[A-Z]{1,3}\b", cand_parts[0])):
-        cand_parts = cand_parts[1:6]
-    best = max(cand_parts, key=score)
-    return best if score(best) > 0 else ""
-
-def _extract_authors_numbered_or_ieee(ref: str, max_authors: int = 8) -> List[str]:
-    s = _safe_strip(ref)
-    if not s:
-        return []
-    s = re.sub(r"^\s*\[\s*\d{1,4}\s*\]\s*", "", s)
-    s = re.sub(r"^\s*\d{1,4}[.)]\s*", "", s)
-
-    # if quoted title, authors are before first quote
-    q = re.search(r"[\"“]", s)
-    prefix = s[: q.start()].strip() if q else ""
-    if not prefix:
-        # else try before first period-space as authors prefix
-        m = re.search(r"\.\s+", s)
-        prefix = s[: m.start()].strip() if m else s[:120]
-
-    # split authors on commas and conjunctions
-    bits = re.split(r"\s*(?:,|\band\b|\&|;)\s*", prefix, flags=re.I)
-    surnames: List[str] = []
-    for b in bits:
-        b = b.strip()
-        if not b:
-            continue
-        # vancouver: "Button KS" -> surname is first token; IEEE: "J. Tan" -> surname last token
-        toks = [t for t in re.split(r"\s+", b) if t]
-        if not toks:
-            continue
-        # choose token that contains letters and is not just initials
-        cand1 = re.sub(r"[^A-Za-z\-']", "", toks[0]).lower()
-        candN = re.sub(r"[^A-Za-z\-']", "", toks[-1]).lower()
-        cand = cand1 if (len(cand1) >= 2 and not re.fullmatch(r"[a-z]{1,2}", cand1)) else candN
-        cand = cand.strip("-'").strip()
-        if not cand or cand in _STOP_AUTHOR_KEYS:
-            continue
-        if cand not in surnames:
-            surnames.append(cand)
-        if len(surnames) >= max_authors:
-            break
-    return surnames
-
-def _canonical_fields(ref_raw: str) -> Tuple[str, List[str], str, str]:
-    """Return (title, authors_surnames, year, doi) using style-agnostic heuristics."""
-    ref_raw = _safe_strip(ref_raw)
-    doi = _extract_doi(ref_raw)
-    year = _extract_year(ref_raw) or _pick_year(ref_raw)
-
-    # title
-    title = _extract_title_guess(ref_raw)
-    if not title or len(title) < 8:
-        title = _extract_title_numbered_or_ieee(ref_raw)
-
-    # authors
-    authors = _extract_author_surnames(ref_raw, max_authors=8)
-    if not authors:
-        authors = _extract_authors_numbered_or_ieee(ref_raw, max_authors=8)
-
-    # final cleanup stopwords
-    authors = [a for a in authors if a and a not in _STOP_AUTHOR_KEYS]
-    return title, authors, year, doi
-
-
 def verify_references_batch(
     references: List[str],
     max_to_check: int = 0,
@@ -594,14 +772,26 @@ def verify_references_batch(
 
     for ref in refs:
         ref_raw = _safe_strip(ref)
-        ref_title, ref_authors, ref_year, ref_doi = _canonical_fields(ref_raw)
+        
+        # ====================================================================
+        # STEP 1: Convert reference to APA format
+        # ====================================================================
+        apa_data = _convert_to_apa(ref_raw)
+        
+        # Extract components from APA conversion
+        ref_title = apa_data.get("title", "")
+        ref_authors = apa_data.get("authors", [])
+        ref_year = apa_data.get("year", "")
+        ref_doi = apa_data.get("doi", "")
         ref_has_authors = bool(ref_authors)
-
-        query = _build_query(ref_title, ref_authors, ref_year, ref_raw)
+        
+        # Build query using APA data
+        query = _build_apa_query(apa_data)
         author_for_ui = ", ".join(ref_authors) if ref_authors else ""
 
         row: Dict[str, Any] = {
             "reference": ref_raw,
+            "reference_apa": apa_data.get("apa_string", ""),
             "status": "offline",
             "source": "",
             "score": 0,
@@ -631,7 +821,7 @@ def verify_references_batch(
                         crossref_candidates.append(hit)
                     time.sleep(max(0.0, float(throttle_s or 0.0)))
 
-                a_query = _authors_to_query(ref_authors, max_join=3)
+                a_query = " ".join(ref_authors[:3]) if ref_authors else ""
                 crossref_candidates.extend(_query_crossref(query, a_query))
                 time.sleep(max(0.0, float(throttle_s or 0.0)))
 
