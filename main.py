@@ -47,7 +47,8 @@ try:
     # Optional: used for AI-assisted re-reconciliation (safe if missing)
     from engine import (
         extract_author_year_citations,
-        extract_numeric_citations,
+        extract_ieee_citations,
+        extract_vancouver_citations,
         parse_reference_author_year,
         parse_reference_numeric,
         reconcile_author_year,
@@ -646,10 +647,17 @@ def _run_ai_assist(job_id: str) -> None:
         references_raw = base_result.get("references_raw") or []
 
         if style_hint == "numeric":
-            # base citations: bracketed first
-            cites = extract_numeric_citations(main_text, bracketed=True)
-            if "vancouver" in style_s and len(cites) < 3:
-                cites = extract_numeric_citations(main_text, bracketed=False)
+            # base citations based on style
+            if "vancouver" in style_s:
+                try:
+                    cites = extract_vancouver_citations(main_text)
+                except:
+                    cites = []
+            else:
+                try:
+                    cites = extract_ieee_citations(main_text)
+                except:
+                    cites = []
 
             # add AI nums
             for it in ai_items:
@@ -660,7 +668,7 @@ def _run_ai_assist(job_id: str) -> None:
             refs = [parse_reference_numeric(r) for r in references_raw]
             refs = [r for r in refs if r is not None]
 
-            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites, refs)
+            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites, refs, style=style_s)
             ref_count = len(refs)
 
         else:
