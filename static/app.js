@@ -29,6 +29,7 @@
     if (typeof v === "object") {
       return (
         v.reference || v.raw || v.text || v.label || v.display || v.citation || v.citation_in_text ||
+        v.reference_apa || // Add APA version
         (v.author && v.year ? `${v.author}, ${v.year}` : "") ||
         (() => { try { return JSON.stringify(v); } catch { return ""; } })()
       );
@@ -119,6 +120,10 @@
     engineVersion: document.getElementById("engineVersion"),
     processingTime: document.getElementById("processingTime"),
     lastUpdated: document.getElementById("lastUpdated"),
+    
+    // New: Job ID display (optional)
+    jobId: document.getElementById("jobId"),
+    verifyStatus: document.getElementById("verifyStatus"),
   };
 
   // ------------------------------
@@ -282,11 +287,15 @@
     addRow("Uncited references", s.uncited_references ?? "", "References never cited in text");
     addRow("Match rate", fmtPct(s.match_rate), "Percentage of citations that matched references");
 
+    if (LAST_JOB_ID && el.jobId) {
+      addRow("Job ID", LAST_JOB_ID.substring(0, 8) + "...", "Use this ID for verification");
+    }
+
     el.summaryTable.innerHTML = rows.join("");
     
     // Update engine version if element exists
     if (el.engineVersion) {
-      el.engineVersion.textContent = data.engine_build || "v1.4.0";
+      el.engineVersion.textContent = data.engine_build || "v1.5.0";
     }
   }
 
@@ -409,7 +418,7 @@
 
     if (!el.verifyBody) return;
     if (!rows.length) {
-      el.verifyBody.innerHTML = `<tr><td colspan="9" class="muted">No online verification data yet.</td></tr>`;
+      el.verifyBody.innerHTML = `<tr><td colspan="10" class="muted">No online verification data yet. Click "Run Online Verification" to start.</td></tr>`;
       return;
     }
     
@@ -424,17 +433,18 @@
           <td class="badge ${esc(st)}">${esc(st)}</td>
           <td>${esc(r.source || "")}</td>
           <td class="num">${esc(r.score ?? "")}</td>
-          <td>${esc(r.found_doi || "")}</td>
-          <td class="num">${esc(r.year || "")}</td>
-          <td>${esc(r.authors || "")}</td>
-          <td>${esc(r.found_title || "")}</td>
+          <td>${esc(r.doi || "")}</td>
+          <td class="num">${esc(r.matched_year || "")}</td>
+          <td>${esc(r.author || "")}</td>
+          <td>${esc(r.matched_title || "")}</td>
+          <td>${esc(r.reference_apa || r.reference || "").substring(0, 100)}...</td>
           <td>${esc(r.query_used || "")}</td>
         </tr>`;
       })
       .join("");
     
     if (remaining > 0) {
-      el.verifyBody.innerHTML += `<tr><td colspan="9" class="muted">... and ${remaining} more (truncated)</td></tr>`;
+      el.verifyBody.innerHTML += `<tr><td colspan="10" class="muted">... and ${remaining} more (truncated)</td></tr>`;
     }
   }
 
@@ -463,6 +473,11 @@
       el.lastUpdated.textContent = new Date().toLocaleTimeString();
     }
 
+    // Update verify status
+    if (el.verifyStatus && LAST_JOB_ID) {
+      el.verifyStatus.textContent = `Ready for verification (Job: ${LAST_JOB_ID.substring(0, 8)}...)`;
+    }
+
     // Enable export buttons
     if (el.btnExportCsvTop) el.btnExportCsvTop.disabled = !LAST_JOB_ID;
     if (el.btnExportWordTop) el.btnExportWordTop.disabled = !LAST_JOB_ID;
@@ -471,7 +486,7 @@
   // ------------------------------
   // API Calls
   // ------------------------------
-  async function postVerify(verifyOnline) {
+  async function runInitialCheck() {
     if (RUNNING) return;
 
     const f = el.file?.files?.[0];
@@ -493,24 +508,15 @@
       const fd = new FormData();
       fd.append("file", f);
       fd.append("style", el.style?.value || "apa");
-      fd.append("verify_online", verifyOnline ? "true" : "false");
       fd.append("verify_mode", el.verifyMode?.value || "all");
 
       const throttleVal = Number(el.throttle?.value || 0.12);
       fd.append("throttle_s", String(throttleVal));
-      fd.append("max_verify", String(Number(el.maxVerify?.value || 0)));
 
       fd.append("use_crossref", el.useCrossref?.checked ? "true" : "false");
       fd.append("use_openalex", el.useOpenAlex?.checked ? "true" : "false");
-      fd.append("ai_assist", el.aiAssist?.checked ? "true" : "false");
-
-      const aiOn = !!el.aiAssist?.checked;
-      const modeMsg = verifyOnline ? "online verification" : "";
-      const aiMsg = aiOn ? "AI assist" : "";
-      const statusMsg = [modeMsg, aiMsg].filter(Boolean).join(" and ");
       
-      setStatus(statusMsg ? `Running with ${statusMsg}...` : "Running check...", "muted");
-
+      setStatus("Running initial citation check...", "muted");
       updateProgress(20, "Processing document...");
 
       const res = await fetch("/verify", { 
@@ -534,15 +540,65 @@
       LAST_JOB_ID = js.job_id || null;
       updateProgress(80, "Rendering results...");
       renderAll(js.data);
+      
+      updateProgress(100, "✅ Complete!");
+      setStatus(`✅ Initial check complete. Job ID: ${LAST_JOB_ID?.substring(0, 8)}... You can now run online verification.`, "success");
+      setTimeout(() => setRunning(false), 500);
+      
+    } catch (e) {
+      console.error(e);
+      setStatus(`❌ Error: ${e?.message || String(e)}`, "warn");
+      setRunning(false);
+      updateProgress(0, "");
+    }
+  }
 
-      if (verifyOnline || aiOn) {
-        setStatus("✅ Initial check complete. Background tasks running...", "success");
-        startPollingOnline();
-      } else {
-        updateProgress(100, "✅ Complete!");
-        setStatus("✅ Done.", "success");
-        setTimeout(() => setRunning(false), 500);
+  async function runOnlineVerification() {
+    if (RUNNING) return;
+    
+    if (!LAST_JOB_ID) {
+      setStatus("❌ No job found. Run initial check first.", "warn");
+      return;
+    }
+
+    setRunning(true);
+    updateProgress(10, "Starting online verification...");
+
+    try {
+      const fd = new FormData();
+      fd.append("job_id", LAST_JOB_ID);
+      fd.append("verify_mode", el.verifyMode?.value || "all");
+
+      const throttleVal = Number(el.throttle?.value || 0.12);
+      fd.append("throttle_s", String(throttleVal));
+
+      fd.append("use_crossref", el.useCrossref?.checked ? "true" : "false");
+      fd.append("use_openalex", el.useOpenAlex?.checked ? "true" : "false");
+
+      setStatus("Starting online verification...", "muted");
+
+      const res = await fetch("/verify-online", { 
+        method: "POST", 
+        body: fd,
+        signal: AbortSignal.timeout(300000)
+      });
+      
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Server error (${res.status}): ${txt.slice(0, 200)}`);
       }
+
+      const js = await res.json();
+      if (!js || js.ok !== true) {
+        throw new Error(js?.error || "Unexpected server response.");
+      }
+
+      updateProgress(30, "Verification started...");
+      setStatus("✅ Online verification started. Progress will update automatically.", "success");
+      
+      // Start polling for status
+      startPollingOnline();
+      
     } catch (e) {
       console.error(e);
       setStatus(`❌ Error: ${e?.message || String(e)}`, "warn");
@@ -574,6 +630,7 @@
       if (pollCount > MAX_POLLS) {
         setStatus("⚠️ Polling timeout - tasks may still be running", "warn");
         stopPollingOnline();
+        setTimeout(() => setRunning(false), 500);
         return;
       }
 
@@ -586,26 +643,27 @@
         const js = await res.json();
         if (!js || js.ok !== true) return;
 
-        let progress = 80;
+        let progress = 30;
         let statusMsg = "";
 
-        if (js.ai && js.ai.state) {
-          if (js.ai.state === "running") {
-            progress = 85 + (js.ai.progress || 0) * 10;
-            statusMsg = js.ai.message || "AI assist running...";
-          } else if (js.ai.state === "done") {
-            progress = 95;
-            statusMsg = "AI assist complete";
-          }
-        }
-
         const online = js.online || {};
+        
         if (online.state === "running") {
-          progress = 85 + (online.progress || 0) * 10;
-          statusMsg = online.message || "Online verification running...";
+          progress = 30 + (online.progress / online.total * 50);
+          statusMsg = online.message || `Online verification: ${online.progress}/${online.total}`;
+          setStatus(statusMsg, "muted");
         } else if (online.state === "done") {
-          progress = 98;
-          statusMsg = "Online verification complete";
+          progress = 100;
+          statusMsg = "Online verification completed";
+          setStatus("✅ Online verification completed!", "success");
+          stopPollingOnline();
+          setTimeout(() => setRunning(false), 500);
+        } else if (online.state === "error") {
+          progress = 0;
+          statusMsg = online.message || "Online verification error";
+          setStatus(`❌ ${statusMsg}`, "warn");
+          stopPollingOnline();
+          setTimeout(() => setRunning(false), 500);
         }
 
         updateProgress(progress, statusMsg);
@@ -614,16 +672,13 @@
           renderAll(js.result);
         }
 
-        const aiState = (js.ai || {}).state || "idle";
-        const onlineState = (online || {}).state || "idle";
-        const aiFinished = ["done", "error", "skipped", "idle"].includes(aiState);
-        const onlineFinished = ["done", "error", "idle"].includes(onlineState);
+        // Update verify status
+        if (el.verifyStatus) {
+          el.verifyStatus.textContent = `Status: ${online.state} (${online.progress || 0}/${online.total || 0})`;
+        }
 
-        if (aiFinished && onlineFinished) {
-          updateProgress(100, "✅ All tasks complete!");
-          setStatus("✅ Complete.", "success");
+        if (online.state === "done" || online.state === "error") {
           stopPollingOnline();
-          setTimeout(() => setRunning(false), 500);
         }
       } catch (e) {
         console.debug("Polling error:", e);
@@ -694,8 +749,8 @@
   // Event Listeners
   // ------------------------------
   function initEventListeners() {
-    if (el.btnCheck) el.btnCheck.addEventListener("click", () => postVerify(false));
-    if (el.btnVerify) el.btnVerify.addEventListener("click", () => postVerify(true));
+    if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
+    if (el.btnVerify) el.btnVerify.addEventListener("click", runOnlineVerification);
     if (el.btnExportCsvTop) el.btnExportCsvTop.addEventListener("click", exportCsv);
     if (el.btnExportWordTop) el.btnExportWordTop.addEventListener("click", exportWord);
     
@@ -706,11 +761,11 @@
     document.addEventListener("keydown", (e) => {
       if (e.ctrlKey && e.key === "Enter" && !RUNNING) {
         e.preventDefault();
-        postVerify(false);
+        runInitialCheck();
       }
       if (e.ctrlKey && e.shiftKey && e.key === "Enter" && !RUNNING) {
         e.preventDefault();
-        postVerify(true);
+        runOnlineVerification();
       }
     });
   }
@@ -731,7 +786,11 @@
     if (urlParams.has('job')) {
       LAST_JOB_ID = urlParams.get('job');
       if (LAST_JOB_ID) {
-        setStatus("🔄 Resuming previous job...", "muted");
+        setStatus(`🔄 Resuming previous job: ${LAST_JOB_ID.substring(0, 8)}...`, "muted");
+        if (el.verifyStatus) {
+          el.verifyStatus.textContent = `Job loaded: ${LAST_JOB_ID.substring(0, 8)}...`;
+        }
+        // Check if verification is already running
         startPollingOnline();
       }
     }
@@ -747,6 +806,8 @@
     getJobId: () => LAST_JOB_ID,
     getData: () => CURRENT_DATA,
     refresh: () => renderAll(CURRENT_DATA),
+    runCheck: runInitialCheck,
+    runVerify: runOnlineVerification,
     setTab: (tabName) => {
       const tabMap = {
         summary: el.tabSummary,
