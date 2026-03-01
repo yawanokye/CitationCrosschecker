@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.6.1"
+__version__ = "1.7.0"
 
 import os
 import re
@@ -11,24 +11,33 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-ENGINE_BUILD = "commercial-2026-03-01-vancouver-specialized"
+ENGINE_BUILD = "commercial-2026-03-01-deepseek-vancouver"
 
 # ==================== DEEPSEEK CONFIGURATION ====================
-# Only used for Vancouver style - load from environment variable for security
+# Load API key from environment variable (SECURE)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
 if not DEEPSEEK_API_KEY:
-    print("WARNING: DEEPSEEK_API_KEY environment variable not set. Vancouver style will use fallback mode.")
+    print("="*70)
+    print("WARNING: DEEPSEEK_API_KEY environment variable not set!")
+    print("Vancouver style citation extraction will use rule-based fallback.")
+    print("For better results with Vancouver style, set the environment variable:")
+    print("  export DEEPSEEK_API_KEY='your-api-key-here'")
+    print("="*70)
+else:
+    print(f"✓ DeepSeek API key loaded successfully (length: {len(DEEPSEEK_API_KEY)})")
 
 DEEPSEEK_CONFIG = {
     "api_url": "https://api.deepseek.com/v1/chat/completions",
     "model": "deepseek-chat",
     "timeout": 30,
-    "max_tokens": 1000,
+    "max_tokens": 2000,
     "temperature": 0,
-    "fallback_to_rule_based": True
+    "retry_count": 2,
+    "use_ai": bool(DEEPSEEK_API_KEY)  # Only use AI if key is present
 }
 
-# Debug flag
+# Debug flag - set to False in production
 DEBUG = True
 
 def log_debug(msg: str):
@@ -1032,118 +1041,187 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 
 
 # ============================================================================
-# SPECIALIZED VANCOUVER REFERENCE PARSER
+# DEEPSEEK AI-POWERED VANCOUVER CITATION EXTRACTION
 # ============================================================================
 
-def parse_vancouver_references_specialized(references_raw: List[str]) -> List[RefNum]:
-    """
-    Specialized Vancouver reference parser that looks for:
-    - Number followed by dot: "1. "
-    - Followed by author surname and initials
-    - Properly splits merged references
-    """
-    parsed_refs = []
-    all_refs = []
+def extract_vancouver_citations_with_ai(text: str) -> List[str]:
+    """Use DeepSeek AI to extract Vancouver citations intelligently."""
     
-    # First, try to split any merged references
-    for block in references_raw:
-        split_refs = split_vancouver_references(block)
-        all_refs.extend(split_refs)
+    if not DEEPSEEK_API_KEY:
+        log_debug("No API key found, using rule-based fallback")
+        return extract_vancouver_citations_fallback(text)
     
-    # Now parse each potential reference
-    for ref in all_refs:
-        ref = ref.strip()
-        if not ref:
-            continue
-            
-        # Look for pattern: number dot space then capital letter (surname)
-        # This is the key Vancouver pattern
-        m = re.match(r'^(\d+)\.\s+([A-Z][a-z]+)', ref)
-        if not m:
-            # Try without dot: "1 Author"
-            m = re.match(r'^(\d+)\s+([A-Z][a-z]+)', ref)
-        
-        if m:
-            num = m.group(1)
-            num_int = int(num)
-            
-            # Filter out years (1900-2099)
-            if 1900 <= num_int <= 2099:
-                continue
-                
-            # Check if it has author-like content (surname followed by initials)
-            if re.search(r'[A-Z][a-z]+(?:,?\s+[A-Z]\.)', ref):
-                parsed_refs.append(RefNum(
-                    reference_full=clean_vancouver_reference(ref),
-                    num=num
-                ))
-                log_debug(f"Parsed Vancouver ref {num}: {ref[:50]}...")
-            elif len(ref) > 50:  # Long enough to be a reference
-                parsed_refs.append(RefNum(
-                    reference_full=clean_vancouver_reference(ref),
-                    num=num
-                ))
-                log_debug(f"Parsed Vancouver ref {num} (len based): {ref[:50]}...")
+    log_debug(f"Using DeepSeek AI with key: {DEEPSEEK_API_KEY[:5]}...{DEEPSEEK_API_KEY[-5:]}")
     
-    log_debug(f"Parsed {len(parsed_refs)} Vancouver references")
-    return parsed_refs
+    # Split text into manageable chunks
+    chunks = split_into_chunks(text, max_chars=3000)
+    all_citations = []
+    
+    for i, chunk in enumerate(chunks):
+        log_debug(f"Processing chunk {i+1}/{len(chunks)} with DeepSeek")
+        citations = call_deepseek_for_citations(chunk)
+        all_citations.extend(citations)
+    
+    # Deduplicate while preserving order
+    seen = set()
+    result = [x for x in all_citations if not (x in seen or seen.add(x))]
+    log_debug(f"DeepSeek extracted {len(result)} unique citations")
+    return result
 
 
-def split_vancouver_references(text: str) -> List[str]:
-    """
-    Split merged Vancouver references.
-    Looks for patterns like:
-    "1. Author... 2. Next author..." or "1. Author... 2.Next author..."
-    """
-    if not text or len(text) < 50:
-        return [text] if text else []
+def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
+    """Split text into chunks at sentence boundaries."""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks = []
+    current_chunk = []
+    current_length = 0
     
-    # Pattern to find new reference starts: number dot space then capital letter
-    # This is the key pattern for Vancouver
-    pattern = r'(?=\d+\.\s+[A-Z][a-z]+)'
-    matches = list(re.finditer(pattern, text))
-    
-    if len(matches) <= 1:
-        # Try pattern without dot: number space then capital letter
-        pattern2 = r'(?=\d+\s+[A-Z][a-z]+)'
-        matches2 = list(re.finditer(pattern2, text))
-        if len(matches2) > 1:
-            matches = matches2
-    
-    if len(matches) <= 1:
-        return [text.strip()]
-    
-    # Split at each match
-    splits = []
-    for i, match in enumerate(matches):
-        start = match.start()
-        if i < len(matches) - 1:
-            end = matches[i + 1].start()
-            splits.append(text[start:end].strip())
+    for sentence in sentences:
+        if current_length + len(sentence) > max_chars and current_chunk:
+            chunks.append(' '.join(current_chunk))
+            current_chunk = [sentence]
+            current_length = len(sentence)
         else:
-            splits.append(text[start:].strip())
+            current_chunk.append(sentence)
+            current_length += len(sentence)
     
-    # Log the split for debugging
-    if len(splits) > 1:
-        log_debug(f"Split merged references into {len(splits)} parts")
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
     
-    return splits
+    return chunks
 
 
-def clean_vancouver_reference(ref: str) -> str:
-    """Clean up a Vancouver reference."""
-    # Normalize spaces
-    ref = re.sub(r'\s+', ' ', ref).strip()
+def call_deepseek_for_citations(text: str) -> List[str]:
+    """Call DeepSeek API to extract citations."""
     
-    # Ensure it ends with a period
-    if not ref.endswith('.'):
-        ref += '.'
+    prompt = f"""You are an expert at identifying Vancouver-style citations in academic text.
+
+Vancouver citation style uses numbers in various formats:
+- [1], (1), ¹ (superscript), or just 1
+- Multiple citations: [1,2,3], (1-5), [1,2,4-7,9]
+- Author + citation: Smith et al. (1) found that...
+- With page numbers: (1 p23), [2 pp45-67] (extract only the citation number, not page numbers)
+
+IMPORTANT: Extract ONLY genuine citation numbers. Do NOT extract:
+- Years (like 2022, 1999) - these are NOT citations
+- Page numbers (like p. 23, pp. 45-67)
+- Table/figure numbers (Table 1, Figure 2)
+- Section numbers (Section 3, Chapter 4)
+- Statistical numbers (50%, 100 participants)
+- Currency amounts ($100, GHS 2,650)
+
+Rules:
+1. If you see a range like "1-5", expand it to individual numbers: 1,2,3,4,5
+2. If you see multiple citations like "1,2,3", list each number separately
+3. Only include numbers that are clearly citations
+
+Return a JSON array of strings, each being a citation number.
+Example: ["1","2","3","4","5"]
+
+Text: {text}
+
+Return ONLY the JSON array, no other text."""
     
-    # Fix common issues
-    ref = re.sub(r'\.(\d)', r'. \1', ref)  # Add space after period before number
-    ref = re.sub(r'(\d)\.([A-Z])', r'\1. \2', ref)  # Add space after dot before capital
+    for attempt in range(DEEPSEEK_CONFIG["retry_count"]):
+        try:
+            headers = {
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": DEEPSEEK_CONFIG["model"],
+                "messages": [
+                    {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": DEEPSEEK_CONFIG["temperature"],
+                "max_tokens": DEEPSEEK_CONFIG["max_tokens"]
+            }
+            
+            log_debug(f"Calling DeepSeek API (attempt {attempt+1})...")
+            response = requests.post(
+                DEEPSEEK_CONFIG["api_url"],
+                headers=headers,
+                json=payload,
+                timeout=DEEPSEEK_CONFIG["timeout"]
+            )
+            
+            log_debug(f"DeepSeek response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+                log_debug(f"DeepSeek response: {content[:100]}...")
+                
+                # Extract JSON array
+                json_match = re.search(r'\[.*\]', content, re.DOTALL)
+                if json_match:
+                    citations = json.loads(json_match.group())
+                    # Ensure all items are strings and look like citation numbers
+                    valid_citations = [str(c) for c in citations if str(c).isdigit()]
+                    log_debug(f"Found {len(valid_citations)} citations in chunk")
+                    return valid_citations
+            else:
+                log_debug(f"DeepSeek API error (attempt {attempt+1}): {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            log_debug(f"DeepSeek call failed (attempt {attempt+1}): {e}")
     
-    return ref
+    return []
+
+
+def extract_vancouver_citations_fallback(text: str) -> List[str]:
+    """Fallback rule-based Vancouver citation extraction."""
+    citations = []
+    
+    # Pattern for bracketed citations [1], [2,3], [1-5]
+    bracketed_pat = re.compile(r"\[\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\]")
+    for m in bracketed_pat.finditer(text):
+        content = m.group(1)
+        for part in re.split(r'\s*,\s*', content):
+            if '-' in part or '–' in part:
+                parts = re.split(r'[-–]', part)
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    start, end = int(parts[0]), int(parts[1])
+                    if start <= end and (end - start) <= 50:
+                        citations.extend([str(i) for i in range(start, end + 1)])
+            elif part.isdigit():
+                citations.append(part)
+    
+    # Pattern for parenthetical citations (1), (2,3), (1-5)
+    paren_pat = re.compile(r"\(\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\)")
+    for m in paren_pat.finditer(text):
+        content = m.group(1)
+        for part in re.split(r'\s*,\s*', content):
+            if '-' in part or '–' in part:
+                parts = re.split(r'[-–]', part)
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    start, end = int(parts[0]), int(parts[1])
+                    if start <= end and (end - start) <= 50:
+                        citations.extend([str(i) for i in range(start, end + 1)])
+            elif part.isdigit():
+                citations.append(part)
+    
+    # Handle superscript Unicode
+    superscript_map = {
+        '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+        '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
+    }
+    for sup, num in superscript_map.items():
+        if sup in text:
+            citations.append(num)
+    
+    # Filter out years (1900-2099)
+    filtered = []
+    for cite in citations:
+        num_int = int(cite)
+        if not (1900 <= num_int <= 2099):
+            filtered.append(cite)
+    
+    # Deduplicate
+    seen = set()
+    return [x for x in filtered if not (x in seen or seen.add(x))]
 
 
 # ============================================================================
@@ -1224,64 +1302,16 @@ def extract_ieee_citations(text: str) -> List[str]:
 
 
 # ============================================================================
-# Citation extractors - Vancouver
+# Citation extractors - Vancouver (AI-POWERED with fallback)
 # ============================================================================
 def extract_vancouver_citations(text: str) -> List[str]:
-    """Extract Vancouver citations - handles [1], (1), superscript, etc."""
-    t = text or ""
-    citations = []
-    
-    # Pattern for bracketed citations [1], [2,3], [1-5]
-    bracketed_pat = re.compile(r"\[\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\]")
-    for m in bracketed_pat.finditer(t):
-        content = m.group(1)
-        for part in re.split(r'\s*,\s*', content):
-            if '-' in part or '–' in part:
-                parts = re.split(r'[-–]', part)
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    start, end = int(parts[0]), int(parts[1])
-                    if start <= end and (end - start) <= 50:
-                        citations.extend([str(i) for i in range(start, end + 1)])
-            elif part.isdigit():
-                citations.append(part)
-    
-    # Pattern for parenthetical citations (1), (2,3), (1-5)
-    paren_pat = re.compile(r"\(\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\)")
-    for m in paren_pat.finditer(t):
-        content = m.group(1)
-        for part in re.split(r'\s*,\s*', content):
-            if '-' in part or '–' in part:
-                parts = re.split(r'[-–]', part)
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    start, end = int(parts[0]), int(parts[1])
-                    if start <= end and (end - start) <= 50:
-                        citations.extend([str(i) for i in range(start, end + 1)])
-            elif part.isdigit():
-                citations.append(part)
-    
-    # Handle superscript Unicode
-    superscript_map = {
-        '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
-        '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
-    }
-    for sup, num in superscript_map.items():
-        if sup in t:
-            citations.append(num)
-    
-    # Look for <sup>1</sup> HTML-style superscript
-    html_sup = re.findall(r'<sup>(\d+)</sup>', t)
-    citations.extend(html_sup)
-    
-    # Deduplicate while preserving order
-    seen = set()
-    deduped = []
-    for num in citations:
-        if num not in seen:
-            seen.add(num)
-            deduped.append(num)
-    
-    log_debug(f"Vancouver extracted {len(deduped)} citations")
-    return deduped
+    """Extract Vancouver citations using AI if available, otherwise fallback."""
+    if DEEPSEEK_API_KEY:
+        log_debug("Using DeepSeek AI for Vancouver citation extraction")
+        return extract_vancouver_citations_with_ai(text)
+    else:
+        log_debug("Using rule-based fallback for Vancouver citation extraction")
+        return extract_vancouver_citations_fallback(text)
 
 
 def _expand_citation_range(match) -> List[str]:
@@ -1365,15 +1395,7 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
 
 
 def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
-    """Parse numeric references from academic papers.
-    
-    Args:
-        ref: Reference string
-        style: "ieee", "vancouver", or "numeric"
-    
-    Returns:
-        RefNum object if valid, None otherwise
-    """
+    """Parse numeric references from academic papers."""
     s = norm_space(ref)
     if not s:
         return None
@@ -1387,32 +1409,50 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
             num = m.group(1)
             body = norm_space(m.group(2))
             body = _strip_leading_reference_number(body)
-            # Check if it looks like a real reference (has author names, title, etc.)
             if len(body) > 20 and re.search(r'[A-Z][a-z]+', body):
                 return RefNum(reference_full=s, num=num)
         return None
     
     elif style == "vancouver":
-        # Vancouver: use specialized parser
-        # This is a single reference, so parse it directly
-        m = re.match(r'^(\d+)\.?\s+([A-Z][a-z]+)', s)
-        if m:
-            num = m.group(1)
-            num_int = int(num)
-            if not (1900 <= num_int <= 2099) and len(s) > 30:
-                return RefNum(reference_full=clean_vancouver_reference(s), num=num)
-        return None
-    
-    else:
-        # Generic numeric (fallback to IEEE)
+        # Vancouver: Try multiple formats
+        # Pattern 1: [1] Rest of reference
         m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
         if m:
             num = m.group(1)
             return RefNum(reference_full=s, num=num)
+        
+        # Pattern 2: 1. Rest of reference
         m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
         if m:
             num = m.group(1)
+            num_int = int(num)
+            if not (1900 <= num_int <= 2099) and len(s) > 30:
+                return RefNum(reference_full=s, num=num)
+        
+        # Pattern 3: (1) Rest of reference
+        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*(.+)$", s)
+        if m:
+            num = m.group(1)
             return RefNum(reference_full=s, num=num)
+        
+        # Pattern 4: 1 Rest of reference
+        m = re.match(r"^(\d{1,4})\s+(.+)$", s)
+        if m:
+            num = m.group(1)
+            num_int = int(num)
+            if not (1900 <= num_int <= 2099) and len(s) > 30:
+                return RefNum(reference_full=s, num=num)
+        
+        return None
+    
+    else:
+        # Generic numeric
+        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
+        if m:
+            return RefNum(reference_full=s, num=m.group(1))
+        m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
+        if m:
+            return RefNum(reference_full=s, num=m.group(1))
         return None
 
 
@@ -1749,16 +1789,7 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
 def reconcile_numeric(citations: List[str], references: List[RefNum], style: str = "ieee") -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
-    """Reconcile numeric citations with references for academic papers.
-    
-    Args:
-        citations: List of citation numbers from text
-        references: List of parsed references
-        style: "ieee" or "vancouver"
-    
-    Returns:
-        Tuple of reconciliation results
-    """
+    """Reconcile numeric citations with references for academic papers."""
     style = style.lower()
     is_ieee = style == "ieee"
     
@@ -2106,12 +2137,13 @@ def run_crosscheck(
             ref_count = len(refs)
             
         elif style_s == "vancouver":
-            # Vancouver: Use specialized reference parser
-            log_debug("Using Vancouver style with specialized reference parser")
+            # Vancouver: AI-powered extraction
+            log_debug("Using Vancouver style with DeepSeek AI")
             
-            # Extract citations
+            # Extract citations using AI
+            cites_nums = []
             if too_large:
-                cites_nums = []
+                # For large texts, process in chunks
                 for chunk in _iter_text_chunks(main_text, chunk_size=300_000):
                     cites_nums.extend(extract_vancouver_citations(chunk))
                 # Deduplicate
@@ -2127,8 +2159,13 @@ def run_crosscheck(
             
             log_debug(f"Vancouver extracted {len(cites_nums)} citations")
             
-            # Use the specialized Vancouver reference parser
-            refs = parse_vancouver_references_specialized(references_raw)
+            # Parse references
+            refs = []
+            for r in references_raw:
+                parsed = parse_reference_numeric(r, style="vancouver")
+                if parsed:
+                    refs.append(parsed)
+            
             log_debug(f"Parsed {len(refs)} Vancouver references")
             
             # Reconcile with Vancouver flexibility
