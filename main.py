@@ -1,9 +1,8 @@
 # main.py (FULL FILE) — Citation Crosschecker (Render-safe)
 # - /verify runs parsing + reconciliation fast and returns job_id
-# - If verify_online=true, starts background online verification in batches (default 60)
+# - /verify-online runs ONLY online verification on existing job
 # - /online/status lets UI poll progress + partial rows (dashboard updates live)
 # - /export/csv and /export/word export the stored results using job_id
-# - Optional AI Assist (DeepSeek) runs in background and patches reconciliation results
 
 import io
 import os
@@ -25,9 +24,10 @@ except ImportError:
     print("! python-dotenv not installed, using system environment variables only")
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 
 
@@ -42,25 +42,6 @@ except Exception as e:
     ENGINE_OK = False
     run_crosscheck = None
     print(f"✗ Engine import failed: {e}")
-
-try:
-    # Optional: used for AI-assisted re-reconciliation (safe if missing)
-    from engine import (
-        extract_author_year_citations,
-        extract_ieee_citations,
-        extract_vancouver_citations,
-        parse_reference_author_year,
-        parse_reference_numeric,
-        reconcile_author_year,
-        reconcile_numeric,
-        read_docx_split_main_and_refs,
-        read_pdf_text,
-    )
-    ENGINE_AI_OK = True
-    print("✓ Engine AI helpers imported successfully")
-except Exception as e:
-    ENGINE_AI_OK = False
-    print(f"! Engine AI helpers not available: {e}")
 
 try:
     from verify import verify_references_batch
@@ -139,14 +120,6 @@ def _store_result(result: Dict[str, Any]) -> str:
                 "started_at": "",
                 "finished_at": "",
             },
-            "ai": {
-                "state": "idle",       # idle|running|done|error|skipped
-                "message": "",
-                "started_at": "",
-                "finished_at": "",
-                "added_citations": 0,
-            },
-            # stored only when AI assist is requested (kept small / optional)
             "file_bytes": b"",
             "file_name": "",
             "style": "",
@@ -190,214 +163,100 @@ def _normalize_verify_status(s: str) -> str:
 
 
 # -----------------------------
-# DeepSeek AI Assist (optional, server-side only)
+# Online verification worker (background)
 # -----------------------------
-DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
-DEEPSEEK_URL = (os.getenv("DEEPSEEK_API_BASE") or "https://api.deepseek.com/v1/chat/completions").strip()
+def _run_online_batches(
+    job_id: str,
+    verify_mode: str,
+    throttle_s: float,
+    use_crossref: bool,
+    use_openalex: bool,
+    batch_size: int,
+) -> None:
+    job = _get_job(job_id)
+    if not job:
+        return
 
-# Show API key status (without revealing the full key)
-if DEEPSEEK_API_KEY:
-    masked_key = DEEPSEEK_API_KEY[:5] + "..." + DEEPSEEK_API_KEY[-5:] if len(DEEPSEEK_API_KEY) > 10 else "***"
-    print(f"✓ DeepSeek API key loaded: {masked_key}")
-else:
-    print("! DeepSeek API key not set - Vancouver style will use rule-based fallback")
+    if not VERIFY_OK:
+        with _store_lock:
+            job["online"]["state"] = "error"
+            job["online"]["message"] = "verify.py not available on server."
+            job["online"]["finished_at"] = _now_iso()
+        return
 
-# keep it strict to avoid hallucinations
-_AI_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})([a-z])?\b", re.I)
+    with _store_lock:
+        job["online"]["state"] = "running"
+        job["online"]["progress"] = 0
+        job["online"]["message"] = "Starting..."
+        job["online"]["started_at"] = _now_iso()
 
-# Discourse / non-author words we should ignore if AI returns them as authors
-_AI_NON_AUTHOR = {
-    "however", "similarly", "regretably", "regrettably", "traditionally", "therefore", "moreover",
-    "furthermore", "consequently", "notably", "generally", "specifically", "overall", "in", "on",
-}
-
-
-
-def _canonical_ai_author(author: str) -> str:
-    """Convert AI-returned author/org strings into a matching-friendly key.
-
-    Aligns with our author-year reconciliation keys (typically first author surname
-    or a stable org acronym).
-    """
-    a = (author or "").strip()
-    if not a:
-        return ""
-
-    # Remove trailing 'et al.'
-    a = re.sub(r"\bet\s+al\.?\b", "", a, flags=re.I).strip()
-
-    # If 'Surname, Initials' keep surname
-    if "," in a:
-        a = a.split(",", 1)[0].strip()
-
-    # Keep acronyms like WHO, IMF
-    if re.fullmatch(r"[A-Z]{2,10}", a):
-        return a
-
-    # Split into tokens, drop connectors
-    parts = re.split(r"\s+", a)
-    parts = [p for p in parts if p and p not in {"&", "and", "AND"}]
-    if not parts:
-        return ""
-
-    # Drop standalone initials like 'A.' or 'M'
-    parts2 = [p for p in parts if not re.fullmatch(r"[A-Z]\.?", p)]
-    if parts2:
-        parts = parts2
-
-    # Use last token as surname (works well for most Western name formats)
-    return parts[-1]
-
-def _deepseek_chat(messages: List[Dict[str, str]], timeout_s: float = 25.0) -> str:
-    if not DEEPSEEK_API_KEY:
-        return ""
     try:
-        r = requests.post(
-            DEEPSEEK_URL,
-            headers={
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": (os.getenv("DEEPSEEK_MODEL") or "deepseek-chat").strip(),
-                "messages": messages,
-                "temperature": 0,
-            },
-            timeout=timeout_s,
-        )
-        if r.status_code != 200:
-            print(f"DeepSeek API error: {r.status_code} - {r.text[:200]}")
-            return ""
-        data = r.json()
-        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-    except Exception as e:
-        print(f"DeepSeek API call failed: {e}")
-        return ""
+        result = job.get("result") or {}
+        refs_raw = result.get("references_raw") or []
+        
+        # If no references found, try to get from job
+        if not refs_raw:
+            refs_raw = job.get("references_raw", [])
+        
+        total = len(refs_raw)
 
+        with _store_lock:
+            job["online"]["total"] = total
+            job["online"]["message"] = f"Queued {total} references"
 
-def _deepseek_extract_citations(snippets: List[str], style_hint: str) -> List[Dict[str, Any]]:
-    """Extract citations from snippets. Returns list of dicts:
-    - APA: {raw, author, year}
-    - numeric: {raw, nums:[...]}
-    """
-    if not DEEPSEEK_API_KEY or not snippets:
-        return []
+        all_rows: List[Dict[str, Any]] = []
 
-    # hard cap to keep requests small and fast
-    snippets = [s for s in snippets if s and s.strip()][:120]
-    if not snippets:
-        return []
+        for start in range(0, total, max(1, int(batch_size or 60))):
+            job = _get_job(job_id)
+            if not job:
+                return
 
-    system = (
-        "You extract in-text citations from academic writing. "
-        "Return ONLY valid JSON. Do not add commentary."
-    )
-
-    if style_hint == "numeric":
-        user = {
-            "role": "user",
-            "content": (
-                "From the snippets, extract numeric in-text citations. "
-                "Return JSON array of objects with keys: raw, nums. "
-                "nums is an array of strings like [\"1\",\"2\",\"3\"]. "
-                "Only include citations explicitly present.\n\nSNIPPETS:\n"
-                + json.dumps(snippets)
-            ),
-        }
-    else:
-        user = {
-            "role": "user",
-            "content": (
-                "From the snippets, extract author-year in-text citations. "
-                "Return JSON array of objects with keys: raw, author, year. "
-                "author should be the first author surname or an org key. "
-                "Only include citations explicitly present.\n\nSNIPPETS:\n"
-                + json.dumps(snippets)
-            ),
-        }
-
-    content = _deepseek_chat(
-        messages=[{"role": "system", "content": system}, user],
-        timeout_s=28.0,
-    )
-    if not content:
-        return []
-
-    # try to locate JSON array
-    m = re.search(r"\[[\s\S]*\]", content)
-    if not m:
-        return []
-    try:
-        items = json.loads(m.group(0))
-    except Exception:
-        return []
-
-    out: List[Dict[str, Any]] = []
-
-    if style_hint == "numeric":
-        for it in items if isinstance(items, list) else []:
-            raw = str((it or {}).get("raw", "")).strip()
-            nums = (it or {}).get("nums", [])
-            if not raw or not isinstance(nums, list):
+            chunk = refs_raw[start:start + max(1, int(batch_size or 60))]
+            if not chunk:
                 continue
-            nums2 = []
-            for n in nums:
-                s = str(n).strip()
-                if re.fullmatch(r"\d{1,4}", s):
-                    nums2.append(s)
-            if nums2:
-                out.append({"raw": raw, "nums": nums2})
-        return out
 
-    # APA/Harvard
-    for it in items if isinstance(items, list) else []:
-        raw = str((it or {}).get("raw", "")).strip()
-        author = str((it or {}).get("author", "")).strip()
-        year = str((it or {}).get("year", "")).strip()
+            rows = verify_references_batch(
+                references=chunk,
+                throttle_s=throttle_s,
+                use_crossref=use_crossref,
+                use_openalex=use_openalex,
+            ) or []
 
-        if not raw or not author or not _AI_YEAR_RE.search(year):
-            continue
+            # normalize statuses
+            for r in rows:
+                r["status"] = _normalize_verify_status(r.get("status"))
 
-        a = author.strip().lower()
-        if a in _AI_NON_AUTHOR:
-            continue
+            all_rows.extend(rows)
 
-        out.append({"raw": raw, "author": author, "year": _AI_YEAR_RE.search(year).group(0)})
-    return out
+            # counts
+            counts: Dict[str, int] = {"verified": 0, "likely": 0, "needs_review": 0, "not_found": 0, "offline": 0}
+            for r in all_rows:
+                st = _normalize_verify_status(r.get("status"))
+                counts[st] = counts.get(st, 0) + 1
 
+            with _store_lock:
+                # Update result with verification data
+                current_result = job.get("result") or {}
+                current_result["online_verification"] = {
+                    "summary": {**counts, "total": int(sum(counts.values()))},
+                    "rows": all_rows,
+                }
+                job["result"] = current_result
+                job["online"]["progress"] = min(start + len(chunk), total)
+                job["online"]["message"] = f"Processed {job['online']['progress']} / {total}"
 
-def _select_ai_snippets(text: str, style_hint: str) -> List[str]:
-    """Pick likely-problematic sentences/clauses to send to AI."""
-    t = text or ""
-    if not t:
-        return []
-    # coarse sentence split
-    parts = re.split(r"(?<=[\.\!\?])\s+", t)
-    keep: List[str] = []
-    for s in parts:
-        s0 = (s or "").strip()
-        if not s0 or len(s0) < 25:
-            continue
-        if len(s0) > 600:
-            s0 = s0[:600]
+            time.sleep(BATCH_PAUSE_S)
 
-        if style_hint == "numeric":
-            if re.search(r"\[\s*\d{1,4}(?:\s*[-–,]\s*\d{1,4})*\s*\]", s0) or re.search(r"\(\s*\d{1,4}(?:\s*[,\\-–]\s*\d{1,4})+\s*\)", s0):
-                keep.append(s0)
-        else:
-            # focus on sentences with years and typical messy patterns
-            if _AI_YEAR_RE.search(s0) and (
-                "&" in s0
-                or "et al" in s0.lower()
-                or "for instance" in s0.lower()
-                or "e.g" in s0.lower()
-                or "(" in s0
-            ):
-                keep.append(s0)
+        with _store_lock:
+            job["online"]["state"] = "done"
+            job["online"]["message"] = "Online verification completed"
+            job["online"]["finished_at"] = _now_iso()
 
-        if len(keep) >= 120:
-            break
-    return keep
+    except Exception as e:
+        with _store_lock:
+            job["online"]["state"] = "error"
+            job["online"]["message"] = f"Online verification failed: {e}"
+            job["online"]["finished_at"] = _now_iso()
 
 
 # -----------------------------
@@ -443,9 +302,9 @@ def _export_csv_bytes(result: Dict[str, Any]) -> bytes:
     for r in rows:
         out.write(
             f"verify,{r.get('status','')},"
-            f"{json.dumps(r.get('reference_full',''))},"
-            f"{json.dumps(r.get('found_title',''))},"
-            f"{json.dumps(r.get('found_doi',''))},"
+            f"{json.dumps(r.get('reference',''))},"
+            f"{json.dumps(r.get('matched_title',''))},"
+            f"{json.dumps(r.get('doi',''))},"
             f"{r.get('score','')},"
             f"{json.dumps(r.get('source',''))}\n"
         )
@@ -468,10 +327,6 @@ def _export_word_bytes(result: Dict[str, Any]) -> bytes:
     for k in ["in_text_citations_found", "reference_entries_found", "missing_in_references", "uncited_references", "match_rate"]:
         doc.add_paragraph(f"{k}: {s.get(k)}")
 
-    ai = result.get("ai_assist") or {}
-    if ai.get("enabled"):
-        doc.add_paragraph(f"AI Assist: enabled (added_citations={ai.get('added_citations',0)}, snippets_sent={ai.get('snippets_sent',0)})")
-
     doc.add_heading("Missing in References", level=2)
     for row in (result.get("missing_in_references") or []):
         doc.add_paragraph(f"- {row.get('citation_in_text','')} (count={row.get('count_in_text',0)})")
@@ -489,7 +344,7 @@ def _export_word_bytes(result: Dict[str, Any]) -> bytes:
     if rows:
         doc.add_heading("Online Verification", level=2)
         for r in rows[:300]:
-            doc.add_paragraph(f"[{r.get('status','')}] {r.get('reference_full','')} | DOI={r.get('found_doi','')} | src={r.get('source','')}")
+            doc.add_paragraph(f"[{r.get('status','')}] {r.get('reference','')} | DOI={r.get('doi','')} | src={r.get('source','')}")
 
     bio = io.BytesIO()
     doc.save(bio)
@@ -497,241 +352,18 @@ def _export_word_bytes(result: Dict[str, Any]) -> bytes:
 
 
 # -----------------------------
-# Online verification worker (background)
-# -----------------------------
-def _run_online_batches(
-    job_id: str,
-    verify_mode: str,
-    throttle_s: float,
-    use_crossref: bool,
-    use_openalex: bool,
-    batch_size: int,
-) -> None:
-    job = _get_job(job_id)
-    if not job:
-        return
-
-    if not VERIFY_OK:
-        with _store_lock:
-            job["online"]["state"] = "error"
-            job["online"]["message"] = "verify.py not available on server."
-            job["online"]["finished_at"] = _now_iso()
-        return
-
-    with _store_lock:
-        job["online"]["state"] = "running"
-        job["online"]["progress"] = 0
-        job["online"]["message"] = "Starting..."
-        job["online"]["started_at"] = _now_iso()
-
-    try:
-        result = job.get("result") or {}
-        refs_raw = result.get("references_raw") or []
-        total = len(refs_raw)
-
-        with _store_lock:
-            job["online"]["total"] = total
-            job["online"]["message"] = f"Queued {total} references"
-
-        all_rows: List[Dict[str, Any]] = []
-
-        for start in range(0, total, max(1, int(batch_size or 60))):
-            job = _get_job(job_id)
-            if not job:
-                return
-
-            chunk = refs_raw[start:start + max(1, int(batch_size or 60))]
-            if not chunk:
-                continue
-
-            rows = verify_references_batch(
-                references=chunk,
-                style=(result.get("style") or "apa"),
-                verify_mode=verify_mode,
-                throttle_s=throttle_s,
-                use_crossref=use_crossref,
-                use_openalex=use_openalex,
-            ) or []
-
-            # normalize statuses
-            for r in rows:
-                r["status"] = _normalize_verify_status(r.get("status"))
-
-            all_rows.extend(rows)
-
-            # counts
-            counts: Dict[str, int] = {"verified": 0, "likely": 0, "needs_review": 0, "not_found": 0, "offline": 0}
-            for r in all_rows:
-                st = _normalize_verify_status(r.get("status"))
-                counts[st] = counts.get(st, 0) + 1
-
-            with _store_lock:
-                result = job.get("result") or {}
-                result["online_verification"] = {
-                    "summary": {**counts, "total": int(sum(counts.values()))},
-                    "rows": all_rows,
-                }
-                job["online"]["progress"] = min(start + len(chunk), total)
-                job["online"]["message"] = f"Processed {job['online']['progress']} / {total}"
-
-            time.sleep(BATCH_PAUSE_S)
-
-        with _store_lock:
-            job["online"]["state"] = "done"
-            job["online"]["message"] = "Online verification completed"
-            job["online"]["finished_at"] = _now_iso()
-
-    except Exception as e:
-        with _store_lock:
-            job["online"]["state"] = "error"
-            job["online"]["message"] = f"Online verification failed: {e}"
-            job["online"]["finished_at"] = _now_iso()
-
-
-# -----------------------------
-# AI assist worker (DeepSeek) — runs in background and patches stored result
-# -----------------------------
-def _run_ai_assist(job_id: str) -> None:
-    job = _get_job(job_id)
-    if not job:
-        return
-
-    if not DEEPSEEK_API_KEY:
-        with _store_lock:
-            job["ai"]["state"] = "skipped"
-            job["ai"]["message"] = "AI assist skipped: DEEPSEEK_API_KEY not set"
-            job["ai"]["finished_at"] = _now_iso()
-        return
-
-    if not ENGINE_AI_OK:
-        with _store_lock:
-            job["ai"]["state"] = "skipped"
-            job["ai"]["message"] = "AI assist skipped: engine helpers not available"
-            job["ai"]["finished_at"] = _now_iso()
-        return
-
-    fb = job.get("file_bytes") or b""
-    fname = job.get("file_name") or "upload"
-    style_s = (job.get("style") or "apa").strip().lower()
-    style_hint = "numeric" if ("ieee" in style_s or "vancouver" in style_s or "numeric" in style_s) else "apa"
-
-    if not fb:
-        with _store_lock:
-            job["ai"]["state"] = "error"
-            job["ai"]["message"] = "AI assist failed: missing file bytes"
-            job["ai"]["finished_at"] = _now_iso()
-        return
-
-    try:
-        # 1) extract main text (avoid refs where possible)
-        if fname.lower().endswith(".docx"):
-            main_text, _ref_lines, _msg = read_docx_split_main_and_refs(fb)
-        elif fname.lower().endswith(".pdf"):
-            full_text = read_pdf_text(fb)
-            # crude split: stop at first References heading if present
-            m = re.search(r"^\s*(references|bibliography|works\s+cited)\b.*$", full_text, flags=re.I | re.M)
-            main_text = full_text[: m.start()] if m else full_text
-        else:
-            main_text = fb.decode("utf-8", errors="ignore")
-
-        if len(main_text) > 350_000:
-            half = 175_000
-            main_text = main_text[:half] + "\n... [TRUNCATED] ...\n" + main_text[-half:]
-
-        # 2) choose snippets and ask AI
-        snippets = _select_ai_snippets(main_text, style_hint=style_hint)
-        ai_items = _deepseek_extract_citations(snippets, style_hint=style_hint)
-
-        # 3) rebuild reconciliation using AI-added citations
-        base_result = (job.get("result") or {})
-        references_raw = base_result.get("references_raw") or []
-
-        if style_hint == "numeric":
-            # base citations based on style
-            if "vancouver" in style_s:
-                try:
-                    cites = extract_vancouver_citations(main_text)
-                except:
-                    cites = []
-            else:
-                try:
-                    cites = extract_ieee_citations(main_text)
-                except:
-                    cites = []
-
-            # add AI nums
-            for it in ai_items:
-                for n in it.get("nums", []):
-                    if re.fullmatch(r"\d{1,4}", str(n)):
-                        cites.append(str(n))
-
-            refs = [parse_reference_numeric(r) for r in references_raw]
-            refs = [r for r in refs if r is not None]
-
-            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(cites, refs, style=style_s)
-            ref_count = len(refs)
-
-        else:
-            cites = extract_author_year_citations(main_text)
-
-            # add AI citations (canonicalised) as raw strings like "Surname, YEAR"
-            for it in ai_items:
-                a0 = (it.get("author") or "").strip()
-                a = _canonical_ai_author(a0)
-                y = (it.get("year") or "").strip()
-                m = _AI_YEAR_RE.search(y)
-                if a and m:
-                    cites.append(f"{a}, {m.group(0)}")
-
-            refs = [parse_reference_author_year(r) for r in references_raw]
-            refs = [r for r in refs if r is not None]
-
-            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
-            ref_count = len(refs)
-
-        # recompute match rate (same rule as engine)
-        missing_unique = int(len(missing_rows or []))
-        match_rate = 0.0
-        if intext_count > 0:
-            match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
-
-        # patch result in store
-        base_result["ai_assist"] = {
-            "enabled": True,
-            "added_citations": int(len(ai_items)),
-            "snippets_sent": int(len(snippets)),
-        }
-        base_result["summary"] = {
-            **(base_result.get("summary") or {}),
-            "in_text_citations_found": int(intext_count),
-            "reference_entries_found": int(ref_count),
-            "missing_in_references": int(missing_unique),
-            "uncited_references": int(len(uncited_refs)),
-            "match_rate": float(round(match_rate, 1)),
-        }
-        base_result["missing_in_references"] = missing_rows
-        base_result["uncited_references"] = uncited_refs
-        base_result["reconciliation_intext_to_reference"] = c2r
-        base_result["reconciliation_reference_to_intext"] = r2c
-
-        with _store_lock:
-            job["result"] = base_result
-            job["ai"]["state"] = "done"
-            job["ai"]["message"] = "AI assist completed"
-            job["ai"]["finished_at"] = _now_iso()
-            job["ai"]["added_citations"] = int(len(ai_items))
-
-    except Exception as e:
-        with _store_lock:
-            job["ai"]["state"] = "error"
-            job["ai"]["message"] = f"AI assist failed: {e}"
-            job["ai"]["finished_at"] = _now_iso()
-
-
-# -----------------------------
 # FastAPI app
 # -----------------------------
 app = FastAPI(title=APP_TITLE)
+
+# Add CORS middleware to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development only - restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
@@ -746,18 +378,34 @@ def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/test")
+async def test():
+    """Simple test endpoint to verify server is running."""
+    return {"message": "Server is working", "status": "ok"}
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Handle favicon requests to avoid 404 errors."""
+    favicon_path = os.path.join(static_dir, "favicon.ico")
+    if os.path.exists(favicon_path):
+        return FileResponse(favicon_path)
+    return JSONResponse(status_code=204)  # No content
+
+
 @app.post("/verify")
 async def verify(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    verify_online: str = Form("false"),  # if true: we start background job, not inline
     verify_mode: str = Form("all"),
-    max_verify: str = Form("0"),         # kept for UI compatibility
     throttle_s: str = Form("0.12"),
     use_crossref: str = Form("true"),
     use_openalex: str = Form("true"),
-    ai_assist: str = Form("false"),
 ):
+    """
+    Run initial citation check (no online verification).
+    Returns job_id that can be used later for online verification.
+    """
     if not ENGINE_OK:
         raise HTTPException(500, "engine.py import failed on server.")
 
@@ -765,12 +413,10 @@ async def verify(
     file_bytes = _read_upload_bytes(file)
 
     style_s = (style or "apa").strip().lower()
-    verify_online_b = str(verify_online).strip().lower() in {"1", "true", "yes", "y", "on"}
     verify_mode_s = (verify_mode or "all").strip().lower()
 
     use_crossref_b = str(use_crossref).strip().lower() in {"1", "true", "yes", "y", "on"}
     use_openalex_b = str(use_openalex).strip().lower() in {"1", "true", "yes", "y", "on"}
-    ai_assist_b = str(ai_assist).strip().lower() in {"1", "true", "yes", "y", "on"}
 
     try:
         throttle_f = float(throttle_s or 0.12)
@@ -778,7 +424,7 @@ async def verify(
         throttle_f = 0.12
 
     def _do_crosscheck() -> Dict[str, Any]:
-        # Always run offline here so /verify returns fast and avoids Render router timeouts.
+        # Run the citation check (no online verification)
         return run_crosscheck(
             file_bytes=file_bytes,
             filename=filename,
@@ -792,43 +438,93 @@ async def verify(
         )
 
     result = await run_in_threadpool(_do_crosscheck)
+    
+    # Store references_raw in the job for later verification
     job_id = _store_result(result)
-
-    # Attach file bytes for optional AI assist (server-side only)
-    if ai_assist_b:
-        job = _get_job(job_id)
-        if job is not None:
-            # avoid huge memory spikes
-            if len(file_bytes) <= 8 * 1024 * 1024:
-                with _store_lock:
-                    job["file_bytes"] = file_bytes
-                    job["file_name"] = filename
-                    job["style"] = style_s
-                    job["ai"]["state"] = "running"
-                    job["ai"]["message"] = "AI assist running"
-                    job["ai"]["started_at"] = _now_iso()
-                threading.Thread(target=_run_ai_assist, args=(job_id,), daemon=True).start()
-            else:
-                with _store_lock:
-                    job["ai"]["state"] = "skipped"
-                    job["ai"]["message"] = "AI assist skipped: file too large"
-                    job["ai"]["finished_at"] = _now_iso()
-
-    # Start background online verification if requested
-    if verify_online_b:
-        t = threading.Thread(
-            target=_run_online_batches,
-            args=(job_id, verify_mode_s, throttle_f, use_crossref_b, use_openalex_b, BATCH_SIZE_DEFAULT),
-            daemon=True,
-        )
-        t.start()
+    
+    # Also store references_raw separately for easy access
+    job = _get_job(job_id)
+    if job and result.get("references_raw"):
+        with _store_lock:
+            job["references_raw"] = result.get("references_raw")
 
     wrapped = _wrap_output(result)
     wrapped["job_id"] = job_id
-    wrapped["online_started"] = bool(verify_online_b)
-    wrapped["ai_started"] = bool(ai_assist_b)
     wrapped["batch_size"] = BATCH_SIZE_DEFAULT
     return JSONResponse(wrapped)
+
+
+@app.post("/verify-online")
+async def verify_online(
+    job_id: str = Form(...),
+    verify_mode: str = Form("all"),
+    throttle_s: str = Form("0.12"),
+    use_crossref: str = Form("true"),
+    use_openalex: str = Form("true"),
+):
+    """
+    Run online verification on an existing job.
+    Does NOT re-run the citation check.
+    """
+    if not VERIFY_OK:
+        raise HTTPException(500, "verify.py not available on server.")
+
+    job = _get_job(job_id)
+    if not job:
+        raise HTTPException(404, "job_id not found or expired.")
+
+    verify_mode_s = (verify_mode or "all").strip().lower()
+    use_crossref_b = str(use_crossref).strip().lower() in {"1", "true", "yes", "y", "on"}
+    use_openalex_b = str(use_openalex).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    try:
+        throttle_f = float(throttle_s or 0.12)
+    except Exception:
+        throttle_f = 0.12
+
+    # Check if job already has verification running
+    if job["online"]["state"] == "running":
+        return JSONResponse({
+            "ok": True,
+            "job_id": job_id,
+            "message": "Verification already running",
+            "online": job.get("online")
+        })
+
+    # Start background online verification
+    t = threading.Thread(
+        target=_run_online_batches,
+        args=(job_id, verify_mode_s, throttle_f, use_crossref_b, use_openalex_b, BATCH_SIZE_DEFAULT),
+        daemon=True,
+    )
+    t.start()
+
+    return JSONResponse({
+        "ok": True,
+        "job_id": job_id,
+        "message": "Online verification started",
+        "online_started": True
+    })
+
+
+@app.post("/check")
+async def check(
+    file: UploadFile = File(...),
+    style: str = Form("apa"),
+    verify_mode: str = Form("all"),
+    throttle_s: str = Form("0.12"),
+    use_crossref: str = Form("true"),
+    use_openalex: str = Form("true"),
+):
+    """Alias for /verify endpoint to maintain compatibility with frontend."""
+    return await verify(
+        file=file,
+        style=style,
+        verify_mode=verify_mode,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=use_openalex,
+    )
 
 
 @app.get("/online/status")
@@ -836,14 +532,16 @@ def online_status(job_id: str, include_result: int = 0):
     job = _get_job(job_id)
     if not job:
         raise HTTPException(404, "job_id not found or expired.")
+    
+    result = job.get("result") or {}
+    
     return {
         "ok": True,
         "ts": _now_iso(),
         "job_id": job_id,
         "online": job.get("online") or {},
-        "ai": job.get("ai") or {},
-        "online_verification": (job.get("result") or {}).get("online_verification") or {"summary": {}, "rows": []},
-        "result": (job.get("result") or {}) if include_result else {},
+        "online_verification": result.get("online_verification") or {"summary": {}, "rows": []},
+        "result": result if include_result else {},
     }
 
 
