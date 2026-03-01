@@ -1,5 +1,5 @@
 # engine.py
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 import os
 import re
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 
-ENGINE_BUILD = "commercial-2026-03-01-vancouver-enhanced"
+ENGINE_BUILD = "commercial-2026-03-01-vancouver-modular"
 
 # ==================== DEEPSEEK CONFIGURATION ====================
 # Only used for Vancouver style - load from environment variable for security
@@ -1031,9 +1031,339 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
     return [x for x in out if x and len(x) >= 10]
 
 
-# -----------------------------
+# ============================================================================
+# VANCOUVER STYLE PIPELINES - MODULAR ARCHITECTURE
+# ============================================================================
+
+class VancouverVariant:
+    """Enumeration of Vancouver variants"""
+    PLOS_ONE = "plos_one"           # [1], [2,3], references: 1., 2.
+    JAMA = "jama"                    # Superscript numbers, references: 1., 2.
+    IEEE = "ieee"                    # [1], [2], references: [1], [2]
+    VANCOUVER_SUPERSCRIPT = "superscript"  # Just superscript numbers
+    VANCOUVER_PAREN = "parentheses"  # (1), (2), references: 1., 2.
+    VANCOUVER_PLAIN = "plain"        # Just numbers, references: 1., 2.
+    GENERIC = "generic"              # Fallback
+
+
+class PlosOnePipeline:
+    """
+    Specialized for PLOS ONE style:
+    - In-text: [1], [2,3], [4-7]
+    - References: 1. Author... or 1 Author...
+    """
+    
+    @staticmethod
+    def extract_citations(text: str) -> List[str]:
+        """Extract citations from PLOS ONE style."""
+        citations = []
+        
+        # Pattern: [1], [2,3], [4-7]
+        pattern = r'\[\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\]'
+        
+        for match in re.finditer(pattern, text):
+            content = match.group(1)
+            for part in re.split(r'\s*,\s*', content):
+                if '-' in part or '–' in part:
+                    parts = re.split(r'[-–]', part)
+                    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                        start, end = int(parts[0]), int(parts[1])
+                        if start <= end and (end - start) <= 50:
+                            citations.extend([str(i) for i in range(start, end + 1)])
+                elif part.isdigit():
+                    citations.append(part)
+        
+        return list(dict.fromkeys(citations))  # Deduplicate
+    
+    @staticmethod
+    def parse_references(refs_raw: List[str]) -> List[RefNum]:
+        """Parse PLOS ONE style references."""
+        parsed = []
+        
+        for ref_block in refs_raw:
+            # Split merged references
+            split_refs = PlosOnePipeline._split_references(ref_block)
+            
+            for ref in split_refs:
+                ref_num = PlosOnePipeline._extract_number(ref)
+                if ref_num and PlosOnePipeline._validate_reference(ref_num, ref):
+                    parsed.append(RefNum(
+                        reference_full=PlosOnePipeline._clean_reference(ref),
+                        num=ref_num
+                    ))
+        
+        return parsed
+    
+    @staticmethod
+    def _split_references(text: str) -> List[str]:
+        """Split merged references."""
+        if not text:
+            return []
+        
+        # Look for pattern: number followed by dot and space, then capital letter
+        pattern = r'(?=\n?\s*(\d+)\.\s+[A-Z])'
+        matches = list(re.finditer(pattern, text))
+        
+        if len(matches) <= 1:
+            return [text.strip()]
+        
+        splits = []
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = matches[i + 1].start() if i < len(matches) - 1 else len(text)
+            splits.append(text[start:end].strip())
+        
+        return splits
+    
+    @staticmethod
+    def _extract_number(ref: str) -> Optional[str]:
+        """Extract reference number."""
+        ref = ref.strip()
+        # Pattern 1: "1. Author..."
+        m = re.match(r'^(\d+)\.\s+', ref)
+        if m:
+            return m.group(1)
+        # Pattern 2: "1 Author..."
+        m = re.match(r'^(\d+)\s+([A-Z])', ref)
+        if m:
+            return m.group(1)
+        return None
+    
+    @staticmethod
+    def _validate_reference(num: str, ref: str) -> bool:
+        """Validate reference."""
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:  # Filter out years
+            return False
+        if len(ref) < 30:
+            return False
+        if not re.search(r'[A-Z][a-z]+', ref):  # Need author name
+            return False
+        return True
+    
+    @staticmethod
+    def _clean_reference(ref: str) -> str:
+        """Clean reference."""
+        ref = re.sub(r'\s+', ' ', ref).strip()
+        if not ref.endswith('.'):
+            ref += '.'
+        return ref
+
+
+class JamaPipeline:
+    """
+    Specialized for JAMA style:
+    - In-text: Superscript numbers (e.g., ¹, ², ³)
+    - References: 1. Author... or 1 Author...
+    """
+    
+    @staticmethod
+    def extract_citations(text: str) -> List[str]:
+        """Extract citations from JAMA style (superscript numbers)."""
+        citations = []
+        
+        # Convert common superscript Unicode to numbers
+        superscript_map = {
+            '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+            '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
+        }
+        
+        # Pattern for superscript Unicode
+        for sup, num in superscript_map.items():
+            if sup in text:
+                citations.append(num)
+        
+        # Also look for <sup>1</sup> HTML-style superscript
+        html_sup = re.findall(r'<sup>(\d+)</sup>', text)
+        citations.extend(html_sup)
+        
+        # Look for numbers in brackets [1] (fallback)
+        bracket_nums = re.findall(r'\[\s*(\d+)\s*\]', text)
+        citations.extend(bracket_nums)
+        
+        return list(dict.fromkeys(citations))
+    
+    @staticmethod
+    def parse_references(refs_raw: List[str]) -> List[RefNum]:
+        """Parse JAMA style references."""
+        # JAMA uses same reference format as PLOS ONE (1. Author...)
+        return PlosOnePipeline.parse_references(refs_raw)
+
+
+class GenericVancouverPipeline:
+    """
+    Generic Vancouver style:
+    - In-text: [1], (1), 1, or superscript
+    - References: 1., 1, [1], or (1)
+    """
+    
+    @staticmethod
+    def extract_citations(text: str) -> List[str]:
+        """Extract citations from generic Vancouver."""
+        citations = []
+        
+        # Try all possible patterns
+        patterns = [
+            (r'\[\s*(\d+)\s*\]', False),           # [1]
+            (r'\(\s*(\d+)\s*\)', False),            # (1)
+            (r'(?<!\d)(\d+)(?!\d)', True),           # standalone 1 (but not part of larger number)
+            (r'<sup>(\d+)</sup>', False),           # <sup>1</sup>
+        ]
+        
+        for pattern, check_context in patterns:
+            for match in re.finditer(pattern, text):
+                num = match.group(1)
+                if check_context:
+                    # Check context to avoid false positives
+                    context = text[max(0, match.start()-30):min(len(text), match.end()+30)]
+                    if GenericVancouverPipeline._is_valid_citation_number(num, context):
+                        citations.append(num)
+                else:
+                    citations.append(num)
+        
+        # Also handle superscript Unicode
+        superscript_map = {
+            '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+            '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
+        }
+        for sup, num in superscript_map.items():
+            if sup in text:
+                citations.append(num)
+        
+        return list(dict.fromkeys(citations))
+    
+    @staticmethod
+    def _is_valid_citation_number(num: str, context: str) -> bool:
+        """Check if a number is a valid citation."""
+        num_int = int(num)
+        
+        # Filter out years
+        if 1900 <= num_int <= 2099:
+            if re.search(r'\b(?:in|during|since|year)\s+' + re.escape(num), context, re.I):
+                return False
+            if re.search(r'[A-Z][a-z]+(?:\s+et al\.?)?\s*[\(\[]\s*' + re.escape(num), context, re.I):
+                return True
+            return False
+        
+        # Filter out page numbers
+        if re.search(r'[pP]\.?\s*' + re.escape(num) + r'\b', context):
+            return False
+        
+        return True
+    
+    @staticmethod
+    def parse_references(refs_raw: List[str]) -> List[RefNum]:
+        """Parse generic Vancouver references."""
+        parsed = []
+        
+        for ref in refs_raw:
+            # Try all possible reference formats
+            ref_num = None
+            clean_ref = GenericVancouverPipeline._clean_reference(ref)
+            
+            # Pattern 1: 1. Author...
+            m = re.match(r'^(\d+)\.\s+', clean_ref)
+            if m:
+                ref_num = m.group(1)
+            
+            # Pattern 2: [1] Author...
+            if not ref_num:
+                m = re.match(r'^\[\s*(\d+)\s*\]\s+', clean_ref)
+                if m:
+                    ref_num = m.group(1)
+            
+            # Pattern 3: (1) Author...
+            if not ref_num:
+                m = re.match(r'^\(\s*(\d+)\s*\)\s+', clean_ref)
+                if m:
+                    ref_num = m.group(1)
+            
+            # Pattern 4: 1 Author...
+            if not ref_num:
+                m = re.match(r'^(\d+)\s+([A-Z])', clean_ref)
+                if m:
+                    ref_num = m.group(1)
+            
+            if ref_num:
+                num_int = int(ref_num)
+                if not (1900 <= num_int <= 2099) and len(clean_ref) > 30:
+                    parsed.append(RefNum(
+                        reference_full=clean_ref,
+                        num=ref_num
+                    ))
+        
+        return parsed
+    
+    @staticmethod
+    def _clean_reference(ref: str) -> str:
+        """Clean reference."""
+        ref = re.sub(r'\s+', ' ', ref).strip()
+        return ref
+
+
+class VancouverPipelineFactory:
+    """Factory to get appropriate pipeline for Vancouver variant."""
+    
+    _pipelines = {
+        VancouverVariant.PLOS_ONE: PlosOnePipeline,
+        VancouverVariant.JAMA: JamaPipeline,
+        VancouverVariant.GENERIC: GenericVancouverPipeline,
+        VancouverVariant.VANCOUVER_SUPERSCRIPT: GenericVancouverPipeline,
+        VancouverVariant.VANCOUVER_PAREN: GenericVancouverPipeline,
+        VancouverVariant.VANCOUVER_PLAIN: GenericVancouverPipeline,
+    }
+    
+    @staticmethod
+    def detect_variant(text: str, references: List[str] = None) -> str:
+        """
+        Auto-detect which Vancouver variant is being used.
+        """
+        # Check for superscript Unicode
+        superscript_chars = ['¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹']
+        if any(c in text for c in superscript_chars):
+            return VancouverVariant.JAMA
+        
+        # Check for PLOS ONE style [1], [2,3]
+        if re.search(r'\[\s*\d+\s*,\s*\d+\s*\]', text):
+            return VancouverVariant.PLOS_ONE
+        
+        # Check for parentheses (1)
+        if re.search(r'\(\s*\d+\s*\)', text):
+            return VancouverVariant.VANCOUVER_PAREN
+        
+        # Check for standalone numbers (likely superscript or plain)
+        if re.search(r'(?<!\d)\d+(?!\d)', text):
+            # Check reference format if available
+            if references and len(references) > 0:
+                first_ref = references[0].strip()
+                if re.match(r'^\d+\.', first_ref):
+                    return VancouverVariant.PLOS_ONE
+                elif re.match(r'^\[\d+\]', first_ref):
+                    return VancouverVariant.IEEE
+            
+            return VancouverVariant.VANCOUVER_PLAIN
+        
+        # Default to PLOS ONE
+        return VancouverVariant.PLOS_ONE
+    
+    @staticmethod
+    def get_pipeline(variant: str = None, text: str = None, references: List[str] = None):
+        """Get appropriate pipeline."""
+        if variant is None and text is not None:
+            variant = VancouverPipelineFactory.detect_variant(text, references or [])
+            log_debug(f"Auto-detected Vancouver variant: {variant}")
+        
+        pipeline_class = VancouverPipelineFactory._pipelines.get(variant)
+        if pipeline_class:
+            return pipeline_class()
+        else:
+            log_debug(f"No specific pipeline for {variant}, using generic")
+            return GenericVancouverPipeline()
+
+
+# ============================================================================
 # Citation extractors - APA/Harvard (UNCHANGED - WORKS PERFECTLY)
-# -----------------------------
+# ============================================================================
 def extract_author_year_citations(text: str) -> List[str]:
     """Extract APA/Harvard citations - RULE BASED, NO AI."""
     t = (text or "").replace("\u2019", "'")
@@ -1074,9 +1404,9 @@ def extract_author_year_citations(text: str) -> List[str]:
     return [c for c in out if c]
 
 
-# -----------------------------
+# ============================================================================
 # Citation extractors - IEEE (UNCHANGED - WORKS PERFECTLY)
-# -----------------------------
+# ============================================================================
 def extract_ieee_citations(text: str) -> List[str]:
     """Extract IEEE citations - RULE BASED, NO AI.
     IEEE strictly uses square brackets: [1], [1,2,3], [1-5]
@@ -1106,268 +1436,6 @@ def extract_ieee_citations(text: str) -> List[str]:
             deduped.append(num)
     
     return deduped
-
-
-# -----------------------------
-# Citation extractors - Vancouver (ENHANCED with better filtering)
-# -----------------------------
-def extract_vancouver_citations_enhanced(text: str) -> List[str]:
-    """
-    Enhanced Vancouver citation extraction with better filtering of false positives.
-    Uses rule-based approach with context awareness to avoid years, page numbers, etc.
-    """
-    t = text or ""
-    citations = []
-    
-    # Step 1: Remove obvious false positive contexts
-    # Remove table/figure references
-    t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+\d+", " ", t, flags=re.I)
-    
-    # Remove page number patterns
-    t = re.sub(r'\b(?:p|pp|page|pages?)\.?\s*\d+\b', ' ', t, flags=re.I)
-    
-    # Remove year patterns with context
-    t = re.sub(r'\b(?:in|during|since|before|after|year)\s+(?:19|20)\d{2}\b', ' ', t, flags=re.I)
-    
-    # Step 2: Extract citation patterns
-    
-    # Pattern 1: Bracketed citations [1], [1,2,3], [1-5]
-    bracketed_pat = re.compile(r"\[\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\]")
-    for m in bracketed_pat.finditer(t):
-        content = m.group(1)
-        context = t[max(0, m.start()-30):min(len(t), m.end()+30)]
-        
-        for part in re.split(r'\s*,\s*', content):
-            if '-' in part or '–' in part:
-                parts = re.split(r'[-–]', part)
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    start, end = int(parts[0]), int(parts[1])
-                    if 1 <= start <= end <= 9999 and (end - start) <= 50:
-                        for i in range(start, end + 1):
-                            if is_valid_vancouver_number(str(i), context):
-                                citations.append(str(i))
-            elif part.isdigit():
-                if is_valid_vancouver_number(part, context):
-                    citations.append(part)
-    
-    # Pattern 2: Parenthetical citations (1), (1,2,3), (1-5)
-    paren_pat = re.compile(r"\(\s*(\d{1,4}(?:\s*[-–,]\s*\d{1,4})*)\s*\)")
-    for m in paren_pat.finditer(t):
-        content = m.group(1)
-        context = t[max(0, m.start()-30):min(len(t), m.end()+30)]
-        
-        for part in re.split(r'\s*,\s*', content):
-            if '-' in part or '–' in part:
-                parts = re.split(r'[-–]', part)
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    start, end = int(parts[0]), int(parts[1])
-                    if 1 <= start <= end <= 9999 and (end - start) <= 50:
-                        for i in range(start, end + 1):
-                            if is_valid_vancouver_number(str(i), context):
-                                citations.append(str(i))
-            elif part.isdigit():
-                if is_valid_vancouver_number(part, context):
-                    citations.append(part)
-    
-    # Pattern 3: Author + citation like Smith et al. (1)
-    author_pat = re.compile(r'([A-Z][a-z]+(?:\s+et al\.?)?)\s*[\(\[]\s*(\d+)\s*[\)\]]', re.I)
-    for m in author_pat.finditer(t):
-        num = m.group(2)
-        context = m.group(0)
-        if is_valid_vancouver_number(num, context):
-            citations.append(num)
-    
-    # Deduplicate while preserving order
-    seen = set()
-    deduped = []
-    for num in citations:
-        if num not in seen:
-            seen.add(num)
-            deduped.append(num)
-    
-    log_debug(f"Vancouver enhanced extracted {len(deduped)} citations")
-    return deduped
-
-
-def is_valid_vancouver_number(num: str, context: str) -> bool:
-    """Check if a number is a valid Vancouver citation (not a year, page, etc.)"""
-    num_int = int(num) if num.isdigit() else 0
-    
-    # Filter out years (1900-2099)
-    if 1900 <= num_int <= 2099:
-        # Check if it's in a year context
-        if re.search(r'\b(?:in|during|since|before|after|year)\s+' + re.escape(num), context, re.I):
-            return False
-        # If it's in brackets with author, might be citation
-        if re.search(r'[A-Z][a-z]+(?:\s+et al\.?)?\s*[\(\[]\s*' + re.escape(num), context, re.I):
-            return True
-        return False
-    
-    # Filter out page numbers
-    if re.search(r'[pP]\.?\s*' + re.escape(num) + r'\b', context):
-        return False
-    
-    # Filter out section numbers
-    if re.search(r'(?:section|chapter|part|table|figure)\s+' + re.escape(num), context, re.I):
-        return False
-    
-    # Filter out statistical numbers
-    if re.search(r'\b' + re.escape(num) + r'\s*%', context) or \
-       re.search(r'\b' + re.escape(num) + r'\s+(?:percent|percentage|participants|patients|cases)\b', context, re.I):
-        return False
-    
-    # Filter out currency
-    if re.search(r'[₵¢$€£¥]\s*' + re.escape(num), context) or \
-       re.search(r'(?:GHS|GH¢|USD|EUR|GBP)\s*' + re.escape(num), context, re.I):
-        return False
-    
-    # Numbers in brackets/parentheses are likely citations
-    if re.search(r'[\(\[]\s*' + re.escape(num) + r'\s*[\)\]]', context):
-        return True
-    
-    return True
-
-
-def extract_vancouver_citations_ai(text: str) -> List[str]:
-    """Extract Vancouver citations using AI (if API key available)."""
-    if not DEEPSEEK_API_KEY:
-        log_debug("No API key, using enhanced rule-based Vancouver")
-        return extract_vancouver_citations_enhanced(text)
-    
-    # If API key exists, use it with proper chunking
-    chunks = split_into_chunks(text, max_chars=3000)
-    all_citations = []
-    
-    for chunk in chunks:
-        citations = call_deepseek_for_citations(chunk)
-        all_citations.extend(citations)
-    
-    # If AI failed, fall back to enhanced rule-based
-    if not all_citations and DEEPSEEK_CONFIG["fallback_to_rule_based"]:
-        log_debug("AI returned no results, using enhanced rule-based fallback")
-        return extract_vancouver_citations_enhanced(text)
-    
-    # Deduplicate
-    seen = set()
-    return [x for x in all_citations if not (x in seen or seen.add(x))]
-
-
-def split_into_chunks(text: str, max_chars: int = 3000) -> List[str]:
-    """Split text into chunks at sentence boundaries."""
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    
-    for sentence in sentences:
-        if current_length + len(sentence) > max_chars and current_chunk:
-            chunks.append(' '.join(current_chunk))
-            current_chunk = [sentence]
-            current_length = len(sentence)
-        else:
-            current_chunk.append(sentence)
-            current_length += len(sentence)
-    
-    if current_chunk:
-        chunks.append(' '.join(current_chunk))
-    
-    return chunks
-
-
-def call_deepseek_for_citations(text: str) -> List[str]:
-    """Call DeepSeek API to extract Vancouver citations."""
-    
-    prompt = f"""You are an expert at identifying Vancouver-style citations in academic text.
-
-Vancouver citation style uses numbers in various formats:
-- (1), [1], ¹ (superscript), or just 1
-- Multiple citations: (1,2,3), [1-5], (1,2,4-7,9)
-- Author + citation: Smith et al. (1) found that...
-- With page numbers: (1 p23), [2 pp45-67]
-
-IMPORTANT: Do NOT extract:
-- Years (like 2022, 1999) unless they're clearly citations
-- Page numbers (like p. 23, pp. 45-67)
-- Table/figure numbers (Table 1, Figure 2)
-- Section numbers (Section 3, Chapter 4)
-- Statistical numbers (50%, 100 participants)
-- Currency amounts ($100, GHS 2,650)
-
-Extract ONLY genuine citation numbers from the text.
-
-If you see ranges like "1-5", expand them to individual numbers: 1,2,3,4,5.
-If you see multiple citations like "1,2,3", list each number separately.
-
-Return a JSON array of strings, each being a citation number.
-Example: ["1","2","3","4","5"]
-
-Text: {text}
-
-Return ONLY the JSON array, no other text."""
-    
-    try:
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": DEEPSEEK_CONFIG["model"],
-            "messages": [
-                {"role": "system", "content": "You extract Vancouver citation numbers. Return JSON array only."},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": DEEPSEEK_CONFIG["temperature"],
-            "max_tokens": DEEPSEEK_CONFIG["max_tokens"]
-        }
-        
-        response = requests.post(
-            DEEPSEEK_CONFIG["api_url"],
-            headers=headers,
-            json=payload,
-            timeout=DEEPSEEK_CONFIG["timeout"]
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            content = result['choices'][0]['message']['content']
-            
-            # Extract JSON array
-            json_match = re.search(r'\[.*\]', content, re.DOTALL)
-            if json_match:
-                citations = json.loads(json_match.group())
-                # Ensure all items are strings and look like citation numbers
-                return [str(c) for c in citations if str(c).isdigit()]
-        
-        return []
-        
-    except Exception as e:
-        log_debug(f"DeepSeek call failed: {e}")
-        return []
-
-
-# -----------------------------
-# Main numeric citation dispatcher (UNCHANGED except Vancouver)
-# -----------------------------
-def extract_numeric_citations(text: str, style: str = "ieee") -> List[str]:
-    """Extract numeric citations based on style.
-    
-    Args:
-        text: Document text
-        style: "ieee", "vancouver", or "numeric"
-    
-    Returns:
-        List of citation numbers as strings
-    """
-    style = style.lower()
-    
-    if style == "ieee":
-        return extract_ieee_citations(text)
-    elif style == "vancouver":
-        return extract_vancouver_citations_ai(text)
-    else:
-        # Generic numeric (fallback to IEEE)
-        return extract_ieee_citations(text)
 
 
 def _expand_citation_range(match) -> List[str]:
@@ -1404,6 +1472,32 @@ def _expand_citation_range(match) -> List[str]:
             nums.append(str(start2))
     
     return nums
+
+
+# ============================================================================
+# Main numeric citation dispatcher
+# ============================================================================
+def extract_numeric_citations(text: str, style: str = "ieee", vancouver_variant: str = None) -> List[str]:
+    """Extract numeric citations based on style.
+    
+    Args:
+        text: Document text
+        style: "ieee", "vancouver", or "numeric"
+        vancouver_variant: Specific Vancouver variant (optional)
+    
+    Returns:
+        List of citation numbers as strings
+    """
+    style = style.lower()
+    
+    if style == "ieee":
+        return extract_ieee_citations(text)
+    elif style == "vancouver":
+        pipeline = VancouverPipelineFactory.get_pipeline(variant=vancouver_variant, text=text)
+        return pipeline.extract_citations(text)
+    else:
+        # Generic numeric (fallback to IEEE)
+        return extract_ieee_citations(text)
 
 
 # -----------------------------
@@ -1450,12 +1544,13 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
     return RefAY(reference_full=s_clean, key=key)
 
 
-def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
+def parse_reference_numeric(ref: str, style: str = "ieee", vancouver_variant: str = None) -> Optional[RefNum]:
     """Parse numeric references from academic papers.
     
     Args:
         ref: Reference string
         style: "ieee", "vancouver", or "numeric"
+        vancouver_variant: Specific Vancouver variant (optional)
     
     Returns:
         RefNum object if valid, None otherwise
@@ -1465,9 +1560,8 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
         return None
     
     style = style.lower()
-    is_ieee = style == "ieee"
     
-    if is_ieee:
+    if style == "ieee":
         # IEEE: STRICTLY [1] format only
         m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
         if m:
@@ -1479,58 +1573,23 @@ def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
                 return RefNum(reference_full=s, num=num)
         return None
     
+    elif style == "vancouver":
+        # Use Vancouver pipeline
+        pipeline = VancouverPipelineFactory.get_pipeline(variant=vancouver_variant)
+        # For now, we need to call parse_references with a list
+        refs = pipeline.parse_references([s])
+        return refs[0] if refs else None
+    
     else:
-        # Vancouver: Try multiple formats in order of specificity
-        
-        # Pattern 1: [1] Rest of reference
+        # Generic numeric (fallback to IEEE)
         m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
         if m:
             num = m.group(1)
-            body = norm_space(m.group(2))
-            body = _strip_leading_reference_number(body)
-            if len(body) > 20:
-                return RefNum(reference_full=s, num=num)
-        
-        # Pattern 2: 1. Rest of reference (but ensure it's not a year)
+            return RefNum(reference_full=s, num=num)
         m = re.match(r"^(\d{1,4})\.\s*(.+)$", s)
         if m:
             num = m.group(1)
-            num_int = int(num)
-            # Skip if it looks like a year (1900-2099)
-            if 1900 <= num_int <= 2099:
-                # Check if the rest looks like a reference
-                body = norm_space(m.group(2))
-                if len(body) > 20 and not YEAR_RE.fullmatch(num):
-                    return RefNum(reference_full=s, num=num)
-            else:
-                body = norm_space(m.group(2))
-                if len(body) > 20:
-                    return RefNum(reference_full=s, num=num)
-        
-        # Pattern 3: (1) Rest of reference
-        m = re.match(r"^\(\s*(\d{1,4})\s*\)\s*(.+)$", s)
-        if m:
-            num = m.group(1)
-            body = norm_space(m.group(2))
-            body = _strip_leading_reference_number(body)
-            if len(body) > 20:
-                return RefNum(reference_full=s, num=num)
-        
-        # Pattern 4: 1 Rest of reference (no punctuation)
-        m = re.match(r"^(\d{1,4})\s+(.+)$", s)
-        if m:
-            num = m.group(1)
-            num_int = int(num)
-            # Skip if it looks like a year (1900-2099)
-            if 1900 <= num_int <= 2099:
-                body = norm_space(m.group(2))
-                if len(body) > 20 and not YEAR_RE.fullmatch(num):
-                    return RefNum(reference_full=s, num=num)
-            else:
-                body = norm_space(m.group(2))
-                if len(body) > 20:
-                    return RefNum(reference_full=s, num=num)
-        
+            return RefNum(reference_full=s, num=num)
         return None
 
 
@@ -2106,19 +2165,19 @@ def _extract_author_year_citations_chunked(text: str) -> List[str]:
     return total
 
 
-def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[str]:
+def _extract_numeric_citations_chunked(text: str, style: str = "ieee", vancouver_variant: str = None) -> List[str]:
     """Chunked version of numeric citation extraction with style parameter."""
     seen = set()
     total = []
     
-    # For Vancouver, use smaller chunks if using AI
-    if style == "vancouver" and DEEPSEEK_API_KEY:
-        chunk_size = 3000
+    # For Vancouver, use smaller chunks
+    if style == "vancouver":
+        chunk_size = 300_000  # Keep standard chunk size, pipelines handle their own logic
     else:
         chunk_size = 300_000
     
     for chunk in _iter_text_chunks(text, chunk_size=chunk_size):
-        for c in extract_numeric_citations(chunk, style=style):
+        for c in extract_numeric_citations(chunk, style=style, vancouver_variant=vancouver_variant):
             if c not in seen:
                 seen.add(c)
                 total.append(c)
@@ -2132,6 +2191,7 @@ def run_crosscheck(
     file_bytes: bytes,
     filename: str,
     style: str = "apa",
+    vancouver_variant: str = None,  # New parameter for Vancouver variant
     verify_online: bool = False,
     verify_mode: str = "all",
     max_verify: int = 0,
@@ -2182,6 +2242,7 @@ def run_crosscheck(
     else:
         return {"error": "Upload a DOCX or PDF"}
 
+    log_debug(f"Initial reference count: {len(references_raw)}")
     main_text_len = len(main_text or "")
     too_large = main_text_len > 2_000_000
 
@@ -2205,6 +2266,8 @@ def run_crosscheck(
             else:
                 cites_nums = extract_numeric_citations(main_text, style="ieee")
             
+            log_debug(f"IEEE extracted {len(cites_nums)} citations")
+            
             # Parse references with IEEE strictness
             refs = []
             for r in references_raw:
@@ -2212,35 +2275,76 @@ def run_crosscheck(
                 if parsed:
                     refs.append(parsed)
             
+            log_debug(f"Parsed {len(refs)} IEEE references")
+            
             # Reconcile with IEEE strictness
             c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
                 cites_nums, refs, style="ieee"
             )
             ref_count = len(refs)
             
-        else:  # Vancouver
-            # Vancouver: Enhanced with better filtering
-            log_debug("Using Vancouver enhanced extraction")
+        elif style_s == "vancouver":
+            # Vancouver: Use modular pipeline system
+            log_debug("Using Vancouver modular pipeline system")
+            
+            # Detect variant if not specified
+            if vancouver_variant is None:
+                vancouver_variant = VancouverPipelineFactory.detect_variant(main_text, references_raw)
+                log_debug(f"Auto-detected Vancouver variant: {vancouver_variant}")
+            
+            # Get appropriate pipeline
+            pipeline = VancouverPipelineFactory.get_pipeline(
+                variant=vancouver_variant,
+                text=main_text,
+                references=references_raw
+            )
+            
+            # Extract citations using pipeline
             cites_nums = []
             if too_large:
-                cites_nums = _extract_numeric_citations_chunked(main_text, style="vancouver")
+                # For large texts, process in chunks but let pipeline handle each chunk
+                for chunk in _iter_text_chunks(main_text, chunk_size=300_000):
+                    cites_nums.extend(pipeline.extract_citations(chunk))
+                # Deduplicate
+                seen = set()
+                deduped = []
+                for num in cites_nums:
+                    if num not in seen:
+                        seen.add(num)
+                        deduped.append(num)
+                cites_nums = deduped
             else:
-                cites_nums = extract_numeric_citations(main_text, style="vancouver")
+                cites_nums = pipeline.extract_citations(main_text)
             
             log_debug(f"Vancouver extracted {len(cites_nums)} citations")
             
-            # Parse references with Vancouver flexibility
-            refs = []
-            for r in references_raw:
-                parsed = parse_reference_numeric(r, style="vancouver")
-                if parsed:
-                    refs.append(parsed)
-            
-            log_debug(f"Vancouver parsed {len(refs)} references")
+            # Parse references using pipeline
+            refs = pipeline.parse_references(references_raw)
+            log_debug(f"Parsed {len(refs)} Vancouver references")
             
             # Reconcile with Vancouver flexibility
             c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
                 cites_nums, refs, style="vancouver"
+            )
+            ref_count = len(refs)
+            
+        else:  # generic numeric
+            # Default to IEEE
+            log_debug(f"Using default numeric (IEEE) extraction for style: {style_s}")
+            cites_nums = []
+            if too_large:
+                cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
+            else:
+                cites_nums = extract_numeric_citations(main_text, style="ieee")
+            
+            refs = []
+            for r in references_raw:
+                parsed = parse_reference_numeric(r, style="ieee")
+                if parsed:
+                    refs.append(parsed)
+            
+            c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+                cites_nums, refs, style="ieee"
             )
             ref_count = len(refs)
 
@@ -2249,9 +2353,12 @@ def run_crosscheck(
     if intext_count > 0:
         match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
 
+    log_debug(f"Final results: intext={intext_count}, refs={ref_count}, missing={missing_unique}, uncited={len(uncited_refs)}")
+
     return {
         "filename": filename,
         "style": style_s,
+        "vancouver_variant": vancouver_variant if style_s == "vancouver" else None,
         "engine_build": ENGINE_BUILD,
         "verify_mode_used": (verify_mode or "all"),
         "reference_detection_message": ref_msg,
