@@ -120,9 +120,9 @@ def _store_result(result: Dict[str, Any]) -> str:
                 "started_at": "",
                 "finished_at": "",
             },
-            "file_bytes": b"",
-            "file_name": "",
-            "style": "",
+            "references_raw": result.get("references_raw", []),
+            "file_name": result.get("filename", ""),
+            "style": result.get("style", ""),
         }
         return job_id
 
@@ -191,18 +191,13 @@ def _run_online_batches(
         job["online"]["started_at"] = _now_iso()
 
     try:
-        result = job.get("result") or {}
-        refs_raw = result.get("references_raw") or []
-        
-        # If no references found, try to get from job
-        if not refs_raw:
-            refs_raw = job.get("references_raw", [])
-        
+        refs_raw = job.get("references_raw") or []
+        style = job.get("style") or "apa"  # Get the style from the job
         total = len(refs_raw)
 
         with _store_lock:
             job["online"]["total"] = total
-            job["online"]["message"] = f"Queued {total} references"
+            job["online"]["message"] = f"Queued {total} references (style: {style})"
 
         all_rows: List[Dict[str, Any]] = []
 
@@ -215,12 +210,19 @@ def _run_online_batches(
             if not chunk:
                 continue
 
-            rows = verify_references_batch(
-                references=chunk,
-                throttle_s=throttle_s,
-                use_crossref=use_crossref,
-                use_openalex=use_openalex,
-            ) or []
+            try:
+                rows = verify_references_batch(
+                    references=chunk,
+                    style=style,  # Pass the style to the verification function
+                    throttle_s=throttle_s,
+                    use_crossref=use_crossref,
+                    use_openalex=use_openalex,
+                ) or []
+            except Exception as e:
+                print(f"Error in verify_references_batch: {e}")
+                import traceback
+                traceback.print_exc()
+                rows = []
 
             # normalize statuses
             for r in rows:
@@ -243,7 +245,7 @@ def _run_online_batches(
                 }
                 job["result"] = current_result
                 job["online"]["progress"] = min(start + len(chunk), total)
-                job["online"]["message"] = f"Processed {job['online']['progress']} / {total}"
+                job["online"]["message"] = f"Processed {job['online']['progress']} / {total} (style: {style})"
 
             time.sleep(BATCH_PAUSE_S)
 
@@ -253,9 +255,12 @@ def _run_online_batches(
             job["online"]["finished_at"] = _now_iso()
 
     except Exception as e:
+        print(f"Online verification error: {e}")
+        import traceback
+        traceback.print_exc()
         with _store_lock:
             job["online"]["state"] = "error"
-            job["online"]["message"] = f"Online verification failed: {e}"
+            job["online"]["message"] = f"Online verification failed: {str(e)}"
             job["online"]["finished_at"] = _now_iso()
 
 
@@ -298,10 +303,11 @@ def _export_csv_bytes(result: Dict[str, Any]) -> bytes:
     # Online verification (if any)
     ov = (result.get("online_verification") or {})
     rows = (ov.get("rows") or [])
-    out.write("\nSECTION,VERIFY_STATUS,REFERENCE,FOUND_TITLE,FOUND_DOI,SCORE,SOURCE\n")
+    out.write("\nSECTION,VERIFY_STATUS,STYLE,REFERENCE,FOUND_TITLE,FOUND_DOI,SCORE,SOURCE\n")
     for r in rows:
         out.write(
             f"verify,{r.get('status','')},"
+            f"{r.get('style','apa')},"
             f"{json.dumps(r.get('reference',''))},"
             f"{json.dumps(r.get('matched_title',''))},"
             f"{json.dumps(r.get('doi',''))},"
@@ -344,7 +350,7 @@ def _export_word_bytes(result: Dict[str, Any]) -> bytes:
     if rows:
         doc.add_heading("Online Verification", level=2)
         for r in rows[:300]:
-            doc.add_paragraph(f"[{r.get('status','')}] {r.get('reference','')} | DOI={r.get('doi','')} | src={r.get('source','')}")
+            doc.add_paragraph(f"[{r.get('status','')}] {r.get('reference','')} | DOI={r.get('doi','')} | src={r.get('source','')} | style={r.get('style','apa')}")
 
     bio = io.BytesIO()
     doc.save(bio)
@@ -409,49 +415,66 @@ async def verify(
     if not ENGINE_OK:
         raise HTTPException(500, "engine.py import failed on server.")
 
-    filename = _safe_filename(file.filename or "upload")
-    file_bytes = _read_upload_bytes(file)
-
-    style_s = (style or "apa").strip().lower()
-    verify_mode_s = (verify_mode or "all").strip().lower()
-
-    use_crossref_b = str(use_crossref).strip().lower() in {"1", "true", "yes", "y", "on"}
-    use_openalex_b = str(use_openalex).strip().lower() in {"1", "true", "yes", "y", "on"}
-
     try:
-        throttle_f = float(throttle_s or 0.12)
-    except Exception:
-        throttle_f = 0.12
+        filename = _safe_filename(file.filename or "upload")
+        file_bytes = await file.read()
+        
+        # Check file size
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"File too large. Max {MAX_UPLOAD_MB} MB.")
 
-    def _do_crosscheck() -> Dict[str, Any]:
-        # Run the citation check (no online verification)
-        return run_crosscheck(
-            file_bytes=file_bytes,
-            filename=filename,
-            style=style_s,
-            verify_online=False,
-            verify_mode=verify_mode_s,
-            max_verify=0,
-            throttle_s=throttle_f,
-            use_crossref=use_crossref_b,
-            use_openalex=use_openalex_b,
-        )
+        style_s = (style or "apa").strip().lower()
+        verify_mode_s = (verify_mode or "all").strip().lower()
 
-    result = await run_in_threadpool(_do_crosscheck)
-    
-    # Store references_raw in the job for later verification
-    job_id = _store_result(result)
-    
-    # Also store references_raw separately for easy access
-    job = _get_job(job_id)
-    if job and result.get("references_raw"):
-        with _store_lock:
-            job["references_raw"] = result.get("references_raw")
+        use_crossref_b = str(use_crossref).strip().lower() in {"1", "true", "yes", "y", "on"}
+        use_openalex_b = str(use_openalex).strip().lower() in {"1", "true", "yes", "y", "on"}
 
-    wrapped = _wrap_output(result)
-    wrapped["job_id"] = job_id
-    wrapped["batch_size"] = BATCH_SIZE_DEFAULT
-    return JSONResponse(wrapped)
+        try:
+            throttle_f = float(throttle_s or 0.12)
+        except Exception:
+            throttle_f = 0.12
+
+        def _do_crosscheck() -> Dict[str, Any]:
+            try:
+                return run_crosscheck(
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    style=style_s,
+                    verify_online=False,
+                    verify_mode=verify_mode_s,
+                    max_verify=0,
+                    throttle_s=throttle_f,
+                    use_crossref=use_crossref_b,
+                    use_openalex=use_openalex_b,
+                )
+            except Exception as e:
+                print(f"Error in run_crosscheck: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
+
+        result = await run_in_threadpool(_do_crosscheck)
+        
+        # Store result
+        job_id = _store_result(result)
+        
+        # Also store references_raw and style for later verification
+        job = _get_job(job_id)
+        if job and result.get("references_raw"):
+            with _store_lock:
+                job["references_raw"] = result.get("references_raw")
+                job["style"] = style_s
+
+        wrapped = _wrap_output(result)
+        wrapped["job_id"] = job_id
+        wrapped["batch_size"] = BATCH_SIZE_DEFAULT
+        return JSONResponse(wrapped)
+        
+    except Exception as e:
+        print(f"Error in /verify endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Internal Server Error: {str(e)}")
 
 
 @app.post("/verify-online")
@@ -503,7 +526,8 @@ async def verify_online(
         "ok": True,
         "job_id": job_id,
         "message": "Online verification started",
-        "online_started": True
+        "online_started": True,
+        "style": job.get("style", "apa")
     })
 
 
@@ -541,6 +565,7 @@ def online_status(job_id: str, include_result: int = 0):
         "job_id": job_id,
         "online": job.get("online") or {},
         "online_verification": result.get("online_verification") or {"summary": {}, "rows": []},
+        "style": job.get("style", "apa"),
         "result": result if include_result else {},
     }
 
