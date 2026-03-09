@@ -382,13 +382,13 @@ def _classify(
     if doi_match and title_score >= 55:
         return "verified"
 
-    if title_score >= 88 and (author_overlap >= 1) and (cand_has_doi or score >= 120):
+    if title_score >= 70 and (author_overlap >= 1) and (cand_has_doi or score >= 100):
         return "verified"
 
-    if title_score >= 80 and (author_overlap >= 1 or year_match):
+    if title_score >= 65 and (author_overlap >= 1 or year_match):
         return "likely"
 
-    if title_score >= 70:
+    if title_score >= 60:
         return "needs_review"
 
     return "not_found"
@@ -531,3 +531,4 @@ def verify_references_batch(
         rows.append(row)
 
     return rows
+
