@@ -330,3 +330,204 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], i
         year = _safe_strip(item.get("year")) or ""
 
     return doi, title, year, authors, api_score
+
+# ---------- scoring ----------
+
+def _score(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    cand_title: str,
+    cand_authors: List[str],
+    cand_year: str,
+    api_score: int = 0,
+) -> Dict[str, Any]:
+
+    ref_title = _norm_text(ref_title)
+    cand_title = _norm_text(cand_title)
+
+    title_score = fuzz.token_set_ratio(ref_title, cand_title) if ref_title and cand_title else 0
+
+    ref_set = set(ref_authors or [])
+    cand_set = set(cand_authors or [])
+
+    author_overlap = len(ref_set.intersection(cand_set))
+
+    year_match = 1 if (ref_year and cand_year and ref_year[:4] == cand_year[:4]) else 0
+
+    score = (title_score * 1.35) + (author_overlap * 25) + (year_match * 8)
+
+    if api_score:
+        score += min(20, int(api_score / 10))
+
+    return {
+        "score": int(score),
+        "title_score": int(title_score),
+        "author_overlap": int(author_overlap),
+        "year_match": int(year_match),
+    }
+
+
+# ---------- classification ----------
+
+def _classify(
+    doi_match: bool,
+    title_score: int,
+    author_overlap: int,
+    year_match: int,
+    score: int,
+    cand_has_doi: bool,
+) -> str:
+
+    if doi_match and title_score >= 55:
+        return "verified"
+
+    if title_score >= 88 and (author_overlap >= 1) and (cand_has_doi or score >= 120):
+        return "verified"
+
+    if title_score >= 80 and (author_overlap >= 1 or year_match):
+        return "likely"
+
+    if title_score >= 70:
+        return "needs_review"
+
+    return "not_found"
+
+
+# ---------- candidate selector ----------
+
+def _pick_best_candidate(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    ref_doi: str,
+    candidates: List[Dict[str, Any]],
+):
+
+    best = None
+    best_meta = {"score": -1}
+    best_doi_match = False
+
+    for cand in candidates:
+
+        cand_doi, cand_title, cand_year, cand_authors, api_score = _candidate_fields(cand)
+
+        meta = _score(
+            ref_title,
+            ref_authors,
+            ref_year,
+            cand_title,
+            cand_authors,
+            cand_year,
+            api_score,
+        )
+
+        doi_match = _doi_equal(ref_doi, cand_doi) if ref_doi else False
+
+        total_score = meta["score"] + (35 if doi_match else 0)
+
+        if total_score > best_meta["score"]:
+            best = cand
+            best_meta = meta
+            best_meta["score"] = total_score
+            best_doi_match = doi_match
+
+    return best, best_meta, best_doi_match
+
+
+# ---------- main public function ----------
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    max_to_check: int = 0,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    use_unpaywall: bool = True,
+    use_semantic_scholar: bool = True,
+) -> List[Dict[str, Any]]:
+
+    refs = [r for r in references if _safe_strip(r)]
+
+    if max_to_check:
+        refs = refs[:max_to_check]
+
+    rows = []
+
+    for ref in refs:
+
+        ref_raw = _safe_strip(ref)
+
+        ref_doi = _extract_doi(ref_raw)
+
+        ref_year = _extract_year(ref_raw)
+
+        ref_title = ref_raw
+        ref_authors = []
+
+        candidates = []
+
+        # Crossref
+        if use_crossref:
+
+            if ref_doi:
+                hit = _query_crossref_by_doi(ref_doi)
+                if hit:
+                    candidates.append(hit)
+
+            candidates.extend(_query_crossref(ref_raw, ""))
+
+        time.sleep(throttle_s)
+
+        # OpenAlex
+        if use_openalex:
+            candidates.extend(_query_openalex(ref_raw))
+
+        time.sleep(throttle_s)
+
+        # Semantic Scholar
+        if use_semantic_scholar:
+            candidates.extend(_query_semantic_scholar(ref_raw))
+
+        best, meta, doi_match = _pick_best_candidate(
+            ref_title,
+            ref_authors,
+            ref_year,
+            ref_doi,
+            candidates,
+        )
+
+        row = {
+            "reference": ref_raw,
+            "status": "not_found",
+            "source": "",
+            "score": 0,
+            "doi": "",
+            "matched_title": "",
+            "matched_year": "",
+        }
+
+        if best:
+
+            cand_doi, cand_title, cand_year, cand_auths, _ = _candidate_fields(best)
+
+            status = _classify(
+                doi_match,
+                meta["title_score"],
+                meta["author_overlap"],
+                meta["year_match"],
+                meta["score"],
+                bool(cand_doi),
+            )
+
+            row["status"] = status
+            row["source"] = best.get("source")
+            row["score"] = meta["score"]
+            row["doi"] = cand_doi
+            row["matched_title"] = cand_title
+            row["matched_year"] = cand_year
+
+        rows.append(row)
+
+    return rows
