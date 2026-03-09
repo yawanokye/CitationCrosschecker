@@ -384,15 +384,15 @@ def _classify(
         return "verified"
 
     # strong bibliographic match
-    if title_score >= 90 and year_match:
+    if title_score >= 70 and year_match:
         return "verified"
 
     # good match
-    if title_score >= 85 and (author_overlap >= 1 or year_match):
+    if title_score >= 65 and (author_overlap >= 1 or year_match):
         return "likely"
 
     # partial
-    if title_score >= 70:
+    if title_score >= 60:
         return "needs_review"
 
     return "not_found"
@@ -535,6 +535,7 @@ def verify_references_batch(
         rows.append(row)
 
     return rows
+
 
 
 
