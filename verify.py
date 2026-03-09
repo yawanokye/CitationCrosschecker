@@ -16,12 +16,10 @@ MAILTO = (
     or ""
 ).strip()
 
-UNPAYWALL_EMAIL = (os.getenv("UNPAYWALL_EMAIL") or MAILTO or "").strip()
 
-
-# -------------------------------------------------------
+# ------------------------------------------------
 # utilities
-# -------------------------------------------------------
+# ------------------------------------------------
 
 def _normalize_verify_status(s: str) -> str:
     s = (s or "").strip().lower().replace(" ", "_")
@@ -30,10 +28,8 @@ def _normalize_verify_status(s: str) -> str:
     return s
 
 
-def _safe(s: Any) -> str:
-    if s is None:
-        return ""
-    return str(s).strip()
+def _safe(x):
+    return "" if x is None else str(x)
 
 
 def _norm(s: str) -> str:
@@ -43,7 +39,7 @@ def _norm(s: str) -> str:
     return s.strip()
 
 
-def _safe_json(url: str, params=None) -> Optional[dict]:
+def _safe_json(url, params=None):
     try:
         headers = {"User-Agent": "CitationCrosschecker/1.0"}
         r = requests.get(url, params=params, timeout=20, headers=headers)
@@ -54,61 +50,59 @@ def _safe_json(url: str, params=None) -> Optional[dict]:
         return None
 
 
-def _extract_doi(text: str) -> str:
-    m = re.search(r"(10\.\d{4,9}/[^\s]+)", text or "", re.I)
-    if not m:
-        return ""
-    return m.group(1).rstrip(".,)")
+# ------------------------------------------------
+# extraction
+# ------------------------------------------------
+
+def _extract_doi(ref):
+    m = re.search(r"(10\.\d{4,9}/[^\s]+)", ref, re.I)
+    return m.group(1).rstrip(".,)") if m else ""
 
 
-def _extract_year(text: str) -> str:
-    m = re.search(r"\b(19|20)\d{2}\b", text)
+def _extract_year(ref):
+    m = re.search(r"\b(19|20)\d{2}\b", ref)
     return m.group(0) if m else ""
 
 
-# -------------------------------------------------------
-# field extraction
-# -------------------------------------------------------
+def _extract_authors(ref):
 
-def _extract_fields(ref: str):
-
-    doi = _extract_doi(ref)
-    year = _extract_year(ref)
-
-    parts = ref.split(".")
-    title = parts[1] if len(parts) > 1 else ""
-
+    block = ref.split("(")[0]
     authors = []
-    author_block = parts[0]
 
-    for a in re.split(r",|and|&", author_block):
+    for a in re.split(r",|and|&", block):
+
         a = a.strip()
         if not a:
             continue
+
         surname = a.split()[-1].lower()
         surname = re.sub(r"[^a-z\-]", "", surname)
+
         if surname:
             authors.append(surname)
 
-    return {
-        "title": title.strip(),
-        "authors": authors[:3],
-        "year": year,
-        "doi": doi
-    }
+    return authors[:3]
 
 
-# -------------------------------------------------------
+def _extract_title(ref):
+
+    parts = ref.split(".")
+
+    if len(parts) >= 2:
+        return parts[1].strip()
+
+    return ""
+
+
+# ------------------------------------------------
 # crossref
-# -------------------------------------------------------
+# ------------------------------------------------
 
-def _crossref_query(q: str, authors: str):
-
-    url = "https://api.crossref.org/works"
+def _crossref(query, authors):
 
     params = {
-        "query.bibliographic": q,
-        "rows": 8,
+        "query.bibliographic": query,
+        "rows": 10,
         "sort": "score",
         "order": "desc"
     }
@@ -119,7 +113,7 @@ def _crossref_query(q: str, authors: str):
     if MAILTO:
         params["mailto"] = MAILTO
 
-    data = _safe_json(url, params)
+    data = _safe_json("https://api.crossref.org/works", params)
 
     if not data:
         return []
@@ -127,23 +121,21 @@ def _crossref_query(q: str, authors: str):
     return data.get("message", {}).get("items", [])
 
 
-# -------------------------------------------------------
+# ------------------------------------------------
 # openalex
-# -------------------------------------------------------
+# ------------------------------------------------
 
-def _openalex_query(q: str):
-
-    url = "https://api.openalex.org/works"
+def _openalex(query):
 
     params = {
-        "search": q,
-        "per-page": 8
+        "search": query,
+        "per-page": 10
     }
 
     if MAILTO:
         params["mailto"] = MAILTO
 
-    data = _safe_json(url, params)
+    data = _safe_json("https://api.openalex.org/works", params)
 
     if not data:
         return []
@@ -151,43 +143,48 @@ def _openalex_query(q: str):
     return data.get("results", [])
 
 
-# -------------------------------------------------------
-# candidate extraction
-# -------------------------------------------------------
+# ------------------------------------------------
+# candidate fields
+# ------------------------------------------------
 
-def _candidate_fields_crossref(item):
+def _cand_crossref(it):
 
-    doi = _safe(item.get("DOI"))
+    doi = _safe(it.get("DOI"))
 
     title = ""
-    if item.get("title"):
-        title = item["title"][0]
+    if it.get("title"):
+        title = it["title"][0]
 
     year = ""
-    dp = item.get("published-print", {}).get("date-parts")
+
+    dp = it.get("published-print", {}).get("date-parts")
     if dp:
         year = str(dp[0][0])
 
     authors = []
-    for a in item.get("author", [])[:5]:
+
+    for a in it.get("author", [])[:5]:
         fam = _safe(a.get("family")).lower()
         fam = re.sub(r"[^a-z\-]", "", fam)
-        if fam:
-            authors.append(fam)
+        authors.append(fam)
 
-    return doi, title, year, authors, int(item.get("score") or 0)
+    score = int(it.get("score") or 0)
+
+    return doi, title, year, authors, score
 
 
-def _candidate_fields_openalex(item):
+def _cand_openalex(it):
 
-    doi = _safe(item.get("doi")).replace("https://doi.org/", "")
-
-    title = _safe(item.get("title"))
-    year = _safe(item.get("publication_year"))
+    doi = _safe(it.get("doi")).replace("https://doi.org/", "")
+    title = _safe(it.get("title"))
+    year = _safe(it.get("publication_year"))
 
     authors = []
-    for a in item.get("authorships", [])[:5]:
+
+    for a in it.get("authorships", [])[:5]:
+
         nm = _safe(a.get("author", {}).get("display_name"))
+
         if nm:
             surname = nm.split()[-1].lower()
             surname = re.sub(r"[^a-z\-]", "", surname)
@@ -196,9 +193,9 @@ def _candidate_fields_openalex(item):
     return doi, title, year, authors, 0
 
 
-# -------------------------------------------------------
+# ------------------------------------------------
 # scoring
-# -------------------------------------------------------
+# ------------------------------------------------
 
 def _score(rt, ra, ry, ct, ca, cy, api_score):
 
@@ -212,9 +209,9 @@ def _score(rt, ra, ry, ct, ca, cy, api_score):
     year_match = 1 if ry and cy and ry[:4] == cy[:4] else 0
 
     score = (
-        title_score * 1.35
-        + author_overlap * 26
-        + year_match * 8
+        title_score * 1.35 +
+        author_overlap * 26 +
+        year_match * 8
     )
 
     score += min(20, int(api_score / 10))
@@ -231,16 +228,15 @@ def _classify(meta, doi_match, has_authors, cand_has_doi):
 
     ts = meta["title_score"]
     ao = meta["author_overlap"]
-    ym = meta["year_match"]
     sc = meta["score"]
 
     if doi_match and ts >= 55:
         return "verified"
 
-    if ts >= 88 and (ao >= 1 or not has_authors) and (cand_has_doi or sc >= 120):
+    if ts >= 88 and (ao >= 1 or not has_authors):
         return "verified"
 
-    if ts >= 80 and (ao >= 1 or not has_authors):
+    if ts >= 80:
         return "likely"
 
     if ts >= 70:
@@ -249,46 +245,40 @@ def _classify(meta, doi_match, has_authors, cand_has_doi):
     return "not_found"
 
 
-# -------------------------------------------------------
-# main function
-# -------------------------------------------------------
+# ------------------------------------------------
+# main
+# ------------------------------------------------
 
 def verify_references_batch(
     references: List[str],
-    style: str = "apa",
-    throttle_s: float = 0.12,
-    use_crossref: bool = True,
-    use_openalex: bool = True,
-    use_unpaywall: bool = True,
+    style="apa",
+    throttle_s=0.12,
+    use_crossref=True,
+    use_openalex=True,
     **kwargs
-) -> List[Dict[str, Any]]:
+):
 
     rows = []
 
     for ref in references:
 
-        ref = _safe(ref)
-        fields = _extract_fields(ref)
+        ref = ref.strip()
 
-        title = fields["title"]
-        authors = fields["authors"]
-        year = fields["year"]
-        doi = fields["doi"]
+        doi = _extract_doi(ref)
+        year = _extract_year(ref)
+        authors = _extract_authors(ref)
+        title = _extract_title(ref)
 
-        query = " ".join(authors + title.split()[:5] + [year])
+        query = " ".join(authors + title.split()[:6] + [year])
 
         best = None
         best_meta = {"score": -1}
 
-        # ---------------- Crossref ----------------
-
         if use_crossref:
 
-            items = _crossref_query(query, " ".join(authors))
+            for it in _crossref(query, " ".join(authors)):
 
-            for it in items:
-
-                cdoi, ctitle, cyear, cauth, api_score = _candidate_fields_crossref(it)
+                cdoi, ctitle, cyear, cauth, api_score = _cand_crossref(it)
 
                 meta = _score(title, authors, year, ctitle, cauth, cyear, api_score)
 
@@ -302,15 +292,11 @@ def verify_references_batch(
 
             time.sleep(throttle_s)
 
-        # ---------------- OpenAlex ----------------
+        if use_openalex and best_meta["score"] < 120:
 
-        if use_openalex and best_meta["score"] < 110:
+            for it in _openalex(query):
 
-            items = _openalex_query(query)
-
-            for it in items:
-
-                cdoi, ctitle, cyear, cauth, api_score = _candidate_fields_openalex(it)
+                cdoi, ctitle, cyear, cauth, api_score = _cand_openalex(it)
 
                 meta = _score(title, authors, year, ctitle, cauth, cyear, api_score)
 
@@ -323,8 +309,6 @@ def verify_references_batch(
                     best = (ctitle, cdoi, cyear, cauth, doi_match)
 
             time.sleep(throttle_s)
-
-        # ---------------- classification ----------------
 
         row = {
             "reference": ref,
@@ -343,12 +327,7 @@ def verify_references_batch(
 
             ctitle, cdoi, cyear, cauth, doi_match = best
 
-            status = _classify(
-                best_meta,
-                doi_match,
-                bool(authors),
-                bool(cdoi)
-            )
+            status = _classify(best_meta, doi_match, bool(authors), bool(cdoi))
 
             row.update({
                 "status": _normalize_verify_status(status),
