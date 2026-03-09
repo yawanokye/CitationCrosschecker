@@ -377,18 +377,22 @@ def _classify(
     year_match: int,
     score: int,
     cand_has_doi: bool,
-) -> str:
+):
 
-    if doi_match and title_score >= 55:
+    # DOI match = guaranteed verification
+    if doi_match:
         return "verified"
 
-    if title_score >= 70 and (author_overlap >= 1) and (cand_has_doi or score >= 95):
+    # strong bibliographic match
+    if title_score >= 90 and year_match:
         return "verified"
 
-    if title_score >= 65 and (author_overlap >= 1 or year_match):
+    # good match
+    if title_score >= 85 and (author_overlap >= 1 or year_match):
         return "likely"
 
-    if title_score >= 60:
+    # partial
+    if title_score >= 70:
         return "needs_review"
 
     return "not_found"
@@ -531,5 +535,6 @@ def verify_references_batch(
         rows.append(row)
 
     return rows
+
 
 
