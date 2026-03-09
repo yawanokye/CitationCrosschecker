@@ -1,36 +1,140 @@
 # verify.py
-# Online citation verification
+# CitationCrosschecker Online Verification Engine
 
 import re
 import time
 import requests
 
-DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)]+", re.I)
+from ai_reconstruct import reconstruct_reference
 
-CROSSREF = "https://api.crossref.org/works"
-OPENALEX = "https://api.openalex.org/works"
+
+CROSSREF_API = "https://api.crossref.org/works"
+OPENALEX_API = "https://api.openalex.org/works"
 
 HEADERS = {
     "User-Agent": "CitationCrosschecker/1.0"
 }
 
 
+DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s]+", re.I)
+
+
+# -----------------------------
+# DOI Detection
+# -----------------------------
 def extract_doi(reference):
 
+    if not reference:
+        return None
+
     m = DOI_RE.search(reference)
+
     if m:
         return m.group(0).rstrip(".,;")
 
     return None
 
 
+# -----------------------------
+# Title Extraction
+# -----------------------------
+def extract_title(reference):
+
+    if not reference:
+        return ""
+
+    ref = reference
+
+    # remove year
+    ref = re.sub(r"\(\d{4}\)", "", ref)
+
+    # remove author block
+    parts = re.split(r"\.\s", ref, 1)
+
+    if len(parts) > 1:
+        ref = parts[1]
+
+    # keep first sentence
+    ref = re.split(r"\.\s", ref)[0]
+
+    return ref.strip()
+
+
+# -----------------------------
+# Text Normalization
+# -----------------------------
+def normalize_text(text):
+
+    if not text:
+        return ""
+
+    text = text.lower()
+
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
+# -----------------------------
+# Similarity Scoring
+# -----------------------------
+def similarity_score(reference, candidate_title):
+
+    ref_title = extract_title(reference)
+
+    ref = normalize_text(ref_title)
+    cand = normalize_text(candidate_title)
+
+    if not ref or not cand:
+        return 0
+
+    ref_words = set(ref.split())
+    cand_words = set(cand.split())
+
+    common = ref_words.intersection(cand_words)
+
+    score = int((len(common) / max(len(ref_words), 1)) * 100)
+
+    return score
+
+
+# -----------------------------
+# Classification
+# -----------------------------
+def classify(score):
+
+    if score >= 85:
+        return "verified"
+
+    if score >= 65:
+        return "likely"
+
+    if score >= 40:
+        return "needs_review"
+
+    return "not_found"
+
+
+# -----------------------------
+# Crossref Lookup
+# -----------------------------
 def crossref_lookup(reference):
 
     try:
 
+        title = extract_title(reference)
+
+        if not title:
+            return None
+
         r = requests.get(
-            CROSSREF,
-            params={"query.bibliographic": reference, "rows": 1},
+            CROSSREF_API,
+            params={
+                "query.title": title,
+                "rows": 3
+            },
             headers=HEADERS,
             timeout=10
         )
@@ -38,9 +142,7 @@ def crossref_lookup(reference):
         if r.status_code != 200:
             return None
 
-        data = r.json()
-
-        items = data.get("message", {}).get("items", [])
+        items = r.json().get("message", {}).get("items", [])
 
         if not items:
             return None
@@ -48,6 +150,7 @@ def crossref_lookup(reference):
         item = items[0]
 
         title = ""
+
         if item.get("title"):
             title = item["title"][0]
 
@@ -55,20 +158,32 @@ def crossref_lookup(reference):
 
         return {
             "title": title,
-            "doi": doi
+            "doi": doi,
+            "source": "crossref"
         }
 
     except:
         return None
 
 
+# -----------------------------
+# OpenAlex Lookup
+# -----------------------------
 def openalex_lookup(reference):
 
     try:
 
+        title = extract_title(reference)
+
+        if not title:
+            return None
+
         r = requests.get(
-            OPENALEX,
-            params={"search": reference, "per_page": 1},
+            OPENALEX_API,
+            params={
+                "search": title,
+                "per_page": 3
+            },
             headers=HEADERS,
             timeout=10
         )
@@ -76,9 +191,7 @@ def openalex_lookup(reference):
         if r.status_code != 200:
             return None
 
-        data = r.json()
-
-        results = data.get("results", [])
+        results = r.json().get("results", [])
 
         if not results:
             return None
@@ -87,82 +200,135 @@ def openalex_lookup(reference):
 
         return {
             "title": item.get("display_name"),
-            "doi": item.get("doi")
+            "doi": item.get("doi"),
+            "source": "openalex"
         }
 
     except:
         return None
 
 
-def score_match(reference, result):
-
-    if not result:
-        return 0
-
-    ref = reference.lower()
-    title = (result.get("title") or "").lower()
-
-    common = 0
-
-    for word in ref.split():
-        if word in title:
-            common += 1
-
-    return min(common * 10, 100)
-
-
-def classify(score):
-
-    if score >= 80:
-        return "verified"
-
-    if score >= 50:
-        return "likely"
-
-    if score >= 30:
-        return "needs_review"
-
-    return "not_found"
-
-
+# -----------------------------
+# Main Batch Verification
+# -----------------------------
 def verify_references_batch(
     references,
     style="apa",
     throttle_s=0.12,
     use_crossref=True,
-    use_openalex=True,
+    use_openalex=True
 ):
 
     rows = []
 
+    AI_LIMIT = 10
+    ai_used = 0
+
     for ref in references:
+
+        ref = ref.strip()
 
         doi = extract_doi(ref)
 
-        result = None
-        source = ""
+        # -----------------------------
+        # DOI verification
+        # -----------------------------
+        if doi:
 
+            rows.append({
+                "reference": ref,
+                "status": "verified",
+                "doi": doi,
+                "matched_title": "",
+                "score": 100,
+                "source": "doi",
+                "style": style
+            })
+
+            continue
+
+
+        result = None
+
+        # -----------------------------
+        # Crossref search
+        # -----------------------------
         if use_crossref:
             result = crossref_lookup(ref)
-            source = "crossref"
 
+        # -----------------------------
+        # OpenAlex fallback
+        # -----------------------------
         if not result and use_openalex:
             result = openalex_lookup(ref)
-            source = "openalex"
 
-        score = score_match(ref, result)
+        # -----------------------------
+        # If result found
+        # -----------------------------
+        if result:
 
-        status = classify(score)
+            matched_title = result.get("title", "")
 
-        rows.append({
-            "reference": ref,
-            "status": status,
-            "doi": doi or (result.get("doi") if result else ""),
-            "matched_title": (result.get("title") if result else ""),
-            "score": score,
-            "source": source,
-            "style": style
-        })
+            score = similarity_score(ref, matched_title)
+
+            status = classify(score)
+
+            rows.append({
+                "reference": ref,
+                "status": status,
+                "doi": result.get("doi"),
+                "matched_title": matched_title,
+                "score": score,
+                "source": result.get("source"),
+                "style": style
+            })
+
+
+        # -----------------------------
+        # AI Reconstruction fallback
+        # -----------------------------
+        else:
+
+            if ai_used < AI_LIMIT:
+
+                repaired = reconstruct_reference(ref)
+
+                result = crossref_lookup(repaired)
+
+                if not result:
+                    result = openalex_lookup(repaired)
+
+                ai_used += 1
+
+                if result:
+
+                    matched_title = result.get("title", "")
+
+                    score = similarity_score(repaired, matched_title)
+
+                    status = classify(score)
+
+                    rows.append({
+                        "reference": ref,
+                        "status": status,
+                        "doi": result.get("doi"),
+                        "matched_title": matched_title,
+                        "score": score,
+                        "source": "ai_reconstruct",
+                        "style": style
+                    })
+
+                    continue
+
+            rows.append({
+                "reference": ref,
+                "status": "not_found",
+                "doi": "",
+                "matched_title": "",
+                "score": 0,
+                "source": "",
+                "style": style
+            })
 
         time.sleep(throttle_s)
 
