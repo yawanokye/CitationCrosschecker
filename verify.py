@@ -1,6 +1,5 @@
 # verify.py
-# Online reference verification module
-# Supports Crossref, OpenAlex and Unpaywall
+# Online citation verification
 
 import re
 import time
@@ -8,18 +7,13 @@ import requests
 
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)]+", re.I)
 
-CROSSREF_API = "https://api.crossref.org/works"
-OPENALEX_API = "https://api.openalex.org/works"
-UNPAYWALL_API = "https://api.unpaywall.org/v2/"
+CROSSREF = "https://api.crossref.org/works"
+OPENALEX = "https://api.openalex.org/works"
 
 HEADERS = {
-    "User-Agent": "CitationIntegrityChecker/1.0 (mailto:research@example.com)"
+    "User-Agent": "CitationCrosschecker/1.0"
 }
 
-
-# ---------------------------------------------------------
-# Extract DOI if present
-# ---------------------------------------------------------
 
 def extract_doi(reference):
 
@@ -30,16 +24,12 @@ def extract_doi(reference):
     return None
 
 
-# ---------------------------------------------------------
-# Crossref verification
-# ---------------------------------------------------------
-
-def check_crossref(reference):
+def crossref_lookup(reference):
 
     try:
 
         r = requests.get(
-            CROSSREF_API,
+            CROSSREF,
             params={"query.bibliographic": reference, "rows": 1},
             headers=HEADERS,
             timeout=10
@@ -50,25 +40,34 @@ def check_crossref(reference):
 
         data = r.json()
 
-        if data["message"]["items"]:
-            return data["message"]["items"][0]
+        items = data.get("message", {}).get("items", [])
+
+        if not items:
+            return None
+
+        item = items[0]
+
+        title = ""
+        if item.get("title"):
+            title = item["title"][0]
+
+        doi = item.get("DOI")
+
+        return {
+            "title": title,
+            "doi": doi
+        }
 
     except:
         return None
 
-    return None
 
-
-# ---------------------------------------------------------
-# OpenAlex verification
-# ---------------------------------------------------------
-
-def check_openalex(reference):
+def openalex_lookup(reference):
 
     try:
 
         r = requests.get(
-            OPENALEX_API,
+            OPENALEX,
             params={"search": reference, "per_page": 1},
             headers=HEADERS,
             timeout=10
@@ -79,125 +78,92 @@ def check_openalex(reference):
 
         data = r.json()
 
-        if data["results"]:
-            return data["results"][0]
+        results = data.get("results", [])
+
+        if not results:
+            return None
+
+        item = results[0]
+
+        return {
+            "title": item.get("display_name"),
+            "doi": item.get("doi")
+        }
 
     except:
         return None
 
-    return None
+
+def score_match(reference, result):
+
+    if not result:
+        return 0
+
+    ref = reference.lower()
+    title = (result.get("title") or "").lower()
+
+    common = 0
+
+    for word in ref.split():
+        if word in title:
+            common += 1
+
+    return min(common * 10, 100)
 
 
-# ---------------------------------------------------------
-# Unpaywall verification
-# ---------------------------------------------------------
+def classify(score):
 
-def check_unpaywall(doi):
-
-    if not doi:
-        return None
-
-    try:
-
-        r = requests.get(
-            UNPAYWALL_API + doi,
-            params={"email": "research@example.com"},
-            headers=HEADERS,
-            timeout=10
-        )
-
-        if r.status_code == 200:
-            return r.json()
-
-    except:
-        return None
-
-    return None
-
-
-# ---------------------------------------------------------
-# Score reference match
-# ---------------------------------------------------------
-
-def score_reference(reference, crossref_result, openalex_result):
-
-    if crossref_result and openalex_result:
+    if score >= 80:
         return "verified"
 
-    if crossref_result or openalex_result:
+    if score >= 50:
         return "likely"
 
-    if len(reference) > 50:
+    if score >= 30:
         return "needs_review"
 
     return "not_found"
 
 
-# ---------------------------------------------------------
-# Batch verification
-# ---------------------------------------------------------
-
 def verify_references_batch(
     references,
+    style="apa",
     throttle_s=0.12,
     use_crossref=True,
-    use_openalex=True
+    use_openalex=True,
 ):
 
-    results = []
-
-    counts = {
-        "verified": 0,
-        "likely": 0,
-        "needs_review": 0,
-        "not_found": 0,
-        "offline": 0
-    }
+    rows = []
 
     for ref in references:
 
-        try:
+        doi = extract_doi(ref)
 
-            doi = extract_doi(ref)
+        result = None
+        source = ""
 
-            crossref_data = None
-            openalex_data = None
+        if use_crossref:
+            result = crossref_lookup(ref)
+            source = "crossref"
 
-            if use_crossref:
-                crossref_data = check_crossref(ref)
+        if not result and use_openalex:
+            result = openalex_lookup(ref)
+            source = "openalex"
 
-            if use_openalex:
-                openalex_data = check_openalex(ref)
+        score = score_match(ref, result)
 
-            score = score_reference(ref, crossref_data, openalex_data)
+        status = classify(score)
 
-            counts[score] += 1
+        rows.append({
+            "reference": ref,
+            "status": status,
+            "doi": doi or (result.get("doi") if result else ""),
+            "matched_title": (result.get("title") if result else ""),
+            "score": score,
+            "source": source,
+            "style": style
+        })
 
-            results.append({
-                "reference": ref,
-                "doi": doi,
-                "crossref": bool(crossref_data),
-                "openalex": bool(openalex_data),
-                "status": score
-            })
+        time.sleep(throttle_s)
 
-            time.sleep(throttle_s)
-
-        except:
-
-            counts["offline"] += 1
-
-            results.append({
-                "reference": ref,
-                "status": "offline"
-            })
-
-    return {
-        "verified": counts["verified"],
-        "likely": counts["likely"],
-        "needs_review": counts["needs_review"],
-        "not_found": counts["not_found"],
-        "offline": counts["offline"],
-        "total": len(references),
-        "results": results
-    }
+    return rows
