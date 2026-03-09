@@ -1,64 +1,56 @@
-import os
-import json
-import requests
+# ai_reconstruct.py
 
+import os
+import requests
+import json
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 
-def reconstruct_reference(reference: str):
-
-    """
-    Use AI to reconstruct missing citation metadata
-    """
+def reconstruct_reference(reference):
 
     if not DEEPSEEK_API_KEY:
-        return None
+        return reference
 
     prompt = f"""
-Extract bibliographic metadata from the following reference.
+Clean and reconstruct the following academic reference.
 
-Return ONLY JSON with this format:
-
-{{
-"title":"",
-"authors":[],
-"year":"",
-"journal":"",
-"doi":""
-}}
+Return ONLY the corrected reference string.
 
 Reference:
 {reference}
 """
 
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0
-    }
-
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
     try:
 
-        r = requests.post(API_URL, json=payload, headers=headers, timeout=20)
+        r = requests.post(
+            API_URL,
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": "You are an academic citation reconstruction expert."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.1
+            },
+            timeout=15
+        )
 
         if r.status_code != 200:
-            return None
+            return reference
 
-        txt = r.json()["choices"][0]["message"]["content"]
+        data = r.json()
 
-        txt = txt.replace("```json", "").replace("```", "").strip()
+        content = data["choices"][0]["message"]["content"]
 
-        return json.loads(txt)
+        return content.strip()
 
     except Exception:
-        return None
+
+        return reference
