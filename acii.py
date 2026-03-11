@@ -1,184 +1,131 @@
 # acii.py
+# Anokye Citation Integrity Index (ACII)
 
-import re
-from collections import Counter
 from typing import Dict, List, Any
-
-YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
-
-
-# ---------------------------------------------------------
-# Helper extractors
-# ---------------------------------------------------------
-
-def extract_year(ref: str):
-
-    if not ref:
-        return None
-
-    m = YEAR_RE.search(ref)
-    return int(m.group()) if m else None
+from collections import Counter
+import math
 
 
-def extract_first_author(ref: str):
-
-    if not ref:
-        return ""
-
-    left = ref.split("(")[0]
-
-    tokens = re.findall(r"[A-Z][a-zA-Z\-']+", left)
-
-    return tokens[0].lower() if tokens else ""
+def _safe_ratio(a, b):
+    return 0 if b == 0 else a / b
 
 
-# ---------------------------------------------------------
-# ACII Calculation
-# ---------------------------------------------------------
+def _verification_integrity(rows: List[Dict[str, Any]]) -> float:
 
-def compute_acii(engine_result: Dict[str, Any],
-                 verify_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = len(rows)
 
-    r2c = engine_result.get("reconciliation_reference_to_intext", [])
+    if total == 0:
+        return 0
 
-    citation_counts = [r.get("times_cited", 0) for r in r2c]
+    verified = sum(1 for r in rows if r.get("status") == "verified")
+    likely = sum(1 for r in rows if r.get("status") == "likely")
 
-    total_citations = sum(citation_counts)
-    total_refs = len(r2c)
-
-    if total_refs == 0:
-        return {"ACII": 0}
-
-    # -----------------------------------------------------
-    # 1 Citation Concentration Index
-    # -----------------------------------------------------
-
-    if total_citations > 0:
-
-        max_share = max(citation_counts) / total_citations
-
-        cci = 1 - max_share
-
-    else:
-        cci = 0
+    return round((verified + 0.5 * likely) / total * 100, 2)
 
 
-    # -----------------------------------------------------
-    # 2 Author Diversity
-    # -----------------------------------------------------
+def _citation_concentration(rows):
 
     authors = []
 
-    for r in r2c:
+    for r in rows:
 
-        a = extract_first_author(r.get("reference"))
+        a = r.get("author") or r.get("matched_authors") or ""
 
         if a:
-            authors.append(a)
+            authors.extend([x.strip() for x in a.split(",") if x.strip()])
 
-    author_freq = Counter(authors)
+    if not authors:
+        return 100
 
-    if author_freq:
+    counts = Counter(authors)
 
-        max_author_share = max(author_freq.values()) / len(authors)
+    n = len(authors)
 
-        author_diversity = 1 - max_author_share
+    hhi = sum((c / n) ** 2 for c in counts.values())
 
-    else:
+    concentration = min(1, hhi * 5)
 
-        author_diversity = 0
+    return round((1 - concentration) * 100, 2)
 
 
-    # -----------------------------------------------------
-    # 3 Temporal Balance
-    # -----------------------------------------------------
+def _author_diversity(rows):
+
+    authors = []
+
+    for r in rows:
+
+        a = r.get("author") or r.get("matched_authors") or ""
+
+        if a:
+            authors.extend([x.strip() for x in a.split(",") if x.strip()])
+
+    if not authors:
+        return 0
+
+    counts = Counter(authors)
+
+    n = len(authors)
+
+    entropy = -sum((c / n) * math.log(c / n) for c in counts.values())
+
+    max_entropy = math.log(len(counts)) if len(counts) > 1 else 1
+
+    return round((entropy / max_entropy) * 100, 2)
+
+
+def _temporal_balance(rows):
 
     years = []
 
-    for r in r2c:
+    for r in rows:
 
-        y = extract_year(r.get("reference"))
+        y = r.get("matched_year")
 
         if y:
-            years.append(y)
+            try:
+                years.append(int(str(y)[:4]))
+            except:
+                pass
 
-    if years:
+    if len(years) < 2:
+        return 50
 
-        year_freq = Counter(years)
+    span = max(years) - min(years)
 
-        max_year_share = max(year_freq.values()) / len(years)
+    score = min(1, span / 20)
 
-        temporal_balance = 1 - max_year_share
-
-    else:
-
-        temporal_balance = 0
-
-
-    # -----------------------------------------------------
-    # 4 Verification Integrity
-    # -----------------------------------------------------
-
-    verified = sum(1 for r in verify_rows if r.get("status") == "verified")
-
-    likely = sum(1 for r in verify_rows if r.get("status") == "likely")
-
-    needs_review = sum(1 for r in verify_rows if r.get("status") == "needs_review")
-
-    total_checked = len(verify_rows)
-
-    if total_checked > 0:
-
-        verification_integrity = (
-            verified +
-            0.5 * likely +
-            0.25 * needs_review
-        ) / total_checked
-
-    else:
-
-        verification_integrity = 0
+    return round(score * 100, 2)
 
 
-    # -----------------------------------------------------
-    # Final ACII Score
-    # -----------------------------------------------------
+def compute_acii(engine_result: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
-    acii_score = (
-        0.40 * verification_integrity +
-        0.25 * cci +
-        0.20 * author_diversity +
-        0.15 * temporal_balance
+    rows_copy = [dict(r) for r in rows]
+
+    v = _verification_integrity(rows_copy)
+
+    c = _citation_concentration(rows_copy)
+
+    d = _author_diversity(rows_copy)
+
+    t = _temporal_balance(rows_copy)
+
+    acii = round(
+        0.4 * v +
+        0.2 * c +
+        0.2 * d +
+        0.2 * t,
+        2
     )
 
-
-    # convert to percentage
-    ACII = round(acii_score * 100, 2)
-
-
     return {
-
-        "ACII": ACII,
-
+        "ACII": acii,
         "components": {
-
-            "verification_integrity": round(verification_integrity * 100, 2),
-
-            "citation_concentration_index": round(cci * 100, 2),
-
-            "author_diversity": round(author_diversity * 100, 2),
-
-            "temporal_balance": round(temporal_balance * 100, 2),
-
+            "verification_integrity": v,
+            "citation_concentration": c,
+            "author_diversity": d,
+            "temporal_balance": t
         },
-
         "stats": {
-
-            "total_references": total_refs,
-
-            "total_citations": total_citations,
-
-            "verified_references": verified,
-
+            "total_references": len(rows_copy)
         }
     }
