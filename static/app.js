@@ -28,19 +28,17 @@
     btnCheck: document.getElementById("btnCheck"),
     btnVerify: document.getElementById("btnVerify"),
 
-    verifyMode: document.getElementById("verifyMode"),
-    throttle: document.getElementById("throttle"),
-    maxVerify: document.getElementById("maxVerify"),
-    useCrossref: document.getElementById("useCrossref"),
-    useOpenAlex: document.getElementById("useOpenAlex"),
-
     status: document.getElementById("status"),
 
     resultsCard: document.getElementById("resultsCard"),
-    summaryTable: document.getElementById("summaryTable"),
 
+    summaryTable: document.getElementById("summaryTable"),
     verifyDash: document.getElementById("verifyDash"),
     verifyBody: document.getElementById("verifyBody"),
+
+    /* tabs */
+    tabs: document.querySelectorAll(".tab-btn"),
+    panels: document.querySelectorAll(".tab-panel"),
 
     /* ACII */
     aciiCard: document.getElementById("aciiCard"),
@@ -61,22 +59,40 @@
     el.status.textContent = msg || "";
   }
 
-  /* ---------------------------------------------------
-     Robust data normalisation (fixes 0 values problem)
-  --------------------------------------------------- */
+  /* --------------------------------------------------
+     TAB NAVIGATION (FIXES YOUR ISSUE)
+  -------------------------------------------------- */
+
+  function activateTab(tabId) {
+
+    el.tabs.forEach(btn => btn.classList.remove("active"));
+    el.panels.forEach(p => p.style.display = "none");
+
+    const btn = document.querySelector(`[data-tab="${tabId}"]`);
+    const panel = document.getElementById(tabId);
+
+    if (btn) btn.classList.add("active");
+    if (panel) panel.style.display = "block";
+  }
+
+  el.tabs.forEach(btn => {
+
+    btn.addEventListener("click", () => {
+
+      const tab = btn.dataset.tab;
+      activateTab(tab);
+
+    });
+
+  });
+
+  /* --------------------------------------------------
+     DATA NORMALISATION
+  -------------------------------------------------- */
 
   function normalizeData(d) {
 
     const data = d && typeof d === "object" ? d : {};
-
-    const missingArr = Array.isArray(data.missing_in_references)
-      ? data.missing_in_references
-      : [];
-
-    const uncitedArr = Array.isArray(data.uncited_references)
-      ? data.uncited_references
-      : [];
-
     const s = data.summary || {};
 
     data.summary = {
@@ -102,14 +118,14 @@
           s.missing_in_references ??
           s.missing ??
           data.missing_in_references_count ??
-          missingArr.length
+          0
         ),
 
       uncited_references:
         toNum(
           s.uncited_references ??
           data.uncited_references_count ??
-          uncitedArr.length
+          0
         ),
 
       match_rate:
@@ -122,9 +138,9 @@
     return data;
   }
 
-  /* ---------------------------------------------------
-     SUMMARY TABLE
-  --------------------------------------------------- */
+  /* --------------------------------------------------
+     SUMMARY
+  -------------------------------------------------- */
 
   function renderSummaryTable(data) {
 
@@ -141,9 +157,9 @@
     `;
   }
 
-  /* ---------------------------------------------------
-     ACII DISPLAY
-  --------------------------------------------------- */
+  /* --------------------------------------------------
+     ACII
+  -------------------------------------------------- */
 
   function renderACII(data) {
 
@@ -172,9 +188,9 @@
       el.aciiT.textContent = c.temporal_balance ?? "";
   }
 
-  /* ---------------------------------------------------
-     VERIFICATION DASHBOARD
-  --------------------------------------------------- */
+  /* --------------------------------------------------
+     VERIFICATION TABLE
+  -------------------------------------------------- */
 
   function renderVerify(data) {
 
@@ -217,9 +233,9 @@
       `).join("");
   }
 
-  /* ---------------------------------------------------
+  /* --------------------------------------------------
      MAIN RENDER
-  --------------------------------------------------- */
+  -------------------------------------------------- */
 
   function renderAll(data) {
 
@@ -235,9 +251,9 @@
     renderVerify(CURRENT_DATA);
   }
 
-  /* ---------------------------------------------------
+  /* --------------------------------------------------
      INITIAL CHECK
-  --------------------------------------------------- */
+  -------------------------------------------------- */
 
   async function runInitialCheck() {
 
@@ -269,9 +285,9 @@
     setStatus("Analysis complete", "success");
   }
 
-  /* ---------------------------------------------------
+  /* --------------------------------------------------
      ONLINE VERIFICATION
-  --------------------------------------------------- */
+  -------------------------------------------------- */
 
   async function runOnlineVerification() {
 
@@ -294,9 +310,9 @@
     startPolling();
   }
 
-  /* ---------------------------------------------------
+  /* --------------------------------------------------
      POLLING
-  --------------------------------------------------- */
+  -------------------------------------------------- */
 
   function startPolling() {
 
@@ -323,10 +339,6 @@
 
     }, CONFIG.POLL_INTERVAL);
   }
-
-  /* ---------------------------------------------------
-     BUTTON EVENTS
-  --------------------------------------------------- */
 
   if (el.btnCheck)
     el.btnCheck.addEventListener("click", runInitialCheck);
