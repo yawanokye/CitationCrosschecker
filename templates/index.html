@@ -8,244 +8,277 @@
 </head>
 <body>
   <div class="page">
-    <header class="topbar">
-      <div class="brand">
-        <div class="logo">CC</div>
-        <div>
-          <div class="title">Citation Crosschecker</div>
-          <div class="subtitle">Checks in-text citations vs reference list. Optional online verification.</div>
-        </div>
-      </div>
 
-      <div class="top-actions">
-        <button id="btnExportCsvTop" class="btn btn-light" disabled>Export CSV</button>
-        <button id="btnExportWordTop" class="btn btn-light" disabled>Export Word</button>
-      </div>
-    </header>
-
-    <main class="content">
-      <section class="card">
-        <h2 class="h2">Run</h2>
-
-        <div class="form-grid">
-          <div class="field">
-            <label for="file">Document</label>
-            <input id="file" type="file" accept=".pdf,.docx" />
-            <div class="hint">DOCX works best. PDF extraction depends on layout.</div>
-          </div>
-
-          <div class="field">
-            <label for="style">Citation style</label>
-            <select id="style">
-              <option value="apa" selected>APA / Harvard (Author-Year)</option>
-              <option value="vancouver">Vancouver (Numeric)</option>
-              <option value="ieee">IEEE (Numeric in brackets)</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="actions">
-          <button id="btnCheck" class="btn btn-primary">Run Check</button>
-          <button id="btnVerify" class="btn btn-outline">Run Online Verification</button>
-        </div>
-
-        <div class="verify-options">
-          <div class="opt">
-            <label for="verifyMode">Verify mode</label>
-            <select id="verifyMode">
-              <option value="all" selected>All references</option>
-              <option value="uncited_only">Uncited only</option>
-            </select>
-          </div>
-
-          <div class="opt">
-            <label>Sources</label>
-            <div class="checks">
-              <label class="check">
-                <input id="useCrossref" type="checkbox" checked />
-                <span>Crossref</span>
-              </label>
-              <label class="check">
-                <input id="useOpenAlex" type="checkbox" checked />
-                <span>OpenAlex</span>
-              </label>
-            </div>
-          </div>
-
-          <div class="opt">
-            <label>AI Assist</label>
-            <div class="checks">
-              <label class="check">
-                <input id="aiAssist" type="checkbox" />
-                <span>AI Assist (Improve detection)</span>
-              </label>
-            </div>
-            <div class="hint">Runs only when needed. If not configured, it will show “skipped”.</div>
-          </div>
-
-          <div class="opt">
-            <label for="throttle">Throttle seconds</label>
-            <input id="throttle" type="number" step="0.01" min="0" value="0.12" />
-            <div class="hint">If you see rate limits or slowdowns, try 0.20 to 0.35.</div>
-          </div>
-
-          <div class="opt">
-            <label for="maxVerify">Max verify per batch</label>
-            <input id="maxVerify" type="number" step="1" min="0" value="0" />
-            <div class="hint">0 means verify all references in batches (recommended for large lists).</div>
-          </div>
-        </div>
-
-        <div id="status" class="status muted">Ready.</div>
-      </section>
-
-      <section id="resultsCard" class="card" style="display:none;">
-        <div class="results-header">
-          <h2 class="h2">Results</h2>
-          <div class="dashboard" id="dash"></div>
-        </div>
-
-        <div id="summary" class="summary"></div>
-
-        <div class="tabs">
-          <button class="tab active" data-tab="summaryPane" type="button">Summary</button>
-          <button class="tab" data-tab="missingPane" type="button">Missing</button>
-          <button class="tab" data-tab="uncitedPane" type="button">Uncited</button>
-          <button class="tab" data-tab="c2rPane" type="button">In-text → Reference</button>
-          <button class="tab" data-tab="r2cPane" type="button">Reference → In-text</button>
-          <button class="tab" data-tab="verifyPane" type="button">Online Verification</button>
-        </div>
-
-        <div class="tabPanes">
-          <div id="summaryPane" class="tabPane active">
-            <div class="pane-note">
-              Use the tabs to explore results. Online verification can take time on large PDFs.
-            </div>
-
-            <div style="height:10px;"></div>
-
-            <div class="tableWrap">
-              <table class="tbl" style="min-width:520px;">
-                <thead>
-                  <tr>
-                    <th style="width:220px;">Item</th>
-                    <th>Value</th>
-                  </tr>
-                </thead>
-                <tbody id="summaryTable"></tbody>
-              </table>
-            </div>
-
-            <div style="height:10px;"></div>
-
-            <div id="refMsg" class="status muted"></div>
-          </div>
-
-          <div id="missingPane" class="tabPane">
-            <h3 class="h3">Citations in text missing from references</h3>
-            <div class="tableWrap">
-              <table class="tbl">
-                <thead>
-                  <tr>
-                    <th style="width:60px;">No.</th>
-                    <th>Citation in Text</th>
-                    <th style="width:120px;">Count</th>
-                  </tr>
-                </thead>
-                <tbody id="missingBody"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="uncitedPane" class="tabPane">
-            <h3 class="h3">References not cited in text</h3>
-            <div class="tableWrap">
-              <table class="tbl">
-                <thead>
-                  <tr>
-                    <th style="width:60px;">No.</th>
-                    <th>Reference</th>
-                  </tr>
-                </thead>
-                <tbody id="uncitedBody"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="c2rPane" class="tabPane">
-            <h3 class="h3">In-text → Reference mapping</h3>
-            <div class="tableWrap">
-              <table class="tbl">
-                <thead>
-                  <tr>
-                    <th style="width:60px;">No.</th>
-                    <th style="width:120px;">Status</th>
-                    <th>In-text</th>
-                    <th>Matched reference</th>
-                    <th style="width:220px;">Flags</th>
-                  </tr>
-                </thead>
-                <tbody id="c2rBody"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="r2cPane" class="tabPane">
-            <h3 class="h3">Reference → In-text mapping</h3>
-            <div class="tableWrap">
-              <table class="tbl">
-                <thead>
-                  <tr>
-                    <th style="width:60px;">No.</th>
-                    <th style="width:120px;">Times cited</th>
-                    <th>Reference</th>
-                    <th style="width:260px;">Cited by (sample)</th>
-                  </tr>
-                </thead>
-                <tbody id="r2cBody"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div id="verifyPane" class="tabPane">
-            <div class="verify-top">
-              <h3 class="h3">Online verification</h3>
-              <div class="dashboard" id="verifyDash"></div>
-            </div>
-
-            <div class="pane-note">
-              Tip: For large reference lists, keep Max verify as 0 so the app runs safe batches.
-            </div>
-
-            <div class="tableWrap">
-              <table class="tbl">
-                <thead>
-                  <tr>
-                    <th style="width:60px;">No.</th>
-                    <th style="width:120px;">Status</th>
-                    <th style="width:110px;">Source</th>
-                    <th style="width:80px;">Score</th>
-                    <th style="width:170px;">DOI</th>
-                    <th style="width:80px;">Year</th>
-                    <th>Authors</th>
-                    <th>Matched title</th>
-                    <th>Query used</th>
-                  </tr>
-                </thead>
-                <tbody id="verifyBody"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <footer class="footer">
-      <div>© Prof Anokye M. Adam, University of Cape Coast.</div>
-      <div class="muted">Disclaimer: This checker can make mistakes. Always cross-check critical citations manually.</div>
-    </footer>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">CC</div>
+    <div>
+      <div class="title">Citation Crosschecker</div>
+      <div class="subtitle">Checks in-text citations vs reference list. Optional online verification.</div>
+    </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <div class="top-actions">
+    <button id="btnExportCsvTop" class="btn btn-light" disabled>Export CSV</button>
+    <button id="btnExportWordTop" class="btn btn-light" disabled>Export Word</button>
+  </div>
+</header>
+
+
+<main class="content">
+
+<section class="card">
+<h2 class="h2">Run</h2>
+
+<div class="form-grid">
+
+<div class="field">
+<label for="file">Document</label>
+<input id="file" type="file" accept=".pdf,.docx" />
+<div class="hint">DOCX works best. PDF extraction depends on layout.</div>
+</div>
+
+<div class="field">
+<label for="style">Citation style</label>
+<select id="style">
+<option value="apa" selected>APA / Harvard</option>
+<option value="vancouver">Vancouver</option>
+<option value="ieee">IEEE</option>
+</select>
+</div>
+
+</div>
+
+<div class="actions">
+<button id="btnCheck" class="btn btn-primary">Run Check</button>
+<button id="btnVerify" class="btn btn-outline">Run Online Verification</button>
+</div>
+
+<div id="status" class="status muted">Ready.</div>
+
+</section>
+
+
+<section id="resultsCard" class="card" style="display:none;">
+
+<div class="results-header">
+<h2 class="h2">Results</h2>
+<div class="dashboard" id="dash"></div>
+</div>
+
+<div class="tabs">
+<button class="tab active" data-tab="summaryPane">Summary</button>
+<button class="tab" data-tab="missingPane">Missing</button>
+<button class="tab" data-tab="uncitedPane">Uncited</button>
+<button class="tab" data-tab="c2rPane">In-text → Reference</button>
+<button class="tab" data-tab="r2cPane">Reference → In-text</button>
+<button class="tab" data-tab="verifyPane">Online Verification</button>
+</div>
+
+
+<div class="tabPanes">
+
+<!-- SUMMARY -->
+<div id="summaryPane" class="tabPane active">
+
+<div class="pane-note">
+Use the tabs to explore results. Online verification can take time on large PDFs.
+</div>
+
+<div style="height:10px;"></div>
+
+<div class="tableWrap">
+<table class="tbl" style="min-width:520px;">
+<thead>
+<tr>
+<th style="width:220px;">Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody id="summaryTable"></tbody>
+</table>
+</div>
+
+<!-- ACII PANEL -->
+<div id="aciiCard" class="card" style="margin-top:20px; display:none;">
+
+<h3 class="h3">Academic Citation Integrity Index (ACII)</h3>
+
+<div style="font-size:34px;font-weight:700;margin-top:6px;">
+<span id="aciiValue">--</span>
+</div>
+
+<div class="tableWrap" style="margin-top:10px;">
+<table class="tbl" style="min-width:420px;">
+<thead>
+<tr>
+<th>Component</th>
+<th style="width:120px;">Score</th>
+</tr>
+</thead>
+<tbody>
+
+<tr>
+<td>Verification Integrity</td>
+<td id="aciiV"></td>
+</tr>
+
+<tr>
+<td>Citation Concentration</td>
+<td id="aciiC"></td>
+</tr>
+
+<tr>
+<td>Author Diversity</td>
+<td id="aciiA"></td>
+</tr>
+
+<tr>
+<td>Temporal Balance</td>
+<td id="aciiT"></td>
+</tr>
+
+</tbody>
+</table>
+</div>
+
+</div>
+
+<div style="height:10px;"></div>
+<div id="refMsg" class="status muted"></div>
+
+</div>
+
+
+<!-- MISSING -->
+<div id="missingPane" class="tabPane">
+
+<h3 class="h3">Citations in text missing from references</h3>
+
+<div class="tableWrap">
+<table class="tbl">
+<thead>
+<tr>
+<th style="width:60px;">No.</th>
+<th>Citation in Text</th>
+<th style="width:120px;">Count</th>
+</tr>
+</thead>
+<tbody id="missingBody"></tbody>
+</table>
+</div>
+
+</div>
+
+
+<!-- UNCITED -->
+<div id="uncitedPane" class="tabPane">
+
+<h3 class="h3">References not cited in text</h3>
+
+<div class="tableWrap">
+<table class="tbl">
+<thead>
+<tr>
+<th style="width:60px;">No.</th>
+<th>Reference</th>
+</tr>
+</thead>
+<tbody id="uncitedBody"></tbody>
+</table>
+</div>
+
+</div>
+
+
+<!-- C2R -->
+<div id="c2rPane" class="tabPane">
+
+<h3 class="h3">In-text → Reference mapping</h3>
+
+<div class="tableWrap">
+<table class="tbl">
+<thead>
+<tr>
+<th style="width:60px;">No.</th>
+<th>Status</th>
+<th>In-text</th>
+<th>Matched reference</th>
+<th>Flags</th>
+</tr>
+</thead>
+<tbody id="c2rBody"></tbody>
+</table>
+</div>
+
+</div>
+
+
+<!-- R2C -->
+<div id="r2cPane" class="tabPane">
+
+<h3 class="h3">Reference → In-text mapping</h3>
+
+<div class="tableWrap">
+<table class="tbl">
+<thead>
+<tr>
+<th style="width:60px;">No.</th>
+<th>Times cited</th>
+<th>Reference</th>
+<th>Cited by</th>
+</tr>
+</thead>
+<tbody id="r2cBody"></tbody>
+</table>
+</div>
+
+</div>
+
+
+<!-- VERIFY -->
+<div id="verifyPane" class="tabPane">
+
+<div class="verify-top">
+<h3 class="h3">Online verification</h3>
+<div class="dashboard" id="verifyDash"></div>
+</div>
+
+<div class="tableWrap">
+<table class="tbl">
+<thead>
+<tr>
+<th>No.</th>
+<th>Status</th>
+<th>Source</th>
+<th>Score</th>
+<th>DOI</th>
+<th>Year</th>
+<th>Authors</th>
+<th>Matched title</th>
+<th>Query used</th>
+</tr>
+</thead>
+<tbody id="verifyBody"></tbody>
+</table>
+</div>
+
+</div>
+
+</div>
+</section>
+
+
+</main>
+
+<footer class="footer">
+<div>© Prof Anokye M. Adam, University of Cape Coast.</div>
+<div class="muted">Citation Crosschecker</div>
+</footer>
+
+</div>
+
+<script src="/static/app.js"></script>
+
 </body>
 </html>
