@@ -19,6 +19,7 @@
 
     resultsCard: $("resultsCard"),
     summaryTable: $("summaryTable"),
+    refMsg: $("refMsg"),
 
     missingBody: $("missingBody"),
     uncitedBody: $("uncitedBody"),
@@ -39,10 +40,6 @@
   let LAST_JOB_ID = null;
   let POLL_TIMER = null;
   let CURRENT_DATA = null;
-
-  /* -----------------------------------------
-     Utility
-  ----------------------------------------- */
 
   function toNum(x, d = 0) {
     const n = Number(x);
@@ -70,9 +67,7 @@
   const panes = document.querySelectorAll(".tabPane");
 
   tabs.forEach(tab => {
-
     tab.addEventListener("click", () => {
-
       const target = tab.dataset.tab;
 
       tabs.forEach(t => t.classList.remove("active"));
@@ -81,68 +76,56 @@
       tab.classList.add("active");
 
       const pane = document.getElementById(target);
-
       if (pane) pane.classList.add("active");
-
     });
-
   });
 
   /* -----------------------------------------
-     Data Normalisation
+     DATA NORMALISATION
   ----------------------------------------- */
 
   function normalizeData(d) {
-
     const data = d && typeof d === "object" ? d : {};
     const s = data.summary || {};
 
     data.summary = {
-      in_text_citations_found:
-        toNum(
-          s.in_text_citations_found ??
-          s.intext_count ??
-          data.intext_count
-        ),
-
-      reference_entries_found:
-        toNum(
-          s.reference_entries_found ??
-          s.ref_count ??
-          data.reference_entries_found
-        ),
-
-      missing_in_references:
-        toNum(
-          s.missing_in_references ??
-          data.missing_in_references_count ??
-          (data.missing_in_references || []).length
-        ),
-
-      uncited_references:
-        toNum(
-          s.uncited_references ??
-          data.uncited_references_count ??
-          (data.uncited_references || []).length
-        ),
-
-      match_rate:
-        toNum(
-          s.match_rate ??
-          data.match_rate
-        )
+      in_text_citations_found: toNum(
+        s.in_text_citations_found ??
+        s.intext_count ??
+        data.intext_count
+      ),
+      reference_entries_found: toNum(
+        s.reference_entries_found ??
+        s.ref_count ??
+        data.reference_entries_found
+      ),
+      missing_in_references: toNum(
+        s.missing_in_references ??
+        data.missing_in_references_count ??
+        (data.missing_in_references || []).length
+      ),
+      uncited_references: toNum(
+        s.uncited_references ??
+        data.uncited_references_count ??
+        (data.uncited_references || []).length
+      ),
+      match_rate: toNum(
+        s.match_rate ??
+        data.match_rate
+      )
     };
 
     return data;
   }
 
   /* -----------------------------------------
-     Summary Table
+     SUMMARY
   ----------------------------------------- */
 
   function renderSummaryTable(data) {
-
     const s = data?.summary || {};
+
+    if (!el.summaryTable) return;
 
     el.summaryTable.innerHTML = `
       <tr><td>In-text citations</td><td>${esc(s.in_text_citations_found)}</td></tr>
@@ -158,14 +141,11 @@
   ----------------------------------------- */
 
   function renderACII(data) {
-
     const acii = data?.acii;
-
     if (!acii) return;
 
-    el.aciiCard.style.display = "block";
-
-    el.aciiValue.textContent = acii.ACII ?? "--";
+    if (el.aciiCard) el.aciiCard.style.display = "block";
+    if (el.aciiValue) el.aciiValue.textContent = acii.ACII ?? "--";
 
     const c = acii.components || {};
 
@@ -173,16 +153,16 @@
     if (el.aciiC) el.aciiC.textContent = c.citation_concentration ?? "";
     if (el.aciiA) el.aciiA.textContent = c.author_diversity ?? "";
     if (el.aciiT) el.aciiT.textContent = c.temporal_balance ?? "";
-
   }
 
   /* -----------------------------------------
-     Missing Citations
+     MISSING
   ----------------------------------------- */
 
   function renderMissing(data) {
-
     const rows = data?.missing_in_references || [];
+
+    if (!el.missingBody) return;
 
     if (!rows.length) {
       el.missingBody.innerHTML = `<tr><td colspan="3">None</td></tr>`;
@@ -192,20 +172,20 @@
     el.missingBody.innerHTML = rows.map((r, i) => `
       <tr>
         <td>${i + 1}</td>
-        <td>${esc(r.citation || r)}</td>
-        <td>${esc(r.count || "")}</td>
+        <td>${esc(r.citation_in_text || r.citation || r)}</td>
+        <td>${esc(r.count_in_text || r.count || "")}</td>
       </tr>
     `).join("");
-
   }
 
   /* -----------------------------------------
-     Uncited References
+     UNCITED
   ----------------------------------------- */
 
   function renderUncited(data) {
-
     const rows = data?.uncited_references || [];
+
+    if (!el.uncitedBody) return;
 
     if (!rows.length) {
       el.uncitedBody.innerHTML = `<tr><td colspan="2">None</td></tr>`;
@@ -218,16 +198,16 @@
         <td>${esc(r.reference || r)}</td>
       </tr>
     `).join("");
-
   }
 
   /* -----------------------------------------
-     In-text → Reference Mapping
+     IN-TEXT -> REFERENCE
   ----------------------------------------- */
 
   function renderC2R(data) {
+    const rows = data?.reconciliation_intext_to_reference || data?.c2r_map || [];
 
-    const rows = data?.c2r_map || [];
+    if (!el.c2rBody) return;
 
     if (!rows.length) {
       el.c2rBody.innerHTML = `<tr><td colspan="5">No mapping available</td></tr>`;
@@ -239,20 +219,20 @@
         <td>${i + 1}</td>
         <td>${esc(r.status || "")}</td>
         <td>${esc(r.in_text || "")}</td>
-        <td>${esc(r.reference || "")}</td>
-        <td>${esc((r.flags || []).join(", "))}</td>
+        <td>${esc(r.matched_reference || r.reference || "")}</td>
+        <td>${esc(r.flags || "")}</td>
       </tr>
     `).join("");
-
   }
 
   /* -----------------------------------------
-     Reference → In-text Mapping
+     REFERENCE -> IN-TEXT
   ----------------------------------------- */
 
   function renderR2C(data) {
+    const rows = data?.reconciliation_reference_to_intext || data?.r2c_map || [];
 
-    const rows = data?.r2c_map || [];
+    if (!el.r2cBody) return;
 
     if (!rows.length) {
       el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`;
@@ -262,37 +242,36 @@
     el.r2cBody.innerHTML = rows.map((r, i) => `
       <tr>
         <td>${i + 1}</td>
-        <td>${esc(r.count || 0)}</td>
+        <td>${esc(r.times_cited ?? r.count ?? 0)}</td>
         <td>${esc(r.reference || "")}</td>
         <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
       </tr>
     `).join("");
-
   }
 
   /* -----------------------------------------
-     Online Verification
+     ONLINE VERIFICATION
   ----------------------------------------- */
 
   function renderVerify(data) {
-
     const ov = data?.online_verification || {};
     const rows = ov.rows || [];
     const sum = ov.summary || {};
 
-    el.verifyDash.innerHTML = `
-      <div class="kpi">Verified ${sum.verified ?? 0}</div>
-      <div class="kpi">Likely ${sum.likely ?? 0}</div>
-      <div class="kpi">Needs Review ${sum.needs_review ?? 0}</div>
-      <div class="kpi">Not Found ${sum.not_found ?? 0}</div>
-      <div class="kpi">Offline ${sum.offline ?? 0}</div>
-    `;
+    if (el.verifyDash) {
+      el.verifyDash.innerHTML = `
+        <div class="kpi">Verified ${sum.verified ?? 0}</div>
+        <div class="kpi">Likely ${sum.likely ?? 0}</div>
+        <div class="kpi">Needs Review ${sum.needs_review ?? 0}</div>
+        <div class="kpi">Not Found ${sum.not_found ?? 0}</div>
+        <div class="kpi">Offline ${sum.offline ?? 0}</div>
+      `;
+    }
+
+    if (!el.verifyBody) return;
 
     if (!rows.length) {
-
-      el.verifyBody.innerHTML =
-        `<tr><td colspan="9">No verification results</td></tr>`;
-
+      el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results</td></tr>`;
       return;
     }
 
@@ -301,49 +280,47 @@
       .map((r, i) => `
         <tr>
           <td>${i + 1}</td>
-          <td>${esc(r.status)}</td>
-          <td>${esc(r.source)}</td>
-          <td>${esc(r.score)}</td>
-          <td>${esc(r.doi)}</td>
-          <td>${esc(r.matched_year)}</td>
-          <td>${esc(r.author)}</td>
-          <td>${esc(r.matched_title)}</td>
-          <td>${esc(r.query_used)}</td>
+          <td>${esc(r.status || "")}</td>
+          <td>${esc(r.source || "")}</td>
+          <td>${esc(r.score ?? "")}</td>
+          <td>${esc(r.doi || "")}</td>
+          <td>${esc(r.matched_year || "")}</td>
+          <td>${esc(r.author || r.matched_authors || "")}</td>
+          <td>${esc(r.matched_title || "")}</td>
+          <td>${esc(r.query_used || "")}</td>
         </tr>
       `).join("");
-
   }
 
   /* -----------------------------------------
-     Master Render
+     MAIN RENDER
   ----------------------------------------- */
 
   function renderAll(data) {
-
     if (!data) return;
 
     CURRENT_DATA = normalizeData(data);
 
-    el.resultsCard.style.display = "block";
+    if (el.resultsCard) el.resultsCard.style.display = "block";
 
     renderSummaryTable(CURRENT_DATA);
     renderACII(CURRENT_DATA);
-
     renderMissing(CURRENT_DATA);
     renderUncited(CURRENT_DATA);
     renderC2R(CURRENT_DATA);
     renderR2C(CURRENT_DATA);
-
     renderVerify(CURRENT_DATA);
 
+    if (el.refMsg && data.reference_detection_message) {
+      el.refMsg.textContent = data.reference_detection_message;
+    }
   }
 
   /* -----------------------------------------
-     Initial Check
+     INITIAL CHECK
   ----------------------------------------- */
 
   async function runInitialCheck() {
-
     const f = el.file?.files?.[0];
 
     if (!f) {
@@ -354,7 +331,6 @@
     setStatus("Analyzing document...");
 
     const fd = new FormData();
-
     fd.append("file", f);
     fd.append("style", el.style?.value || "apa");
 
@@ -366,19 +342,16 @@
     const js = await res.json();
 
     LAST_JOB_ID = js.job_id;
-
     renderAll(js.data);
 
     setStatus("Analysis complete", "success");
-
   }
 
   /* -----------------------------------------
-     Online Verification
+     ONLINE VERIFICATION
   ----------------------------------------- */
 
   async function runOnlineVerification() {
-
     if (!LAST_JOB_ID) {
       setStatus("Run document check first", "warn");
       return;
@@ -395,43 +368,38 @@
     });
 
     startPolling();
-
   }
 
   /* -----------------------------------------
-     Polling
+     POLLING
   ----------------------------------------- */
 
   function startPolling() {
-
-    if (POLL_TIMER)
-      clearInterval(POLL_TIMER);
+    if (POLL_TIMER) clearInterval(POLL_TIMER);
 
     POLL_TIMER = setInterval(async () => {
-
       const res = await fetch(
         `/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}&include_result=1`
       );
 
       const js = await res.json();
 
-      if (js.result)
-        renderAll(js.result);
+      if (js.result) renderAll(js.result);
 
       if (js.online?.state === "done") {
-
         clearInterval(POLL_TIMER);
-
         setStatus("Online verification complete", "success");
-
       }
 
+      if (js.online?.state === "error") {
+        clearInterval(POLL_TIMER);
+        setStatus(js.online?.message || "Online verification failed", "warn");
+      }
     }, CONFIG.POLL_INTERVAL);
-
   }
 
   /* -----------------------------------------
-     Buttons
+     BUTTONS
   ----------------------------------------- */
 
   el.btnCheck?.addEventListener("click", runInitialCheck);
