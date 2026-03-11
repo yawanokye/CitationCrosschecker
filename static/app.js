@@ -8,6 +8,42 @@
     MAX_VERIFY_DISPLAY: 500
   };
 
+  const $ = (id) => document.getElementById(id);
+
+  const el = {
+    file: $("file"),
+    style: $("style"),
+    btnCheck: $("btnCheck"),
+    btnVerify: $("btnVerify"),
+    status: $("status"),
+
+    resultsCard: $("resultsCard"),
+    summaryTable: $("summaryTable"),
+
+    missingBody: $("missingBody"),
+    uncitedBody: $("uncitedBody"),
+    c2rBody: $("c2rBody"),
+    r2cBody: $("r2cBody"),
+
+    verifyDash: $("verifyDash"),
+    verifyBody: $("verifyBody"),
+
+    aciiCard: $("aciiCard"),
+    aciiValue: $("aciiValue"),
+    aciiV: $("aciiV"),
+    aciiC: $("aciiC"),
+    aciiA: $("aciiA"),
+    aciiT: $("aciiT")
+  };
+
+  let LAST_JOB_ID = null;
+  let POLL_TIMER = null;
+  let CURRENT_DATA = null;
+
+  /* -----------------------------------------
+     Utility
+  ----------------------------------------- */
+
   function toNum(x, d = 0) {
     const n = Number(x);
     return Number.isFinite(n) ? n : d;
@@ -20,78 +56,41 @@
       .replaceAll(">", "&gt;");
   }
 
-  const el = {
-
-    file: document.getElementById("file"),
-    style: document.getElementById("style"),
-
-    btnCheck: document.getElementById("btnCheck"),
-    btnVerify: document.getElementById("btnVerify"),
-
-    status: document.getElementById("status"),
-
-    resultsCard: document.getElementById("resultsCard"),
-
-    summaryTable: document.getElementById("summaryTable"),
-    verifyDash: document.getElementById("verifyDash"),
-    verifyBody: document.getElementById("verifyBody"),
-
-    /* tabs */
-    tabs: document.querySelectorAll(".tab-btn"),
-    panels: document.querySelectorAll(".tab-panel"),
-
-    /* ACII */
-    aciiCard: document.getElementById("aciiCard"),
-    aciiValue: document.getElementById("aciiValue"),
-    aciiV: document.getElementById("aciiV"),
-    aciiC: document.getElementById("aciiC"),
-    aciiA: document.getElementById("aciiA"),
-    aciiT: document.getElementById("aciiT")
-  };
-
-  let LAST_JOB_ID = null;
-  let POLL_TIMER = null;
-  let CURRENT_DATA = null;
-
   function setStatus(msg, tone = "muted") {
     if (!el.status) return;
     el.status.className = `status ${tone}`;
     el.status.textContent = msg || "";
   }
 
-  /* --------------------------------------------------
-     TAB NAVIGATION (FIXES YOUR ISSUE)
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     TAB NAVIGATION
+  ----------------------------------------- */
 
-const tabs = document.querySelectorAll(".tab");
-const panes = document.querySelectorAll(".tabPane");
+  const tabs = document.querySelectorAll(".tab");
+  const panes = document.querySelectorAll(".tabPane");
 
-tabs.forEach(tab => {
+  tabs.forEach(tab => {
 
-  tab.addEventListener("click", () => {
+    tab.addEventListener("click", () => {
 
-    const target = tab.dataset.tab;
+      const target = tab.dataset.tab;
 
-    /* remove active state */
-    tabs.forEach(t => t.classList.remove("active"));
-    panes.forEach(p => p.classList.remove("active"));
+      tabs.forEach(t => t.classList.remove("active"));
+      panes.forEach(p => p.classList.remove("active"));
 
-    /* activate selected */
-    tab.classList.add("active");
+      tab.classList.add("active");
 
-    const pane = document.getElementById(target);
+      const pane = document.getElementById(target);
 
-    if (pane) {
-      pane.classList.add("active");
-    }
+      if (pane) pane.classList.add("active");
+
+    });
 
   });
 
-});
-
-  /* --------------------------------------------------
-     DATA NORMALISATION
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     Data Normalisation
+  ----------------------------------------- */
 
   function normalizeData(d) {
 
@@ -99,11 +98,9 @@ tabs.forEach(tab => {
     const s = data.summary || {};
 
     data.summary = {
-
       in_text_citations_found:
         toNum(
           s.in_text_citations_found ??
-          s.intext_citations_found ??
           s.intext_count ??
           data.intext_count
         ),
@@ -111,7 +108,6 @@ tabs.forEach(tab => {
       reference_entries_found:
         toNum(
           s.reference_entries_found ??
-          s.references_found ??
           s.ref_count ??
           data.reference_entries_found
         ),
@@ -119,16 +115,15 @@ tabs.forEach(tab => {
       missing_in_references:
         toNum(
           s.missing_in_references ??
-          s.missing ??
           data.missing_in_references_count ??
-          0
+          (data.missing_in_references || []).length
         ),
 
       uncited_references:
         toNum(
           s.uncited_references ??
           data.uncited_references_count ??
-          0
+          (data.uncited_references || []).length
         ),
 
       match_rate:
@@ -141,15 +136,13 @@ tabs.forEach(tab => {
     return data;
   }
 
-  /* --------------------------------------------------
-     SUMMARY
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     Summary Table
+  ----------------------------------------- */
 
   function renderSummaryTable(data) {
 
     const s = data?.summary || {};
-
-    if (!el.summaryTable) return;
 
     el.summaryTable.innerHTML = `
       <tr><td>In-text citations</td><td>${esc(s.in_text_citations_found)}</td></tr>
@@ -160,9 +153,9 @@ tabs.forEach(tab => {
     `;
   }
 
-  /* --------------------------------------------------
+  /* -----------------------------------------
      ACII
-  -------------------------------------------------- */
+  ----------------------------------------- */
 
   function renderACII(data) {
 
@@ -170,30 +163,116 @@ tabs.forEach(tab => {
 
     if (!acii) return;
 
-    if (el.aciiCard)
-      el.aciiCard.style.display = "block";
+    el.aciiCard.style.display = "block";
 
-    if (el.aciiValue)
-      el.aciiValue.textContent = acii.ACII ?? "--";
+    el.aciiValue.textContent = acii.ACII ?? "--";
 
     const c = acii.components || {};
 
-    if (el.aciiV)
-      el.aciiV.textContent = c.verification_integrity ?? "";
+    if (el.aciiV) el.aciiV.textContent = c.verification_integrity ?? "";
+    if (el.aciiC) el.aciiC.textContent = c.citation_concentration ?? "";
+    if (el.aciiA) el.aciiA.textContent = c.author_diversity ?? "";
+    if (el.aciiT) el.aciiT.textContent = c.temporal_balance ?? "";
 
-    if (el.aciiC)
-      el.aciiC.textContent = c.citation_concentration ?? "";
-
-    if (el.aciiA)
-      el.aciiA.textContent = c.author_diversity ?? "";
-
-    if (el.aciiT)
-      el.aciiT.textContent = c.temporal_balance ?? "";
   }
 
-  /* --------------------------------------------------
-     VERIFICATION TABLE
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     Missing Citations
+  ----------------------------------------- */
+
+  function renderMissing(data) {
+
+    const rows = data?.missing_in_references || [];
+
+    if (!rows.length) {
+      el.missingBody.innerHTML = `<tr><td colspan="3">None</td></tr>`;
+      return;
+    }
+
+    el.missingBody.innerHTML = rows.map((r, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${esc(r.citation || r)}</td>
+        <td>${esc(r.count || "")}</td>
+      </tr>
+    `).join("");
+
+  }
+
+  /* -----------------------------------------
+     Uncited References
+  ----------------------------------------- */
+
+  function renderUncited(data) {
+
+    const rows = data?.uncited_references || [];
+
+    if (!rows.length) {
+      el.uncitedBody.innerHTML = `<tr><td colspan="2">None</td></tr>`;
+      return;
+    }
+
+    el.uncitedBody.innerHTML = rows.map((r, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${esc(r.reference || r)}</td>
+      </tr>
+    `).join("");
+
+  }
+
+  /* -----------------------------------------
+     In-text → Reference Mapping
+  ----------------------------------------- */
+
+  function renderC2R(data) {
+
+    const rows = data?.c2r_map || [];
+
+    if (!rows.length) {
+      el.c2rBody.innerHTML = `<tr><td colspan="5">No mapping available</td></tr>`;
+      return;
+    }
+
+    el.c2rBody.innerHTML = rows.map((r, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${esc(r.status || "")}</td>
+        <td>${esc(r.in_text || "")}</td>
+        <td>${esc(r.reference || "")}</td>
+        <td>${esc((r.flags || []).join(", "))}</td>
+      </tr>
+    `).join("");
+
+  }
+
+  /* -----------------------------------------
+     Reference → In-text Mapping
+  ----------------------------------------- */
+
+  function renderR2C(data) {
+
+    const rows = data?.r2c_map || [];
+
+    if (!rows.length) {
+      el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`;
+      return;
+    }
+
+    el.r2cBody.innerHTML = rows.map((r, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${esc(r.count || 0)}</td>
+        <td>${esc(r.reference || "")}</td>
+        <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
+      </tr>
+    `).join("");
+
+  }
+
+  /* -----------------------------------------
+     Online Verification
+  ----------------------------------------- */
 
   function renderVerify(data) {
 
@@ -201,29 +280,27 @@ tabs.forEach(tab => {
     const rows = ov.rows || [];
     const sum = ov.summary || {};
 
-    if (el.verifyDash) {
-
-      el.verifyDash.innerHTML = `
-        <div class="kpi">Verified ${sum.verified ?? 0}</div>
-        <div class="kpi">Likely ${sum.likely ?? 0}</div>
-        <div class="kpi">Needs Review ${sum.needs_review ?? 0}</div>
-        <div class="kpi">Not Found ${sum.not_found ?? 0}</div>
-        <div class="kpi">Offline ${sum.offline ?? 0}</div>
-      `;
-    }
+    el.verifyDash.innerHTML = `
+      <div class="kpi">Verified ${sum.verified ?? 0}</div>
+      <div class="kpi">Likely ${sum.likely ?? 0}</div>
+      <div class="kpi">Needs Review ${sum.needs_review ?? 0}</div>
+      <div class="kpi">Not Found ${sum.not_found ?? 0}</div>
+      <div class="kpi">Offline ${sum.offline ?? 0}</div>
+    `;
 
     if (!rows.length) {
 
       el.verifyBody.innerHTML =
-        `<tr><td colspan="8">No verification results</td></tr>`;
+        `<tr><td colspan="9">No verification results</td></tr>`;
 
       return;
     }
 
     el.verifyBody.innerHTML = rows
       .slice(0, CONFIG.MAX_VERIFY_DISPLAY)
-      .map(r => `
+      .map((r, i) => `
         <tr>
+          <td>${i + 1}</td>
           <td>${esc(r.status)}</td>
           <td>${esc(r.source)}</td>
           <td>${esc(r.score)}</td>
@@ -231,14 +308,15 @@ tabs.forEach(tab => {
           <td>${esc(r.matched_year)}</td>
           <td>${esc(r.author)}</td>
           <td>${esc(r.matched_title)}</td>
-          <td>${esc(r.reference)}</td>
+          <td>${esc(r.query_used)}</td>
         </tr>
       `).join("");
+
   }
 
-  /* --------------------------------------------------
-     MAIN RENDER
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     Master Render
+  ----------------------------------------- */
 
   function renderAll(data) {
 
@@ -246,17 +324,23 @@ tabs.forEach(tab => {
 
     CURRENT_DATA = normalizeData(data);
 
-    if (el.resultsCard)
-      el.resultsCard.style.display = "block";
+    el.resultsCard.style.display = "block";
 
     renderSummaryTable(CURRENT_DATA);
     renderACII(CURRENT_DATA);
+
+    renderMissing(CURRENT_DATA);
+    renderUncited(CURRENT_DATA);
+    renderC2R(CURRENT_DATA);
+    renderR2C(CURRENT_DATA);
+
     renderVerify(CURRENT_DATA);
+
   }
 
-  /* --------------------------------------------------
-     INITIAL CHECK
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     Initial Check
+  ----------------------------------------- */
 
   async function runInitialCheck() {
 
@@ -286,11 +370,12 @@ tabs.forEach(tab => {
     renderAll(js.data);
 
     setStatus("Analysis complete", "success");
+
   }
 
-  /* --------------------------------------------------
-     ONLINE VERIFICATION
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     Online Verification
+  ----------------------------------------- */
 
   async function runOnlineVerification() {
 
@@ -302,7 +387,6 @@ tabs.forEach(tab => {
     setStatus("Starting online verification...");
 
     const fd = new FormData();
-
     fd.append("job_id", LAST_JOB_ID);
 
     await fetch("/verify-online", {
@@ -311,11 +395,12 @@ tabs.forEach(tab => {
     });
 
     startPolling();
+
   }
 
-  /* --------------------------------------------------
-     POLLING
-  -------------------------------------------------- */
+  /* -----------------------------------------
+     Polling
+  ----------------------------------------- */
 
   function startPolling() {
 
@@ -338,15 +423,18 @@ tabs.forEach(tab => {
         clearInterval(POLL_TIMER);
 
         setStatus("Online verification complete", "success");
+
       }
 
     }, CONFIG.POLL_INTERVAL);
+
   }
 
-  if (el.btnCheck)
-    el.btnCheck.addEventListener("click", runInitialCheck);
+  /* -----------------------------------------
+     Buttons
+  ----------------------------------------- */
 
-  if (el.btnVerify)
-    el.btnVerify.addEventListener("click", runOnlineVerification);
+  el.btnCheck?.addEventListener("click", runInitialCheck);
+  el.btnVerify?.addEventListener("click", runOnlineVerification);
 
 })();
