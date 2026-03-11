@@ -63,28 +63,31 @@
      TAB NAVIGATION (FIXES YOUR ISSUE)
   -------------------------------------------------- */
 
-  function activateTab(tabId) {
+const tabs = document.querySelectorAll(".tab");
+const panes = document.querySelectorAll(".tabPane");
 
-    el.tabs.forEach(btn => btn.classList.remove("active"));
-    el.panels.forEach(p => p.style.display = "none");
+tabs.forEach(tab => {
 
-    const btn = document.querySelector(`[data-tab="${tabId}"]`);
-    const panel = document.getElementById(tabId);
+  tab.addEventListener("click", () => {
 
-    if (btn) btn.classList.add("active");
-    if (panel) panel.style.display = "block";
-  }
+    const target = tab.dataset.tab;
 
-  el.tabs.forEach(btn => {
+    /* remove active state */
+    tabs.forEach(t => t.classList.remove("active"));
+    panes.forEach(p => p.classList.remove("active"));
 
-    btn.addEventListener("click", () => {
+    /* activate selected */
+    tab.classList.add("active");
 
-      const tab = btn.dataset.tab;
-      activateTab(tab);
+    const pane = document.getElementById(target);
 
-    });
+    if (pane) {
+      pane.classList.add("active");
+    }
 
   });
+
+});
 
   /* --------------------------------------------------
      DATA NORMALISATION
