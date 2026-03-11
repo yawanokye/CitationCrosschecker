@@ -1,14 +1,11 @@
-/* static/app.js - OPTIMIZED VERSION with Tab Navigation + ACII Support */
+/* static/app.js — Citation Crosschecker Dashboard */
 
 (() => {
   "use strict";
 
   const CONFIG = {
     POLL_INTERVAL: 1200,
-    MAX_C2R_DISPLAY: 500,
-    MAX_R2C_DISPLAY: 500,
-    MAX_VERIFY_DISPLAY: 500,
-    CHUNK_WARNING_SIZE: 2_000_000
+    MAX_VERIFY_DISPLAY: 500
   };
 
   function toNum(x, d = 0) {
@@ -16,36 +13,11 @@
     return Number.isFinite(n) ? n : d;
   }
 
-  function asText(v) {
-    if (v == null) return "";
-    if (typeof v === "string") return v;
-    if (typeof v === "number") return String(v);
-    if (typeof v === "object") {
-      return (
-        v.reference || v.raw || v.text || v.label || v.display ||
-        v.citation || v.citation_in_text || v.reference_apa ||
-        (v.author && v.year ? `${v.author}, ${v.year}` : "") ||
-        (() => { try { return JSON.stringify(v); } catch { return ""; } })()
-      );
-    }
-    try { return String(v); } catch { return ""; }
-  }
-
-  function normalizeData(d) {
-    const data = d && typeof d === "object" ? d : {};
-
-    const missingArr = Array.isArray(data.missing_in_references) ? data.missing_in_references : [];
-    const uncitedArr = Array.isArray(data.uncited_references) ? data.uncited_references : [];
-
-    data.summary = {
-      in_text_citations_found: toNum(data.in_text_citations_found ?? 0),
-      reference_entries_found: toNum(data.reference_entries_found ?? 0),
-      missing_in_references: toNum(data.missing_in_references_count ?? missingArr.length),
-      uncited_references: toNum(data.uncited_references_count ?? uncitedArr.length),
-      match_rate: toNum(data.match_rate ?? 0),
-    };
-
-    return data;
+  function esc(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
   }
 
   const el = {
@@ -63,34 +35,24 @@
     useOpenAlex: document.getElementById("useOpenAlex"),
 
     status: document.getElementById("status"),
-    progressBar: document.getElementById("progressBar"),
 
     resultsCard: document.getElementById("resultsCard"),
-    dash: document.getElementById("dash"),
-    verifyDash: document.getElementById("verifyDash"),
     summaryTable: document.getElementById("summaryTable"),
 
-    missingBody: document.getElementById("missingBody"),
-    uncitedBody: document.getElementById("uncitedBody"),
-    c2rBody: document.getElementById("c2rBody"),
-    r2cBody: document.getElementById("r2cBody"),
+    verifyDash: document.getElementById("verifyDash"),
     verifyBody: document.getElementById("verifyBody"),
 
-    btnExportCsvTop: document.getElementById("btnExportCsvTop"),
-    btnExportWordTop: document.getElementById("btnExportWordTop"),
-
-    /* ACII elements */
+    /* ACII */
     aciiCard: document.getElementById("aciiCard"),
     aciiValue: document.getElementById("aciiValue"),
     aciiV: document.getElementById("aciiV"),
     aciiC: document.getElementById("aciiC"),
     aciiA: document.getElementById("aciiA"),
-    aciiT: document.getElementById("aciiT"),
+    aciiT: document.getElementById("aciiT")
   };
 
   let LAST_JOB_ID = null;
   let POLL_TIMER = null;
-  let RUNNING = false;
   let CURRENT_DATA = null;
 
   function setStatus(msg, tone = "muted") {
@@ -99,12 +61,70 @@
     el.status.textContent = msg || "";
   }
 
-  function esc(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
+  /* ---------------------------------------------------
+     Robust data normalisation (fixes 0 values problem)
+  --------------------------------------------------- */
+
+  function normalizeData(d) {
+
+    const data = d && typeof d === "object" ? d : {};
+
+    const missingArr = Array.isArray(data.missing_in_references)
+      ? data.missing_in_references
+      : [];
+
+    const uncitedArr = Array.isArray(data.uncited_references)
+      ? data.uncited_references
+      : [];
+
+    const s = data.summary || {};
+
+    data.summary = {
+
+      in_text_citations_found:
+        toNum(
+          s.in_text_citations_found ??
+          s.intext_citations_found ??
+          s.intext_count ??
+          data.intext_count
+        ),
+
+      reference_entries_found:
+        toNum(
+          s.reference_entries_found ??
+          s.references_found ??
+          s.ref_count ??
+          data.reference_entries_found
+        ),
+
+      missing_in_references:
+        toNum(
+          s.missing_in_references ??
+          s.missing ??
+          data.missing_in_references_count ??
+          missingArr.length
+        ),
+
+      uncited_references:
+        toNum(
+          s.uncited_references ??
+          data.uncited_references_count ??
+          uncitedArr.length
+        ),
+
+      match_rate:
+        toNum(
+          s.match_rate ??
+          data.match_rate
+        )
+    };
+
+    return data;
   }
+
+  /* ---------------------------------------------------
+     SUMMARY TABLE
+  --------------------------------------------------- */
 
   function renderSummaryTable(data) {
 
@@ -121,9 +141,9 @@
     `;
   }
 
-  /* ------------------------------
-     ACII Renderer
-  ------------------------------ */
+  /* ---------------------------------------------------
+     ACII DISPLAY
+  --------------------------------------------------- */
 
   function renderACII(data) {
 
@@ -131,7 +151,8 @@
 
     if (!acii) return;
 
-    if (el.aciiCard) el.aciiCard.style.display = "block";
+    if (el.aciiCard)
+      el.aciiCard.style.display = "block";
 
     if (el.aciiValue)
       el.aciiValue.textContent = acii.ACII ?? "--";
@@ -151,6 +172,10 @@
       el.aciiT.textContent = c.temporal_balance ?? "";
   }
 
+  /* ---------------------------------------------------
+     VERIFICATION DASHBOARD
+  --------------------------------------------------- */
+
   function renderVerify(data) {
 
     const ov = data?.online_verification || {};
@@ -169,15 +194,16 @@
     }
 
     if (!rows.length) {
-      el.verifyBody.innerHTML = `<tr><td colspan="8">No verification data</td></tr>`;
+
+      el.verifyBody.innerHTML =
+        `<tr><td colspan="8">No verification results</td></tr>`;
+
       return;
     }
 
     el.verifyBody.innerHTML = rows
       .slice(0, CONFIG.MAX_VERIFY_DISPLAY)
-      .map((r) => {
-
-        return `
+      .map(r => `
         <tr>
           <td>${esc(r.status)}</td>
           <td>${esc(r.source)}</td>
@@ -188,10 +214,12 @@
           <td>${esc(r.matched_title)}</td>
           <td>${esc(r.reference)}</td>
         </tr>
-        `;
-      })
-      .join("");
+      `).join("");
   }
+
+  /* ---------------------------------------------------
+     MAIN RENDER
+  --------------------------------------------------- */
 
   function renderAll(data) {
 
@@ -199,34 +227,38 @@
 
     CURRENT_DATA = normalizeData(data);
 
-    if (el.resultsCard) el.resultsCard.style.display = "block";
+    if (el.resultsCard)
+      el.resultsCard.style.display = "block";
 
     renderSummaryTable(CURRENT_DATA);
-
-    /* ACII */
     renderACII(CURRENT_DATA);
-
     renderVerify(CURRENT_DATA);
   }
 
-  async function runInitialCheck() {
+  /* ---------------------------------------------------
+     INITIAL CHECK
+  --------------------------------------------------- */
 
-    if (RUNNING) return;
+  async function runInitialCheck() {
 
     const f = el.file?.files?.[0];
 
     if (!f) {
-      setStatus("Choose a file first", "warn");
+      setStatus("Please choose a file first", "warn");
       return;
     }
 
-    RUNNING = true;
+    setStatus("Analyzing document...");
 
     const fd = new FormData();
+
     fd.append("file", f);
     fd.append("style", el.style?.value || "apa");
 
-    const res = await fetch("/verify", { method: "POST", body: fd });
+    const res = await fetch("/verify", {
+      method: "POST",
+      body: fd
+    });
 
     const js = await res.json();
 
@@ -234,27 +266,42 @@
 
     renderAll(js.data);
 
-    RUNNING = false;
+    setStatus("Analysis complete", "success");
   }
+
+  /* ---------------------------------------------------
+     ONLINE VERIFICATION
+  --------------------------------------------------- */
 
   async function runOnlineVerification() {
 
     if (!LAST_JOB_ID) {
-      setStatus("Run initial check first", "warn");
+      setStatus("Run document check first", "warn");
       return;
     }
 
+    setStatus("Starting online verification...");
+
     const fd = new FormData();
+
     fd.append("job_id", LAST_JOB_ID);
 
-    await fetch("/verify-online", { method: "POST", body: fd });
+    await fetch("/verify-online", {
+      method: "POST",
+      body: fd
+    });
 
     startPolling();
   }
 
+  /* ---------------------------------------------------
+     POLLING
+  --------------------------------------------------- */
+
   function startPolling() {
 
-    if (POLL_TIMER) clearInterval(POLL_TIMER);
+    if (POLL_TIMER)
+      clearInterval(POLL_TIMER);
 
     POLL_TIMER = setInterval(async () => {
 
@@ -264,18 +311,27 @@
 
       const js = await res.json();
 
-      if (js.result) {
+      if (js.result)
         renderAll(js.result);
-      }
 
       if (js.online?.state === "done") {
+
         clearInterval(POLL_TIMER);
+
+        setStatus("Online verification complete", "success");
       }
 
     }, CONFIG.POLL_INTERVAL);
   }
 
-  if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
-  if (el.btnVerify) el.btnVerify.addEventListener("click", runOnlineVerification);
+  /* ---------------------------------------------------
+     BUTTON EVENTS
+  --------------------------------------------------- */
+
+  if (el.btnCheck)
+    el.btnCheck.addEventListener("click", runInitialCheck);
+
+  if (el.btnVerify)
+    el.btnVerify.addEventListener("click", runOnlineVerification);
 
 })();
