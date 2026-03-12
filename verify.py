@@ -1,4 +1,5 @@
-# verify.py
+# verify.py (UPDATED HIGH-VERIFICATION VERSION)
+
 import os
 import re
 import time
@@ -15,14 +16,11 @@ MAILTO = (
     or os.getenv("CROSSREF_MAILTO")
     or os.getenv("OPENALEX_MAILTO")
     or ""
-)
-MAILTO = (MAILTO or "").strip()
-
-UNPAYWALL_EMAIL = (os.getenv("UNPAYWALL_EMAIL") or MAILTO or "").strip()
+).strip()
 
 
 # ---------------------------------------------------------
-# Helper functions
+# Helpers
 # ---------------------------------------------------------
 
 def _normalize_verify_status(s: str) -> str:
@@ -51,17 +49,16 @@ def _norm_text(s: str) -> str:
     s = _safe_strip(s).lower()
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"[^\w\s\-:/]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return re.sub(r"\s+", " ", s).strip()
 
 
-def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 20) -> Optional[dict]:
+def _safe_get_json(url: str, params: Optional[dict] = None) -> Optional[dict]:
     try:
         headers = {
             "User-Agent": f"CitationCrosschecker (mailto:{MAILTO})",
             "Accept": "application/json",
         }
-        r = requests.get(url, params=params, timeout=timeout, headers=headers)
+        r = requests.get(url, params=params, timeout=20, headers=headers)
         if r.status_code != 200:
             return None
         return r.json()
@@ -69,206 +66,239 @@ def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 20) -
         return None
 
 
+def _extract_year(text: str) -> str:
+    m = re.search(r"(19|20)\d{2}", text)
+    return m.group(0) if m else ""
+
+
+def _extract_doi(text: str) -> str:
+    m = re.search(r"(10\.\d{4,9}/[^\s]+)", text)
+    return m.group(1).rstrip(").,;") if m else ""
+
+
 # ---------------------------------------------------------
-# Metadata extraction
+# Query Builder
 # ---------------------------------------------------------
 
-def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str], int, str]:
+def _build_query(ref: str) -> Tuple[str, List[str], str]:
 
-    src = _safe_strip((cand or {}).get("source"))
-    item = (cand or {}).get("item") or {}
+    ref = _safe_strip(ref)
+
+    year = _extract_year(ref)
+    doi = _extract_doi(ref)
+
+    words = re.findall(r"[A-Za-z]{4,}", ref)
+
+    title_words = words[3:8]
+
+    authors = []
+    if "," in ref:
+        authors.append(ref.split(",")[0].lower())
+
+    query = " ".join(authors + title_words + [year])
+
+    return query, authors, year, doi
+
+
+# ---------------------------------------------------------
+# Candidate Extraction
+# ---------------------------------------------------------
+
+def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
+
+    src = cand.get("source")
+    item = cand.get("item") or {}
 
     doi = ""
     title = ""
     year = ""
-    authors: List[str] = []
-    api_score = 0
-    journal = ""
+    authors = []
 
     if src == "crossref":
 
         doi = _safe_strip(item.get("DOI"))
 
         titles = item.get("title") or []
-        title_raw = _safe_str(titles[0]) if titles else ""
-        title = _norm_text(title_raw)
+        title = _norm_text(titles[0]) if titles else ""
 
-        journal = _safe_str((item.get("container-title") or [""])[0])
+        year = str((item.get("issued", {}).get("date-parts", [[None]])[0][0]))
 
-        try:
-            api_score = int(item.get("score") or 0)
-        except Exception:
-            api_score = 0
-
-        pp = (((item.get("published-print") or {}).get("date-parts")) or [[None]])
-        po = (((item.get("published-online") or {}).get("date-parts")) or [[None]])
-        y = (pp[0][0] if pp and pp[0] else None) or (po[0][0] if po and po[0] else None)
-        year = _safe_str(y)
-
-        for au in (item.get("author") or [])[:10]:
-            fam = _safe_strip((au or {}).get("family")).lower()
-            fam = re.sub(r"[^a-z\-']", "", fam)
-            if fam:
-                authors.append(fam)
+        for au in (item.get("author") or [])[:5]:
+            fam = _safe_strip(au.get("family")).lower()
+            authors.append(fam)
 
     elif src == "openalex":
 
-        doi_raw = item.get("doi")
-        doi = _safe_str(doi_raw).replace("https://doi.org/", "")
+        doi = _safe_strip(item.get("doi")).replace("https://doi.org/", "")
+        title = _norm_text(item.get("title"))
+        year = str(item.get("publication_year"))
 
-        title = _norm_text(_safe_strip(item.get("title")))
+        for a in (item.get("authorships") or [])[:5]:
+            name = a.get("author", {}).get("display_name")
+            if name:
+                authors.append(name.split()[-1].lower())
 
-        year = _safe_strip(item.get("publication_year"))
-
-        journal = _safe_str((item.get("host_venue") or {}).get("display_name"))
-
-        for a in (item.get("authorships") or [])[:10]:
-            au = (a or {}).get("author") or {}
-            nm = _safe_strip(au.get("display_name"))
-            if nm:
-                last = nm.split()[-1].lower()
-                last = re.sub(r"[^a-z\-']", "", last)
-                if last:
-                    authors.append(last)
-
-    return doi, title, year, authors, api_score, journal
+    return doi, title, year, authors
 
 
 # ---------------------------------------------------------
-# Peer review detection (ACII helper)
+# Scoring
 # ---------------------------------------------------------
 
-def _detect_peer_review(source: str, journal: str) -> bool:
-    if source in {"crossref", "openalex"} and journal:
-        return True
-    return False
+def _score(ref_title, ref_authors, ref_year, cand_title, cand_authors, cand_year):
+
+    title_score = fuzz.token_set_ratio(ref_title, cand_title)
+
+    author_overlap = len(set(ref_authors).intersection(set(cand_authors)))
+
+    year_match = 1 if ref_year and cand_year and ref_year == cand_year else 0
+
+    score = (title_score * 1.6) + (author_overlap * 20) + (year_match * 10)
+
+    return {
+        "score": int(score),
+        "title_score": int(title_score),
+        "author_overlap": author_overlap,
+        "year_match": year_match,
+    }
 
 
 # ---------------------------------------------------------
-# Main verification batch
+# Classification (Lowered Thresholds)
+# ---------------------------------------------------------
+
+def _classify(doi_match, title_score, score):
+
+    if doi_match:
+        return "verified"
+
+    if title_score >= 72:
+        return "verified"
+
+    if title_score >= 60:
+        return "likely"
+
+    if title_score >= 45:
+        return "needs_review"
+
+    return "not_found"
+
+
+# ---------------------------------------------------------
+# Main Verification
 # ---------------------------------------------------------
 
 def verify_references_batch(
     references: List[str],
     style: str = "apa",
-    max_to_check: int = 0,
     throttle_s: float = 0.12,
     use_crossref: bool = True,
     use_openalex: bool = True,
-) -> List[Dict[str, Any]]:
+):
 
-    refs = [r for r in (references or []) if _safe_strip(r)]
+    rows = []
 
-    if max_to_check and max_to_check > 0:
-        refs = refs[:max_to_check]
+    for ref in references:
 
-    rows: List[Dict[str, Any]] = []
+        query, ref_authors, ref_year, ref_doi = _build_query(ref)
 
-    for i, ref in enumerate(refs):
+        ref_title = _norm_text(ref)
 
-        ref_raw = _safe_strip(ref)
-
-        row: Dict[str, Any] = {
-
-            "reference_id": i + 1,
-            "reference": ref_raw,
-
+        row = {
+            "reference": ref,
             "status": "offline",
             "source": "",
             "score": 0,
-
             "doi": "",
             "matched_title": "",
             "matched_year": "",
             "matched_authors": "",
-
             "title_score": 0,
             "author_overlap": 0,
             "year_match": 0,
-
-            # ACII metadata
-            "journal": "",
-            "peer_reviewed": False,
-            "citations_in_text": 1,
-            "self_citation": False,
-
-            "attempts": [],
+            "query_used": query,
         }
 
-        try:
+        candidates = []
 
-            # ---------------- Crossref ----------------
+        try:
 
             if use_crossref:
 
                 url = "https://api.crossref.org/works"
-                params = {"query.bibliographic": ref_raw[:200], "rows": 5}
+
+                params = {
+                    "query.bibliographic": query,
+                    "rows": 5,
+                    "sort": "score",
+                }
 
                 data = _safe_get_json(url, params)
 
-                items = (data or {}).get("message", {}).get("items", [])
+                for it in (data or {}).get("message", {}).get("items", []):
+                    candidates.append({"source": "crossref", "item": it})
 
-                if items:
-
-                    cand = {"source": "crossref", "item": items[0]}
-
-                    doi, title, year, authors, api_score, journal = _candidate_fields(cand)
-
-                    row.update({
-
-                        "status": "verified",
-                        "source": "crossref",
-
-                        "doi": doi,
-                        "matched_title": title,
-                        "matched_year": year,
-                        "matched_authors": ", ".join(authors),
-
-                        "journal": journal,
-                        "peer_reviewed": _detect_peer_review("crossref", journal),
-
-                    })
-
-            # ---------------- OpenAlex fallback ----------------
-
-            if row["status"] != "verified" and use_openalex:
+            if use_openalex:
 
                 url = "https://api.openalex.org/works"
-                params = {"search": ref_raw[:200], "per-page": 3}
+
+                params = {"search": query, "per-page": 5}
 
                 data = _safe_get_json(url, params)
 
-                results = (data or {}).get("results", [])
+                for it in (data or {}).get("results", []):
+                    candidates.append({"source": "openalex", "item": it})
 
-                if results:
+            best_score = -1
+            best = None
+            best_meta = {}
 
-                    cand = {"source": "openalex", "item": results[0]}
+            for cand in candidates:
 
-                    doi, title, year, authors, api_score, journal = _candidate_fields(cand)
+                doi, title, year, authors = _candidate_fields(cand)
 
-                    row.update({
+                meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
 
-                        "status": "likely",
-                        "source": "openalex",
+                doi_match = ref_doi and doi == ref_doi
 
-                        "doi": doi,
-                        "matched_title": title,
-                        "matched_year": year,
-                        "matched_authors": ", ".join(authors),
+                meta_score = meta["score"] + (40 if doi_match else 0)
 
-                        "journal": journal,
-                        "peer_reviewed": _detect_peer_review("openalex", journal),
+                if meta_score > best_score:
+                    best_score = meta_score
+                    best = cand
+                    best_meta = meta
+                    best_meta["doi_match"] = doi_match
+                    best_meta["doi"] = doi
+                    best_meta["title"] = title
+                    best_meta["year"] = year
+                    best_meta["authors"] = authors
 
-                    })
+            if best:
 
-            rows.append(row)
+                status = _classify(
+                    best_meta["doi_match"],
+                    best_meta["title_score"],
+                    best_meta["score"],
+                )
+
+                row.update({
+                    "status": status,
+                    "source": best["source"],
+                    "score": best_meta["score"],
+                    "doi": best_meta["doi"],
+                    "matched_title": best_meta["title"],
+                    "matched_year": best_meta["year"],
+                    "matched_authors": ", ".join(best_meta["authors"]),
+                    "title_score": best_meta["title_score"],
+                    "author_overlap": best_meta["author_overlap"],
+                    "year_match": best_meta["year_match"],
+                })
 
         except Exception as e:
-
             row["status"] = "offline"
-            row["error"] = _safe_str(e)
+            row["error"] = str(e)
 
-            rows.append(row)
+        rows.append(row)
 
         time.sleep(throttle_s)
 
@@ -276,8 +306,3 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
-
-
-
-
-
