@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (Stable Version) */
+/* static/app.js — Citation Crosschecker Dashboard (ACII Enhanced Version) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -9,8 +9,8 @@ CONFIG
 ------------------------------------------------------- */
 
 const CONFIG = {
-    POLL_INTERVAL: 1200,
-    MAX_VERIFY_DISPLAY: 500
+POLL_INTERVAL: 1200,
+MAX_VERIFY_DISPLAY: 500
 };
 
 /* -------------------------------------------------------
@@ -44,6 +44,7 @@ verifyBody: $("verifyBody"),
 
 aciiCard: $("aciiCard"),
 aciiValue: $("aciiValue"),
+
 aciiV: $("aciiV"),
 aciiC: $("aciiC"),
 aciiA: $("aciiA"),
@@ -59,7 +60,7 @@ let CURRENT_DATA = null;
 UTILITY
 ------------------------------------------------------- */
 
-function esc(s) {
+function esc(s){
 return String(s ?? "")
 .replaceAll("&","&amp;")
 .replaceAll("<","&lt;")
@@ -163,7 +164,7 @@ el.summaryTable.innerHTML = `
 }
 
 /* -------------------------------------------------------
-ACII
+ACII (UPDATED)
 ------------------------------------------------------- */
 
 function renderACII(data){
@@ -173,14 +174,70 @@ const acii = data?.acii;
 if(!acii) return;
 
 if(el.aciiCard) el.aciiCard.style.display="block";
-if(el.aciiValue) el.aciiValue.textContent = acii.ACII ?? "--";
+
+/* -------------------------
+Composite ACII
+--------------------------*/
+
+if(el.aciiValue){
+
+const score = acii.ACII?.score ?? "--";
+const category = acii.ACII?.category ?? "";
+const remark = acii.ACII?.remark ?? "";
+
+el.aciiValue.innerHTML = `
+<div class="aciiScore">${score}</div>
+<div class="aciiCategory">${category}</div>
+<div class="aciiRemark">${remark}</div>
+`;
+
+}
+
+/* -------------------------
+Component Indicators
+--------------------------*/
 
 const c = acii.components || {};
 
-if(el.aciiV) el.aciiV.textContent = c.verification_integrity ?? "";
-if(el.aciiC) el.aciiC.textContent = c.citation_concentration ?? "";
-if(el.aciiA) el.aciiA.textContent = c.author_diversity ?? "";
-if(el.aciiT) el.aciiT.textContent = c.temporal_balance ?? "";
+if(el.aciiV){
+
+el.aciiV.innerHTML = `
+<div class="score">${c.verification_integrity?.score ?? ""}</div>
+<div class="category">${c.verification_integrity?.category ?? ""}</div>
+<div class="remark">${c.verification_integrity?.remark ?? ""}</div>
+`;
+
+}
+
+if(el.aciiC){
+
+el.aciiC.innerHTML = `
+<div class="score">${c.citation_concentration?.score ?? ""}</div>
+<div class="category">${c.citation_concentration?.category ?? ""}</div>
+<div class="remark">${c.citation_concentration?.remark ?? ""}</div>
+`;
+
+}
+
+if(el.aciiA){
+
+el.aciiA.innerHTML = `
+<div class="score">${c.author_diversity?.score ?? ""}</div>
+<div class="category">${c.author_diversity?.category ?? ""}</div>
+<div class="remark">${c.author_diversity?.remark ?? ""}</div>
+`;
+
+}
+
+if(el.aciiT){
+
+el.aciiT.innerHTML = `
+<div class="score">${c.temporal_balance?.score ?? ""}</div>
+<div class="category">${c.temporal_balance?.category ?? ""}</div>
+<div class="remark">${c.temporal_balance?.remark ?? ""}</div>
+`;
+
+}
 
 }
 
@@ -228,59 +285,6 @@ el.uncitedBody.innerHTML = rows.map((r,i)=>`
 <tr>
 <td>${i+1}</td>
 <td>${esc(r.reference || r)}</td>
-</tr>
-`).join("");
-
-}
-
-/* -------------------------------------------------------
-IN-TEXT → REFERENCE
-------------------------------------------------------- */
-
-function renderC2R(data){
-
-const rows = data?.reconciliation_intext_to_reference || [];
-
-if(!el.c2rBody) return;
-
-if(!rows.length){
-el.c2rBody.innerHTML=`<tr><td colspan="5">No mapping available</td></tr>`;
-return;
-}
-
-el.c2rBody.innerHTML = rows.map((r,i)=>`
-<tr>
-<td>${i+1}</td>
-<td>${esc(r.status || "")}</td>
-<td>${esc(r.in_text || "")}</td>
-<td>${esc(r.matched_reference || "")}</td>
-<td>${esc(r.flags || "")}</td>
-</tr>
-`).join("");
-
-}
-
-/* -------------------------------------------------------
-REFERENCE → IN-TEXT
-------------------------------------------------------- */
-
-function renderR2C(data){
-
-const rows = data?.reconciliation_reference_to_intext || [];
-
-if(!el.r2cBody) return;
-
-if(!rows.length){
-el.r2cBody.innerHTML=`<tr><td colspan="4">No mapping available</td></tr>`;
-return;
-}
-
-el.r2cBody.innerHTML = rows.map((r,i)=>`
-<tr>
-<td>${i+1}</td>
-<td>${esc(r.times_cited ?? 0)}</td>
-<td>${esc(r.reference)}</td>
-<td>${esc((r.cited_by || []).slice(0,3).join("; "))}</td>
 </tr>
 `).join("");
 
@@ -349,8 +353,6 @@ renderSummaryTable(CURRENT_DATA);
 renderACII(CURRENT_DATA);
 renderMissing(CURRENT_DATA);
 renderUncited(CURRENT_DATA);
-renderC2R(CURRENT_DATA);
-renderR2C(CURRENT_DATA);
 renderVerify(CURRENT_DATA);
 
 }
