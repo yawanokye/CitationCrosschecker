@@ -2,15 +2,13 @@
 
 import io
 import os
-import time
 import uuid
-import json
 import threading
 from datetime import datetime
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -19,17 +17,24 @@ from engine import run_crosscheck
 from verify import verify_references_batch
 from acii import compute_acii
 
+
 APP_TITLE = "CitationCrosschecker"
 
 app = FastAPI(title=APP_TITLE)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(BASE_DIR, "static")),
+    name="static"
+)
 
 _store: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
+
 
 # --------------------------------------------------
 # Utility
@@ -37,6 +42,7 @@ _lock = threading.Lock()
 
 def now():
     return datetime.utcnow().isoformat()
+
 
 def store_result(result):
 
@@ -62,7 +68,7 @@ def get_job(job_id):
 
 
 # --------------------------------------------------
-# NEW: reference -> citation mapping
+# Reference -> citation mapping
 # --------------------------------------------------
 
 def build_reference_to_intext(result):
@@ -96,15 +102,22 @@ def build_reference_to_intext(result):
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request}
+    )
 
 
 # --------------------------------------------------
-# INITIAL VERIFY
+# INITIAL DOCUMENT CHECK
 # --------------------------------------------------
 
 @app.post("/verify")
-async def verify(file: UploadFile = File(...), style: str = Form("apa")):
+async def verify(
+    file: UploadFile = File(...),
+    style: str = Form("apa")
+):
 
     data = await file.read()
 
@@ -118,7 +131,7 @@ async def verify(file: UploadFile = File(...), style: str = Form("apa")):
 
     result = await run_in_threadpool(run)
 
-    # Build missing interface structures
+    # Build reference -> in-text mapping
     result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
 
     job_id = store_result(result)
@@ -130,7 +143,7 @@ async def verify(file: UploadFile = File(...), style: str = Form("apa")):
 
 
 # --------------------------------------------------
-# ONLINE VERIFY
+# ONLINE VERIFICATION
 # --------------------------------------------------
 
 @app.post("/verify-online")
@@ -139,7 +152,7 @@ async def verify_online(job_id: str = Form(...)):
     job = get_job(job_id)
 
     if not job:
-        raise HTTPException(404)
+        raise HTTPException(404, "Job not found")
 
     refs = job["result"].get("references_raw", [])
 
@@ -159,30 +172,51 @@ async def verify_online(job_id: str = Form(...)):
         }
 
         for r in rows:
-            summary[r["status"]] += 1
+
+            status = r.get("status", "offline")
+
+            if status not in summary:
+                status = "offline"
+
+            summary[status] += 1
 
         result = job["result"]
 
+        # Attach verification results
         result["online_verification"] = {
             "rows": rows,
             "summary": summary
         }
 
-        # ACII
-        result["acii"] = compute_acii(result, rows)
+        # --------------------------------------------------
+        # Compute ACII
+        # --------------------------------------------------
 
-        # rebuild mapping
+        try:
+
+            result["acii"] = compute_acii(result, rows)
+
+        except Exception as e:
+
+            result["acii"] = {
+                "error": str(e)
+            }
+
+        # --------------------------------------------------
+        # rebuild reference mapping
+        # --------------------------------------------------
+
         result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
 
         job["online"]["state"] = "done"
 
-    threading.Thread(target=worker).start()
+    threading.Thread(target=worker, daemon=True).start()
 
     return {"started": True}
 
 
 # --------------------------------------------------
-# STATUS
+# STATUS POLLING
 # --------------------------------------------------
 
 @app.get("/online/status")
@@ -191,7 +225,7 @@ def online_status(job_id: str):
     job = get_job(job_id)
 
     if not job:
-        raise HTTPException(404)
+        raise HTTPException(404, "Job not found")
 
     return {
         "online": job["online"],
