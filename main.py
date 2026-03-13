@@ -1,11 +1,13 @@
-# main.py — FULL FILE (Citation Crosschecker Render Optimized)
+# main.py — FULL FILE (Citation Crosschecker Render Optimized - FIXED VERSION)
 
 import io
 import os
+import re
 import uuid
 import threading
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List
+from collections import defaultdict
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse
@@ -45,7 +47,6 @@ def now():
 
 
 def store_result(result):
-
     job_id = uuid.uuid4().hex
 
     with _lock:
@@ -62,38 +63,75 @@ def store_result(result):
 
 
 def get_job(job_id):
-
     with _lock:
         return _store.get(job_id)
 
 
 # --------------------------------------------------
-# Reference -> citation mapping
+# Helper function to normalize text for comparison
+# --------------------------------------------------
+
+def _norm_text_citation(s: str) -> str:
+    """Normalize citation text for duplicate detection"""
+    if not s:
+        return ""
+    s = s.lower()
+    # Remove page numbers, punctuation, and extra spaces
+    s = re.sub(r'[^a-z0-9]', '', s)
+    return s.strip()
+
+
+# --------------------------------------------------
+# Reference -> citation mapping (FIXED FOR UNIQUENESS)
 # --------------------------------------------------
 
 def build_reference_to_intext(result):
-
+    """
+    Build mapping from references to in-text citations.
+    Ensures unique citations per reference.
+    """
     mapping = {}
-
     rows = result.get("reconciliation_intext_to_reference", [])
-
+    
+    # Track seen citations per reference to avoid duplicates
+    seen_per_ref = {}
+    
     for r in rows:
-
         ref = r.get("matched_reference")
-
         if not ref:
             continue
-
-        mapping.setdefault(ref, {
-            "reference": ref,
-            "times_cited": 0,
-            "cited_by": []
-        })
-
-        mapping[ref]["times_cited"] += 1
-        mapping[ref]["cited_by"].append(r.get("in_text"))
-
-    return list(mapping.values())
+            
+        # Initialize if not exists
+        if ref not in mapping:
+            mapping[ref] = {
+                "reference": ref,
+                "times_cited": 0,
+                "cited_by": []
+            }
+            seen_per_ref[ref] = set()
+        
+        # Get the citation text
+        in_text = r.get("in_text", "")
+        
+        # Create a normalized version for comparison
+        # Remove page numbers, spaces, punctuation for comparison
+        in_text_norm = _norm_text_citation(in_text)
+        
+        # Skip if empty
+        if not in_text_norm:
+            continue
+        
+        # Check if we've seen this citation before for this reference
+        if in_text_norm not in seen_per_ref[ref]:
+            seen_per_ref[ref].add(in_text_norm)
+            mapping[ref]["times_cited"] += 1
+            mapping[ref]["cited_by"].append(in_text)
+    
+    # Convert to list and sort by times_cited (most cited first)
+    result_list = list(mapping.values())
+    result_list.sort(key=lambda x: x["times_cited"], reverse=True)
+    
+    return result_list
 
 
 # --------------------------------------------------
@@ -102,7 +140,6 @@ def build_reference_to_intext(result):
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-
     return templates.TemplateResponse(
         "index.html",
         {"request": request}
@@ -118,7 +155,6 @@ async def verify(
     file: UploadFile = File(...),
     style: str = Form("apa")
 ):
-
     data = await file.read()
 
     def run():
@@ -131,8 +167,22 @@ async def verify(
 
     result = await run_in_threadpool(run)
 
-    # Build reference -> in-text mapping
+    # Build reference -> in-text mapping (deduplicated)
     result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
+    
+    # Also ensure in-text citations are unique in the forward mapping
+    # This is handled by the reconciliation logic in engine.py, but we'll add
+    # a post-processing step to be safe
+    if "reconciliation_intext_to_reference" in result:
+        # Deduplicate in-text to reference mapping
+        unique_cites = {}
+        for item in result["reconciliation_intext_to_reference"]:
+            cite_text = item.get("in_text", "")
+            cite_norm = _norm_text_citation(cite_text)
+            if cite_norm and cite_norm not in unique_cites:
+                unique_cites[cite_norm] = item
+        
+        result["reconciliation_intext_to_reference"] = list(unique_cites.values())
 
     job_id = store_result(result)
 
@@ -148,7 +198,6 @@ async def verify(
 
 @app.post("/verify-online")
 async def verify_online(job_id: str = Form(...)):
-
     job = get_job(job_id)
 
     if not job:
@@ -160,55 +209,63 @@ async def verify_online(job_id: str = Form(...)):
     job["online"]["total"] = len(refs)
 
     def worker():
-
-        rows = verify_references_batch(refs)
-
-        summary = {
-            "verified": 0,
-            "likely": 0,
-            "needs_review": 0,
-            "not_found": 0,
-            "offline": 0
-        }
-
-        for r in rows:
-
-            status = r.get("status", "offline")
-
-            if status not in summary:
-                status = "offline"
-
-            summary[status] += 1
-
-        result = job["result"]
-
-        # Attach verification results
-        result["online_verification"] = {
-            "rows": rows,
-            "summary": summary
-        }
-
-        # --------------------------------------------------
-        # Compute ACII
-        # --------------------------------------------------
-
         try:
+            rows = verify_references_batch(refs)
 
-            result["acii"] = compute_acii(result, rows)
-
-        except Exception as e:
-
-            result["acii"] = {
-                "error": str(e)
+            summary = {
+                "verified": 0,
+                "likely": 0,
+                "needs_review": 0,
+                "not_found": 0,
+                "offline": 0
             }
 
-        # --------------------------------------------------
-        # rebuild reference mapping
-        # --------------------------------------------------
+            for r in rows:
+                status = r.get("status", "offline")
+                if status in summary:
+                    summary[status] += 1
+                else:
+                    summary["offline"] += 1
 
-        result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
+            result = job["result"]
 
-        job["online"]["state"] = "done"
+            # Attach verification results
+            result["online_verification"] = {
+                "rows": rows,
+                "summary": summary
+            }
+
+            # --------------------------------------------------
+            # Compute ACII
+            # --------------------------------------------------
+            try:
+                result["acii"] = compute_acii(result, rows)
+            except Exception as e:
+                result["acii"] = {
+                    "error": str(e)
+                }
+
+            # --------------------------------------------------
+            # rebuild reference mapping (deduplicated)
+            # --------------------------------------------------
+            result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
+            
+            # Also deduplicate in-text to reference mapping
+            if "reconciliation_intext_to_reference" in result:
+                unique_cites = {}
+                for item in result["reconciliation_intext_to_reference"]:
+                    cite_text = item.get("in_text", "")
+                    cite_norm = _norm_text_citation(cite_text)
+                    if cite_norm and cite_norm not in unique_cites:
+                        unique_cites[cite_norm] = item
+                
+                result["reconciliation_intext_to_reference"] = list(unique_cites.values())
+
+            job["online"]["state"] = "done"
+            
+        except Exception as e:
+            job["online"]["state"] = "error"
+            job["online"]["message"] = str(e)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -221,7 +278,6 @@ async def verify_online(job_id: str = Form(...)):
 
 @app.get("/online/status")
 def online_status(job_id: str):
-
     job = get_job(job_id)
 
     if not job:
@@ -230,4 +286,16 @@ def online_status(job_id: str):
     return {
         "online": job["online"],
         "result": job["result"]
+    }
+
+
+# --------------------------------------------------
+# HEALTH CHECK
+# --------------------------------------------------
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy",
+        "timestamp": now()
     }
