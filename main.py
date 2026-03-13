@@ -82,50 +82,50 @@ def _norm_text_citation(s: str) -> str:
 
 
 # --------------------------------------------------
-# Reference -> citation mapping (FIXED FOR UNIQUENESS)
+# Reference -> citation mapping (FIXED - PROPER COUNTING)
 # --------------------------------------------------
 
 def build_reference_to_intext(result):
     """
     Build mapping from references to in-text citations.
-    Ensures unique citations per reference.
+    Counts EACH citation occurrence, but prevents duplicate ENTRIES.
     """
     mapping = {}
     rows = result.get("reconciliation_intext_to_reference", [])
     
-    # Track seen citations per reference to avoid duplicates
-    seen_per_ref = {}
+    # Track ALL citations to count them properly
+    # But track unique combinations for display
+    citation_counter = defaultdict(int)
+    citation_samples = defaultdict(list)
+    seen_samples = defaultdict(set)
     
     for r in rows:
         ref = r.get("matched_reference")
         if not ref:
             continue
             
-        # Initialize if not exists
-        if ref not in mapping:
-            mapping[ref] = {
-                "reference": ref,
-                "times_cited": 0,
-                "cited_by": []
-            }
-            seen_per_ref[ref] = set()
-        
         # Get the citation text
         in_text = r.get("in_text", "")
         
-        # Create a normalized version for comparison
-        # Remove page numbers, spaces, punctuation for comparison
+        # Create a normalized version for sample deduplication only
         in_text_norm = _norm_text_citation(in_text)
         
-        # Skip if empty
-        if not in_text_norm:
-            continue
+        # COUNT EVERY CITATION (this is for the times_cited number)
+        citation_counter[ref] += 1
         
-        # Check if we've seen this citation before for this reference
-        if in_text_norm not in seen_per_ref[ref]:
-            seen_per_ref[ref].add(in_text_norm)
-            mapping[ref]["times_cited"] += 1
-            mapping[ref]["cited_by"].append(in_text)
+        # For display samples, only keep unique ones (limited to 6)
+        if in_text_norm and in_text_norm not in seen_samples[ref]:
+            if len(citation_samples[ref]) < 6:
+                seen_samples[ref].add(in_text_norm)
+                citation_samples[ref].append(in_text)
+    
+    # Build the result
+    for ref in citation_counter:
+        mapping[ref] = {
+            "reference": ref,
+            "times_cited": citation_counter[ref],  # This counts ALL occurrences
+            "cited_by": citation_samples.get(ref, [])  # This shows unique samples
+        }
     
     # Convert to list and sort by times_cited (most cited first)
     result_list = list(mapping.values())
@@ -299,3 +299,4 @@ def health():
         "status": "healthy",
         "timestamp": now()
     }
+
