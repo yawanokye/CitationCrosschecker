@@ -203,40 +203,73 @@ const acii = data?.acii;
 if(!acii) return;
 
 if(el.aciiCard) el.aciiCard.style.display="block";
-if(el.aciiValue) el.aciiValue.textContent = acii.ACII ?? "--";
+
+if(el.aciiValue)
+el.aciiValue.textContent = acii.ACII ?? "--";
 
 const c = acii.components || {};
 
-/* scores */
 
-$("aciiV").textContent = c.verification_integrity ?? "";
-$("aciiC").textContent = c.citation_concentration ?? "";
-$("aciiA").textContent = c.author_diversity ?? "";
-$("aciiT").textContent = c.temporal_balance ?? "";
+/* verification */
 
-/* categories */
+if($("aciiV"))
+$("aciiV").textContent =
+c.verification_integrity?.score ?? "";
 
-$("aciiVcat").textContent = aciiCategory(c.verification_integrity);
-$("aciiCcat").textContent = aciiCategory(c.citation_concentration);
-$("aciiAcat").textContent = aciiCategory(c.author_diversity);
-$("aciiTcat").textContent = aciiCategory(c.temporal_balance);
+if($("aciiVcat"))
+$("aciiVcat").textContent =
+c.verification_integrity?.category ?? "";
 
-/* remarks */
-
+if($("aciiVremark"))
 $("aciiVremark").textContent =
-aciiRemark("verification",c.verification_integrity);
+c.verification_integrity?.remark ?? "";
 
+
+/* concentration */
+
+if($("aciiC"))
+$("aciiC").textContent =
+c.citation_concentration?.score ?? "";
+
+if($("aciiCcat"))
+$("aciiCcat").textContent =
+c.citation_concentration?.category ?? "";
+
+if($("aciiCremark"))
 $("aciiCremark").textContent =
-aciiRemark("concentration",c.citation_concentration);
+c.citation_concentration?.remark ?? "";
 
+
+/* diversity */
+
+if($("aciiA"))
+$("aciiA").textContent =
+c.author_diversity?.score ?? "";
+
+if($("aciiAcat"))
+$("aciiAcat").textContent =
+c.author_diversity?.category ?? "";
+
+if($("aciiAremark"))
 $("aciiAremark").textContent =
-aciiRemark("diversity",c.author_diversity);
+c.author_diversity?.remark ?? "";
 
+
+/* temporal */
+
+if($("aciiT"))
+$("aciiT").textContent =
+c.temporal_balance?.score ?? "";
+
+if($("aciiTcat"))
+$("aciiTcat").textContent =
+c.temporal_balance?.category ?? "";
+
+if($("aciiTremark"))
 $("aciiTremark").textContent =
-aciiRemark("temporal",c.temporal_balance);
+c.temporal_balance?.remark ?? "";
 
 }
-
 /* -------------------------------------------------------
 MASTER RENDER
 ------------------------------------------------------- */
