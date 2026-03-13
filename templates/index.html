@@ -1,41 +1,33 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Citation Crosschecker</title>
-<link rel="stylesheet" href="/static/app.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Citation Crosschecker</title>
+  <link rel="stylesheet" href="/static/app.css" />
 </head>
-
 <body>
-
-<div class="page">
+  <div class="page">
 
 <header class="topbar">
+  <div class="brand">
+    <div class="logo">CC</div>
+    <div>
+      <div class="title">Citation Crosschecker</div>
+      <div class="subtitle">Checks in-text citations vs reference list. Optional online verification.</div>
+    </div>
+  </div>
 
-<div class="brand">
-<div class="logo">CC</div>
-
-<div>
-<div class="title">Citation Crosschecker</div>
-<div class="subtitle">
-Checks in-text citations vs reference list. Optional online verification.
-</div>
-</div>
-</div>
-
-<div class="top-actions">
-<button id="btnExportCsvTop" class="btn btn-light" disabled>Export CSV</button>
-<button id="btnExportWordTop" class="btn btn-light" disabled>Export Word</button>
-</div>
-
+  <div class="top-actions">
+    <button id="btnExportCsvTop" class="btn btn-light" disabled>Export CSV</button>
+    <button id="btnExportWordTop" class="btn btn-light" disabled>Export Word</button>
+  </div>
 </header>
 
 
 <main class="content">
 
 <section class="card">
-
 <h2 class="h2">Run</h2>
 
 <div class="form-grid">
@@ -74,7 +66,6 @@ Checks in-text citations vs reference list. Optional online verification.
 <div class="dashboard" id="dash"></div>
 </div>
 
-
 <div class="tabs">
 <button class="tab active" data-tab="summaryPane">Summary</button>
 <button class="tab" data-tab="missingPane">Missing</button>
@@ -86,7 +77,6 @@ Checks in-text citations vs reference list. Optional online verification.
 
 
 <div class="tabPanes">
-
 
 <!-- SUMMARY -->
 <div id="summaryPane" class="tabPane active">
@@ -109,25 +99,36 @@ Use the tabs to explore results. Online verification can take time on large PDFs
 </table>
 </div>
 
-
 <!-- ACII PANEL -->
-
 <div id="aciiCard" class="card" style="margin-top:20px; display:none;">
 
 <h3 class="h3">Anokye Citation Integrity Index (ACII)</h3>
 
-<div style="font-size:36px;font-weight:700;margin-top:6px;">
+<div class="aciiScoreBox">
+
+<div class="aciiScoreValue">
 <span id="aciiValue">--</span>
 </div>
 
-<div class="tableWrap" style="margin-top:14px;">
+<div id="aciiInterpretation" class="aciiInterpretation"></div>
 
+<div class="aciiScale">
+<div>90–100 <span>Excellent citation integrity</span></div>
+<div>80–89 <span>Very good citation integrity</span></div>
+<div>70–79 <span>Good citation integrity</span></div>
+<div>60–69 <span>Moderate citation integrity</span></div>
+<div>50–59 <span>Weak citation integrity</span></div>
+<div>Below 50 <span>Poor citation integrity</span></div>
+</div>
+
+</div>
+
+<div class="tableWrap" style="margin-top:12px;">
 <table class="tbl" style="min-width:640px;">
-
 <thead>
 <tr>
 <th>Indicator</th>
-<th style="width:90px;">Score</th>
+<th style="width:100px;">Score</th>
 <th style="width:140px;">Category</th>
 <th>Remark</th>
 </tr>
@@ -136,11 +137,8 @@ Use the tabs to explore results. Online verification can take time on large PDFs
 <tbody>
 
 <tr>
-<td>
+<td title="Measures percentage of references verified in scholarly databases.">
 Verification Integrity
-<div class="hint">
-Measures percentage of references successfully verified in scholarly databases.
-</div>
 </td>
 <td id="aciiVScore"></td>
 <td id="aciiVCategory"></td>
@@ -148,11 +146,8 @@ Measures percentage of references successfully verified in scholarly databases.
 </tr>
 
 <tr>
-<td>
+<td title="Measures whether citations rely heavily on a few sources.">
 Citation Concentration
-<div class="hint">
-Measures whether citations rely heavily on a few sources.
-</div>
 </td>
 <td id="aciiCScore"></td>
 <td id="aciiCCategory"></td>
@@ -160,11 +155,8 @@ Measures whether citations rely heavily on a few sources.
 </tr>
 
 <tr>
-<td>
+<td title="Measures diversity of authors represented in the reference list.">
 Author Diversity
-<div class="hint">
-Measures the diversity of authors represented in the reference list.
-</div>
 </td>
 <td id="aciiAScore"></td>
 <td id="aciiACategory"></td>
@@ -172,11 +164,8 @@ Measures the diversity of authors represented in the reference list.
 </tr>
 
 <tr>
-<td>
+<td title="Measures spread of references across publication years.">
 Temporal Balance
-<div class="hint">
-Measures the spread of references across publication years.
-</div>
 </td>
 <td id="aciiTScore"></td>
 <td id="aciiTCategory"></td>
@@ -184,9 +173,7 @@ Measures the spread of references across publication years.
 </tr>
 
 </tbody>
-
 </table>
-
 </div>
 
 </div>
@@ -198,14 +185,12 @@ Measures the spread of references across publication years.
 
 
 <!-- MISSING -->
-
 <div id="missingPane" class="tabPane">
 
 <h3 class="h3">Citations in text missing from references</h3>
 
 <div class="tableWrap">
 <table class="tbl">
-
 <thead>
 <tr>
 <th style="width:60px;">No.</th>
@@ -213,9 +198,7 @@ Measures the spread of references across publication years.
 <th style="width:120px;">Count</th>
 </tr>
 </thead>
-
 <tbody id="missingBody"></tbody>
-
 </table>
 </div>
 
@@ -223,41 +206,32 @@ Measures the spread of references across publication years.
 
 
 <!-- UNCITED -->
-
 <div id="uncitedPane" class="tabPane">
 
 <h3 class="h3">References not cited in text</h3>
 
 <div class="tableWrap">
-
 <table class="tbl">
-
 <thead>
 <tr>
 <th style="width:60px;">No.</th>
 <th>Reference</th>
 </tr>
 </thead>
-
 <tbody id="uncitedBody"></tbody>
-
 </table>
-
 </div>
 
 </div>
 
 
-<!-- IN-TEXT → REF -->
-
+<!-- C2R -->
 <div id="c2rPane" class="tabPane">
 
 <h3 class="h3">In-text → Reference mapping</h3>
 
 <div class="tableWrap">
-
 <table class="tbl">
-
 <thead>
 <tr>
 <th style="width:60px;">No.</th>
@@ -267,26 +241,20 @@ Measures the spread of references across publication years.
 <th>Flags</th>
 </tr>
 </thead>
-
 <tbody id="c2rBody"></tbody>
-
 </table>
-
 </div>
 
 </div>
 
 
-<!-- REF → IN-TEXT -->
-
+<!-- R2C -->
 <div id="r2cPane" class="tabPane">
 
 <h3 class="h3">Reference → In-text mapping</h3>
 
 <div class="tableWrap">
-
 <table class="tbl">
-
 <thead>
 <tr>
 <th style="width:60px;">No.</th>
@@ -295,18 +263,14 @@ Measures the spread of references across publication years.
 <th>Cited by</th>
 </tr>
 </thead>
-
 <tbody id="r2cBody"></tbody>
-
 </table>
-
 </div>
 
 </div>
 
 
-<!-- ONLINE VERIFICATION -->
-
+<!-- VERIFY -->
 <div id="verifyPane" class="tabPane">
 
 <div class="verify-top">
@@ -315,9 +279,7 @@ Measures the spread of references across publication years.
 </div>
 
 <div class="tableWrap">
-
 <table class="tbl">
-
 <thead>
 <tr>
 <th>No.</th>
@@ -331,21 +293,17 @@ Measures the spread of references across publication years.
 <th>Query used</th>
 </tr>
 </thead>
-
 <tbody id="verifyBody"></tbody>
-
 </table>
-
 </div>
 
 </div>
 
 </div>
-
 </section>
 
-</main>
 
+</main>
 
 <footer class="footer">
 <div>© Prof Anokye M. Adam, University of Cape Coast.</div>
@@ -353,7 +311,6 @@ Measures the spread of references across publication years.
 </footer>
 
 </div>
-
 
 <script src="/static/app.js"></script>
 
