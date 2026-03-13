@@ -4,6 +4,8 @@ __version__ = "1.5.0"
 import re
 import io
 import unicodedata
+import tempfile
+import os
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
@@ -29,6 +31,13 @@ try:
     PDF_OK = True
 except Exception:
     PDF_OK = False
+
+# PDF to DOCX conversion
+try:
+    from pdf2docx import Converter
+    PDF2DOCX_OK = True
+except Exception:
+    PDF2DOCX_OK = False
 
 
 # ============================================================================
@@ -413,9 +422,62 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
     return out
 
 
-# -----------------------------
+# ============================================================================
+# PDF TO DOCX CONVERSION
+# ============================================================================
+
+def convert_pdf_to_docx(file_bytes: bytes) -> Optional[bytes]:
+    """
+    Convert PDF to DOCX using pdf2docx library.
+    Returns DOCX bytes or None if conversion fails.
+    """
+    if not PDF2DOCX_OK:
+        return None
+    
+    temp_pdf = None
+    temp_docx = None
+    
+    try:
+        # Create temporary files
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_pdf:
+            tmp_pdf.write(file_bytes)
+            temp_pdf = tmp_pdf.name
+        
+        temp_docx = tempfile.NamedTemporaryFile(suffix='.docx', delete=False).name
+        
+        # Convert PDF to DOCX
+        cv = Converter(temp_pdf)
+        cv.convert(temp_docx, start=0, end=None)
+        cv.close()
+        
+        # Read the converted DOCX
+        with open(temp_docx, 'rb') as f:
+            docx_bytes = f.read()
+        
+        return docx_bytes
+        
+    except Exception as e:
+        print(f"PDF to DOCX conversion failed: {e}")
+        return None
+        
+    finally:
+        # Clean up temporary files
+        if temp_pdf and os.path.exists(temp_pdf):
+            try:
+                os.unlink(temp_pdf)
+            except:
+                pass
+        if temp_docx and os.path.exists(temp_docx):
+            try:
+                os.unlink(temp_docx)
+            except:
+                pass
+
+
+# ============================================================================
 # DOCX extraction
-# -----------------------------
+# ============================================================================
+
 def _iter_docx_text(doc: "Document"):
     for p in doc.paragraphs:
         t = norm_space(p.text)
@@ -565,10 +627,12 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
     return "\n".join(main_lines).strip(), ref_lines, msg
 
 
-# -----------------------------
-# PDF extraction
-# -----------------------------
-def read_pdf_text(file_bytes: bytes) -> str:
+# ============================================================================
+# PDF extraction (fallback if conversion fails)
+# ============================================================================
+
+def read_pdf_text_fallback(file_bytes: bytes) -> str:
+    """Fallback PDF extraction if conversion fails"""
     if not PDF_OK:
         raise RuntimeError("pdfplumber not installed")
 
@@ -586,94 +650,68 @@ def read_pdf_text(file_bytes: bytes) -> str:
     return "\n".join(out)
 
 
-def _looks_like_new_numeric_reference_start(s: str) -> bool:
-    s0 = (s or "").strip()
-    if not s0:
-        return False
+# ============================================================================
+# Main document processing function
+# ============================================================================
+
+def process_document(file_bytes: bytes, filename: str) -> Tuple[str, List[str], str]:
+    """
+    Process document (PDF or DOCX) and extract main text and references.
+    For PDFs, tries conversion to DOCX first, then falls back to direct extraction.
+    """
+    name = filename.lower()
     
-    if re.match(r"^\[\s*\d{1,4}\s*\]\s+\S", s0):
-        return True
-    if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
-        return True
+    # Handle DOCX directly
+    if name.endswith('.docx'):
+        return read_docx_split_main_and_refs(file_bytes)
     
-    m = re.match(r"^(\d{1,4})[\.)]\s+(.+)$", s0)
-    if m:
-        num = m.group(1)
-        num_int = int(num)
-        if 1900 <= num_int <= 2099:
-            rest = m.group(2)
-            if YEAR_RE.search(rest) or len(rest) > 30:
-                return True
-            return False
-        return True
-    
-    m = re.match(r"^(\d{1,4})\s+([A-Z].+)$", s0)
-    if m:
-        num = m.group(1)
-        num_int = int(num)
-        if 1900 <= num_int <= 2099:
-            return False
-        return True
-    
-    return False
-
-
-def _looks_like_new_apa_reference_start(s: str) -> bool:
-    s0 = (s or "").strip()
-    if not s0:
-        return False
-
-    if re.search(r"\.\s*\(\s*" + YEAR + r"\s*\)\.", s0):
-        return True
-
-    m = re.match(r"^(.+?)\s*\(\s*" + YEAR + r"\s*\)", s0)
-    if m:
-        a = m.group(1)
-        a = re.sub(r"[^A-Za-z,\.\-\s&/\u2013\u2014-]", "", a).strip()
-        return len(a) >= 3
-    return False
-
-
-def _count_reference_like(lines: List[str], style_hint: str) -> int:
-    c = 0
-    for ln in lines:
-        s = (ln or "").strip()
-        if not s:
-            continue
-        if style_hint == "numeric":
-            if _looks_like_new_numeric_reference_start(s):
-                c += 1
+    # Handle PDF
+    elif name.endswith('.pdf'):
+        ref_msg = ""
+        main_text = ""
+        references_raw = []
+        
+        # Try PDF to DOCX conversion first
+        if PDF2DOCX_OK:
+            try:
+                docx_bytes = convert_pdf_to_docx(file_bytes)
+                if docx_bytes:
+                    main_text, ref_lines, msg = read_docx_split_main_and_refs(docx_bytes)
+                    references_raw = _merge_reference_lines(ref_lines)
+                    ref_msg = f"PDF converted to DOCX. {msg}"
+                    
+                    # If conversion gave good results, return them
+                    if len(references_raw) >= 5:
+                        return main_text, references_raw, ref_msg
+            except Exception as e:
+                ref_msg = f"PDF to DOCX conversion failed: {e}. "
+        
+        # Fallback to direct PDF extraction
+        full_text = read_pdf_text_fallback(file_bytes)
+        
+        # Try to extract references using patterns
+        lines = full_text.splitlines()
+        idx, tail = _find_reference_heading(lines, style_hint="apa")
+        
+        if idx == -1:
+            # No heading found, try enhanced extraction
+            references_raw = extract_references_enhanced(full_text)
+            main_text = full_text
+            ref_msg += f"Found {len(references_raw)} references using enhanced extraction."
         else:
-            if _looks_like_new_apa_reference_start(s):
-                c += 1
-    return c
-
-
-def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str]:
-    candidates: List[Tuple[int, str]] = []
-
-    for i, line in enumerate(lines):
-        s = (line or "").strip()
-        if not s:
-            continue
-
-        for pat in REF_HEADINGS:
-            if re.search(pat, s, flags=re.I):
-                candidates.append((i, ""))
-
-        m = REF_HEADING_RELAXED.search(s)
-        if m and m.start() <= 4 and len(s) <= 160:
-            tail = s[m.end():].strip(" :-\t")
-            if _looks_like_toc_references_line(s, tail):
-                continue
-            candidates.append((i, tail))
-
-    for i, tail in candidates:
-        lookahead = [ln for ln in lines[i + 1: i + 31] if (ln or "").strip()]
-        if _count_reference_like(lookahead, style_hint=style_hint) >= 3:
-            return i, tail
-
-    return -1, ""
+            main_text = "\n".join(lines[:idx]).strip()
+            ref_msg += f"Found References heading: {lines[idx].strip()}"
+            ref_block_lines: List[str] = []
+            if tail:
+                ref_block_lines.append(tail)
+            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
+            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint="apa")
+            references_raw = _merge_reference_lines(ref_block_lines)
+        
+        return main_text, references_raw, ref_msg
+    
+    else:
+        raise ValueError(f"Unsupported file type: {filename}")
 
 
 # ============================================================================
@@ -878,6 +916,96 @@ def extract_references_enhanced(text: str) -> List[str]:
     if len(refs) < 5:
         refs = extract_references_heuristic(text)
     return refs
+
+
+def _looks_like_new_numeric_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+    
+    if re.match(r"^\[\s*\d{1,4}\s*\]\s+\S", s0):
+        return True
+    if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
+        return True
+    
+    m = re.match(r"^(\d{1,4})[\.)]\s+(.+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            rest = m.group(2)
+            if YEAR_RE.search(rest) or len(rest) > 30:
+                return True
+            return False
+        return True
+    
+    m = re.match(r"^(\d{1,4})\s+([A-Z].+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            return False
+        return True
+    
+    return False
+
+
+def _looks_like_new_apa_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+
+    if re.search(r"\.\s*\(\s*" + YEAR + r"\s*\)\.", s0):
+        return True
+
+    m = re.match(r"^(.+?)\s*\(\s*" + YEAR + r"\s*\)", s0)
+    if m:
+        a = m.group(1)
+        a = re.sub(r"[^A-Za-z,\.\-\s&/\u2013\u2014-]", "", a).strip()
+        return len(a) >= 3
+    return False
+
+
+def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str]:
+    candidates: List[Tuple[int, str]] = []
+
+    for i, line in enumerate(lines):
+        s = (line or "").strip()
+        if not s:
+            continue
+
+        for pat in REF_HEADINGS:
+            if re.search(pat, s, flags=re.I):
+                candidates.append((i, ""))
+
+        m = REF_HEADING_RELAXED.search(s)
+        if m and m.start() <= 4 and len(s) <= 160:
+            tail = s[m.end():].strip(" :-\t")
+            if _looks_like_toc_references_line(s, tail):
+                continue
+            candidates.append((i, tail))
+
+    for i, tail in candidates:
+        lookahead = [ln for ln in lines[i + 1: i + 31] if (ln or "").strip()]
+        if _count_reference_like(lookahead, style_hint=style_hint) >= 3:
+            return i, tail
+
+    return -1, ""
+
+
+def _count_reference_like(lines: List[str], style_hint: str) -> int:
+    c = 0
+    for ln in lines:
+        s = (ln or "").strip()
+        if not s:
+            continue
+        if style_hint == "numeric":
+            if _looks_like_new_numeric_reference_start(s):
+                c += 1
+        else:
+            if _looks_like_new_apa_reference_start(s):
+                c += 1
+    return c
 
 
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
@@ -1701,38 +1829,8 @@ def run_crosscheck(
     is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
     style_hint = "numeric" if is_numeric else "apa"
 
-    if name.endswith(".docx"):
-        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines(ref_block_lines)
-        if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
-
-    elif name.endswith(".pdf"):
-        full_text = read_pdf_text(file_bytes)
-        
-        lines = full_text.splitlines()
-        
-        idx, tail = _find_reference_heading(lines, style_hint=style_hint)
-        
-        if idx == -1:
-            references_raw = extract_references_enhanced(full_text)
-            main_text = full_text
-            ref_msg = f"Found {len(references_raw)} references using enhanced extraction."
-        else:
-            main_text = "\n".join(lines[:idx]).strip()
-            ref_msg = f"Found References heading: {lines[idx].strip()}"
-            ref_block_lines: List[str] = []
-            if tail:
-                ref_block_lines.append(tail)
-            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
-            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
-            references_raw = _merge_reference_lines(ref_block_lines)
-        
-        if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
-
-    else:
-        return {"error": "Upload a DOCX or PDF"}
+    # Process document (PDF with conversion if possible)
+    main_text, references_raw, ref_msg = process_document(file_bytes, name)
 
     main_text_len = len(main_text or "")
     too_large = main_text_len > 2_000_000
