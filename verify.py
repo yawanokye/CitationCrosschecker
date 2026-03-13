@@ -419,7 +419,7 @@ def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[st
 
 
 # ---------------------------------------------------------
-# Scoring and classification - UPDATED with LIKELY category
+# Scoring and classification
 # ---------------------------------------------------------
 
 def _score(
@@ -437,82 +437,32 @@ def _score(
     partial_score = fuzz.partial_ratio(ref_title, cand_title) if ref_title and cand_title else 0
     title_score = int((token_score * 0.7) + (partial_score * 0.3))
 
-    # Author overlap as percentage
-    if ref_authors and cand_authors:
-        ref_author_set = set(ref_authors)
-        cand_author_set = set(cand_authors)
-        
-        # Calculate Jaccard similarity for authors
-        intersection = len(ref_author_set & cand_author_set)
-        union = len(ref_author_set | cand_author_set)
-        
-        if union > 0:
-            author_similarity = (intersection / union) * 100
-        else:
-            author_similarity = 0
-            
-        # Also count exact matches for bonus
-        author_overlap = intersection
-    else:
-        author_similarity = 0
-        author_overlap = 0
-    
+    author_overlap = len(set(ref_authors).intersection(set(cand_authors)))
     year_match = 1 if ref_year and cand_year and ref_year[:4] == cand_year[:4] else 0
-    
-    # Calculate overall score (weighted)
-    # Title is most important (60%), author similarity (30%), year match (10%)
-    score = (title_score * 0.6) + (author_similarity * 0.3) + (year_match * 10)
+
+    score = (title_score * 1.5) + (author_overlap * 20) + (year_match * 10)
 
     return {
         "score": int(score),
         "title_score": int(title_score),
         "author_overlap": int(author_overlap),
-        "author_similarity": int(author_similarity),
         "year_match": int(year_match),
     }
 
 
 def _classify(doi_match: bool, title_score: int, score: int, year_match: int) -> str:
-    """
-    Classification thresholds:
-    - verified: High confidence match (≥85 overall OR ≥90 title with year)
-    - likely: Good match but needs quick check (70-84 overall OR ≥80 title with year)
-    - needs_review: Possible match but needs verification (50-69 overall)
-    - not_found: Poor match (<50 overall)
-    """
-    
-    # DOI match is always verified
     if doi_match:
         return "verified"
-    
-    # ===== VERIFIED =====
-    # High confidence matches
-    if score >= 85:
+
+    if title_score >= 70:
         return "verified"
-    
-    if title_score >= 90 and year_match:
+
+    if title_score >= 55 and year_match:
         return "verified"
-    
-    # ===== LIKELY =====
-    # Good matches that are probably correct but worth a quick check
-    if score >= 70:
-        return "likely"
-    
-    if title_score >= 80 and year_match:
-        return "likely"
-    
-    if title_score >= 85:
-        return "likely"
-    
-    # ===== NEEDS REVIEW =====
-    # Possible matches that need human verification
-    if score >= 50:
+
+    if title_score >= 45:
         return "needs_review"
-    
-    if title_score >= 60:
-        return "needs_review"
-    
-    # ===== NOT FOUND =====
+
     return "not_found"
 
 
@@ -536,7 +486,7 @@ def _best_candidate(
         meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
 
         doi_match = bool(ref_doi and doi and ref_doi.lower() == doi.lower())
-        meta_score = int(meta["score"] + (25 if doi_match else 0))  # DOI bonus
+        meta_score = int(meta["score"] + (40 if doi_match else 0))
 
         if meta_score > best_score:
             best_score = meta_score
@@ -577,7 +527,6 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
         "matched_authors": "",
         "title_score": 0,
         "author_overlap": 0,
-        "author_similarity": 0,
         "year_match": 0,
         "query_used": query,
         "author": ", ".join(ref_authors),
@@ -639,7 +588,6 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 "matched_authors": ", ".join(best_meta.get("authors", [])),
                 "title_score": int(best_meta.get("title_score", 0)),
                 "author_overlap": int(best_meta.get("author_overlap", 0)),
-                "author_similarity": int(best_meta.get("author_similarity", 0)),
                 "year_match": int(best_meta.get("year_match", 0)),
             })
         else:
@@ -703,7 +651,6 @@ def verify_references_batch(
                     "matched_authors": "",
                     "title_score": 0,
                     "author_overlap": 0,
-                    "author_similarity": 0,
                     "year_match": 0,
                     "query_used": "",
                     "author": "",
