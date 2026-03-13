@@ -209,7 +209,6 @@ el.aciiValue.textContent = acii.ACII ?? "--";
 
 const c = acii.components || {};
 
-
 /* verification */
 
 if($("aciiV"))
@@ -223,7 +222,6 @@ c.verification_integrity?.category ?? "";
 if($("aciiVremark"))
 $("aciiVremark").textContent =
 c.verification_integrity?.remark ?? "";
-
 
 /* concentration */
 
@@ -239,7 +237,6 @@ if($("aciiCremark"))
 $("aciiCremark").textContent =
 c.citation_concentration?.remark ?? "";
 
-
 /* diversity */
 
 if($("aciiA"))
@@ -253,7 +250,6 @@ c.author_diversity?.category ?? "";
 if($("aciiAremark"))
 $("aciiAremark").textContent =
 c.author_diversity?.remark ?? "";
-
 
 /* temporal */
 
@@ -270,6 +266,156 @@ $("aciiTremark").textContent =
 c.temporal_balance?.remark ?? "";
 
 }
+
+/* -------------------------------------------------------
+MISSING
+------------------------------------------------------- */
+
+function renderMissing(data){
+
+const rows = data?.missing_in_references || [];
+
+if(!el.missingBody) return;
+
+if(!rows.length){
+el.missingBody.innerHTML=`<tr><td colspan="3">None</td></tr>`;
+return;
+}
+
+el.missingBody.innerHTML = rows.map((r,i)=>`
+<tr>
+<td>${i+1}</td>
+<td>${esc(r.citation_in_text || r)}</td>
+<td>${esc(r.count_in_text || "")}</td>
+</tr>
+`).join("");
+
+}
+
+/* -------------------------------------------------------
+UNCITED
+------------------------------------------------------- */
+
+function renderUncited(data){
+
+const rows = data?.uncited_references || [];
+
+if(!el.uncitedBody) return;
+
+if(!rows.length){
+el.uncitedBody.innerHTML=`<tr><td colspan="2">None</td></tr>`;
+return;
+}
+
+el.uncitedBody.innerHTML = rows.map((r,i)=>`
+<tr>
+<td>${i+1}</td>
+<td>${esc(r.reference || r)}</td>
+</tr>
+`).join("");
+
+}
+
+/* -------------------------------------------------------
+IN-TEXT → REFERENCE
+------------------------------------------------------- */
+
+function renderC2R(data){
+
+const rows = data?.reconciliation_intext_to_reference || [];
+
+if(!el.c2rBody) return;
+
+if(!rows.length){
+el.c2rBody.innerHTML=`<tr><td colspan="5">No mapping available</td></tr>`;
+return;
+}
+
+el.c2rBody.innerHTML = rows.map((r,i)=>`
+<tr>
+<td>${i+1}</td>
+<td>${esc(r.status || "")}</td>
+<td>${esc(r.in_text || "")}</td>
+<td>${esc(r.matched_reference || "")}</td>
+<td>${esc(r.flags || "")}</td>
+</tr>
+`).join("");
+
+}
+
+/* -------------------------------------------------------
+REFERENCE → IN-TEXT
+------------------------------------------------------- */
+
+function renderR2C(data){
+
+const rows = data?.reconciliation_reference_to_intext || [];
+
+if(!el.r2cBody) return;
+
+if(!rows.length){
+el.r2cBody.innerHTML=`<tr><td colspan="4">No mapping available</td></tr>`;
+return;
+}
+
+el.r2cBody.innerHTML = rows.map((r,i)=>`
+<tr>
+<td>${i+1}</td>
+<td>${esc(r.times_cited ?? 0)}</td>
+<td>${esc(r.reference)}</td>
+<td>${esc((r.cited_by || []).slice(0,3).join("; "))}</td>
+</tr>
+`).join("");
+
+}
+
+/* -------------------------------------------------------
+ONLINE VERIFICATION
+------------------------------------------------------- */
+
+function renderVerify(data){
+
+const ov = data?.online_verification || {};
+const rows = ov.rows || [];
+const sum = ov.summary || {};
+
+if(el.verifyDash){
+
+el.verifyDash.innerHTML = `
+<div class="kpi">Verified ${sum.verified ?? 0}</div>
+<div class="kpi">Likely ${sum.likely ?? 0}</div>
+<div class="kpi">Needs Review ${sum.needs_review ?? 0}</div>
+<div class="kpi">Not Found ${sum.not_found ?? 0}</div>
+<div class="kpi">Offline ${sum.offline ?? 0}</div>
+`;
+
+}
+
+if(!el.verifyBody) return;
+
+if(!rows.length){
+el.verifyBody.innerHTML=`<tr><td colspan="9">No verification results</td></tr>`;
+return;
+}
+
+el.verifyBody.innerHTML = rows
+.slice(0,CONFIG.MAX_VERIFY_DISPLAY)
+.map((r,i)=>`
+<tr>
+<td>${i+1}</td>
+<td>${esc(r.status)}</td>
+<td>${esc(r.source)}</td>
+<td>${esc(r.score)}</td>
+<td>${esc(r.doi)}</td>
+<td>${esc(r.matched_year)}</td>
+<td>${esc(r.matched_authors)}</td>
+<td>${esc(r.matched_title)}</td>
+<td>${esc(r.query_used)}</td>
+</tr>
+`).join("");
+
+}
+
 /* -------------------------------------------------------
 MASTER RENDER
 ------------------------------------------------------- */
@@ -291,3 +437,94 @@ renderR2C(CURRENT_DATA);
 renderVerify(CURRENT_DATA);
 
 }
+
+/* -------------------------------------------------------
+RUN INITIAL CHECK
+------------------------------------------------------- */
+
+async function runInitialCheck(){
+
+const f = el.file?.files?.[0];
+
+if(!f){
+setStatus("Please choose a file first","warn");
+return;
+}
+
+setStatus("Analyzing document...");
+
+const fd = new FormData();
+
+fd.append("file",f);
+fd.append("style",el.style?.value || "apa");
+
+const res = await fetch("/verify",{method:"POST",body:fd});
+const js = await res.json();
+
+LAST_JOB_ID = js.job_id;
+
+renderAll(js);
+
+setStatus("Analysis complete","success");
+
+}
+
+/* -------------------------------------------------------
+RUN ONLINE VERIFICATION
+------------------------------------------------------- */
+
+async function runOnlineVerification(){
+
+if(!LAST_JOB_ID){
+setStatus("Run document check first","warn");
+return;
+}
+
+setStatus("Starting online verification...");
+
+const fd = new FormData();
+fd.append("job_id",LAST_JOB_ID);
+
+await fetch("/verify-online",{method:"POST",body:fd});
+
+startPolling();
+
+}
+
+/* -------------------------------------------------------
+POLLING
+------------------------------------------------------- */
+
+function startPolling(){
+
+if(POLL_TIMER) clearInterval(POLL_TIMER);
+
+POLL_TIMER = setInterval(async()=>{
+
+const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
+const js = await res.json();
+
+if(js.result) renderAll(js.result);
+
+if(js.online?.state==="done"){
+clearInterval(POLL_TIMER);
+setStatus("Online verification complete","success");
+}
+
+if(js.online?.state==="error"){
+clearInterval(POLL_TIMER);
+setStatus(js.online?.message || "Verification failed","warn");
+}
+
+},CONFIG.POLL_INTERVAL);
+
+}
+
+/* -------------------------------------------------------
+BUTTON EVENTS
+------------------------------------------------------- */
+
+if(el.btnCheck) el.btnCheck.addEventListener("click",runInitialCheck);
+if(el.btnVerify) el.btnVerify.addEventListener("click",runOnlineVerification);
+
+});
