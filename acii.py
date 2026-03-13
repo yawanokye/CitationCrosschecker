@@ -5,44 +5,55 @@ from typing import Dict, List, Any
 from collections import Counter
 import math
 
-# --------------------------------------------------
-# CATEGORY AND REMARK HELPERS
-# --------------------------------------------------
 
-def _category(score):
+def _safe_ratio(a, b):
+    return 0 if b == 0 else a / b
+
+
+# -----------------------------------------------------
+# CATEGORY + REMARK HELPERS
+# -----------------------------------------------------
+
+def _category(score: float) -> str:
 
     if score >= 90:
         return "Excellent"
+
     if score >= 80:
         return "Very Good"
+
     if score >= 70:
         return "Good"
+
     if score >= 60:
         return "Moderate"
+
     if score >= 50:
         return "Weak"
 
     return "Poor"
 
 
-def _remark(metric, score):
+def _remark(metric: str, score: float) -> str:
 
-    if metric == "verification_integrity":
+    if metric == "verification":
         return f"{score}% of references verified in scholarly databases"
 
-    if metric == "citation_concentration":
+    if metric == "concentration":
         return "Indicates whether citations rely heavily on a few authors"
 
-    if metric == "author_diversity":
+    if metric == "diversity":
         return "Measures diversity of authors represented in the reference list"
 
-    if metric == "temporal_balance":
+    if metric == "temporal":
         return "Measures spread of references across publication years"
 
     return ""
-def _safe_ratio(a, b):
-    return 0 if b == 0 else a / b
 
+
+# -----------------------------------------------------
+# COMPONENTS
+# -----------------------------------------------------
 
 def _verification_integrity(rows: List[Dict[str, Any]]) -> float:
 
@@ -131,16 +142,17 @@ def _temporal_balance(rows):
     return round(score * 100, 2)
 
 
+# -----------------------------------------------------
+# MAIN ACII COMPUTATION
+# -----------------------------------------------------
+
 def compute_acii(engine_result: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     rows_copy = [dict(r) for r in rows]
 
     v = _verification_integrity(rows_copy)
-
     c = _citation_concentration(rows_copy)
-
     d = _author_diversity(rows_copy)
-
     t = _temporal_balance(rows_copy)
 
     acii = round(
@@ -153,40 +165,36 @@ def compute_acii(engine_result: Dict[str, Any], rows: List[Dict[str, Any]]) -> D
 
     return {
 
-    "ACII": acii,
-    "category": _category(acii),
+        "ACII": acii,
+        "category": _category(acii),
 
-    "components": {
+        "components": {
 
-        "verification_integrity": {
-            "score": v,
-            "category": _category(v),
-            "remark": _remark("verification_integrity", v)
+            "verification_integrity": {
+                "score": v,
+                "category": _category(v),
+                "remark": _remark("verification", v)
+            },
+
+            "citation_concentration": {
+                "score": c,
+                "category": _category(c),
+                "remark": _remark("concentration", c)
+            },
+
+            "author_diversity": {
+                "score": d,
+                "category": _category(d),
+                "remark": _remark("diversity", d)
+            },
+
+            "temporal_balance": {
+                "score": t,
+                "category": _category(t),
+                "remark": _remark("temporal", t)
+            }
         },
 
-        "citation_concentration": {
-            "score": c,
-            "category": _category(c),
-            "remark": _remark("citation_concentration", c)
-        },
-
-        "author_diversity": {
-            "score": d,
-            "category": _category(d),
-            "remark": _remark("author_diversity", d)
-        },
-
-        "temporal_balance": {
-            "score": t,
-            "category": _category(t),
-            "remark": _remark("temporal_balance", t)
-        }
-    },
-
-    "stats": {
-        "total_references": len(rows_copy)
-    }
-}
         "stats": {
             "total_references": len(rows_copy)
         }
