@@ -568,367 +568,112 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 # -----------------------------
 # PDF extraction
 # -----------------------------
-# -----------------------------
-# Enhanced PDF extraction
-# -----------------------------
-def read_pdf_text_enhanced(file_bytes: bytes) -> str:
-    """Enhanced PDF text extraction with better layout handling"""
+def read_pdf_text(file_bytes: bytes) -> str:
     if not PDF_OK:
         raise RuntimeError("pdfplumber not installed")
 
     out: List[str] = []
-    
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page_num, page in enumerate(pdf.pages):
-                try:
-                    # Try different extraction strategies
-                    text = ""
-                    
-                    # Strategy 1: Full text with layout preservation
-                    text = page.extract_text(
-                        layout=True,  # Preserve layout
-                        x_tolerance=2,  # Horizontal tolerance
-                        y_tolerance=2,   # Vertical tolerance
-                    ) or ""
-                    
-                    # If that fails, try simpler extraction
-                    if len(text.strip()) < 50:
-                        text = page.extract_text() or ""
-                    
-                    # Clean up the text
-                    text = text.replace("\x00", " ")
-                    
-                    # Fix hyphenated line breaks
-                    text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", text)
-                    
-                    # Remove isolated line breaks (keep paragraph breaks)
-                    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-                    
-                    # Remove extra spaces
-                    text = re.sub(r"[ \t]+", " ", text)
-                    
-                    out.append(text)
-                    
-                except Exception as e:
-                    print(f"Error extracting page {page_num}: {e}")
-                    continue
-                    
-    except Exception as e:
-        print(f"Error opening PDF: {e}")
-        return ""
-    
-    return "\n\n".join(out)  # Double newline for paragraph breaks
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            try:
+                text = page.extract_text() or ""
+                text = text.replace("\x00", " ")
+                text = re.sub(r"-\n", "", text)
+                text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+            except Exception:
+                text = ""
+            out.append(text)
+    return "\n".join(out)
 
 
-def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
-    """
-    Extract references from PDF with multiple strategies.
-    Returns (main_text, references_list, message)
-    """
-    lines = text.splitlines()
+def _looks_like_new_numeric_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
     
-    # Strategy 1: Find references section by common headings
-    ref_start, ref_heading = _find_reference_heading_enhanced(lines)
+    if re.match(r"^\[\s*\d{1,4}\s*\]\s+\S", s0):
+        return True
+    if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
+        return True
     
-    if ref_start != -1:
-        # Found references section
-        main_text = "\n".join(lines[:ref_start]).strip()
-        ref_lines = lines[ref_start:]
-        
-        # Clean up references
-        refs = _extract_references_from_section(ref_lines)
-        msg = f"Found references section starting at line {ref_start}: '{ref_heading[:50]}...'"
-        return main_text, refs, msg
+    m = re.match(r"^(\d{1,4})[\.)]\s+(.+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            rest = m.group(2)
+            if YEAR_RE.search(rest) or len(rest) > 30:
+                return True
+            return False
+        return True
     
-    # Strategy 2: Look for references by pattern (no heading)
-    refs = extract_references_pattern_based(text)
-    if len(refs) >= 5:
-        # Found enough references by pattern
-        # Try to determine where main text ends
-        last_citation_idx = _find_last_citation_index(lines)
-        if last_citation_idx > 0:
-            main_text = "\n".join(lines[:last_citation_idx + 50]).strip()
-        else:
-            main_text = text[:len(text)//2]  # Fallback: first half
-        msg = f"Found {len(refs)} references by pattern matching"
-        return main_text, refs, msg
+    m = re.match(r"^(\d{1,4})\s+([A-Z].+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            return False
+        return True
     
-    # Strategy 3: Heuristic extraction
-    refs = extract_references_heuristic(text)
-    msg = f"Found {len(refs)} references by heuristic analysis"
-    return text, refs, msg
+    return False
 
 
-def _find_reference_heading_enhanced(lines: List[str]) -> Tuple[int, str]:
-    """Enhanced heading detection with more patterns"""
-    heading_patterns = [
-        # Standard headings
-        r"^\s*references?\s*$",
-        r"^\s*bibliograph(?:y|ies)\s*$",
-        r"^\s*works?\s+cited\s*$",
-        r"^\s*literature\s+cited\s*$",
-        r"^\s*REFERENCES\s*$",
-        r"^\s*BIBLIOGRAPHY\s*$",
-        r"^\s*REFERENCES AND NOTES\s*$",
-        r"^\s*REFERENCES AND FOOTNOTES\s*$",
-        
-        # Numbered headings
-        r"^\s*(?:IV|V|VI|VII|VIII|IX|X)\.?\s+REFERENCES?\s*$",
-        r"^\s*(?:4|5|6|7|8|9|10)\.?\s+REFERENCES?\s*$",
-        
-        # Common in papers
-        r"^\s*REFERENCES?\s*\[.*\]\s*$",
-        r"^\s*REFERENCES?\s*\(.*\)\s*$",
-        
-        # Section with dots
-        r"^\s*\d+\.?\s*REFERENCES?\s*$",
-        
-        # Variations
-        r"^\s*REFERENCE LIST\s*$",
-        r"^\s*SOURCES CITED\s*$",
-        r"^\s*CITED REFERENCES\s*$",
-        r"^\s*LIST OF REFERENCES\s*$",
-    ]
-    
-    # Look in last 40% of document
-    start_idx = int(len(lines) * 0.6)
-    
-    best_match = -1
-    best_heading = ""
-    best_score = 0
-    
-    for i, line in enumerate(lines):
-        if i < start_idx:
-            continue
-            
-        s = line.strip()
-        if not s or len(s) > 200:  # Skip empty or very long lines
-            continue
-        
-        # Check against patterns
-        for pattern in heading_patterns:
-            if re.search(pattern, s, re.I):
-                # Check if following lines look like references
-                lookahead = lines[i+1:i+11]
-                ref_score = _score_reference_lines(lookahead)
-                
-                if ref_score > best_score:
-                    best_score = ref_score
-                    best_match = i
-                    best_heading = s
-                break
-        
-        # Also check for capitalized headings
-        if not best_match and len(s) < 100 and s.isupper() and "REF" in s.upper():
-            lookahead = lines[i+1:i+11]
-            ref_score = _score_reference_lines(lookahead)
-            if ref_score > 5:
-                return i, s
-    
-    return best_match, best_heading
+def _looks_like_new_apa_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+
+    if re.search(r"\.\s*\(\s*" + YEAR + r"\s*\)\.", s0):
+        return True
+
+    m = re.match(r"^(.+?)\s*\(\s*" + YEAR + r"\s*\)", s0)
+    if m:
+        a = m.group(1)
+        a = re.sub(r"[^A-Za-z,\.\-\s&/\u2013\u2014-]", "", a).strip()
+        return len(a) >= 3
+    return False
 
 
-def _score_reference_lines(lines: List[str]) -> int:
-    """Score how much a set of lines looks like references"""
-    score = 0
-    
-    for line in lines[:10]:  # Check first 10 lines
-        s = line.strip()
+def _count_reference_like(lines: List[str], style_hint: str) -> int:
+    c = 0
+    for ln in lines:
+        s = (ln or "").strip()
         if not s:
             continue
-        
-        # Has year
-        if YEAR_RE.search(s):
-            score += 3
-        
-        # Has DOI
-        if _DOI_RE.search(s):
-            score += 2
-        
-        # Has brackets [1] or (1) or 1.
-        if re.search(r'^\[\s*\d+\s*\]', s):
-            score += 3
-        elif re.search(r'^\(\s*\d+\s*\)', s):
-            score += 2
-        elif re.search(r'^\d+\.\s+', s):
-            score += 2
-        
-        # Has author pattern (Last, F.)
-        if re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', s):
-            score += 3
-        
-        # Has "et al."
-        if re.search(r'et\s+al\.', s, re.I):
-            score += 2
-        
-        # Has journal/conference indicators
-        if re.search(r'\b(Journal|Conference|Proceedings|Review|Letters?)\b', s, re.I):
-            score += 2
-        
-        # Has page numbers
-        if re.search(r'\bpp?\.\s*\d+', s, re.I):
-            score += 2
-        
-        # Has volume/issue
-        if re.search(r'\b(vol\.?|volume|issue|no\.?|number)\s*\d+', s, re.I):
-            score += 2
-        
-        # Has URL/DOI
-        if re.search(r'https?://|doi\.org|dx\.doi', s, re.I):
-            score += 2
-    
-    return score
-
-
-def _find_last_citation_index(lines: List[str]) -> int:
-    """Find where in-text citations end and references begin"""
-    citation_patterns = [
-        r'\(\s*(?:[A-Z][a-z]+(?:\s+and\s+[A-Z][a-z]+)?,\s*\d{4}[a-z]?\s*)\)',  # (Smith, 2020)
-        r'\[\s*\d+\s*\]',  # [1]
-        r'\(\s*\d+\s*\)',  # (1)
-    ]
-    
-    last_citation = 0
-    
-    for i, line in enumerate(lines):
-        s = line.strip()
-        if not s:
-            continue
-        
-        # Check if line has citation patterns
-        has_citation = False
-        for pattern in citation_patterns:
-            if re.search(pattern, s):
-                has_citation = True
-                break
-        
-        if has_citation:
-            last_citation = i
-    
-    return last_citation
-
-
-def _extract_references_from_section(lines: List[str]) -> List[str]:
-    """Extract references from a section of text"""
-    refs = []
-    current_ref = ""
-    in_refs = True
-    
-    # Determine reference style
-    style = detect_reference_format(lines, 0)
-    
-    for line in lines:
-        s = line.strip()
-        if not s:
-            if current_ref:
-                refs.append(clean_reference(current_ref))
-                current_ref = ""
-            continue
-        
-        # Check if this is a new reference
-        is_new = False
-        
-        if style == "ieee":
-            is_new = bool(re.match(r'^\[\s*\d+\s*\]', s))
-        elif style == "numbered":
-            is_new = bool(re.match(r'^\d+\.\s+', s)) and not re.match(r'^\d{4}\.', s)
-        elif style == "apa":
-            is_new = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', s[:150]))
-        else:
-            # Auto-detect
-            is_new = (
-                bool(re.match(r'^\[\s*\d+\s*\]', s)) or
-                bool(re.match(r'^\d+\.\s+', s)) or
-                bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', s[:150]))
-            )
-        
-        if is_new and current_ref:
-            refs.append(clean_reference(current_ref))
-            current_ref = s
-        elif is_new:
-            current_ref = s
-        elif current_ref:
-            # Continuation of previous reference
-            current_ref = join_reference_lines(current_ref, s)
-    
-    # Add last reference
-    if current_ref:
-        refs.append(clean_reference(current_ref))
-    
-    # Filter out non-references
-    valid_refs = []
-    for ref in refs:
-        if len(ref) > 30 and (YEAR_RE.search(ref) or _DOI_RE.search(ref)):
-            valid_refs.append(ref)
-    
-    return valid_refs
-
-
-# Update the run_crosscheck function to use enhanced PDF extraction
-def run_crosscheck(
-    file_bytes: bytes,
-    filename: str,
-    style: str = "apa",
-    verify_online: bool = False,
-    verify_mode: str = "all",
-    max_verify: int = 0,
-    throttle_s: float = 0.12,
-    use_crossref: bool = True,
-    use_openalex: bool = True,
-) -> Dict[str, Any]:
-
-    name = (filename or "").lower().strip()
-    style_s = (style or "apa").strip().lower()
-
-    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
-    style_hint = "numeric" if is_numeric else "apa"
-
-    if name.endswith(".docx"):
-        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines(ref_block_lines)
         if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
+            if _looks_like_new_numeric_reference_start(s):
+                c += 1
+        else:
+            if _looks_like_new_apa_reference_start(s):
+                c += 1
+    return c
 
-    elif name.endswith(".pdf"):
-        # Use enhanced PDF extraction
-        full_text = read_pdf_text_enhanced(file_bytes)
-        
-        # Extract references using multiple strategies
-        main_text, references_raw, ref_msg = extract_references_from_pdf(full_text)
-        
-        # Additional cleanup
-        if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
 
-    else:
-        return {"error": "Upload a DOCX or PDF"}
+def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str]:
+    candidates: List[Tuple[int, str]] = []
 
-    # Rest of the function remains the same...
-    main_text_len = len(main_text or "")
-    too_large = main_text_len > 2_000_000
+    for i, line in enumerate(lines):
+        s = (line or "").strip()
+        if not s:
+            continue
 
-    # ... (rest of the existing code)
+        for pat in REF_HEADINGS:
+            if re.search(pat, s, flags=re.I):
+                candidates.append((i, ""))
 
-    return {
-        "filename": filename,
-        "style": style_s,
-        "engine_build": ENGINE_BUILD,
-        "verify_mode_used": (verify_mode or "all"),
-        "reference_detection_message": ref_msg,
-        "summary": {
-            "in_text_citations_found": int(intext_count),
-            "reference_entries_found": int(ref_count),
-            "missing_in_references": int(missing_unique),
-            "uncited_references": int(len(uncited_refs)),
-            "match_rate": float(round(match_rate, 1)),
-        },
-        "missing_in_references": missing_rows,
-        "uncited_references": uncited_refs,
-        "reconciliation_intext_to_reference": c2r,
-        "reconciliation_reference_to_intext": r2c,
-        "references_raw": references_raw,
-    }
+        m = REF_HEADING_RELAXED.search(s)
+        if m and m.start() <= 4 and len(s) <= 160:
+            tail = s[m.end():].strip(" :-\t")
+            if _looks_like_toc_references_line(s, tail):
+                continue
+            candidates.append((i, tail))
+
+    for i, tail in candidates:
+        lookahead = [ln for ln in lines[i + 1: i + 31] if (ln or "").strip()]
+        if _count_reference_like(lookahead, style_hint=style_hint) >= 3:
+            return i, tail
+
+    return -1, ""
 
 
 # ============================================================================
@@ -2076,4 +1821,3 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
-
