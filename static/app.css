@@ -1,4 +1,4 @@
-/* static/app.css */
+/* static/app.css — FIXED VERSION */
 
 :root{
   /* Light, clean theme */
@@ -20,7 +20,9 @@
   --radius: 16px;
 }
 
-*{ box-sizing: border-box; }
+*{ 
+  box-sizing: border-box; 
+}
 
 html,body{
   margin:0;
@@ -192,9 +194,21 @@ html,body{
 }
 
 .status.muted{ color: var(--muted); }
-.status.good{ border-color: rgba(22,163,74,0.25); }
-.status.warn{ border-color: rgba(245,158,11,0.25); }
-.status.bad{ border-color: rgba(220,38,38,0.25); }
+.status.good{ 
+  border-color: rgba(22,163,74,0.25);
+  background: rgba(22,163,74,0.05);
+  color: var(--good);
+}
+.status.warn{ 
+  border-color: rgba(245,158,11,0.25);
+  background: rgba(245,158,11,0.05);
+  color: var(--warn);
+}
+.status.bad{ 
+  border-color: rgba(220,38,38,0.25);
+  background: rgba(220,38,38,0.05);
+  color: var(--bad);
+}
 
 .dashboard{
   display:flex;
@@ -220,6 +234,10 @@ html,body{
   font-weight: 900;
 }
 
+/* =================================================
+   TAB NAVIGATION - FIXED
+================================================= */
+
 .tabs{
   display:flex;
   gap: 8px;
@@ -237,18 +255,39 @@ html,body{
   cursor:pointer;
   font-weight: 900;
   font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.tab:hover{
+  background: rgba(59,130,246,0.08);
+  border-color: rgba(59,130,246,0.3);
 }
 
 .tab.active{
   border-color: rgba(59,130,246,0.55);
   background: rgba(59,130,246,0.10);
+  color: var(--primary2);
 }
+
+/* Tab pane visibility - FIXED */
+.tabPane {
+    display: none;
+}
+
+.tabPane.active {
+    display: block;
+}
+
+/* =================================================
+   TABLES
+================================================= */
 
 .tableWrap{
   width:100%;
   overflow:auto;
   border-radius: 14px;
   border: 1px solid var(--line);
+  margin: 10px 0;
 }
 
 .tbl{
@@ -263,30 +302,105 @@ html,body{
   color: var(--muted);
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
+  background: rgba(15,23,42,0.02);
 }
 
 .tbl tbody td{
   padding: 10px 12px;
   border-bottom: 1px solid rgba(15,23,42,0.06);
   font-size: 13px;
+  vertical-align: top;
 }
 
 .tbl tbody tr:hover{
   background: rgba(59,130,246,0.04);
 }
 
-.footer{
-  margin-top: 14px;
-  padding: 14px 4px 0;
-  color: var(--text);
-  font-size: 13px;
-  border-top: 1px solid var(--line);
+.tbl tbody tr:last-child td{
+  border-bottom: none;
 }
 
-.muted{ color: var(--muted); }
+/* =================================================
+   VERIFICATION DASHBOARD - FIXED
+================================================= */
+
+#verifyDash {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 10px 0 15px;
+    padding: 12px;
+    background: var(--card2);
+    border-radius: 12px;
+    border: 1px solid var(--line);
+}
+
+#verifyDash .kpi {
+    background: var(--card);
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 110px;
+    text-align: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+}
 
 /* =================================================
-   ACII DASHBOARD ADDITION
+   STATUS BADGES - FIXED
+================================================= */
+
+.badge{
+  display:inline-block;
+  padding:4px 10px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:800;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border: 1px solid transparent;
+}
+
+.badge.verified { 
+  background: rgba(22,163,74,0.15); 
+  color: #166534; 
+  border-color: rgba(22,163,74,0.3);
+}
+
+.badge.likely { 
+  background: rgba(59,130,246,0.15); 
+  color: #1e40af; 
+  border-color: rgba(59,130,246,0.3);
+}
+
+.badge.needs_review,
+.badge.needs_review { 
+  background: rgba(245,158,11,0.15); 
+  color: #92400e; 
+  border-color: rgba(245,158,11,0.3);
+}
+
+.badge.not_found { 
+  background: rgba(220,38,38,0.15); 
+  color: #991b1b; 
+  border-color: rgba(220,38,38,0.3);
+}
+
+.badge.offline { 
+  background: rgba(100,116,139,0.15); 
+  color: #334155; 
+  border-color: rgba(100,116,139,0.3);
+}
+
+.badge.matched {
+  background: rgba(22,163,74,0.15);
+  color: #166534;
+  border-color: rgba(22,163,74,0.3);
+}
+
+/* =================================================
+   ACII DASHBOARD
 ================================================= */
 
 .aciiScoreBox{
@@ -322,45 +436,72 @@ html,body{
   color:var(--text);
 }
 
+#aciiCard {
+  margin-top: 20px;
+  border-left: 4px solid var(--primary);
+}
+
 #aciiCard table.tbl tbody tr:hover{
   background: rgba(59,130,246,0.06);
 }
 
-.badge{
-  display:inline-block;
-  padding:4px 10px;
-  border-radius:999px;
-  font-size:12px;
-  font-weight:900;
-  border:1px solid var(--line);
+#aciiCard .h3 {
+  color: var(--primary2);
 }
 
-.badge.Excellent{
-  background:rgba(22,163,74,0.12);
-  color:var(--good);
+/* =================================================
+   FOOTER
+================================================= */
+
+.footer{
+  margin-top: 14px;
+  padding: 14px 4px 0;
+  color: var(--text);
+  font-size: 13px;
+  border-top: 1px solid var(--line);
 }
 
-.badge.VeryGood{
-  background:rgba(59,130,246,0.12);
-  color:var(--primary2);
+.muted{ 
+  color: var(--muted); 
 }
 
-.badge.Good{
-  background:rgba(245,158,11,0.14);
-  color:#92400e;
+/* =================================================
+   UTILITY CLASSES
+================================================= */
+
+.pane-note {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 12px;
+  background: var(--card2);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
 }
 
-.badge.Moderate{
-  background:rgba(245,158,11,0.20);
-  color:#92400e;
+.text-truncate {
+  max-width: 250px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.badge.Weak{
-  background:rgba(220,38,38,0.12);
-  color:var(--bad);
-}
-
-.badge.Poor{
-  background:rgba(220,38,38,0.18);
-  color:var(--bad);
+/* Responsive adjustments */
+@media (max-width: 640px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .tabs {
+    gap: 4px;
+  }
+  
+  .tab {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  
+  #verifyDash .kpi {
+    min-width: calc(50% - 10px);
+  }
 }
