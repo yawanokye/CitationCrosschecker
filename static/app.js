@@ -400,6 +400,96 @@
   }
 
   /* -----------------------------------------
+   INITIAL CHECK
+----------------------------------------- */
+
+async function runInitialCheck(){
+
+  const f = el.file?.files?.[0];
+
+  if(!f){
+    setStatus("Please choose a file first","warn");
+    return;
+  }
+
+  setStatus("Analyzing document...");
+
+  const fd = new FormData();
+  fd.append("file",f);
+  fd.append("style",el.style?.value || "apa");
+
+  const res = await fetch("/verify",{
+    method:"POST",
+    body:fd
+  });
+
+  const js = await res.json();
+
+  LAST_JOB_ID = js.job_id;
+
+  renderAll(js.data);
+
+  setStatus("Analysis complete","good");
+}
+
+
+/* -----------------------------------------
+   ONLINE VERIFICATION
+----------------------------------------- */
+
+async function runOnlineVerification(){
+
+  if(!LAST_JOB_ID){
+    setStatus("Run document check first","warn");
+    return;
+  }
+
+  setStatus("Starting online verification...");
+
+  const fd = new FormData();
+  fd.append("job_id",LAST_JOB_ID);
+
+  await fetch("/verify-online",{
+    method:"POST",
+    body:fd
+  });
+
+  startPolling();
+}
+
+
+/* -----------------------------------------
+   POLLING
+----------------------------------------- */
+
+function startPolling(){
+
+  if(POLL_TIMER) clearInterval(POLL_TIMER);
+
+  POLL_TIMER = setInterval(async ()=>{
+
+    const res = await fetch(
+      `/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}&include_result=1`
+    );
+
+    const js = await res.json();
+
+    if(js.result) renderAll(js.result);
+
+    if(js.online?.state === "done"){
+      clearInterval(POLL_TIMER);
+      setStatus("Online verification complete","good");
+    }
+
+    if(js.online?.state === "error"){
+      clearInterval(POLL_TIMER);
+      setStatus(js.online?.message || "Online verification failed","warn");
+    }
+
+  },CONFIG.POLL_INTERVAL);
+}
+
+  /* -----------------------------------------
      BUTTONS
   ----------------------------------------- */
 
