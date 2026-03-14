@@ -1,7 +1,6 @@
 import os
 import re
 import threading
-import time
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -37,26 +36,6 @@ _STYLE_ALIASES = {
     "ieee": "ieee",
     "vancouver": "vancouver",
 }
-
-# API rate limiting
-_API_LAST_CALL = 0
-_API_LOCK = threading.Lock()
-_API_MIN_INTERVAL = 0.2  # 200ms between API calls to avoid rate limiting
-
-
-# ---------------------------------------------------------
-# Rate limiting helper
-# ---------------------------------------------------------
-
-def _throttle():
-    """Ensure we don't hit APIs too fast"""
-    global _API_LAST_CALL
-    with _API_LOCK:
-        now = time.time()
-        elapsed = now - _API_LAST_CALL
-        if elapsed < _API_MIN_INTERVAL:
-            time.sleep(_API_MIN_INTERVAL - elapsed)
-        _API_LAST_CALL = time.time()
 
 
 # ---------------------------------------------------------
@@ -98,7 +77,6 @@ def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 14) -
             "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
             "Accept": "application/json",
         }
-        _throttle()  # Rate limit
         r = requests.get(url, params=params, timeout=timeout, headers=headers)
         if r.status_code != 200:
             return None
@@ -325,158 +303,6 @@ def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
 
 
 # ---------------------------------------------------------
-# BATCH API QUERIES - OPTIMIZED
-# ---------------------------------------------------------
-
-def _batch_query_crossref(queries: List[Tuple[str, str, str]], rows: int = 5) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Batch query Crossref for multiple references.
-    Returns dict mapping query to results.
-    """
-    if not queries:
-        return {}
-    
-    results = {q[0]: [] for q in queries}  # query -> results
-    
-    # Process each query individually (Crossref doesn't support true batching)
-    # But we'll use a single session for efficiency
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
-        "Accept": "application/json",
-    })
-    
-    for query, doi, title_only in queries:
-        try:
-            _throttle()
-            
-            # Try DOI first if available
-            if doi:
-                url = f"https://api.crossref.org/works/{doi}"
-                params = {"mailto": MAILTO} if MAILTO else None
-                r = session.get(url, params=params, timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
-                    if data and "message" in data:
-                        results[query].append({"source": "crossref", "item": data["message"]})
-                        continue  # Skip further queries if DOI worked
-            
-            # Try bibliographic query
-            url = "https://api.crossref.org/works"
-            params = {
-                "query.bibliographic": query,
-                "rows": rows,
-                "sort": "score",
-                "order": "desc",
-            }
-            if MAILTO:
-                params["mailto"] = MAILTO
-            
-            r = session.get(url, params=params, timeout=12)
-            if r.status_code == 200:
-                data = r.json()
-                items = data.get("message", {}).get("items", [])
-                results[query].extend([{"source": "crossref", "item": it} for it in items])
-            
-            # Try title-only query if we got few results
-            if len(results[query]) < 3 and title_only:
-                params = {
-                    "query.title": title_only,
-                    "rows": rows,
-                    "sort": "score",
-                    "order": "desc",
-                }
-                if MAILTO:
-                    params["mailto"] = MAILTO
-                
-                r = session.get(url, params=params, timeout=12)
-                if r.status_code == 200:
-                    data = r.json()
-                    items = data.get("message", {}).get("items", [])
-                    results[query].extend([{"source": "crossref", "item": it} for it in items])
-                    
-        except Exception as e:
-            print(f"Error querying Crossref for {query}: {e}")
-    
-    return results
-
-
-def _batch_query_openalex(queries: List[Tuple[str, str, str]], rows: int = 5) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Batch query OpenAlex for multiple references.
-    Returns dict mapping query to results.
-    """
-    if not queries:
-        return {}
-    
-    results = {q[0]: [] for q in queries}
-    
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
-        "Accept": "application/json",
-    })
-    
-    for query, doi, title_only in queries:
-        try:
-            _throttle()
-            
-            url = "https://api.openalex.org/works"
-            
-            # Use DOI if available
-            if doi:
-                doi_clean = doi.replace("https://doi.org/", "").replace("http://dx.doi.org/", "")
-                params = {
-                    "filter": f"doi:{doi_clean}",
-                    "per-page": rows,
-                }
-                if MAILTO:
-                    params["mailto"] = MAILTO
-                
-                r = session.get(url, params=params, timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
-                    items = data.get("results", [])
-                    if items:
-                        results[query].extend([{"source": "openalex", "item": it} for it in items])
-                        continue
-            
-            # Search query
-            params = {
-                "search": query,
-                "per-page": rows,
-            }
-            if MAILTO:
-                params["mailto"] = MAILTO
-            
-            r = session.get(url, params=params, timeout=12)
-            if r.status_code == 200:
-                data = r.json()
-                items = data.get("results", [])
-                results[query].extend([{"source": "openalex", "item": it} for it in items])
-            
-            # Title-only if needed
-            if len(results[query]) < 3 and title_only:
-                params = {
-                    "search": title_only,
-                    "per-page": rows,
-                }
-                if MAILTO:
-                    params["mailto"] = MAILTO
-                
-                r = session.get(url, params=params, timeout=12)
-                if r.status_code == 200:
-                    data = r.json()
-                    items = data.get("results", [])
-                    results[query].extend([{"source": "openalex", "item": it} for it in items])
-                    
-        except Exception as e:
-            print(f"Error querying OpenAlex for {query}: {e}")
-    
-    return results
-
-
-# ---------------------------------------------------------
 # Candidate extraction
 # ---------------------------------------------------------
 
@@ -520,7 +346,80 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
 
 
 # ---------------------------------------------------------
-# Scoring and classification
+# External queries
+# ---------------------------------------------------------
+
+def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
+    if not doi:
+        return []
+    url = f"https://api.crossref.org/works/{doi}"
+    params = {"mailto": MAILTO} if MAILTO else None
+    data = _safe_get_json(url, params=params, timeout=10)
+    if not data or "message" not in data:
+        return []
+    return [{"source": "crossref", "item": data["message"]}]
+
+
+def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
+    if not query:
+        return []
+    url = "https://api.crossref.org/works"
+    params: Dict[str, Any] = {
+        "query.bibliographic": query,
+        "rows": rows,
+        "sort": "score",
+        "order": "desc",
+    }
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=12)
+    items = (data or {}).get("message", {}).get("items", [])
+    return [{"source": "crossref", "item": it} for it in items]
+
+
+def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
+    if not title_query:
+        return []
+    url = "https://api.crossref.org/works"
+    params: Dict[str, Any] = {
+        "query.title": title_query,
+        "rows": rows,
+        "sort": "score",
+        "order": "desc",
+    }
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=12)
+    items = (data or {}).get("message", {}).get("items", [])
+    return [{"source": "crossref", "item": it} for it in items]
+
+
+def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
+    if not query:
+        return []
+    url = "https://api.openalex.org/works"
+    params: Dict[str, Any] = {"search": query, "per-page": rows}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=12)
+    items = (data or {}).get("results", [])
+    return [{"source": "openalex", "item": it} for it in items]
+
+
+def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
+    if not title_query:
+        return []
+    url = "https://api.openalex.org/works"
+    params: Dict[str, Any] = {"search": title_query, "per-page": rows}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=12)
+    items = (data or {}).get("results", [])
+    return [{"source": "openalex", "item": it} for it in items]
+
+
+# ---------------------------------------------------------
+# Scoring and classification - UPDATED with LIKELY category
 # ---------------------------------------------------------
 
 def _score(
@@ -538,32 +437,82 @@ def _score(
     partial_score = fuzz.partial_ratio(ref_title, cand_title) if ref_title and cand_title else 0
     title_score = int((token_score * 0.7) + (partial_score * 0.3))
 
-    author_overlap = len(set(ref_authors).intersection(set(cand_authors)))
+    # Author overlap as percentage
+    if ref_authors and cand_authors:
+        ref_author_set = set(ref_authors)
+        cand_author_set = set(cand_authors)
+        
+        # Calculate Jaccard similarity for authors
+        intersection = len(ref_author_set & cand_author_set)
+        union = len(ref_author_set | cand_author_set)
+        
+        if union > 0:
+            author_similarity = (intersection / union) * 100
+        else:
+            author_similarity = 0
+            
+        # Also count exact matches for bonus
+        author_overlap = intersection
+    else:
+        author_similarity = 0
+        author_overlap = 0
+    
     year_match = 1 if ref_year and cand_year and ref_year[:4] == cand_year[:4] else 0
-
-    score = (title_score * 1.5) + (author_overlap * 20) + (year_match * 10)
+    
+    # Calculate overall score (weighted)
+    # Title is most important (60%), author similarity (30%), year match (10%)
+    score = (title_score * 0.6) + (author_similarity * 0.3) + (year_match * 10)
 
     return {
         "score": int(score),
         "title_score": int(title_score),
         "author_overlap": int(author_overlap),
+        "author_similarity": int(author_similarity),
         "year_match": int(year_match),
     }
 
 
 def _classify(doi_match: bool, title_score: int, score: int, year_match: int) -> str:
+    """
+    Classification thresholds:
+    - verified: High confidence match (≥85 overall OR ≥90 title with year)
+    - likely: Good match but needs quick check (70-84 overall OR ≥80 title with year)
+    - needs_review: Possible match but needs verification (50-69 overall)
+    - not_found: Poor match (<50 overall)
+    """
+    
+    # DOI match is always verified
     if doi_match:
         return "verified"
-
-    if title_score >= 70:
+    
+    # ===== VERIFIED =====
+    # High confidence matches
+    if score >= 85:
         return "verified"
-
-    if title_score >= 55 and year_match:
+    
+    if title_score >= 90 and year_match:
         return "verified"
-
-    if title_score >= 45:
+    
+    # ===== LIKELY =====
+    # Good matches that are probably correct but worth a quick check
+    if score >= 70:
+        return "likely"
+    
+    if title_score >= 80 and year_match:
+        return "likely"
+    
+    if title_score >= 85:
+        return "likely"
+    
+    # ===== NEEDS REVIEW =====
+    # Possible matches that need human verification
+    if score >= 50:
         return "needs_review"
-
+    
+    if title_score >= 60:
+        return "needs_review"
+    
+    # ===== NOT FOUND =====
     return "not_found"
 
 
@@ -587,7 +536,7 @@ def _best_candidate(
         meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
 
         doi_match = bool(ref_doi and doi and ref_doi.lower() == doi.lower())
-        meta_score = int(meta["score"] + (40 if doi_match else 0))
+        meta_score = int(meta["score"] + (25 if doi_match else 0))  # DOI bonus
 
         if meta_score > best_score:
             best_score = meta_score
@@ -603,125 +552,106 @@ def _best_candidate(
 
 
 # ---------------------------------------------------------
-# BATCH WORKER - OPTIMIZED
+# Worker
 # ---------------------------------------------------------
 
-def _verify_references_batch_optimized(
-    refs_with_info: List[Tuple[str, str, str, List[str], str, str, str]],
-    style: str,
-    use_crossref: bool,
-    use_openalex: bool,
-) -> List[Dict[str, Any]]:
-    """
-    Verify multiple references in optimized batch mode.
-    """
-    if not refs_with_info:
-        return []
-    
-    # Prepare batch queries
-    crossref_queries = []
-    openalex_queries = []
-    
-    for ref, query, ref_authors_str, ref_year, ref_doi, title_only, ref_title in refs_with_info:
+def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
+    cache_key = f"{style}::{ref}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    query, ref_authors, ref_year, ref_doi, title_only = _build_query(ref, style)
+    fields = _extract_fields_by_style(ref, style)
+    ref_title = fields.get("title") or ref
+
+    row: Dict[str, Any] = {
+        "reference": ref,
+        "style": style,
+        "status": "offline",
+        "source": "",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "title_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "query_used": query,
+        "author": ", ".join(ref_authors),
+    }
+
+    candidates: List[Dict[str, Any]] = []
+
+    try:
+        # DOI-first shortcut
+        if ref_doi and use_crossref:
+            candidates.extend(_query_crossref_by_doi(ref_doi))
+
+        # stage 1
         if use_crossref:
-            crossref_queries.append((query, ref_doi, title_only))
+            candidates.extend(_query_crossref(query, rows=10))
         if use_openalex:
-            openalex_queries.append((query, ref_doi, title_only))
-    
-    # Execute batch queries
-    crossref_results = {}
-    openalex_results = {}
-    
-    # Run in parallel using threads
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = []
-        
-        if crossref_queries:
-            futures.append(executor.submit(_batch_query_crossref, crossref_queries))
-        if openalex_queries:
-            futures.append(executor.submit(_batch_query_openalex, openalex_queries))
-        
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                if hasattr(result, 'keys') and result:
-                    # Check which type of result
-                    sample_key = next(iter(result))
-                    if sample_key in [q[0] for q in crossref_queries]:
-                        crossref_results.update(result)
-                    else:
-                        openalex_results.update(result)
-    
-    # Process each reference with its results
-    rows = []
-    
-    for ref, query, ref_authors_str, ref_year, ref_doi, title_only, ref_title in refs_with_info:
-        # Collect all candidates for this reference
-        candidates = []
-        
-        if use_crossref and query in crossref_results:
-            candidates.extend(crossref_results[query])
-        
-        if use_openalex and query in openalex_results:
-            candidates.extend(openalex_results[query])
-        
-        # Parse authors
-        ref_authors = [a.strip() for a in ref_authors_str.split(",") if a.strip()]
-        
-        row = {
-            "reference": ref,
-            "style": style,
-            "status": "offline",
-            "source": "",
-            "score": 0,
-            "doi": "",
-            "matched_title": "",
-            "matched_year": "",
-            "matched_authors": "",
-            "title_score": 0,
-            "author_overlap": 0,
-            "year_match": 0,
-            "query_used": query,
-            "author": ref_authors_str,
-        }
-        
-        try:
-            if candidates:
-                best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
-                
-                if best:
+            candidates.extend(_query_openalex(query, rows=10))
+
+        best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
+
+        if best:
+            status = _classify(
+                bool(best_meta.get("doi_match")),
+                int(best_meta.get("title_score", 0)),
+                int(best_meta.get("score", 0)),
+                int(best_meta.get("year_match", 0)),
+            )
+
+            # deep fallback only for weak cases
+            if status in {"needs_review", "not_found"}:
+                deep_candidates = list(candidates)
+
+                if use_crossref:
+                    deep_candidates.extend(_query_crossref(query, rows=20))
+                    deep_candidates.extend(_query_crossref_title_only(title_only, rows=12))
+
+                if use_openalex:
+                    deep_candidates.extend(_query_openalex(query, rows=20))
+                    deep_candidates.extend(_query_openalex_title_only(title_only, rows=12))
+
+                best2, best_meta2 = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, deep_candidates)
+                if best2:
+                    best = best2
+                    best_meta = best_meta2
                     status = _classify(
                         bool(best_meta.get("doi_match")),
                         int(best_meta.get("title_score", 0)),
                         int(best_meta.get("score", 0)),
                         int(best_meta.get("year_match", 0)),
                     )
-                    
-                    row.update({
-                        "status": status,
-                        "source": _safe_strip(best.get("source")),
-                        "score": int(best_meta.get("score", 0)),
-                        "doi": _safe_strip(best_meta.get("doi")),
-                        "matched_title": _safe_strip(best_meta.get("title")),
-                        "matched_year": _safe_strip(best_meta.get("year")),
-                        "matched_authors": ", ".join(best_meta.get("authors", [])),
-                        "title_score": int(best_meta.get("title_score", 0)),
-                        "author_overlap": int(best_meta.get("author_overlap", 0)),
-                        "year_match": int(best_meta.get("year_match", 0)),
-                    })
-                else:
-                    row["status"] = "not_found"
-            else:
-                row["status"] = "not_found"
-                
-        except Exception as e:
-            row["status"] = "offline"
-            row["error"] = str(e)
-        
-        row["status"] = _normalize_verify_status(row.get("status"))
-        rows.append(row)
-    
-    return rows
+
+            row.update({
+                "status": status,
+                "source": _safe_strip(best.get("source")),
+                "score": int(best_meta.get("score", 0)),
+                "doi": _safe_strip(best_meta.get("doi")),
+                "matched_title": _safe_strip(best_meta.get("title")),
+                "matched_year": _safe_strip(best_meta.get("year")),
+                "matched_authors": ", ".join(best_meta.get("authors", [])),
+                "title_score": int(best_meta.get("title_score", 0)),
+                "author_overlap": int(best_meta.get("author_overlap", 0)),
+                "author_similarity": int(best_meta.get("author_similarity", 0)),
+                "year_match": int(best_meta.get("year_match", 0)),
+            })
+        else:
+            row["status"] = "not_found"
+
+    except Exception as e:
+        row["status"] = "offline"
+        row["error"] = str(e)
+
+    row["status"] = _normalize_verify_status(row.get("status"))
+    _cache_set(cache_key, row)
+    return row
 
 
 # ---------------------------------------------------------
@@ -740,62 +670,47 @@ def verify_references_batch(
         return []
 
     normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
-    
-    # Pre-process all references to extract info
-    refs_with_info = []
-    
-    for ref in refs:
-        cache_key = f"{normalized_style}::{ref}"
-        cached = _cache_get(cache_key)
-        if cached:
-            # Use cached result
-            refs_with_info.append((ref, None, None, None, None, None, None, cached))
-            continue
-        
-        query, ref_authors, ref_year, ref_doi, title_only = _build_query(ref, normalized_style)
-        fields = _extract_fields_by_style(ref, normalized_style)
-        ref_title = fields.get("title") or ref
-        ref_authors_str = ", ".join(ref_authors)
-        
-        refs_with_info.append((
-            ref, query, ref_authors_str, ref_year, ref_doi, title_only, ref_title, None
-        ))
-    
-    # Separate cached and new
-    cached_rows = []
-    new_refs = []
-    
-    for item in refs_with_info:
-        if len(item) > 7 and item[7] is not None:
-            cached_rows.append(item[7])  # Cached result
-        else:
-            new_refs.append(item[:7])  # (ref, query, ref_authors_str, ref_year, ref_doi, title_only, ref_title)
-    
-    # Process new references in optimized batches
-    if new_refs:
-        # Split into batches of 20 to avoid overwhelming APIs
-        BATCH_SIZE = 20
-        new_rows = []
-        
-        for i in range(0, len(new_refs), BATCH_SIZE):
-            batch = new_refs[i:i + BATCH_SIZE]
-            batch_results = _verify_references_batch_optimized(
-                batch, normalized_style, use_crossref, use_openalex
-            )
-            new_rows.extend(batch_results)
-            
-            # Cache results
-            for row in batch_results:
-                cache_key = f"{normalized_style}::{row['reference']}"
-                _cache_set(cache_key, row)
-        
-        # Combine cached and new results
-        all_rows = cached_rows + new_rows
-    else:
-        all_rows = cached_rows
-    
-    # Map back to original order
-    ref_to_row = {row["reference"]: row for row in all_rows}
-    ordered_rows = [ref_to_row[ref] for ref in refs if ref in ref_to_row]
-    
-    return ordered_rows
+
+    rows: List[Dict[str, Any]] = [None] * len(refs)  # type: ignore
+    workers = min(8, max(1, len(refs)))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                _verify_single_reference,
+                ref,
+                normalized_style,
+                use_crossref,
+                use_openalex,
+            ): i
+            for i, ref in enumerate(refs)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                rows[idx] = future.result()
+            except Exception as e:
+                rows[idx] = {
+                    "reference": refs[idx],
+                    "style": normalized_style,
+                    "status": "offline",
+                    "source": "",
+                    "score": 0,
+                    "doi": "",
+                    "matched_title": "",
+                    "matched_year": "",
+                    "matched_authors": "",
+                    "title_score": 0,
+                    "author_overlap": 0,
+                    "author_similarity": 0,
+                    "year_match": 0,
+                    "query_used": "",
+                    "author": "",
+                    "error": str(e),
+                }
+
+    for r in rows:
+        r["status"] = _normalize_verify_status(r.get("status"))
+
+    return rows
