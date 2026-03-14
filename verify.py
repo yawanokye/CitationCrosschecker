@@ -17,6 +17,9 @@ MAILTO = (
     or ""
 ).strip()
 
+# Google Scholar via SerpAPI
+SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
+
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -341,12 +344,29 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
                 surname = re.sub(r"[^a-z'\-]", "", name.split()[-1].lower())
                 if surname:
                     authors.append(surname)
+    
+    # Google Scholar handling
+    elif src == "googlescholar":
+        title = _safe_strip(item.get("title"))
+        year = _safe_strip(item.get("year"))
+        doi = _safe_strip(item.get("doi"))
+        
+        # Authors are already processed in the query function
+        authors = item.get("authors", [])
+        
+        # Try to extract DOI from link if available
+        if not doi:
+            link = item.get("link", "")
+            if link and "doi.org" in link:
+                doi_match = _DOI_RE.search(link)
+                if doi_match:
+                    doi = doi_match.group(1)
 
     return doi, _norm_text(title), year, authors
 
 
 # ---------------------------------------------------------
-# External queries
+# External queries - Crossref and OpenAlex (existing)
 # ---------------------------------------------------------
 
 def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
@@ -416,6 +436,99 @@ def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[st
     data = _safe_get_json(url, params=params, timeout=12)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "item": it} for it in items]
+
+
+# ---------------------------------------------------------
+# Google Scholar via SerpAPI (NEW)
+# ---------------------------------------------------------
+
+def _query_google_scholar(query: str, rows: int = 10) -> List[Dict[str, Any]]:
+    """
+    Query Google Scholar using SerpAPI
+    """
+    if not SERPAPI_KEY:
+        return []
+    
+    if not query:
+        return []
+    
+    try:
+        # Try to import serpapi
+        from serpapi import GoogleSearch
+        
+        params = {
+            "api_key": SERPAPI_KEY,
+            "engine": "google_scholar",
+            "q": query,
+            "hl": "en",
+            "num": rows
+        }
+        
+        search = GoogleSearch(params)
+        results = search.get_dict()
+        
+        items = results.get("organic_results", [])
+        
+        # Convert to format compatible with existing code
+        candidates = []
+        for item in items:
+            # Extract publication info
+            pub_info = item.get("publication_info", {})
+            summary = pub_info.get("summary", "")
+            
+            # Try to extract year from summary
+            year_match = _YEAR_RE.search(summary)
+            year = year_match.group(1) if year_match else ""
+            
+            # Extract authors
+            authors = []
+            for author in pub_info.get("authors", []):
+                if isinstance(author, dict):
+                    name = author.get("name", "")
+                else:
+                    name = str(author)
+                
+                # Extract surname
+                if name:
+                    surname = name.split()[-1].lower() if name.split() else ""
+                    surname = re.sub(r"[^a-z'\-]", "", surname)
+                    if surname:
+                        authors.append(surname)
+            
+            # Create a compatible item structure
+            candidates.append({
+                "source": "googlescholar",
+                "item": {
+                    "title": item.get("title", ""),
+                    "authors": authors,
+                    "year": year,
+                    "doi": "",  # Google Scholar doesn't always provide DOI
+                    "cited_by": item.get("inline_links", {}).get("cited_by", {}).get("total", 0),
+                    "link": item.get("link", ""),
+                    "resource": item.get("resource", {}).get("title", "")
+                }
+            })
+        
+        return candidates
+        
+    except ImportError:
+        print("Warning: serpapi package not installed. Run: pip install serpapi")
+        return []
+    except Exception as e:
+        print(f"Google Scholar query error: {e}")
+        return []
+
+
+def _query_google_scholar_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
+    """
+    Query Google Scholar with title-only search
+    """
+    if not SERPAPI_KEY or not title_query:
+        return []
+    
+    # For title-only search, we can add quotes to make it exact
+    quoted_query = f'"{title_query}"'
+    return _query_google_scholar(quoted_query, rows=rows)
 
 
 # ---------------------------------------------------------
@@ -552,7 +665,7 @@ def _best_candidate(
 
 
 # ---------------------------------------------------------
-# Worker
+# Worker - UPDATED with Google Scholar integration
 # ---------------------------------------------------------
 
 def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
@@ -595,6 +708,10 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             candidates.extend(_query_crossref(query, rows=10))
         if use_openalex:
             candidates.extend(_query_openalex(query, rows=10))
+        
+        # Google Scholar query (always try if API key is available)
+        if SERPAPI_KEY:
+            candidates.extend(_query_google_scholar(query, rows=10))
 
         best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
 
@@ -617,6 +734,11 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 if use_openalex:
                     deep_candidates.extend(_query_openalex(query, rows=20))
                     deep_candidates.extend(_query_openalex_title_only(title_only, rows=12))
+                
+                # Google Scholar deep fallback
+                if SERPAPI_KEY:
+                    deep_candidates.extend(_query_google_scholar(query, rows=20))
+                    deep_candidates.extend(_query_google_scholar_title_only(title_only, rows=12))
 
                 best2, best_meta2 = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, deep_candidates)
                 if best2:
@@ -655,7 +777,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
 
 
 # ---------------------------------------------------------
-# Public API
+# Public API - UPDATED with Google Scholar parameter
 # ---------------------------------------------------------
 
 def verify_references_batch(
@@ -664,6 +786,7 @@ def verify_references_batch(
     throttle_s: float = 0.0,
     use_crossref: bool = True,
     use_openalex: bool = True,
+    use_googlescholar: bool = True,  # New parameter
 ) -> List[Dict[str, Any]]:
     refs = [r for r in (references or []) if _safe_strip(r)]
     if not refs:
@@ -682,6 +805,8 @@ def verify_references_batch(
                 normalized_style,
                 use_crossref,
                 use_openalex,
+                # Note: Google Scholar is controlled inside the function via SERPAPI_KEY
+                # The use_googlescholar parameter can be used to enable/disable if needed
             ): i
             for i, ref in enumerate(refs)
         }
