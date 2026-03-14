@@ -85,6 +85,7 @@ def _norm_text_citation(s: str) -> str:
 # Reference -> citation mapping (FIXED - PROPER COUNTING)
 # --------------------------------------------------
 
+
 def build_reference_to_intext(result):
     """
     Build mapping from references to in-text citations.
@@ -132,7 +133,6 @@ def build_reference_to_intext(result):
     result_list.sort(key=lambda x: x["times_cited"], reverse=True)
     
     return result_list
-
 
 # --------------------------------------------------
 # INDEX
@@ -299,4 +299,5 @@ def health():
         "status": "healthy",
         "timestamp": now()
     }
+
 
