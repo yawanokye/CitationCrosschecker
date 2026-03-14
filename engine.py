@@ -631,24 +631,461 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 # PDF extraction (fallback if conversion fails)
 # ============================================================================
 
-def read_pdf_text_fallback(file_bytes: bytes) -> str:
-    """Fallback PDF extraction if conversion fails"""
+# -----------------------------
+# Enhanced PDF extraction - COMPLETELY REWRITTEN
+# -----------------------------
+
+def read_pdf_text_enhanced(file_bytes: bytes) -> str:
+    """Multi-strategy PDF text extraction"""
     if not PDF_OK:
         raise RuntimeError("pdfplumber not installed")
 
-    out: List[str] = []
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            try:
-                text = page.extract_text() or ""
-                text = text.replace("\x00", " ")
-                text = re.sub(r"-\n", "", text)
-                text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-            except Exception:
-                text = ""
-            out.append(text)
-    return "\n".join(out)
+    all_texts = []
+    
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                page_texts = []
+                
+                # Strategy 1: Try with layout preservation
+                try:
+                    text = page.extract_text(
+                        layout=True,
+                        x_tolerance=3,
+                        y_tolerance=3,
+                    ) or ""
+                    if len(text.strip()) > 50:
+                        page_texts.append(text)
+                except:
+                    pass
+                
+                # Strategy 2: Simple extraction
+                try:
+                    text = page.extract_text() or ""
+                    if len(text.strip()) > 50:
+                        page_texts.append(text)
+                except:
+                    pass
+                
+                # Strategy 3: Try with different settings
+                try:
+                    text = page.extract_text(
+                        x_tolerance=1,
+                        y_tolerance=1,
+                        keep_blank_chars=False,
+                        use_text_flow=True,
+                    ) or ""
+                    if len(text.strip()) > 50:
+                        page_texts.append(text)
+                except:
+                    pass
+                
+                # Take the longest text from this page
+                if page_texts:
+                    best_text = max(page_texts, key=len)
+                    
+                    # Clean up the text
+                    best_text = best_text.replace("\x00", " ")
+                    best_text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", best_text)
+                    best_text = re.sub(r"(\w+)-\s+(\w+)", r"\1\2", best_text)
+                    best_text = re.sub(r"(?<!\n)\n(?!\n)", " ", best_text)
+                    best_text = re.sub(r"[ \t]+", " ", best_text)
+                    
+                    all_texts.append(best_text)
+                    
+    except Exception as e:
+        print(f"PDF extraction error: {e}")
+        return ""
+    
+    return "\n\n".join(all_texts)
 
+
+def find_references_section_robust(text: str) -> Tuple[int, int, str]:
+    """
+    Find where references section starts and ends.
+    Returns (start_index, end_index, section_type)
+    """
+    lines = text.split('\n')
+    
+    # Common reference headings (with variations)
+    ref_headings = [
+        r'^\\s*references?\\s*$',
+        r'^\\s*bibliography\\s*$',
+        r'^\\s*works?\\s+cited\\s*$',
+        r'^\\s*literature\\s+cited\\s*$',
+        r'^\\s*references?\\s*and\\s*notes\\s*$',
+        r'^\\s*cited\\s*references?\\s*$',
+        r'^\\s*reference\\s*list\\s*$',
+        r'^\\s*sources?\\s*cited\\s*$',
+        r'^\\s*REFERENCES?\\s*$',
+        r'^\\s*BIBLIOGRAPHY\\s*$',
+        r'^\\s*WORKS?\\s+CITED\\s*$',
+        r'^\\s*LITERATURE\\s+CITED\\s*$',
+    ]
+    
+    # Look in last 40% of document
+    start_idx = int(len(lines) * 0.6)
+    
+    best_start = -1
+    best_heading = ""
+    confidence = 0
+    
+    for i in range(start_idx, len(lines)):
+        line = lines[i].strip()
+        if not line or len(line) > 100:  # Skip empty or very long lines
+            continue
+        
+        # Check each heading pattern
+        for pattern in ref_headings:
+            if re.search(pattern, line, re.I):
+                # Look at next few lines to verify it's really references
+                next_lines = lines[i+1:i+11]
+                ref_score = 0
+                
+                for j, next_line in enumerate(next_lines):
+                    if j > 5:  # Only check first 5-6 lines
+                        break
+                    nline = next_line.strip()
+                    if not nline:
+                        continue
+                    
+                    # Check for reference patterns
+                    if re.search(r'\b(19|20)\d{2}\b', nline):  # Has year
+                        ref_score += 3
+                    if re.search(r'\[\d+\]', nline):  # Has [1]
+                        ref_score += 3
+                    if re.search(r'^\d+\.\s+', nline):  # Starts with number
+                        ref_score += 2
+                    if re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', nline):  # Author pattern
+                        ref_score += 3
+                    if re.search(r'\bdoi:\s*10\.', nline, re.I):  # Has DOI
+                        ref_score += 2
+                    if re.search(r'https?://', nline):  # Has URL
+                        ref_score += 1
+                
+                if ref_score > confidence:
+                    confidence = ref_score
+                    best_start = i
+                    best_heading = line
+                    break
+    
+    # If we found a heading with good confidence
+    if best_start != -1 and confidence >= 8:
+        # Find where references end (look for next section heading)
+        end_idx = len(lines)
+        for i in range(best_start + 1, len(lines)):
+            line = lines[i].strip()
+            if line and len(line) < 100 and re.search(r'^\\s*(appendix|acknowledgments?|footnotes?|supplementary|supporting|\\d+\\.\\s+[A-Z])', line, re.I):
+                end_idx = i
+                break
+        
+        return best_start, end_idx, "references"
+    
+    # If no heading found, try to find references by pattern
+    ref_candidates = []
+    for i in range(start_idx, len(lines)):
+        line = lines[i].strip()
+        if not line:
+            continue
+        
+        # Check if line looks like a reference
+        score = 0
+        if re.search(r'\b(19|20)\d{2}\b', line):
+            score += 1
+        if re.search(r'\[\d+\]', line):
+            score += 2
+        if re.search(r'^\d+\.\s+', line):
+            score += 1
+        if re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', line):
+            score += 2
+        if re.search(r'\bet\s+al\.', line, re.I):
+            score += 1
+        if re.search(r'journal|proceedings|conference|press|university', line, re.I):
+            score += 1
+        
+        if score >= 3:  # Looks like a reference
+            ref_candidates.append((i, line))
+    
+    if len(ref_candidates) >= 5:
+        # Found enough reference-like lines
+        best_start = ref_candidates[0][0] - 1  # Start just before first reference
+        return best_start, len(lines), "pattern"
+    
+    return -1, len(lines), "not_found"
+
+
+def extract_references_from_pdf(text: str) -> Tuple[str, List[str], str]:
+    """
+    Extract references from PDF with multiple strategies.
+    Returns (main_text, references_list, message)
+    """
+    # Find references section
+    start_idx, end_idx, section_type = find_references_section_robust(text)
+    
+    lines = text.split('\n')
+    
+    if start_idx == -1:
+        # No clear references section found
+        msg = "No clear references section found. Using heuristic extraction."
+        refs = extract_references_heuristic(text)
+        return text, refs, msg
+    
+    # Split into main text and references
+    main_text = '\n'.join(lines[:start_idx]).strip()
+    ref_lines = lines[start_idx:end_idx]
+    
+    # Clean up reference lines
+    cleaned_refs = []
+    current_ref = ""
+    in_refs = True
+    
+    # Detect reference style
+    sample = ' '.join(ref_lines[:20])
+    if re.search(r'\[\d+\]', sample):
+        style = "ieee"
+    elif re.search(r'^\d+\.\s+', sample):
+        style = "numbered"
+    else:
+        style = "apa"
+    
+    for line in ref_lines:
+        line = line.strip()
+        if not line:
+            if current_ref and len(current_ref) > 30:
+                cleaned_refs.append(clean_reference(current_ref))
+                current_ref = ""
+            continue
+        
+        # Check if this starts a new reference
+        is_new = False
+        
+        if style == "ieee":
+            is_new = bool(re.match(r'^\[\s*\d+\s*\]', line))
+        elif style == "numbered":
+            is_new = bool(re.match(r'^\d+\.\s+', line))
+        else:  # apa
+            is_new = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:150]))
+        
+        if is_new:
+            if current_ref:
+                cleaned_refs.append(clean_reference(current_ref))
+            current_ref = line
+        elif current_ref:
+            # Check if this line is continuation or new paragraph
+            if line[0].isupper() and len(line) > 30 and current_ref[-1] == '.':
+                # Probably a new reference without clear marker
+                cleaned_refs.append(clean_reference(current_ref))
+                current_ref = line
+            else:
+                # Continuation
+                if current_ref.endswith('-'):
+                    current_ref = current_ref[:-1] + line
+                else:
+                    current_ref += " " + line
+    
+    if current_ref and len(current_ref) > 30:
+        cleaned_refs.append(clean_reference(current_ref))
+    
+    # Filter out non-references
+    valid_refs = []
+    for ref in cleaned_refs:
+        if len(ref) > 30 and (re.search(r'\d{4}', ref) or re.search(r'\[\d+\]', ref)):
+            valid_refs.append(ref)
+    
+    msg = f"Found references section ({section_type}) with {len(valid_refs)} entries"
+    return main_text, valid_refs, msg
+
+
+def extract_references_heuristic(text: str) -> List[str]:
+    """Extract references using heuristics when no clear section is found"""
+    lines = text.split('\n')
+    references = []
+    current_ref = ""
+    
+    # Look in last 30% of document
+    start_idx = int(len(lines) * 0.7)
+    
+    for i in range(start_idx, len(lines)):
+        line = lines[i].strip()
+        if not line:
+            if current_ref and len(current_ref) > 30:
+                references.append(clean_reference(current_ref))
+                current_ref = ""
+            continue
+        
+        # Features that indicate a reference
+        has_year = bool(re.search(r'\b(19|20)\d{2}\b', line))
+        has_brackets = bool(re.search(r'\[\d+\]', line))
+        has_numbering = bool(re.match(r'^\d+\.\s+', line))
+        has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', line))
+        has_doi = bool(re.search(r'\b10\.\d{4,9}/', line))
+        has_journal = bool(re.search(r'\b(Journal|Review|Letters?|Proceedings|Conference)\b', line, re.I))
+        
+        # Calculate confidence this is a reference
+        confidence = 0
+        if has_year: confidence += 2
+        if has_brackets: confidence += 3
+        if has_numbering: confidence += 2
+        if has_author: confidence += 3
+        if has_doi: confidence += 2
+        if has_journal: confidence += 1
+        
+        if confidence >= 4:  # Looks like a reference
+            if not current_ref:
+                current_ref = line
+            else:
+                # Check if this is a new reference or continuation
+                if (has_brackets or has_numbering) and confidence >= 5:
+                    if current_ref:
+                        references.append(clean_reference(current_ref))
+                    current_ref = line
+                else:
+                    current_ref += " " + line
+        elif current_ref:
+            current_ref += " " + line
+    
+    if current_ref and len(current_ref) > 30:
+        references.append(clean_reference(current_ref))
+    
+    # Deduplicate
+    seen = set()
+    unique_refs = []
+    for ref in references:
+        ref_key = re.sub(r'[^a-z0-9]', '', ref.lower())[:100]
+        if ref_key not in seen:
+            seen.add(ref_key)
+            unique_refs.append(ref)
+    
+    return unique_refs
+
+
+# Update the run_crosscheck function to use the new PDF extraction
+def run_crosscheck(
+    file_bytes: bytes,
+    filename: str,
+    style: str = "apa",
+    verify_online: bool = False,
+    verify_mode: str = "all",
+    max_verify: int = 0,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+) -> Dict[str, Any]:
+
+    name = (filename or "").lower().strip()
+    style_s = (style or "apa").strip().lower()
+
+    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
+    style_hint = "numeric" if is_numeric else "apa"
+
+    if name.endswith(".docx"):
+        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
+        references_raw = _merge_reference_lines(ref_block_lines)
+        if style_hint == "numeric":
+            references_raw = _split_embedded_numeric_refs(references_raw)
+
+    elif name.endswith(".pdf"):
+        # Use enhanced PDF extraction
+        full_text = read_pdf_text_enhanced(file_bytes)
+        
+        # Extract references using robust method
+        main_text, references_raw, ref_msg = extract_references_from_pdf(full_text)
+        
+        # Additional cleanup
+        if style_hint == "numeric":
+            references_raw = _split_embedded_numeric_refs(references_raw)
+
+    else:
+        return {"error": "Upload a DOCX or PDF"}
+
+    # Rest of the function remains the same...
+    main_text_len = len(main_text or "")
+    too_large = main_text_len > 2_000_000
+
+    if style_hint == "apa":
+        cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
+        refs = [parse_reference_author_year(r) for r in references_raw]
+        refs = [r for r in refs if r is not None]
+
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
+        ref_count = len(refs)
+
+    elif style_s == "ieee":
+        cites_nums = []
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
+        else:
+            cites_nums = extract_ieee_citations(main_text)
+        
+        refs = []
+        for r in references_raw:
+            parsed = parse_reference_numeric(r, style="ieee")
+            if parsed:
+                refs.append(parsed)
+        
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+            cites_nums, refs, style="ieee"
+        )
+        ref_count = len(refs)
+
+    elif style_s == "vancouver":
+        print("Using Vancouver style - sequential numbering")
+        
+        cites_nums = []
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style="vancouver")
+        else:
+            cites_nums = extract_vancouver_citations(main_text)
+        
+        refs = parse_vancouver_references(references_raw)
+        
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_vancouver(
+            cites_nums, refs
+        )
+        ref_count = len(refs)
+
+    else:
+        cites_nums = []
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
+        else:
+            cites_nums = extract_ieee_citations(main_text)
+        
+        refs = []
+        for r in references_raw:
+            parsed = parse_reference_numeric(r, style="ieee")
+            if parsed:
+                refs.append(parsed)
+        
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+            cites_nums, refs, style="ieee"
+        )
+        ref_count = len(refs)
+
+    missing_unique = int(len(missing_rows or []))
+    match_rate = 0.0
+    if intext_count > 0:
+        match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
+
+    return {
+        "filename": filename,
+        "style": style_s,
+        "engine_build": ENGINE_BUILD,
+        "verify_mode_used": (verify_mode or "all"),
+        "reference_detection_message": ref_msg,
+        "summary": {
+            "in_text_citations_found": int(intext_count),
+            "reference_entries_found": int(ref_count),
+            "missing_in_references": int(missing_unique),
+            "uncited_references": int(len(uncited_refs)),
+            "match_rate": float(round(match_rate, 1)),
+        },
+        "missing_in_references": missing_rows,
+        "uncited_references": uncited_refs,
+        "reconciliation_intext_to_reference": c2r,
+        "reconciliation_reference_to_intext": r2c,
+        "references_raw": references_raw,
+    }
 
 # ============================================================================
 # Main document processing function
@@ -1919,3 +2356,4 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+
