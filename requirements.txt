@@ -12,6 +12,7 @@ pdfplumber==0.11.4
 pdfminer.six==20231228
 gunicorn==21.2.0
 pdf2docx==0.5.8
-serpapi==1.0.0
+serpapi==0.1.5
+
 
 
