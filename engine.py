@@ -564,15 +564,182 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
     msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
     return "\n".join(main_lines).strip(), ref_lines, msg
 
+# ============================================================================
+# PDF EXTRACTION (IMPROVED)
+# ============================================================================
 
-# -----------------------------
-# PDF extraction
-# -----------------------------
+def _pdf_page_to_lines(page) -> List[str]:
+    lines: List[str] = []
 
-def read_pdf_text(file_bytes: bytes) -> str:      
-     
-  
+    try:
+        words = page.extract_words(
+            use_text_flow=True,
+            keep_blank_chars=False,
+            x_tolerance=2,
+            y_tolerance=3,
+        ) or []
+    except Exception:
+        words = []
 
+    if words:
+        buckets: Dict[int, List[dict]] = defaultdict(list)
+
+        for w in words:
+            try:
+                top = float(w.get("top", 0.0))
+            except Exception:
+                top = 0.0
+
+            bucket = int(round(top / 3.0))
+            buckets[bucket].append(w)
+
+        for bucket in sorted(buckets.keys()):
+            row = sorted(buckets[bucket], key=lambda x: float(x.get("x0", 0.0)))
+            text = norm_space(" ".join(_safe_str(w.get("text")) for w in row))
+            if text:
+                lines.append(text)
+
+        return lines
+
+    try:
+        text = page.extract_text(layout=True) or ""
+    except Exception:
+        text = ""
+
+    for ln in text.splitlines():
+        s = norm_space(ln)
+        if s:
+            lines.append(s)
+
+    return lines
+
+
+def _remove_repeated_pdf_headers_footers(page_lines: List[List[str]]) -> List[List[str]]:
+    if not page_lines:
+        return page_lines
+
+    top_counter = Counter()
+    bottom_counter = Counter()
+
+    for lines in page_lines:
+        slim = [x for x in lines if x.strip()]
+        for ln in slim[:2]:
+            if len(ln) <= 140:
+                top_counter[soft_lower(ln)] += 1
+
+        for ln in slim[-2:]:
+            if len(ln) <= 140:
+                bottom_counter[soft_lower(ln)] += 1
+
+    repeated = {
+        k for k, v in top_counter.items() if v >= 2
+    } | {
+        k for k, v in bottom_counter.items() if v >= 2
+    }
+
+    cleaned_pages: List[List[str]] = []
+
+    for lines in page_lines:
+        new_lines: List[str] = []
+
+        for idx, ln in enumerate(lines):
+
+            key = soft_lower(ln)
+
+            if key in repeated and (idx < 2 or idx >= max(0, len(lines) - 2)):
+                continue
+
+            if re.fullmatch(r"(?:page\s+)?\d{1,4}(?:\s+of\s+\d{1,4})?", ln.lower()):
+                continue
+
+            new_lines.append(ln)
+
+        cleaned_pages.append(new_lines)
+
+    return cleaned_pages
+
+
+def _flatten_pdf_lines(page_lines: List[List[str]]) -> List[str]:
+    flat: List[str] = []
+
+    for lines in page_lines:
+        for ln in lines:
+
+            s = norm_space(ln)
+            if not s:
+                continue
+
+            if flat:
+
+                prev = flat[-1]
+
+                if prev.endswith("-") and re.match(r"^[a-z]", s):
+                    flat[-1] = prev[:-1] + s
+                    continue
+
+                if (
+                    len(prev) >= 20
+                    and not _looks_like_new_numeric_reference_start(s)
+                    and not _looks_like_new_apa_reference_start(s)
+                    and not _looks_like_heading_line(s)
+                    and re.match(r"^[a-z,(]", s)
+                ):
+                    flat[-1] = prev + " " + s
+                    continue
+
+            flat.append(s)
+
+    return flat
+
+
+def read_pdf_split_main_and_refs(file_bytes: bytes, style_hint: str = "apa") -> Tuple[str, List[str], str]:
+
+    if not PDF_OK:
+        raise RuntimeError("pdfplumber not installed")
+
+    page_lines: List[List[str]] = []
+
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+
+        for page in pdf.pages:
+            page_lines.append(_pdf_page_to_lines(page))
+
+    page_lines = _remove_repeated_pdf_headers_footers(page_lines)
+
+    lines = _flatten_pdf_lines(page_lines)
+
+    idx, tail = _find_reference_heading(lines, style_hint=style_hint)
+
+    if idx == -1:
+
+        full_text = "\n".join(lines).strip()
+        references_raw = extract_references_enhanced(full_text)
+
+        msg = f"Found {len(references_raw)} references using enhanced extraction."
+
+        return full_text, references_raw, msg
+
+    main_text = "\n".join(lines[:idx]).strip()
+
+    heading_line = lines[idx].strip()
+
+    ref_block_lines: List[str] = []
+
+    if tail:
+        ref_block_lines.append(tail)
+
+    ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
+
+    ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
+
+    references_raw = _merge_reference_lines(ref_block_lines)
+
+    if style_hint == "numeric":
+        references_raw = _split_embedded_numeric_refs(references_raw)
+
+    msg = f"Found References heading: {heading_line}"
+
+    return main_text, references_raw, msg
 
 # ============================================================================
 # Reference Extraction Functions
@@ -1719,3 +1886,4 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+
