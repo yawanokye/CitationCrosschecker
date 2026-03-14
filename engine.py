@@ -568,10 +568,112 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 # -----------------------------
 # PDF extraction
 # -----------------------------
+def read_pdf_text(file_bytes: bytes) -> str:
+    if not PDF_OK:
+        raise RuntimeError("pdfplumber not installed")
 
-def read_pdf_text(file_bytes: bytes) -> str:      
-     
-  
+    out: List[str] = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            try:
+                text = page.extract_text() or ""
+                text = text.replace("\x00", " ")
+                text = re.sub(r"-\n", "", text)
+                text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+            except Exception:
+                text = ""
+            out.append(text)
+    return "\n".join(out)
+
+
+def _looks_like_new_numeric_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+    
+    if re.match(r"^\[\s*\d{1,4}\s*\]\s+\S", s0):
+        return True
+    if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
+        return True
+    
+    m = re.match(r"^(\d{1,4})[\.)]\s+(.+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            rest = m.group(2)
+            if YEAR_RE.search(rest) or len(rest) > 30:
+                return True
+            return False
+        return True
+    
+    m = re.match(r"^(\d{1,4})\s+([A-Z].+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            return False
+        return True
+    
+    return False
+
+
+def _looks_like_new_apa_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+
+    if re.search(r"\.\s*\(\s*" + YEAR + r"\s*\)\.", s0):
+        return True
+
+    m = re.match(r"^(.+?)\s*\(\s*" + YEAR + r"\s*\)", s0)
+    if m:
+        a = m.group(1)
+        a = re.sub(r"[^A-Za-z,\.\-\s&/\u2013\u2014-]", "", a).strip()
+        return len(a) >= 3
+    return False
+
+
+def _count_reference_like(lines: List[str], style_hint: str) -> int:
+    c = 0
+    for ln in lines:
+        s = (ln or "").strip()
+        if not s:
+            continue
+        if style_hint == "numeric":
+            if _looks_like_new_numeric_reference_start(s):
+                c += 1
+        else:
+            if _looks_like_new_apa_reference_start(s):
+                c += 1
+    return c
+
+
+def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str]:
+    candidates: List[Tuple[int, str]] = []
+
+    for i, line in enumerate(lines):
+        s = (line or "").strip()
+        if not s:
+            continue
+
+        for pat in REF_HEADINGS:
+            if re.search(pat, s, flags=re.I):
+                candidates.append((i, ""))
+
+        m = REF_HEADING_RELAXED.search(s)
+        if m and m.start() <= 4 and len(s) <= 160:
+            tail = s[m.end():].strip(" :-\t")
+            if _looks_like_toc_references_line(s, tail):
+                continue
+            candidates.append((i, tail))
+
+    for i, tail in candidates:
+        lookahead = [ln for ln in lines[i + 1: i + 31] if (ln or "").strip()]
+        if _count_reference_like(lookahead, style_hint=style_hint) >= 3:
+            return i, tail
+
+    return -1, ""
 
 
 # ============================================================================
