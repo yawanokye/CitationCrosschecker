@@ -490,7 +490,7 @@ def _classify(doi_match: bool, title_score: int, score: int, year_match: int) ->
     if score >= 85:
         return "verified"
     
-    if title_score >= 90 and year_match:
+    if title_score >= 75 and year_match:
         return "verified"
     
     # ===== LIKELY =====
@@ -498,7 +498,7 @@ def _classify(doi_match: bool, title_score: int, score: int, year_match: int) ->
     if score >= 70:
         return "likely"
     
-    if title_score >= 80 and year_match:
+    if title_score >= 65 and year_match:
         return "likely"
     
     if title_score >= 85:
@@ -714,3 +714,4 @@ def verify_references_batch(
         r["status"] = _normalize_verify_status(r.get("status"))
 
     return rows
+
