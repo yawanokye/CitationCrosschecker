@@ -170,19 +170,7 @@ async def verify(
     # Build reference -> in-text mapping (deduplicated)
     result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
     
-    # Also ensure in-text citations are unique in the forward mapping
-    # This is handled by the reconciliation logic in engine.py, but we'll add
-    # a post-processing step to be safe
-    if "reconciliation_intext_to_reference" in result:
-        # Deduplicate in-text to reference mapping
-        unique_cites = {}
-        for item in result["reconciliation_intext_to_reference"]:
-            cite_text = item.get("in_text", "")
-            cite_norm = _norm_text_citation(cite_text)
-            if cite_norm and cite_norm not in unique_cites:
-                unique_cites[cite_norm] = item
-        
-        result["reconciliation_intext_to_reference"] = list(unique_cites.values())
+   
 
     job_id = store_result(result)
 
@@ -299,5 +287,6 @@ def health():
         "status": "healthy",
         "timestamp": now()
     }
+
 
 
