@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION WITH EXPORTS) */
+/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -74,7 +74,6 @@ TAB NAVIGATION
 const tabs = document.querySelectorAll(".tab");
 const panes = document.querySelectorAll(".tabPane");
 
-// Initially hide all panes except the first
 panes.forEach((pane, index) => {
     if (index === 0) {
         pane.classList.add("active");
@@ -98,7 +97,38 @@ tabs.forEach(tab => {
 });
 
 /* -------------------------------------------------------
-EXPORT FUNCTIONS (NO DEDUPLICATION)
+UNIQUE CITATION DEDUPLICATION (WITH COUNT)
+------------------------------------------------------- */
+
+function getUniqueCitationsWithCount(c2rRows) {
+    const uniqueMap = new Map();
+    
+    c2rRows.forEach(row => {
+        const citeText = row.in_text || '';
+        // Normalize for grouping (lowercase, remove extra spaces)
+        const normalizedCite = citeText.toLowerCase().replace(/\s+/g, ' ').trim();
+        const key = `${normalizedCite}|${row.status}|${row.matched_reference || ''}`;
+        
+        if (uniqueMap.has(key)) {
+            const existing = uniqueMap.get(key);
+            existing.count++;
+            // Keep the first occurrence's flags
+        } else {
+            uniqueMap.set(key, {
+                citation: citeText,
+                status: row.status,
+                matched_reference: row.matched_reference,
+                flags: row.flags,
+                count: 1
+            });
+        }
+    });
+    
+    return Array.from(uniqueMap.values());
+}
+
+/* -------------------------------------------------------
+EXPORT FUNCTIONS
 ------------------------------------------------------- */
 
 function escapeCsv(str) {
@@ -120,9 +150,11 @@ function exportCSV(data) {
     const s = normalized.summary || {};
     const missing = normalized.missing_in_references || [];
     const uncited = normalized.uncited_references || [];
-    // IMPORTANT: Use raw data without deduplication
-    const c2r = normalized.reconciliation_intext_to_reference || [];
+    const c2rRaw = normalized.reconciliation_intext_to_reference || [];
     const r2c = normalized.reconciliation_reference_to_intext || [];
+    
+    // For CSV export: show unique citations with counts
+    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
 
     // Create CSV content
     let csv = [];
@@ -130,9 +162,10 @@ function exportCSV(data) {
     // Summary section
     csv.push("=== SUMMARY ===");
     csv.push(`"Metric","Value"`);
-    csv.push(`"In-text citations found","${s.in_text_citations_found || 0}"`);
+    csv.push(`"Total in-text citations found (occurrences)","${s.in_text_citations_found || 0}"`);
+    csv.push(`"Unique citations","${uniqueCitations.length}"`);
     csv.push(`"Reference entries found","${s.reference_entries_found || 0}"`);
-    csv.push(`"Missing in references","${s.missing_in_references || 0}"`);
+    csv.push(`"Missing in references (unique)","${s.missing_in_references || 0}"`);
     csv.push(`"Uncited references","${s.uncited_references || 0}"`);
     csv.push(`"Match rate","${s.match_rate || 0}"`);
     csv.push(``);
@@ -155,17 +188,17 @@ function exportCSV(data) {
     });
     csv.push(``);
 
-    // Citation to Reference mapping - KEEP ALL OCCURRENCES
-    csv.push("=== CITATION TO REFERENCE MAPPING (ALL OCCURRENCES) ===");
-    csv.push(`"#","Status","Citation","Matched Reference","Flags"`);
-    c2r.forEach((item, idx) => {
-        csv.push(`"${idx + 1}","${item.status || ''}","${escapeCsv(item.in_text || '')}","${escapeCsv(item.matched_reference || '')}","${item.flags || ''}"`);
+    // UNIQUE Citation to Reference mapping (with count)
+    csv.push("=== CITATION TO REFERENCE MAPPING (UNIQUE CITATIONS) ===");
+    csv.push(`"#","Status","Citation","Count","Matched Reference","Flags"`);
+    uniqueCitations.forEach((item, idx) => {
+        csv.push(`"${idx + 1}","${item.status || ''}","${escapeCsv(item.citation)}","${item.count}","${escapeCsv(item.matched_reference || '')}","${item.flags || ''}"`);
     });
     csv.push(``);
 
     // Reference to Citation mapping
     csv.push("=== REFERENCE TO CITATION MAPPING ===");
-    csv.push(`"#","Times Cited","Reference","Cited By"`);
+    csv.push(`"#","Times Cited","Reference","Cited By (sample)"`);
     r2c.forEach((item, idx) => {
         const citedBy = (item.cited_by || []).slice(0, 3).join("; ");
         csv.push(`"${idx + 1}","${item.times_cited || 0}","${escapeCsv(item.reference || '')}","${escapeCsv(citedBy)}"`);
@@ -193,9 +226,11 @@ function exportWordFile(data) {
     const s = normalized.summary || {};
     const missing = normalized.missing_in_references || [];
     const uncited = normalized.uncited_references || [];
-    // IMPORTANT: Use raw data without deduplication
-    const c2r = normalized.reconciliation_intext_to_reference || [];
+    const c2rRaw = normalized.reconciliation_intext_to_reference || [];
     const r2c = normalized.reconciliation_reference_to_intext || [];
+    
+    // For Word export: show unique citations with counts
+    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
     const timestamp = new Date().toLocaleString();
 
     // Build HTML content for Word
@@ -218,6 +253,7 @@ function exportWordFile(data) {
         .badge.not_found { background: #e74c3c; color: white; }
         .footer { margin-top: 30px; font-size: 11px; color: #7f8c8d; text-align: center; border-top: 1px solid #ddd; padding-top: 15px; }
         .citation-count { color: #3498db; font-weight: bold; }
+        .occurrence-note { background: #f8f9fa; padding: 10px; border-left: 4px solid #3498db; margin-bottom: 15px; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -228,10 +264,11 @@ function exportWordFile(data) {
     
     <h2>📈 Summary</h2>
     <table class="summary-table">
-        <tr><th>Metric</th><th>Value</th> </tr>
-         <tr><td>In-text citations found</td><td>${s.in_text_citations_found || 0}</td></tr>
+         <tr><th>Metric</th><th>Value</th></tr>
+         <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
+         <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
          <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
-         <tr><td>Missing in references</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td></tr>
+         <tr><td>Missing in references (unique)</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td></tr>
          <tr><td>Uncited references</td><td><strong style="color: ${s.uncited_references > 0 ? '#e67e22' : '#27ae60'}">${s.uncited_references || 0}</strong></td></tr>
          <tr><td>Match rate</td><td><strong style="color: ${s.match_rate >= 80 ? '#27ae60' : '#e67e22'}">${s.match_rate || 0}%</strong></td></tr>
     </table>
@@ -239,7 +276,7 @@ function exportWordFile(data) {
     <h2>❌ Missing Citations</h2>
     ${missing.length > 0 ? `
     <table>
-        <thead><tr><th>#</th><th>Citation</th><th>Count</th></tr></thead>
+        <thead><tr><th>#</th><th>Citation</th><th>Occurrences</th></tr></thead>
         <tbody>
             ${missing.map((item, idx) => {
                 const citation = (typeof item === 'string') ? item : (item.citation_in_text || item);
@@ -261,16 +298,22 @@ function exportWordFile(data) {
     </table>
     ` : '<p>✅ All references are cited!</p>'}
     
-    <h2>📝 Citation to Reference Mapping <span class="citation-count">(Total: ${c2r.length} occurrences)</span></h2>
-    ${c2r.length > 0 ? `
+    <div class="occurrence-note">
+        📌 <strong>Note:</strong> ${s.in_text_citations_found || 0} total citation occurrences found in the document. 
+        The table below shows <strong>${uniqueCitations.length} unique citations</strong> with their occurrence counts.
+    </div>
+    
+    <h2>📝 Citation to Reference Mapping <span class="citation-count">(Unique Citations: ${uniqueCitations.length})</span></h2>
+    ${uniqueCitations.length > 0 ? `
     <table>
-        <thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Matched Reference</th><th>Flags</th></tr></thead>
+        <thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Occurrences</th><th>Matched Reference</th><th>Flags</th></tr></thead>
         <tbody>
-            ${c2r.map((item, idx) => `
+            ${uniqueCitations.map((item, idx) => `
                 <tr>
                     <td>${idx + 1}</td>
                     <td>${item.status === 'matched' ? '✓ Matched' : '✗ Not Found'}</td>
-                    <td>${esc(item.in_text || '')}</td>
+                    <td>${esc(item.citation)}</td>
+                    <td style="text-align:center"><strong>${item.count}</strong></td>
                     <td>${esc((item.matched_reference || '').substring(0, 150))}${(item.matched_reference || '').length > 150 ? '...' : ''}</td>
                     <td>${esc(item.flags || '')}</td>
                 </tr>
@@ -287,7 +330,7 @@ function exportWordFile(data) {
             ${r2c.slice(0, 100).map((item, idx) => `
                 <tr>
                     <td>${idx + 1}</td>
-                    <td>${item.times_cited || 0}</td>
+                    <td style="text-align:center"><strong>${item.times_cited || 0}</strong></td>
                     <td>${esc((item.reference || '').substring(0, 150))}${(item.reference || '').length > 150 ? '...' : ''}</td>
                     <td>${esc((item.cited_by || []).slice(0, 2).join("; "))}</td>
                 </tr>
@@ -328,18 +371,6 @@ function aciiCategory(score) {
     if (score >= 60) return "Moderate";
     if (score >= 50) return "Weak";
     return "Poor";
-}
-
-function aciiRemark(metric, score) {
-    if (metric === "verification")
-        return score + "% verified in scholarly databases";
-    if (metric === "concentration")
-        return "Measures whether citations rely heavily on few authors";
-    if (metric === "diversity")
-        return "Measures diversity of authors represented";
-    if (metric === "temporal")
-        return "Measures spread of publication years";
-    return "";
 }
 
 /* -------------------------------------------------------
@@ -386,11 +417,11 @@ function renderSummaryTable(data) {
     if (!el.summaryTable) return;
 
     el.summaryTable.innerHTML = `
-        <tr><td>In-text citations</td><td>${esc(s.in_text_citations_found)}</td></tr>
-         <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
-         <tr><td>Missing</td><td>${esc(s.missing_in_references)}</td></tr>
-         <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
-         <tr><td>Match rate</td><td>${esc(s.match_rate)}</td></tr>
+        <tr><td>In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
+        <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
+        <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
+        <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
+        <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
     `;
 }
 
@@ -485,33 +516,36 @@ function renderUncited(data) {
 }
 
 /* -------------------------------------------------------
-IN-TEXT → REFERENCE (KEEP ALL OCCURRENCES)
+IN-TEXT → REFERENCE (UNIQUE CITATIONS WITH COUNT)
 ------------------------------------------------------- */
 
 function renderC2R(data) {
-    // IMPORTANT: Use raw data without deduplication
-    const rows = data?.reconciliation_intext_to_reference || [];
+    const c2rRaw = data?.reconciliation_intext_to_reference || [];
+    
+    // Get unique citations with occurrence counts
+    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
 
     if (!el.c2rBody) return;
 
-    if (!rows.length) {
-        el.c2rBody.innerHTML = `<tr><td colspan="5">No mapping available</td></tr>`;
+    if (!uniqueCitations.length) {
+        el.c2rBody.innerHTML = `<tr><td colspan="6">No mapping available</td></tr>`;
         return;
     }
 
-    // Show ALL occurrences - no deduplication
-    el.c2rBody.innerHTML = rows.map((r, i) => {
+    // Show unique citations with count
+    el.c2rBody.innerHTML = uniqueCitations.map((item, i) => {
         let statusClass = '';
-        if (r.status === 'matched') statusClass = 'verified';
-        else if (r.status === 'not_found') statusClass = 'not_found';
+        if (item.status === 'matched') statusClass = 'verified';
+        else if (item.status === 'not_found') statusClass = 'not_found';
         
         return `
         <tr>
             <td>${i + 1}</td>
-            <td><span class="badge ${statusClass}">${esc(r.status || '')}</span></td>
-            <td>${esc(r.in_text || '')}</td>
-            <td>${esc(r.matched_reference || '')}</td>
-            <td>${esc(r.flags || '')}</td>
+            <td><span class="badge ${statusClass}">${esc(item.status || '')}</span></td>
+            <td>${esc(item.citation)}</td>
+            <td style="text-align:center"><strong>${item.count}</strong></td>
+            <td>${esc(item.matched_reference || '')}</td>
+            <td>${esc(item.flags || '')}</td>
         </tr>
     `}).join("");
 }
@@ -615,7 +649,7 @@ function renderAll(data) {
     renderACII(CURRENT_DATA);
     renderMissing(CURRENT_DATA);
     renderUncited(CURRENT_DATA);
-    renderC2R(CURRENT_DATA);  // Now shows all occurrences
+    renderC2R(CURRENT_DATA);  // Now shows unique citations with count column
     renderR2C(CURRENT_DATA);
     renderVerify(CURRENT_DATA);
 }
@@ -709,15 +743,13 @@ BUTTON EVENTS
 if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
 if (el.btnVerify) el.btnVerify.addEventListener("click", runOnlineVerification);
 
-// Export buttons - enable after results are loaded
+// Export buttons
 const exportCsv = document.getElementById("btnExportCsvTop");
 const exportWord = document.getElementById("btnExportWordTop");
 
-// Initially disabled
 if (exportCsv) exportCsv.disabled = true;
 if (exportWord) exportWord.disabled = true;
 
-// Add click handlers
 if (exportCsv) {
     exportCsv.addEventListener("click", () => {
         if (!window.latestResults) {
