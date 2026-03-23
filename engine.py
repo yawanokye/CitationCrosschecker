@@ -7,6 +7,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
+from pdf_to_docx_pipeline import process_pdf
 
 ENGINE_BUILD = "commercial-2026-03-01-final"
 
@@ -1707,8 +1708,7 @@ def run_crosscheck(
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
 
-    from pdf_to_docx_pipeline import process_pdf
-
+    
     elif name.endswith(".pdf"):
         try:
             pdf_data = process_pdf(file_bytes)
