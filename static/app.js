@@ -502,5 +502,5 @@ const exportCsv = document.getElementById("btnExportCsvTop");
 const exportWord = document.getElementById("btnExportWordTop");
 if (exportCsv) exportCsv.disabled = false;
 if (exportWord) exportWord.disabled = false;
-
+window.latestResults = data;
 });
