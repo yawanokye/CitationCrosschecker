@@ -1156,20 +1156,20 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
 if year_base and year_base != year:
     cand_keys.append(f"{auth}|{year_base}".lower())
 
-        ym = YEAR_RE.search(c)
-        if ym:
-            left = (c[: ym.start()] or "").strip(" ,;()")
-            names = _surnames_from_author_blob(left)
-            if names:
-                cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
-                if year_base and year_base != ym.group(1):
-                    cand_keys.append(f"{names[0]}|{year_base}".lower())
-                if len(names) >= 2:
-                    cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
-                    cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
-                    if year_base and year_base != ym.group(1):
-                        cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
-                        cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
+ym = YEAR_RE.search(c)
+if ym:
+    left = (c[: ym.start()] or "").strip(" ,;()")
+    names = _surnames_from_author_blob(left)
+    if names:
+        cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
+        if year_base and year_base != ym.group(1):
+            cand_keys.append(f"{names[0]}|{year_base}".lower())
+        if len(names) >= 2:
+            cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
+            cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
+            if year_base and year_base != ym.group(1):
+                cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
+                cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
 
         matched_ref = None
         used_key = None
