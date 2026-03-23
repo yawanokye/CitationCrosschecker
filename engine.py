@@ -1707,26 +1707,23 @@ def run_crosscheck(
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
 
+    from pdf_to_docx_pipeline import process_pdf
+
     elif name.endswith(".pdf"):
-        full_text = read_pdf_text(file_bytes)
-        
-        lines = full_text.splitlines()
-        
-        idx, tail = _find_reference_heading(lines, style_hint=style_hint)
-        
-        if idx == -1:
-            references_raw = extract_references_enhanced(full_text)
-            main_text = full_text
-            ref_msg = f"Found {len(references_raw)} references using enhanced extraction."
-        else:
-            main_text = "\n".join(lines[:idx]).strip()
-            ref_msg = f"Found References heading: {lines[idx].strip()}"
-            ref_block_lines: List[str] = []
-            if tail:
-                ref_block_lines.append(tail)
-            ref_block_lines.extend([ln for ln in lines[idx + 1:] if ln.strip()])
-            ref_block_lines = _truncate_reference_block(ref_block_lines, style_hint=style_hint)
-            references_raw = _merge_reference_lines(ref_block_lines)
+        try:
+            pdf_data = process_pdf(file_bytes)
+    
+            main_text = pdf_data["main_text"]
+            references_raw = pdf_data["references"]
+    
+            ref_msg = f"PDF converted to DOCX and cleaned. Found {len(references_raw)} references."
+    
+        except Exception as e:
+            return {
+                "error": "PDF conversion failed",
+                "note": str(e),
+                "filename": filename
+            }
         
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
