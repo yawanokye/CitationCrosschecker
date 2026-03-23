@@ -1138,12 +1138,23 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         parsed = _parse_author_year_from_cite(c)
         if not parsed:
             continue
+        
         auth, year = parsed
         year_base = _base_year(year)
-
+        
         cand_keys = [f"{auth}|{year}".lower()]
-        if year_base and year_base != year:
-            cand_keys.append(f"{auth}|{year_base}".lower())
+        
+        # 🔥 FORCE et al first-author fallback (robust)
+        if re.search(r"\bet\s+al\.?", c, re.I):
+            m = re.search(r'([A-Z][A-Za-z\'\-]+)\s+et\s+al', c, re.I)
+            if m:
+                first_author = m.group(1).lower()
+                cand_keys.append(f"{first_author}|{year}".lower())
+                if year_base and year_base != year:
+                    cand_keys.append(f"{first_author}|{year_base}".lower())
+
+if year_base and year_base != year:
+    cand_keys.append(f"{auth}|{year_base}".lower())
 
         ym = YEAR_RE.search(c)
         if ym:
