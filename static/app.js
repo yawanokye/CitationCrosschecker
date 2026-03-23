@@ -330,7 +330,7 @@ function renderR2C(data) {
         <tr>
             <td>${i + 1}</td>
             <td>${esc(r.times_cited ?? 0)}</td>
-            <td>${esc(r.matched_reference || '')}</td>
+            <td>${esc(r.reference || '')}</td>
             <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
         </tr>
     `).join("");
