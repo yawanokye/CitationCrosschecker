@@ -1,5 +1,5 @@
 # acii.py
-# Anokye Citation Integrity Index (ACII)
+# Citation Integrity Index (ACII)
 
 from typing import Dict, List, Any
 from collections import Counter
