@@ -1160,9 +1160,8 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
                         cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
                         cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
 
-        matched_ref = ""
-        matched_key = ""
-        used = ""
+        matched_ref = None
+        used_key = None
         for k in cand_keys:
             if k in alias_map:
                 matched_ref = alias_map[k]
