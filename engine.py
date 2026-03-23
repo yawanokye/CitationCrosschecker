@@ -1038,9 +1038,20 @@ def extract_author_year_citations(text: str) -> List[str]:
 
     for m in narr_pat.finditer(t):
         author = m.group(1).strip()
-        year = m.group(2).strip()
-        author = re.sub(r"(’s|'s)\b", "", author).strip()
-        out.append(norm_space(f"{author}, {year}"))
+        years_block = m.group(2).strip()
+    
+        if not years_block:
+            continue
+    
+        author = _POSSESSIVE_RE.sub("", author).strip()
+    
+        # 🔥 split multiple years
+        years = re.split(r"[;,]\s*", years_block)
+    
+        for y in years:
+            y = y.strip()
+            if YEAR_RE.fullmatch(y):
+                out.add(norm_space(f"{author}, {y}"))
 
     return [c for c in out if c]
 
