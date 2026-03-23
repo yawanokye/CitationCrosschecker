@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION) */
+/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION WITH EXPORTS) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -24,6 +24,7 @@ const el = {
     style: $("style"),
     btnCheck: $("btnCheck"),
     btnVerify: $("btnVerify"),
+    btnExportVerify: $("btnExportVerify"),
     status: $("status"),
     resultsCard: $("resultsCard"),
     summaryTable: $("summaryTable"),
@@ -35,7 +36,8 @@ const el = {
     verifyDash: $("verifyDash"),
     verifyBody: $("verifyBody"),
     aciiCard: $("aciiCard"),
-    aciiValue: $("aciiValue")
+    aciiValue: $("aciiValue"),
+    aciiDescription: $("aciiDescription")
 };
 
 let LAST_JOB_ID = null;
@@ -97,6 +99,20 @@ tabs.forEach(tab => {
 });
 
 /* -------------------------------------------------------
+ACII SCORE DESCRIPTION
+------------------------------------------------------- */
+
+function getACIIRating(score) {
+    score = Number(score);
+    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity. The document demonstrates exceptional scholarly rigor with well-verified, diverse, and temporally balanced citations." };
+    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity. Most citations are verified with good author diversity and temporal distribution." };
+    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity. Citations are generally reliable with adequate author representation." };
+    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity. Some citations may require verification or improvement in diversity." };
+    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity. Significant room for improvement in verification and diversity." };
+    return { text: "Poor", class: "poor", description: "Low citation integrity. Many citations are unverified or lack author diversity." };
+}
+
+/* -------------------------------------------------------
 UNIQUE CITATION DEDUPLICATION (WITH COUNT)
 ------------------------------------------------------- */
 
@@ -105,14 +121,12 @@ function getUniqueCitationsWithCount(c2rRows) {
     
     c2rRows.forEach(row => {
         const citeText = row.in_text || '';
-        // Normalize for grouping (lowercase, remove extra spaces)
         const normalizedCite = citeText.toLowerCase().replace(/\s+/g, ' ').trim();
         const key = `${normalizedCite}|${row.status}|${row.matched_reference || ''}`;
         
         if (uniqueMap.has(key)) {
             const existing = uniqueMap.get(key);
             existing.count++;
-            // Keep the first occurrence's flags
         } else {
             uniqueMap.set(key, {
                 citation: citeText,
@@ -140,6 +154,52 @@ function escapeCsv(str) {
     return escaped;
 }
 
+function exportVerificationCSV(data) {
+    if (!data) {
+        alert("No verification data to export. Run verification first.");
+        return;
+    }
+
+    const ov = data?.online_verification || {};
+    const rows = ov.rows || [];
+    const sum = ov.summary || {};
+
+    let csv = [];
+
+    // Header
+    csv.push("=== ONLINE VERIFICATION REPORT ===");
+    csv.push(`"Generated","${new Date().toLocaleString()}"`);
+    csv.push(``);
+    
+    // Summary
+    csv.push("=== SUMMARY ===");
+    csv.push(`"Verified","${sum.verified || 0}"`);
+    csv.push(`"Likely","${sum.likely || 0}"`);
+    csv.push(`"Needs Review","${sum.needs_review || 0}"`);
+    csv.push(`"Not Found","${sum.not_found || 0}"`);
+    csv.push(`"Offline","${sum.offline || 0}"`);
+    csv.push(``);
+    
+    // Detailed results
+    csv.push("=== VERIFICATION DETAILS ===");
+    csv.push(`"#","Status","Source","Score","DOI","Matched Year","Matched Authors","Matched Title","Query Used"`);
+    
+    rows.forEach((r, idx) => {
+        csv.push(`"${idx + 1}","${r.status || ''}","${escapeCsv(r.source || '—')}","${r.score || '—'}","${r.doi || '—'}","${r.matched_year || '—'}","${escapeCsv(r.matched_authors || '—')}","${escapeCsv((r.matched_title || '').substring(0, 100))}","${escapeCsv(r.query_used || '—')}"`);
+    });
+
+    // Download file
+    const blob = new Blob([csv.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `verification_report_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
 function exportCSV(data) {
     if (!data) {
         alert("No data to export. Run a check first.");
@@ -152,23 +212,43 @@ function exportCSV(data) {
     const uncited = normalized.uncited_references || [];
     const c2rRaw = normalized.reconciliation_intext_to_reference || [];
     const r2c = normalized.reconciliation_reference_to_intext || [];
+    const acii = normalized.acii || {};
+    const ov = normalized.online_verification || {};
     
-    // For CSV export: show unique citations with counts
     const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
 
-    // Create CSV content
     let csv = [];
 
     // Summary section
+    csv.push("=== CITATION CROSSCHECK REPORT ===");
+    csv.push(`"Generated","${new Date().toLocaleString()}"`);
+    csv.push(``);
     csv.push("=== SUMMARY ===");
-    csv.push(`"Metric","Value"`);
     csv.push(`"Total in-text citations found (occurrences)","${s.in_text_citations_found || 0}"`);
     csv.push(`"Unique citations","${uniqueCitations.length}"`);
     csv.push(`"Reference entries found","${s.reference_entries_found || 0}"`);
     csv.push(`"Missing in references (unique)","${s.missing_in_references || 0}"`);
     csv.push(`"Uncited references","${s.uncited_references || 0}"`);
-    csv.push(`"Match rate","${s.match_rate || 0}"`);
+    csv.push(`"Match rate","${s.match_rate || 0}%"`);
     csv.push(``);
+    
+    // ACII Section
+    csv.push("=== ACII SCORE (Academic Citation Integrity Index) ===");
+    csv.push(`"ACII Score","${acii.ACII || '—'}"`);
+    const rating = getACIIRating(acii.ACII);
+    csv.push(`"Rating","${rating.text}"`);
+    csv.push(`"Description","${rating.description}"`);
+    csv.push(``);
+    
+    if (acii.components) {
+        csv.push("=== ACII COMPONENTS ===");
+        const comp = acii.components;
+        csv.push(`"Verification Integrity","${comp.verification_integrity?.score || '—'} (${comp.verification_integrity?.category || '—'})"`);
+        csv.push(`"Citation Concentration","${comp.citation_concentration?.score || '—'} (${comp.citation_concentration?.category || '—'})"`);
+        csv.push(`"Author Diversity","${comp.author_diversity?.score || '—'} (${comp.author_diversity?.category || '—'})"`);
+        csv.push(`"Temporal Balance","${comp.temporal_balance?.score || '—'} (${comp.temporal_balance?.category || '—'})"`);
+        csv.push(``);
+    }
 
     // Missing citations section
     csv.push("=== MISSING CITATIONS ===");
@@ -188,7 +268,7 @@ function exportCSV(data) {
     });
     csv.push(``);
 
-    // UNIQUE Citation to Reference mapping (with count)
+    // Unique Citation to Reference mapping
     csv.push("=== CITATION TO REFERENCE MAPPING (UNIQUE CITATIONS) ===");
     csv.push(`"#","Status","Citation","Count","Matched Reference","Flags"`);
     uniqueCitations.forEach((item, idx) => {
@@ -203,6 +283,17 @@ function exportCSV(data) {
         const citedBy = (item.cited_by || []).slice(0, 3).join("; ");
         csv.push(`"${idx + 1}","${item.times_cited || 0}","${escapeCsv(item.reference || '')}","${escapeCsv(citedBy)}"`);
     });
+    
+    // Verification summary if available
+    if (ov.rows && ov.rows.length > 0) {
+        csv.push(``);
+        csv.push("=== ONLINE VERIFICATION SUMMARY ===");
+        csv.push(`"Verified","${ov.summary?.verified || 0}"`);
+        csv.push(`"Likely","${ov.summary?.likely || 0}"`);
+        csv.push(`"Needs Review","${ov.summary?.needs_review || 0}"`);
+        csv.push(`"Not Found","${ov.summary?.not_found || 0}"`);
+        csv.push(`"Offline","${ov.summary?.offline || 0}"`);
+    }
 
     // Download file
     const blob = new Blob([csv.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -228,21 +319,23 @@ function exportWordFile(data) {
     const uncited = normalized.uncited_references || [];
     const c2rRaw = normalized.reconciliation_intext_to_reference || [];
     const r2c = normalized.reconciliation_reference_to_intext || [];
+    const acii = normalized.acii || {};
+    const ov = normalized.online_verification || {};
     
-    // For Word export: show unique citations with counts
     const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
     const timestamp = new Date().toLocaleString();
+    const aciiRating = getACIIRating(acii.ACII);
 
-    // Build HTML content for Word
     let html = `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>Citation Crosscheck Report</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.4; }
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
         h2 { color: #34495e; margin-top: 25px; border-left: 4px solid #3498db; padding-left: 10px; }
+        h3 { color: #555; margin-top: 15px; }
         table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
         th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; vertical-align: top; }
         th { background-color: #f2f2f2; font-weight: bold; }
@@ -251,9 +344,26 @@ function exportWordFile(data) {
         .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
         .badge.verified { background: #27ae60; color: white; }
         .badge.not_found { background: #e74c3c; color: white; }
+        .badge.likely { background: #f39c12; color: white; }
+        .badge.needs_review { background: #e67e22; color: white; }
+        .badge.offline { background: #95a5a6; color: white; }
         .footer { margin-top: 30px; font-size: 11px; color: #7f8c8d; text-align: center; border-top: 1px solid #ddd; padding-top: 15px; }
         .citation-count { color: #3498db; font-weight: bold; }
         .occurrence-note { background: #f8f9fa; padding: 10px; border-left: 4px solid #3498db; margin-bottom: 15px; font-size: 13px; }
+        .acii-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+        .acii-score { font-size: 48px; font-weight: bold; }
+        .acii-rating { font-size: 24px; }
+        .acii-description { margin-top: 10px; font-size: 14px; opacity: 0.9; }
+        .acii-component { background: #f0f0f0; padding: 10px; margin: 5px 0; border-radius: 5px; }
+        .acii-component span { font-weight: bold; color: #333; }
+        .excellent { color: #27ae60; }
+        .very-good { color: #2ecc71; }
+        .good { color: #f39c12; }
+        .moderate { color: #e67e22; }
+        .weak { color: #e74c3c; }
+        .poor { color: #c0392b; }
+        .kpi-grid { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
+        .kpi { background: #f8f9fa; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3498db; }
     </style>
 </head>
 <body>
@@ -264,14 +374,31 @@ function exportWordFile(data) {
     
     <h2>📈 Summary</h2>
     <table class="summary-table">
-         <tr><th>Metric</th><th>Value</th></tr>
-         <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
-         <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
-         <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
-         <tr><td>Missing in references (unique)</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td></tr>
-         <tr><td>Uncited references</td><td><strong style="color: ${s.uncited_references > 0 ? '#e67e22' : '#27ae60'}">${s.uncited_references || 0}</strong></td></tr>
-         <tr><td>Match rate</td><td><strong style="color: ${s.match_rate >= 80 ? '#27ae60' : '#e67e22'}">${s.match_rate || 0}%</strong></td></tr>
+        <tr><th>Metric</th><th>Value</th> </tr>
+        <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td> </tr>
+        <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td> </tr>
+        <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td> </tr>
+        <tr><td>Missing in references (unique)</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td> </tr>
+        <tr><td>Uncited references</td><td><strong style="color: ${s.uncited_references > 0 ? '#e67e22' : '#27ae60'}">${s.uncited_references || 0}</strong></td> </tr>
+        <tr><td>Match rate</td><td><strong style="color: ${s.match_rate >= 80 ? '#27ae60' : '#e67e22'}">${s.match_rate || 0}%</strong></td> </tr>
     </table>
+    
+    <h2>📊 ACII Score (Academic Citation Integrity Index)</h2>
+    <div class="acii-card">
+        <div class="acii-score">${acii.ACII || '—'}</div>
+        <div class="acii-rating ${aciiRating.class}">${aciiRating.text}</div>
+        <div class="acii-description">${aciiRating.description}</div>
+    </div>
+    
+    ${acii.components ? `
+    <h3>Component Scores</h3>
+    <div class="kpi-grid">
+        <div class="kpi"><strong>Verification Integrity:</strong> ${acii.components.verification_integrity?.score || '—'} (${acii.components.verification_integrity?.category || '—'})</div>
+        <div class="kpi"><strong>Citation Concentration:</strong> ${acii.components.citation_concentration?.score || '—'} (${acii.components.citation_concentration?.category || '—'})</div>
+        <div class="kpi"><strong>Author Diversity:</strong> ${acii.components.author_diversity?.score || '—'} (${acii.components.author_diversity?.category || '—'})</div>
+        <div class="kpi"><strong>Temporal Balance:</strong> ${acii.components.temporal_balance?.score || '—'} (${acii.components.temporal_balance?.category || '—'})</div>
+    </div>
+    ` : ''}
     
     <h2>❌ Missing Citations</h2>
     ${missing.length > 0 ? `
@@ -340,6 +467,35 @@ function exportWordFile(data) {
     </table>
     ` : '<p>No mapping available.</p>'}
     
+    ${ov.rows && ov.rows.length > 0 ? `
+    <h2>🔍 Online Verification Results</h2>
+    <div class="kpi-grid">
+        <div class="kpi">✅ Verified: ${ov.summary?.verified || 0}</div>
+        <div class="kpi">🔍 Likely: ${ov.summary?.likely || 0}</div>
+        <div class="kpi">⚠️ Needs Review: ${ov.summary?.needs_review || 0}</div>
+        <div class="kpi">❌ Not Found: ${ov.summary?.not_found || 0}</div>
+        <div class="kpi">📡 Offline: ${ov.summary?.offline || 0}</div>
+    </div>
+    <table>
+        <thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Matched Year</th><th>Matched Authors</th><th>Matched Title</th></tr></thead>
+        <tbody>
+            ${ov.rows.slice(0, 50).map((r, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td>${r.status || ''}</td>
+                    <td>${esc(r.source || '—')}</td>
+                    <td>${r.score || '—'}</td>
+                    <td>${r.doi || '—'}</td>
+                    <td>${r.matched_year || '—'}</td>
+                    <td>${esc((r.matched_authors || '').substring(0, 50))}</td>
+                    <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
+                </tr>
+            `).join('')}
+            ${ov.rows.length > 50 ? `<tr><td colspan="8">... and ${ov.rows.length - 50} more verification results</td></tr>` : ''}
+        </tbody>
+    </table>
+    ` : ''}
+    
     <div class="footer">
         <p>Report generated by Citation Crosschecker | Engine: ${esc(normalized.engine_build || 'N/A')}</p>
         <p>${esc(normalized.reference_detection_message || '')}</p>
@@ -347,7 +503,6 @@ function exportWordFile(data) {
 </body>
 </html>`;
 
-    // Download Word file
     const blob = new Blob([html], { type: "application/msword" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -363,14 +518,54 @@ function exportWordFile(data) {
 ACII HELPERS
 ------------------------------------------------------- */
 
-function aciiCategory(score) {
-    score = Number(score);
-    if (score >= 90) return "Excellent";
-    if (score >= 80) return "Very Good";
-    if (score >= 70) return "Good";
-    if (score >= 60) return "Moderate";
-    if (score >= 50) return "Weak";
-    return "Poor";
+function renderACII(data) {
+    const acii = data?.acii;
+
+    if (!acii) return;
+
+    if (el.aciiCard) el.aciiCard.style.display = "block";
+
+    if (el.aciiValue) {
+        const score = acii.ACII ?? "--";
+        el.aciiValue.textContent = score;
+        
+        // Add description
+        if (el.aciiDescription && score !== "--") {
+            const rating = getACIIRating(score);
+            el.aciiDescription.innerHTML = `<strong>${rating.text}</strong><br><small>${rating.description}</small>`;
+            el.aciiDescription.className = `acii-desc ${rating.class}`;
+        }
+    }
+
+    const c = acii.components || {};
+
+    if ($("aciiV"))
+        $("aciiV").textContent = c.verification_integrity?.score ?? "";
+    if ($("aciiVcat"))
+        $("aciiVcat").textContent = c.verification_integrity?.category ?? "";
+    if ($("aciiVremark"))
+        $("aciiVremark").textContent = c.verification_integrity?.remark ?? "";
+
+    if ($("aciiC"))
+        $("aciiC").textContent = c.citation_concentration?.score ?? "";
+    if ($("aciiCcat"))
+        $("aciiCcat").textContent = c.citation_concentration?.category ?? "";
+    if ($("aciiCremark"))
+        $("aciiCremark").textContent = c.citation_concentration?.remark ?? "";
+
+    if ($("aciiA"))
+        $("aciiA").textContent = c.author_diversity?.score ?? "";
+    if ($("aciiAcat"))
+        $("aciiAcat").textContent = c.author_diversity?.category ?? "";
+    if ($("aciiAremark"))
+        $("aciiAremark").textContent = c.author_diversity?.remark ?? "";
+
+    if ($("aciiT"))
+        $("aciiT").textContent = c.temporal_balance?.score ?? "";
+    if ($("aciiTcat"))
+        $("aciiTcat").textContent = c.temporal_balance?.category ?? "";
+    if ($("aciiTremark"))
+        $("aciiTremark").textContent = c.temporal_balance?.remark ?? "";
 }
 
 /* -------------------------------------------------------
@@ -426,51 +621,6 @@ function renderSummaryTable(data) {
 }
 
 /* -------------------------------------------------------
-ACII
-------------------------------------------------------- */
-
-function renderACII(data) {
-    const acii = data?.acii;
-
-    if (!acii) return;
-
-    if (el.aciiCard) el.aciiCard.style.display = "block";
-
-    if (el.aciiValue)
-        el.aciiValue.textContent = acii.ACII ?? "--";
-
-    const c = acii.components || {};
-
-    if ($("aciiV"))
-        $("aciiV").textContent = c.verification_integrity?.score ?? "";
-    if ($("aciiVcat"))
-        $("aciiVcat").textContent = c.verification_integrity?.category ?? "";
-    if ($("aciiVremark"))
-        $("aciiVremark").textContent = c.verification_integrity?.remark ?? "";
-
-    if ($("aciiC"))
-        $("aciiC").textContent = c.citation_concentration?.score ?? "";
-    if ($("aciiCcat"))
-        $("aciiCcat").textContent = c.citation_concentration?.category ?? "";
-    if ($("aciiCremark"))
-        $("aciiCremark").textContent = c.citation_concentration?.remark ?? "";
-
-    if ($("aciiA"))
-        $("aciiA").textContent = c.author_diversity?.score ?? "";
-    if ($("aciiAcat"))
-        $("aciiAcat").textContent = c.author_diversity?.category ?? "";
-    if ($("aciiAremark"))
-        $("aciiAremark").textContent = c.author_diversity?.remark ?? "";
-
-    if ($("aciiT"))
-        $("aciiT").textContent = c.temporal_balance?.score ?? "";
-    if ($("aciiTcat"))
-        $("aciiTcat").textContent = c.temporal_balance?.category ?? "";
-    if ($("aciiTremark"))
-        $("aciiTremark").textContent = c.temporal_balance?.remark ?? "";
-}
-
-/* -------------------------------------------------------
 MISSING
 ------------------------------------------------------- */
 
@@ -522,7 +672,6 @@ IN-TEXT → REFERENCE (UNIQUE CITATIONS WITH COUNT)
 function renderC2R(data) {
     const c2rRaw = data?.reconciliation_intext_to_reference || [];
     
-    // Get unique citations with occurrence counts
     const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
 
     if (!el.c2rBody) return;
@@ -532,7 +681,6 @@ function renderC2R(data) {
         return;
     }
 
-    // Show unique citations with count
     el.c2rBody.innerHTML = uniqueCitations.map((item, i) => {
         let statusClass = '';
         if (item.status === 'matched') statusClass = 'verified';
@@ -596,7 +744,7 @@ function renderVerify(data) {
     if (!el.verifyBody) return;
 
     if (!rows.length) {
-        el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></tr>`;
+        el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Run Online Verification" to start. </td> </tr>`;
         return;
     }
 
@@ -611,7 +759,7 @@ function renderVerify(data) {
             else if (r.status === 'offline') badgeClass = 'offline';
 
             return `
-            <tr>
+             <tr>
                 <td>${i + 1}</td>
                 <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
                 <td>${esc(r.source || '—')}</td>
@@ -623,6 +771,11 @@ function renderVerify(data) {
                 <td>${esc(r.query_used || '—')}</td>
             </tr>
         `}).join("");
+    
+    // Enable verification export button if results exist
+    if (el.btnExportVerify && rows.length > 0) {
+        el.btnExportVerify.disabled = false;
+    }
 }
 
 /* -------------------------------------------------------
@@ -634,7 +787,6 @@ function renderAll(data) {
 
     CURRENT_DATA = normalizeData(data);
     
-    // Store for exports
     window.latestResults = CURRENT_DATA;
     
     // Enable export buttons
@@ -649,7 +801,7 @@ function renderAll(data) {
     renderACII(CURRENT_DATA);
     renderMissing(CURRENT_DATA);
     renderUncited(CURRENT_DATA);
-    renderC2R(CURRENT_DATA);  // Now shows unique citations with count column
+    renderC2R(CURRENT_DATA);
     renderR2C(CURRENT_DATA);
     renderVerify(CURRENT_DATA);
 }
@@ -708,6 +860,25 @@ async function runOnlineVerification() {
 }
 
 /* -------------------------------------------------------
+EXPORT VERIFICATION RESULTS
+------------------------------------------------------- */
+
+function exportVerificationResults() {
+    if (!window.latestResults) {
+        alert("No verification data to export. Run verification first.");
+        return;
+    }
+    
+    const ov = window.latestResults?.online_verification;
+    if (!ov || !ov.rows || ov.rows.length === 0) {
+        alert("No verification results available. Please run online verification first.");
+        return;
+    }
+    
+    exportVerificationCSV(window.latestResults);
+}
+
+/* -------------------------------------------------------
 POLLING
 ------------------------------------------------------- */
 
@@ -724,6 +895,8 @@ function startPolling() {
             if (js.online?.state === "done") {
                 clearInterval(POLL_TIMER);
                 setStatus("Online verification complete", "good");
+                // Enable verification export button
+                if (el.btnExportVerify) el.btnExportVerify.disabled = false;
             }
 
             if (js.online?.state === "error") {
@@ -742,6 +915,10 @@ BUTTON EVENTS
 
 if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
 if (el.btnVerify) el.btnVerify.addEventListener("click", runOnlineVerification);
+if (el.btnExportVerify) {
+    el.btnExportVerify.disabled = true;
+    el.btnExportVerify.addEventListener("click", exportVerificationResults);
+}
 
 // Export buttons
 const exportCsv = document.getElementById("btnExportCsvTop");
