@@ -500,7 +500,7 @@ if (el.btnVerify) el.btnVerify.addEventListener("click", runOnlineVerification);
 // Disable export buttons for now
 const exportCsv = document.getElementById("btnExportCsvTop");
 const exportWord = document.getElementById("btnExportWordTop");
-if (exportCsv) exportCsv.disabled = true;
-if (exportWord) exportWord.disabled = true;
+if (exportCsv) exportCsv.disabled = false;
+if (exportWord) exportWord.disabled = false;
 
 });
