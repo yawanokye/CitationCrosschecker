@@ -306,7 +306,7 @@ function renderC2R(data) {
             <td>${i + 1}</td>
             <td><span class="badge ${statusClass}">${esc(r.status || '')}</span></td>
             <td>${esc(r.in_text || '')}</td>
-            <td>${esc(r.matched_reference || '').substring(0, 80)}${(r.matched_reference || '').length > 80 ? '…' : ''}</td>
+            <td>${esc(r.matched_reference || '')}</td>
             <td>${esc(r.flags || '')}</td>
         </tr>
     `}).join("");
@@ -330,7 +330,7 @@ function renderR2C(data) {
         <tr>
             <td>${i + 1}</td>
             <td>${esc(r.times_cited ?? 0)}</td>
-            <td>${esc(r.reference).substring(0, 80)}${(r.reference || '').length > 80 ? '…' : ''}</td>
+            <td>${esc(r.matched_reference || '')}</td>
             <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
         </tr>
     `).join("");
