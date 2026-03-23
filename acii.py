@@ -40,7 +40,7 @@ def _remark(metric: str, score: float) -> str:
         return f"{score}% of references verified in scholarly databases"
 
     if metric == "concentration":
-        return "Indicates whether citations rely heavily on a few authors"
+        return "Measures the extent to which citations are evenly distributed across authors and sources."
 
     if metric == "diversity":
         return "Measures diversity of authors represented in the reference list"
