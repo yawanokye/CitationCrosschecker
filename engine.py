@@ -1043,15 +1043,15 @@ def extract_author_year_citations(text: str) -> List[str]:
         if not years_block:
             continue
     
-        author = _POSSESSIVE_RE.sub("", author).strip()
+        author = re.sub(r"(’s|'s)\b", "", author).strip()
     
-        # 🔥 split multiple years
+        # split multiple years
         years = re.split(r"[;,]\s*", years_block)
     
         for y in years:
             y = y.strip()
             if YEAR_RE.fullmatch(y):
-                out.add(norm_space(f"{author}, {y}"))
+                out.append(norm_space(f"{author}, {y}"))
 
     return [c for c in out if c]
 
@@ -1144,7 +1144,7 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         
         cand_keys = [f"{auth}|{year}".lower()]
         
-        # 🔥 FORCE et al first-author fallback (robust)
+        # FORCE et al first-author fallback (robust)
         if re.search(r"\bet\s+al\.?", c, re.I):
             m = re.search(r'([A-Z][A-Za-z\'\-]+)\s+et\s+al', c, re.I)
             if m:
@@ -1153,36 +1153,35 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
                 if year_base and year_base != year:
                     cand_keys.append(f"{first_author}|{year_base}".lower())
 
-if year_base and year_base != year:
-    cand_keys.append(f"{auth}|{year_base}".lower())
+        if year_base and year_base != year:
+            cand_keys.append(f"{auth}|{year_base}".lower())
 
-ym = YEAR_RE.search(c)
-if ym:
-    left = (c[: ym.start()] or "").strip(" ,;()")
-    names = _surnames_from_author_blob(left)
-    if names:
-        cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
-        if year_base and year_base != ym.group(1):
-            cand_keys.append(f"{names[0]}|{year_base}".lower())
-        if len(names) >= 2:
-            cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
-            cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
-            if year_base and year_base != ym.group(1):
-                cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
-                cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
+        ym = YEAR_RE.search(c)
+        if ym:
+            left = (c[: ym.start()] or "").strip(" ,;()")
+            names = _surnames_from_author_blob(left)
+            if names:
+                cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
+                if year_base and year_base != ym.group(1):
+                    cand_keys.append(f"{names[0]}|{year_base}".lower())
+                if len(names) >= 2:
+                    cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
+                    cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
+                    if year_base and year_base != ym.group(1):
+                        cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
+                        cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
 
         matched_ref = None
         used_key = None
         for k in cand_keys:
             if k in alias_map:
                 matched_ref = alias_map[k]
-                matched_key = k
-                used = k
+                used_key = k
                 break
 
         if matched_ref:
             cite_counts_by_ref[matched_ref] += 1
-            parsed_cites.append((matched_ref, c, f"alias:{used}" if used else ""))
+            parsed_cites.append((matched_ref, c, f"alias:{used_key}" if used_key else ""))
         else:
             best_ref = ""
             best_score = 0
