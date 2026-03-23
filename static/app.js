@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION) */
+/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION WITH EXPORTS) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -41,6 +41,9 @@ const el = {
 let LAST_JOB_ID = null;
 let POLL_TIMER = null;
 let CURRENT_DATA = null;
+
+// Store latest results for export
+window.latestResults = null;
 
 /* -------------------------------------------------------
 UTILITY
@@ -93,6 +96,241 @@ tabs.forEach(tab => {
         if (pane) pane.classList.add("active");
     });
 });
+
+/* -------------------------------------------------------
+EXPORT FUNCTIONS
+------------------------------------------------------- */
+
+function exportCSV(data) {
+    if (!data) {
+        alert("No data to export. Run a check first.");
+        return;
+    }
+
+    const normalized = normalizeData(data);
+    const s = normalized.summary || {};
+    const missing = normalized.missing_in_references || [];
+    const uncited = normalized.uncited_references || [];
+    const c2r = normalized.reconciliation_intext_to_reference || [];
+    const r2c = normalized.reconciliation_reference_to_intext || [];
+
+    // Create CSV content
+    let csv = [];
+
+    // Summary section
+    csv.push("=== SUMMARY ===");
+    csv.push(`"Metric","Value"`);
+    csv.push(`"In-text citations found","${s.in_text_citations_found || 0}"`);
+    csv.push(`"Reference entries found","${s.reference_entries_found || 0}"`);
+    csv.push(`"Missing in references","${s.missing_in_references || 0}"`);
+    csv.push(`"Uncited references","${s.uncited_references || 0}"`);
+    csv.push(`"Match rate","${s.match_rate || 0}"`);
+    csv.push(``);
+
+    // Missing citations section
+    csv.push("=== MISSING CITATIONS ===");
+    csv.push(`"#","Citation","Count"`);
+    missing.forEach((item, idx) => {
+        const citation = (typeof item === 'string') ? item : (item.citation_in_text || item);
+        const count = (typeof item === 'string') ? 1 : (item.count_in_text || 1);
+        csv.push(`"${idx + 1}","${escapeCsv(citation)}","${count}"`);
+    });
+    csv.push(``);
+
+    // Uncited references section
+    csv.push("=== UNCITED REFERENCES ===");
+    csv.push(`"#","Reference"`);
+    uncited.forEach((ref, idx) => {
+        csv.push(`"${idx + 1}","${escapeCsv(ref)}"`);
+    });
+    csv.push(``);
+
+    // Citation to Reference mapping
+    csv.push("=== CITATION TO REFERENCE MAPPING ===");
+    csv.push(`"#","Status","Citation","Matched Reference","Flags"`);
+    const uniqueC2r = deduplicateCitations(c2r);
+    uniqueC2r.forEach((item, idx) => {
+        csv.push(`"${idx + 1}","${item.status || ''}","${escapeCsv(item.in_text || '')}","${escapeCsv(item.matched_reference || '')}","${item.flags || ''}"`);
+    });
+    csv.push(``);
+
+    // Reference to Citation mapping
+    csv.push("=== REFERENCE TO CITATION MAPPING ===");
+    csv.push(`"#","Times Cited","Reference","Cited By"`);
+    r2c.forEach((item, idx) => {
+        const citedBy = (item.cited_by || []).slice(0, 3).join("; ");
+        csv.push(`"${idx + 1}","${item.times_cited || 0}","${escapeCsv(item.reference || '')}","${escapeCsv(citedBy)}"`);
+    });
+
+    // Download file
+    const blob = new Blob([csv.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `citation_report_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
+function exportWordFile(data) {
+    if (!data) {
+        alert("No data to export. Run a check first.");
+        return;
+    }
+
+    const normalized = normalizeData(data);
+    const s = normalized.summary || {};
+    const missing = normalized.missing_in_references || [];
+    const uncited = normalized.uncited_references || [];
+    const c2r = deduplicateCitations(normalized.reconciliation_intext_to_reference || []);
+    const r2c = normalized.reconciliation_reference_to_intext || [];
+    const timestamp = new Date().toLocaleString();
+
+    // Build HTML content for Word
+    let html = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Citation Crosscheck Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 25px; border-left: 4px solid #3498db; padding-left: 10px; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; vertical-align: top; }
+        th { background-color: #f2f2f2; font-weight: bold; }
+        tr:hover { background-color: #f5f5f5; }
+        .summary-table { width: auto; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+        .badge.verified { background: #27ae60; color: white; }
+        .badge.not_found { background: #e74c3c; color: white; }
+        .footer { margin-top: 30px; font-size: 11px; color: #7f8c8d; text-align: center; border-top: 1px solid #ddd; padding-top: 15px; }
+    </style>
+</head>
+<body>
+    <h1>📊 Citation Crosscheck Report</h1>
+    <p><strong>Generated:</strong> ${timestamp}</p>
+    <p><strong>File:</strong> ${esc(normalized.filename || 'N/A')}</p>
+    <p><strong>Style:</strong> ${esc(normalized.style || 'APA/Harvard')}</p>
+    
+    <h2>📈 Summary</h2>
+    <table class="summary-table">
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>In-text citations found</td><td>${s.in_text_citations_found || 0}</td></tr>
+        <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
+        <tr><td>Missing in references</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td></tr>
+        <tr><td>Uncited references</td><td><strong style="color: ${s.uncited_references > 0 ? '#e67e22' : '#27ae60'}">${s.uncited_references || 0}</strong></td></tr>
+        <tr><td>Match rate</td><td><strong style="color: ${s.match_rate >= 80 ? '#27ae60' : '#e67e22'}">${s.match_rate || 0}%</strong></td></tr>
+    </table>
+    
+    <h2>❌ Missing Citations</h2>
+    ${missing.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Citation</th><th>Count</th></tr></thead>
+        <tbody>
+            ${missing.map((item, idx) => {
+                const citation = (typeof item === 'string') ? item : (item.citation_in_text || item);
+                const count = (typeof item === 'string') ? 1 : (item.count_in_text || 1);
+                return `<tr><td>${idx + 1}</td><td>${esc(citation)}</td><td>${count}</td></tr>`;
+            }).join('')}
+        </tbody>
+    </table>
+    ` : '<p>✅ No missing citations found!</p>'}
+    
+    <h2>📌 Uncited References</h2>
+    ${uncited.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Reference</th></tr></thead>
+        <tbody>
+            ${uncited.slice(0, 50).map((ref, idx) => `<tr><td>${idx + 1}</td><td>${esc(ref.substring(0, 200))}${ref.length > 200 ? '...' : ''}</td></tr>`).join('')}
+            ${uncited.length > 50 ? `<tr><td colspan="2">... and ${uncited.length - 50} more</td></tr>` : ''}
+        </tbody>
+    </table>
+    ` : '<p>✅ All references are cited!</p>'}
+    
+    <h2>📝 Citation to Reference Mapping</h2>
+    ${c2r.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Matched Reference</th><th>Flags</th></tr></thead>
+        <tbody>
+            ${c2r.map((item, idx) => `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${item.status === 'matched' ? '✓ Matched' : '✗ Not Found'}</td>
+                    <td>${esc(item.in_text || '')}</td>
+                    <td>${esc((item.matched_reference || '').substring(0, 150))}${(item.matched_reference || '').length > 150 ? '...' : ''}</td>
+                    <td>${esc(item.flags || '')}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    </table>
+    ` : '<p>No mapping available.</p>'}
+    
+    <h2>📖 Reference to Citation Mapping</h2>
+    ${r2c.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Times Cited</th><th>Reference</th><th>Cited By</th></tr></thead>
+        <tbody>
+            ${r2c.slice(0, 100).map((item, idx) => `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${item.times_cited || 0}</td>
+                    <td>${esc((item.reference || '').substring(0, 150))}${(item.reference || '').length > 150 ? '...' : ''}</td>
+                    <td>${esc((item.cited_by || []).slice(0, 2).join("; "))}</td>
+                </tr>
+            `).join('')}
+            ${r2c.length > 100 ? `<tr><td colspan="4">... and ${r2c.length - 100} more references</td></tr>` : ''}
+        </tbody>
+    </table>
+    ` : '<p>No mapping available.</p>'}
+    
+    <div class="footer">
+        <p>Report generated by Citation Crosschecker | Engine: ${esc(normalized.engine_build || 'N/A')}</p>
+        <p>${esc(normalized.reference_detection_message || '')}</p>
+    </div>
+</body>
+</html>`;
+
+    // Download Word file
+    const blob = new Blob([html], { type: "application/msword" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `citation_report_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.doc`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
+function escapeCsv(str) {
+    if (!str) return '';
+    // Escape quotes and wrap in quotes if contains comma, newline, or quote
+    const escaped = String(str).replace(/"/g, '""');
+    if (escaped.includes(',') || escaped.includes('\n') || escaped.includes('"')) {
+        return `"${escaped}"`;
+    }
+    return escaped;
+}
+
+function deduplicateCitations(c2rRows) {
+    const uniqueRows = [];
+    const seen = new Set();
+
+    c2rRows.forEach(row => {
+        const citeText = row.in_text || '';
+        const citeKey = citeText.toLowerCase().replace(/[^a-z0-9]/g, '');
+        
+        if (!seen.has(citeKey)) {
+            seen.add(citeKey);
+            uniqueRows.push(row);
+        }
+    });
+    
+    return uniqueRows;
+}
 
 /* -------------------------------------------------------
 ACII HELPERS
@@ -273,20 +511,7 @@ IN-TEXT → REFERENCE (FIXED FOR UNIQUENESS)
 function renderC2R(data) {
     const rows = data?.reconciliation_intext_to_reference || [];
 
-    // Deduplicate citations in the frontend
-    const uniqueRows = [];
-    const seen = new Set();
-
-    rows.forEach(row => {
-        // Create a unique key based on the citation text (normalized)
-        const citeText = row.in_text || '';
-        const citeKey = citeText.toLowerCase().replace(/[^a-z0-9]/g, '');
-        
-        if (!seen.has(citeKey)) {
-            seen.add(citeKey);
-            uniqueRows.push(row);
-        }
-    });
+    const uniqueRows = deduplicateCitations(rows);
 
     if (!el.c2rBody) return;
 
@@ -296,7 +521,6 @@ function renderC2R(data) {
     }
 
     el.c2rBody.innerHTML = uniqueRows.map((r, i) => {
-        // Determine status class for badge
         let statusClass = '';
         if (r.status === 'matched') statusClass = 'verified';
         else if (r.status === 'not_found') statusClass = 'not_found';
@@ -365,7 +589,6 @@ function renderVerify(data) {
     el.verifyBody.innerHTML = rows
         .slice(0, CONFIG.MAX_VERIFY_DISPLAY)
         .map((r, i) => {
-            // Determine badge class based on status
             let badgeClass = '';
             if (r.status === 'verified') badgeClass = 'verified';
             else if (r.status === 'likely') badgeClass = 'likely';
@@ -382,7 +605,7 @@ function renderVerify(data) {
                 <td>${esc(r.doi || '—')}</td>
                 <td>${esc(r.matched_year || '—')}</td>
                 <td>${esc(r.matched_authors || '—')}</td>
-                <td>${esc(r.matched_title || '—').substring(0, 50)}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
+                <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
                 <td>${esc(r.query_used || '—')}</td>
             </tr>
         `}).join("");
@@ -396,6 +619,15 @@ function renderAll(data) {
     if (!data) return;
 
     CURRENT_DATA = normalizeData(data);
+    
+    // Store for exports
+    window.latestResults = CURRENT_DATA;
+    
+    // Enable export buttons
+    const exportCsv = document.getElementById("btnExportCsvTop");
+    const exportWord = document.getElementById("btnExportWordTop");
+    if (exportCsv) exportCsv.disabled = false;
+    if (exportWord) exportWord.disabled = false;
 
     if (el.resultsCard) el.resultsCard.style.display = "block";
 
@@ -497,25 +729,31 @@ BUTTON EVENTS
 if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
 if (el.btnVerify) el.btnVerify.addEventListener("click", runOnlineVerification);
 
-// Export buttons
+// Export buttons - enable after results are loaded
 const exportCsv = document.getElementById("btnExportCsvTop");
 const exportWord = document.getElementById("btnExportWordTop");
 
-// Disable initially
+// Initially disabled
 if (exportCsv) exportCsv.disabled = true;
 if (exportWord) exportWord.disabled = true;
 
-// ✅ ADD THIS PART HERE
+// Add click handlers
 if (exportCsv) {
     exportCsv.addEventListener("click", () => {
-        if (!window.latestResults) return alert("Run a check first.");
+        if (!window.latestResults) {
+            alert("Run a check first to export data.");
+            return;
+        }
         exportCSV(window.latestResults);
     });
 }
 
 if (exportWord) {
     exportWord.addEventListener("click", () => {
-        if (!window.latestResults) return alert("Run a check first.");
+        if (!window.latestResults) {
+            alert("Run a check first to export data.");
+            return;
+        }
         exportWordFile(window.latestResults);
     });
 }
