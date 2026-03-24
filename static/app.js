@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION WITH EXPORTS) */
+/* static/app.js — Citation Crosschecker Dashboard (FIXED VERSION) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -37,12 +37,14 @@ const el = {
     verifyBody: $("verifyBody"),
     aciiCard: $("aciiCard"),
     aciiValue: $("aciiValue"),
-    aciiDescription: $("aciiDescription")
+    aciiDescription: $("aciiDescription"),
+    verifyProgress: $("verifyProgress")
 };
 
 let LAST_JOB_ID = null;
 let POLL_TIMER = null;
 let CURRENT_DATA = null;
+let VERIFICATION_IN_PROGRESS = false;
 
 // Store latest results for export
 window.latestResults = null;
@@ -67,6 +69,41 @@ function setStatus(msg, tone = "muted") {
     if (!el.status) return;
     el.status.className = `status ${tone}`;
     el.status.textContent = msg || "";
+}
+
+/* -------------------------------------------------------
+RESET VERIFICATION UI
+------------------------------------------------------- */
+
+function resetVerificationUI() {
+    // Reset verification dashboard
+    if (el.verifyDash) {
+        el.verifyDash.innerHTML = `
+            <div class="kpi">✅ Verified: 0</div>
+            <div class="kpi">🔍 Likely: 0</div>
+            <div class="kpi">⚠️ Needs Review: 0</div>
+            <div class="kpi">❌ Not Found: 0</div>
+            <div class="kpi">📡 Offline: 0</div>
+        `;
+    }
+    
+    // Reset verification table
+    if (el.verifyBody) {
+        el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></tr>`;
+    }
+    
+    // Disable verification export button
+    if (el.btnExportVerify) {
+        el.btnExportVerify.disabled = true;
+    }
+    
+    // Clear progress indicator
+    if (el.verifyProgress) {
+        el.verifyProgress.style.display = "none";
+        el.verifyProgress.querySelector(".progress-text")?.remove();
+    }
+    
+    VERIFICATION_IN_PROGRESS = false;
 }
 
 /* -------------------------------------------------------
@@ -164,23 +201,27 @@ function exportVerificationCSV(data) {
     const rows = ov.rows || [];
     const sum = ov.summary || {};
 
+    if (rows.length === 0) {
+        alert("No verification results available. Run online verification first.");
+        return;
+    }
+
     let csv = [];
 
-    // Header
     csv.push("=== ONLINE VERIFICATION REPORT ===");
     csv.push(`"Generated","${new Date().toLocaleString()}"`);
+    csv.push(`"Job ID","${data.job_id || LAST_JOB_ID || 'N/A'}"`);
     csv.push(``);
     
-    // Summary
     csv.push("=== SUMMARY ===");
     csv.push(`"Verified","${sum.verified || 0}"`);
     csv.push(`"Likely","${sum.likely || 0}"`);
     csv.push(`"Needs Review","${sum.needs_review || 0}"`);
     csv.push(`"Not Found","${sum.not_found || 0}"`);
     csv.push(`"Offline","${sum.offline || 0}"`);
+    csv.push(`"Total Processed","${sum.total || rows.length}"`);
     csv.push(``);
     
-    // Detailed results
     csv.push("=== VERIFICATION DETAILS ===");
     csv.push(`"#","Status","Source","Score","DOI","Matched Year","Matched Authors","Matched Title","Query Used"`);
     
@@ -188,7 +229,6 @@ function exportVerificationCSV(data) {
         csv.push(`"${idx + 1}","${r.status || ''}","${escapeCsv(r.source || '—')}","${r.score || '—'}","${r.doi || '—'}","${r.matched_year || '—'}","${escapeCsv(r.matched_authors || '—')}","${escapeCsv((r.matched_title || '').substring(0, 100))}","${escapeCsv(r.query_used || '—')}"`);
     });
 
-    // Download file
     const blob = new Blob([csv.join("\n")], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -219,9 +259,9 @@ function exportCSV(data) {
 
     let csv = [];
 
-    // Summary section
     csv.push("=== CITATION CROSSCHECK REPORT ===");
     csv.push(`"Generated","${new Date().toLocaleString()}"`);
+    csv.push(`"Job ID","${normalized.job_id || LAST_JOB_ID || 'N/A'}"`);
     csv.push(``);
     csv.push("=== SUMMARY ===");
     csv.push(`"Total in-text citations found (occurrences)","${s.in_text_citations_found || 0}"`);
@@ -232,7 +272,6 @@ function exportCSV(data) {
     csv.push(`"Match rate","${s.match_rate || 0}%"`);
     csv.push(``);
     
-    // ACII Section
     csv.push("=== ACII SCORE (Academic Citation Integrity Index) ===");
     csv.push(`"ACII Score","${acii.ACII || '—'}"`);
     const rating = getACIIRating(acii.ACII);
@@ -250,7 +289,6 @@ function exportCSV(data) {
         csv.push(``);
     }
 
-    // Missing citations section
     csv.push("=== MISSING CITATIONS ===");
     csv.push(`"#","Citation","Count"`);
     missing.forEach((item, idx) => {
@@ -260,7 +298,6 @@ function exportCSV(data) {
     });
     csv.push(``);
 
-    // Uncited references section
     csv.push("=== UNCITED REFERENCES ===");
     csv.push(`"#","Reference"`);
     uncited.forEach((ref, idx) => {
@@ -268,7 +305,6 @@ function exportCSV(data) {
     });
     csv.push(``);
 
-    // Unique Citation to Reference mapping
     csv.push("=== CITATION TO REFERENCE MAPPING (UNIQUE CITATIONS) ===");
     csv.push(`"#","Status","Citation","Count","Matched Reference","Flags"`);
     uniqueCitations.forEach((item, idx) => {
@@ -276,7 +312,6 @@ function exportCSV(data) {
     });
     csv.push(``);
 
-    // Reference to Citation mapping
     csv.push("=== REFERENCE TO CITATION MAPPING ===");
     csv.push(`"#","Times Cited","Reference","Cited By (sample)"`);
     r2c.forEach((item, idx) => {
@@ -284,7 +319,6 @@ function exportCSV(data) {
         csv.push(`"${idx + 1}","${item.times_cited || 0}","${escapeCsv(item.reference || '')}","${escapeCsv(citedBy)}"`);
     });
     
-    // Verification summary if available
     if (ov.rows && ov.rows.length > 0) {
         csv.push(``);
         csv.push("=== ONLINE VERIFICATION SUMMARY ===");
@@ -295,7 +329,6 @@ function exportCSV(data) {
         csv.push(`"Offline","${ov.summary?.offline || 0}"`);
     }
 
-    // Download file
     const blob = new Blob([csv.join("\n")], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -354,16 +387,14 @@ function exportWordFile(data) {
         .acii-score { font-size: 48px; font-weight: bold; }
         .acii-rating { font-size: 24px; }
         .acii-description { margin-top: 10px; font-size: 14px; opacity: 0.9; }
-        .acii-component { background: #f0f0f0; padding: 10px; margin: 5px 0; border-radius: 5px; }
-        .acii-component span { font-weight: bold; color: #333; }
+        .kpi-grid { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
+        .kpi { background: #f8f9fa; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3498db; }
         .excellent { color: #27ae60; }
         .very-good { color: #2ecc71; }
         .good { color: #f39c12; }
         .moderate { color: #e67e22; }
         .weak { color: #e74c3c; }
         .poor { color: #c0392b; }
-        .kpi-grid { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
-        .kpi { background: #f8f9fa; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3498db; }
     </style>
 </head>
 <body>
@@ -371,16 +402,17 @@ function exportWordFile(data) {
     <p><strong>Generated:</strong> ${timestamp}</p>
     <p><strong>File:</strong> ${esc(normalized.filename || 'N/A')}</p>
     <p><strong>Style:</strong> ${esc(normalized.style || 'APA/Harvard')}</p>
+    <p><strong>Job ID:</strong> ${esc(normalized.job_id || LAST_JOB_ID || 'N/A')}</p>
     
     <h2>📈 Summary</h2>
     <table class="summary-table">
-        <tr><th>Metric</th><th>Value</th> </tr>
-        <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td> </tr>
-        <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td> </tr>
-        <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td> </tr>
-        <tr><td>Missing in references (unique)</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td> </tr>
-        <tr><td>Uncited references</td><td><strong style="color: ${s.uncited_references > 0 ? '#e67e22' : '#27ae60'}">${s.uncited_references || 0}</strong></td> </tr>
-        <tr><td>Match rate</td><td><strong style="color: ${s.match_rate >= 80 ? '#27ae60' : '#e67e22'}">${s.match_rate || 0}%</strong></td> </tr>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
+        <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
+        <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
+        <tr><td>Missing in references (unique)</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td></tr>
+        <tr><td>Uncited references</td><td><strong style="color: ${s.uncited_references > 0 ? '#e67e22' : '#27ae60'}">${s.uncited_references || 0}</strong></td></tr>
+        <tr><td>Match rate</td><td><strong style="color: ${s.match_rate >= 80 ? '#27ae60' : '#e67e22'}">${s.match_rate || 0}%</strong></td></tr>
     </table>
     
     <h2>📊 ACII Score (Academic Citation Integrity Index)</h2>
@@ -529,7 +561,6 @@ function renderACII(data) {
         const score = acii.ACII ?? "--";
         el.aciiValue.textContent = score;
         
-        // Add description
         if (el.aciiDescription && score !== "--") {
             const rating = getACIIRating(score);
             el.aciiDescription.innerHTML = `<strong>${rating.text}</strong><br><small>${rating.description}</small>`;
@@ -690,9 +721,9 @@ function renderC2R(data) {
         <tr>
             <td>${i + 1}</td>
             <td><span class="badge ${statusClass}">${esc(item.status || '')}</span></td>
-            <td>${esc(item.citation)}</td>
+            <td style="max-width: 300px;">${esc(item.citation)}</td>
             <td style="text-align:center"><strong>${item.count}</strong></td>
-            <td>${esc(item.matched_reference || '')}</td>
+            <td style="max-width: 400px;">${esc(item.matched_reference || '')}</td>
             <td>${esc(item.flags || '')}</td>
         </tr>
     `}).join("");
@@ -708,17 +739,17 @@ function renderR2C(data) {
     if (!el.r2cBody) return;
 
     if (!rows.length) {
-        el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`;
+        el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td> </tr>`;
         return;
     }
 
     el.r2cBody.innerHTML = rows.map((r, i) => `
-        <tr>
-            <td>${i + 1}</td>
-            <td>${esc(r.times_cited ?? 0)}</td>
-            <td>${esc(r.reference || '')}</td>
-            <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
-        </tr>
+         <tr>
+             <td>${i + 1}</td>
+             <td>${esc(r.times_cited ?? 0)}</td>
+             <td style="max-width: 500px;">${esc(r.reference || '')}</td>
+             <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
+         </tr>
     `).join("");
 }
 
@@ -744,7 +775,7 @@ function renderVerify(data) {
     if (!el.verifyBody) return;
 
     if (!rows.length) {
-        el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Run Online Verification" to start. </td> </tr>`;
+        el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></tr>`;
         return;
     }
 
@@ -760,19 +791,18 @@ function renderVerify(data) {
 
             return `
              <tr>
-                <td>${i + 1}</td>
-                <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
-                <td>${esc(r.source || '—')}</td>
-                <td>${esc(r.score || '—')}</td>
-                <td>${esc(r.doi || '—')}</td>
-                <td>${esc(r.matched_year || '—')}</td>
-                <td>${esc(r.matched_authors || '—')}</td>
-                <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
-                <td>${esc(r.query_used || '—')}</td>
-            </tr>
+                 <td>${i + 1}</td>
+                 <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
+                 <td>${esc(r.source || '—')}</td>
+                 <td>${esc(r.score || '—')}</td>
+                 <td>${esc(r.doi || '—')}</td>
+                 <td>${esc(r.matched_year || '—')}</td>
+                 <td>${esc(r.matched_authors || '—')}</td>
+                 <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
+                 <td>${esc(r.query_used || '—')}</td>
+             </tr>
         `}).join("");
     
-    // Enable verification export button if results exist
     if (el.btnExportVerify && rows.length > 0) {
         el.btnExportVerify.disabled = false;
     }
@@ -785,11 +815,12 @@ MASTER RENDER
 function renderAll(data) {
     if (!data) return;
 
+    // Store the data with job_id
     CURRENT_DATA = normalizeData(data);
-    
+    CURRENT_DATA.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = CURRENT_DATA;
     
-    // Enable export buttons
+    // Enable main export buttons
     const exportCsv = document.getElementById("btnExportCsvTop");
     const exportWord = document.getElementById("btnExportWordTop");
     if (exportCsv) exportCsv.disabled = false;
@@ -818,6 +849,17 @@ async function runInitialCheck() {
         return;
     }
 
+    // Reset verification state for new document
+    if (POLL_TIMER) {
+        clearInterval(POLL_TIMER);
+        POLL_TIMER = null;
+    }
+    VERIFICATION_IN_PROGRESS = false;
+    LAST_JOB_ID = null;
+    
+    // Reset verification UI
+    resetVerificationUI();
+
     setStatus("Analyzing document...");
 
     const fd = new FormData();
@@ -845,8 +887,21 @@ async function runOnlineVerification() {
         setStatus("Run document check first", "warn");
         return;
     }
+    
+    if (VERIFICATION_IN_PROGRESS) {
+        setStatus("Verification already in progress...", "warn");
+        return;
+    }
 
     setStatus("Starting online verification...");
+    VERIFICATION_IN_PROGRESS = true;
+    
+    // Show progress indicator
+    if (el.verifyProgress) {
+        el.verifyProgress.style.display = "block";
+        const progressText = el.verifyProgress.querySelector(".progress-text");
+        if (progressText) progressText.textContent = "Verifying citations against online databases...";
+    }
 
     const fd = new FormData();
     fd.append("job_id", LAST_JOB_ID);
@@ -856,6 +911,8 @@ async function runOnlineVerification() {
         startPolling();
     } catch (err) {
         setStatus("Error: " + err.message, "bad");
+        VERIFICATION_IN_PROGRESS = false;
+        if (el.verifyProgress) el.verifyProgress.style.display = "none";
     }
 }
 
@@ -890,18 +947,27 @@ function startPolling() {
             const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
             const js = await res.json();
 
-            if (js.result) renderAll(js.result);
+            if (js.result) {
+                // Preserve job_id in the result
+                js.result.job_id = LAST_JOB_ID;
+                renderAll(js.result);
+            }
 
             if (js.online?.state === "done") {
                 clearInterval(POLL_TIMER);
+                POLL_TIMER = null;
                 setStatus("Online verification complete", "good");
-                // Enable verification export button
+                VERIFICATION_IN_PROGRESS = false;
+                if (el.verifyProgress) el.verifyProgress.style.display = "none";
                 if (el.btnExportVerify) el.btnExportVerify.disabled = false;
             }
 
             if (js.online?.state === "error") {
                 clearInterval(POLL_TIMER);
+                POLL_TIMER = null;
                 setStatus(js.online?.message || "Verification failed", "warn");
+                VERIFICATION_IN_PROGRESS = false;
+                if (el.verifyProgress) el.verifyProgress.style.display = "none";
             }
         } catch (err) {
             console.error("Polling error:", err);
