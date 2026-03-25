@@ -807,7 +807,7 @@ async function runOnlineVerification() {
 }
 
 /* -------------------------------------------------------
-STATUS POLLING WITH PROGRESS (IMPROVED)
+STATUS POLLING WITH PROGRESS - SINGLE JOB ID
 ------------------------------------------------------- */
 
 async function fetchStatus() {
@@ -817,25 +817,34 @@ async function fetchStatus() {
         const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
         const js = await res.json();
         
-        // Update progress from online status
+        // Update progress from online status (single source)
         if (js.online) {
             const progress = js.online.progress || 0;
             const total = js.online.total || 0;
             const percentage = js.online.percentage || 0;
+            const state = js.online.state || "processing";
             
             if (total > 0) {
-                updateProgress(progress, total, js.online.state, 
-                    `Verifying: ${progress}/${total} (${percentage}%)`);
+                // Always use the same progress value - no jumping
+                const currentProgress = progress;
+                const currentTotal = total;
+                const currentPercentage = percentage;
+                
+                updateProgress(currentProgress, currentTotal, state, 
+                    `Verifying: ${currentProgress}/${currentTotal} (${currentPercentage}%)`);
+                
+                console.log(`[Progress] ${currentProgress}/${currentTotal} (${currentPercentage}%) - ${state}`);
             }
         }
         
-        // Update from progress object (more detailed)
+        // Also handle progress object if present (for consistency)
         if (js.progress) {
-            updateProgress(js.progress.current, js.progress.total, js.progress.status,
-                `${js.progress.message || `Processing: ${js.progress.current}/${js.progress.total} (${js.progress.percentage}%)`}`);
-            
-            if (el.estimatedRemaining && js.progress.estimated_remaining) {
-                el.estimatedRemaining.textContent = `⏱️ Estimated: ${js.progress.estimated_remaining}`;
+            // Only update if it matches online status (prevents jumps)
+            if (js.online && js.progress.current === js.online.progress) {
+                // Already updated above
+            } else if (!js.online) {
+                updateProgress(js.progress.current, js.progress.total, js.progress.status,
+                    `${js.progress.message || `Processing: ${js.progress.current}/${js.progress.total} (${js.progress.percentage}%)`}`);
             }
         }
         
@@ -851,44 +860,31 @@ async function fetchStatus() {
             `;
         }
         
-        if (js.result) renderAll(js.result);
+        if (js.result) {
+            renderAll(js.result);
+        }
         
         // Check completion
-        if (js.online?.state === "done" || js.progress?.status === "completed") {
+        if (js.online?.state === "completed") {
             setStatus("Online verification complete", "good");
             VERIFICATION_IN_PROGRESS = false;
             if (el.btnVerify) el.btnVerify.disabled = false;
-            const total = js.progress?.total || js.online?.total || 0;
+            const total = js.online.total || 0;
             updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
             stopPolling();
             if (el.btnExportVerify) el.btnExportVerify.disabled = false;
-            if (el.estimatedRemaining) el.estimatedRemaining.textContent = "";
         }
         
-        if (js.online?.state === "error" || js.progress?.status === "error") {
+        if (js.online?.state === "error") {
             setStatus(js.online?.message || "Verification failed", "warn");
             VERIFICATION_IN_PROGRESS = false;
             if (el.btnVerify) el.btnVerify.disabled = false;
-            updateProgress(0, 0, "error", "Verification failed");
+            updateProgress(0, 0, "error", js.online?.message || "Verification failed");
             stopPolling();
         }
         
     } catch (err) {
         console.error("Status fetch error:", err);
-    }
-}
-
-function startPolling() {
-    if (POLL_TIMER) clearInterval(POLL_TIMER);
-    POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
-    console.log("[Polling] Started");
-}
-
-function stopPolling() {
-    if (POLL_TIMER) {
-        clearInterval(POLL_TIMER);
-        POLL_TIMER = null;
-        console.log("[Polling] Stopped");
     }
 }
 
