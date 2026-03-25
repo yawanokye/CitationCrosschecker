@@ -58,9 +58,11 @@ def update_job_progress(job_id: str, progress: int):
         if job_id in _jobs:
             job = _jobs[job_id]
             job.progress = progress
+            # Also update the job in main.py's store via a callback
             if progress >= job.total:
                 job.status = "completed"
                 job.completed_at = datetime.now().isoformat()
+            print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")  # Debug line
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     """Get job progress status"""
@@ -736,9 +738,10 @@ def verify_references_batch(
                 rows[idx] = future.result()
                 completed_count += 1
                 
-                # Update progress if tracking
+                # Update progress if tracking - update for EVERY completed reference
                 if job_id:
                     update_job_progress(job_id, completed_count)
+                    print(f"[DEBUG] Progress: {completed_count}/{len(refs)}")  # Debug line
                     
             except Exception as e:
                 rows[idx] = {
