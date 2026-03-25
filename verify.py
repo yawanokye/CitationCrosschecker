@@ -97,6 +97,16 @@ _api_health = {
 # QUEUE MANAGEMENT FUNCTIONS
 # ============================================================
 
+def update_job_progress(job_id: str, current: int, total: int, status: str = "processing"):
+    """Update job progress"""
+    with _job_lock:
+        if job_id in _jobs:
+            _jobs[job_id].progress = current
+            _jobs[job_id].status = status
+            if current >= total:
+                _jobs[job_id].status = "completed"
+
+
 def get_queue_stats() -> Dict[str, Any]:
     """Get current queue statistics"""
     with _queue_lock:
@@ -170,8 +180,8 @@ def _process_queue_worker():
                 time.sleep(0.5)
                 continue
             
-            # Process the job using the original high-quality verification
-            _process_job_with_original_verification(job_id)
+            # Process the job with progress tracking
+            _process_job_with_progress(job_id)
             
         except Exception as e:
             print(f"Queue worker error: {e}")
@@ -184,8 +194,8 @@ def _process_queue_worker():
                 break
 
 
-def _process_job_with_original_verification(job_id: str):
-    """Process a single verification job using the original verify_references_batch"""
+def _process_job_with_progress(job_id: str):
+    """Process a single verification job with progress tracking"""
     with _job_lock:
         if job_id not in _jobs:
             return
@@ -194,22 +204,41 @@ def _process_job_with_original_verification(job_id: str):
         job.started_at = datetime.now().isoformat()
     
     try:
-        # Use the original verification function with rate limiting
-        results = verify_references_batch_original(
-            job.references,
-            style=job.style,
-            throttle_s=0.1,  # Small throttle
-            use_crossref=True,
-            use_openalex=True,
-            rate_limiters=(_openalex_limiter, _crossref_limiter)
-        )
+        references = job.references
+        total = len(references)
+        results = []
+        
+        # Process in small batches to show smooth progress
+        batch_size = 5
+        
+        for i in range(0, total, batch_size):
+            batch = references[i:i+batch_size]
+            
+            # Process batch sequentially
+            for ref in batch:
+                result = _verify_single_reference_with_rate_limit(
+                    ref,
+                    job.style,
+                    use_crossref=True,
+                    use_openalex=True,
+                    openalex_limiter=_openalex_limiter,
+                    crossref_limiter=_crossref_limiter
+                )
+                results.append(result)
+                
+                # Update progress after each citation
+                current = len(results)
+                update_job_progress(job_id, current, total, "processing")
+                
+                # Small delay to prevent overwhelming
+                time.sleep(0.05)
         
         with _job_lock:
             if job_id in _jobs:
                 _jobs[job_id].results = results
                 _jobs[job_id].status = "completed"
                 _jobs[job_id].completed_at = datetime.now().isoformat()
-                _jobs[job_id].progress = job.total
+                _jobs[job_id].progress = total
                 
     except Exception as e:
         with _job_lock:
