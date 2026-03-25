@@ -31,9 +31,9 @@ MAILTO = (
 class VerificationJob:
     """Represents a verification job"""
     job_id: str
-    citations: List[str]
+    references: List[str]
     style: str
-    status: str = "pending"  # pending, processing, completed, failed
+    status: str = "pending"
     progress: int = 0
     total: int = 0
     results: List[Dict[str, Any]] = field(default_factory=list)
@@ -58,7 +58,6 @@ class RateLimiter:
         self.tokens = requests_per_second
         self.last_update = time.time()
         self.lock = threading.Lock()
-        self._waiting = 0
     
     def acquire(self) -> bool:
         """Acquire a token, returns True if available"""
@@ -113,25 +112,26 @@ def get_queue_stats() -> Dict[str, Any]:
         "processing_jobs": processing_jobs,
         "total_jobs": len(_jobs),
         "api_health": _api_health,
-        "is_busy": queue_size > 50 or pending_jobs > 10
+        "is_busy": queue_size > 50 or pending_jobs > 20
     }
+
 
 def is_server_busy() -> bool:
     """Check if server is too busy to accept new jobs"""
     stats = get_queue_stats()
-    # Busy if queue > 100 or pending > 20
     return stats["queue_size"] > 100 or stats["pending_jobs"] > 20
 
-def submit_verification_job(citations: List[str], style: str = "apa") -> str:
+
+def submit_verification_job(references: List[str], style: str = "apa") -> str:
     """Submit a verification job to the queue"""
     job_id = uuid.uuid4().hex
     
     with _job_lock:
         _jobs[job_id] = VerificationJob(
             job_id=job_id,
-            citations=citations,
+            references=references,
             style=style,
-            total=len(citations)
+            total=len(references)
         )
     
     with _queue_lock:
@@ -142,6 +142,7 @@ def submit_verification_job(citations: List[str], style: str = "apa") -> str:
     
     return job_id
 
+
 def _start_worker_thread():
     """Start background worker thread if not running"""
     global _processing
@@ -151,6 +152,7 @@ def _start_worker_thread():
     _processing = True
     thread = threading.Thread(target=_process_queue_worker, daemon=True)
     thread.start()
+
 
 def _process_queue_worker():
     """Background worker that processes verification jobs"""
@@ -168,8 +170,8 @@ def _process_queue_worker():
                 time.sleep(0.5)
                 continue
             
-            # Process the job
-            _process_job(job_id)
+            # Process the job using the original high-quality verification
+            _process_job_with_original_verification(job_id)
             
         except Exception as e:
             print(f"Queue worker error: {e}")
@@ -181,8 +183,9 @@ def _process_queue_worker():
                 _processing = False
                 break
 
-def _process_job(job_id: str):
-    """Process a single verification job"""
+
+def _process_job_with_original_verification(job_id: str):
+    """Process a single verification job using the original verify_references_batch"""
     with _job_lock:
         if job_id not in _jobs:
             return
@@ -191,30 +194,22 @@ def _process_job(job_id: str):
         job.started_at = datetime.now().isoformat()
     
     try:
-        results = []
-        total = len(job.citations)
-        
-        for i, citation in enumerate(job.citations):
-            # Update progress
-            with _job_lock:
-                if job_id in _jobs:
-                    _jobs[job_id].progress = i + 1
-            
-            # Verify citation with rate limiting
-            result = _verify_single_citation_with_queue(
-                citation, 
-                job.style,
-                _openalex_limiter,
-                _crossref_limiter
-            )
-            results.append(result)
+        # Use the original verification function with rate limiting
+        results = verify_references_batch_original(
+            job.references,
+            style=job.style,
+            throttle_s=0.1,  # Small throttle
+            use_crossref=True,
+            use_openalex=True,
+            rate_limiters=(_openalex_limiter, _crossref_limiter)
+        )
         
         with _job_lock:
             if job_id in _jobs:
                 _jobs[job_id].results = results
                 _jobs[job_id].status = "completed"
                 _jobs[job_id].completed_at = datetime.now().isoformat()
-                _jobs[job_id].progress = total
+                _jobs[job_id].progress = job.total
                 
     except Exception as e:
         with _job_lock:
@@ -222,6 +217,7 @@ def _process_job(job_id: str):
                 _jobs[job_id].status = "failed"
                 _jobs[job_id].error = str(e)
                 _jobs[job_id].completed_at = datetime.now().isoformat()
+
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     """Get status of a verification job"""
@@ -244,188 +240,9 @@ def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
             "results": job.results if job.status == "completed" else None
         }
 
-def _verify_single_citation_with_queue(
-    citation: str, 
-    style: str, 
-    openalex_limiter: RateLimiter,
-    crossref_limiter: RateLimiter
-) -> Dict[str, Any]:
-    """Verify single citation with queue-based rate limiting"""
-    
-    # First try OpenAlex (better quality)
-    openalex_available = openalex_limiter.wait_and_acquire(timeout=5)
-    
-    if openalex_available:
-        result = _verify_with_openalex(citation, style)
-        if result and result.get("score", 0) >= 70:
-            return result
-    
-    # Fallback to Crossref
-    crossref_available = crossref_limiter.wait_and_acquire(timeout=5)
-    
-    if crossref_available:
-        result = _verify_with_crossref(citation, style)
-        if result:
-            return result
-    
-    # Return offline status if both fail
-    return {
-        "status": "offline",
-        "citation": citation,
-        "score": 0,
-        "message": "Service temporarily busy, please try again"
-    }
-
-def _verify_with_openalex(citation: str, style: str) -> Optional[Dict[str, Any]]:
-    """Verify with OpenAlex API"""
-    try:
-        query, authors, year, doi, title_only = _build_query(citation, style)
-        
-        if not query:
-            return None
-        
-        url = "https://api.openalex.org/works"
-        params = {"search": query, "per-page": 3}
-        if MAILTO:
-            params["mailto"] = MAILTO
-        
-        data = _safe_get_json(url, params=params, timeout=12)
-        
-        if not data:
-            _api_health["openalex"]["failures"] += 1
-            _api_health["openalex"]["success_rate"] = max(0, _api_health["openalex"]["success_rate"] - 0.05)
-            return None
-        
-        _api_health["openalex"]["failures"] = max(0, _api_health["openalex"]["failures"] - 1)
-        _api_health["openalex"]["success_rate"] = min(1.0, _api_health["openalex"]["success_rate"] + 0.02)
-        
-        items = data.get("results", [])
-        
-        if not items:
-            return None
-        
-        best = items[0]
-        
-        # Extract fields
-        cand_title = best.get("title", "")
-        cand_year = best.get("publication_year", "")
-        cand_authors = []
-        for a in best.get("authorships", [])[:3]:
-            name = a.get("author", {}).get("display_name", "")
-            if name:
-                surname = name.split()[-1].lower() if name.split() else ""
-                cand_authors.append(surname)
-        
-        # Calculate score
-        score_data = _score(
-            citation, authors, year, 
-            cand_title, cand_authors, cand_year
-        )
-        
-        status = _classify(
-            False,
-            score_data["title_score"],
-            score_data["score"],
-            score_data["year_match"]
-        )
-        
-        return {
-            "status": status,
-            "source": "openalex",
-            "score": score_data["score"],
-            "doi": best.get("doi", "").replace("https://doi.org/", ""),
-            "matched_title": cand_title,
-            "matched_year": cand_year,
-            "matched_authors": ", ".join(cand_authors[:3]),
-            "title_score": score_data["title_score"],
-            "author_overlap": score_data["author_overlap"],
-            "author_similarity": score_data["author_similarity"],
-            "year_match": score_data["year_match"]
-        }
-        
-    except Exception as e:
-        _api_health["openalex"]["failures"] += 1
-        return None
-
-def _verify_with_crossref(citation: str, style: str) -> Optional[Dict[str, Any]]:
-    """Verify with Crossref API"""
-    try:
-        query, authors, year, doi, title_only = _build_query(citation, style)
-        
-        if not query:
-            return None
-        
-        url = "https://api.crossref.org/works"
-        params = {"query.bibliographic": query, "rows": 3, "sort": "score"}
-        if MAILTO:
-            params["mailto"] = MAILTO
-        
-        data = _safe_get_json(url, params=params, timeout=12)
-        
-        if not data:
-            _api_health["crossref"]["failures"] += 1
-            _api_health["crossref"]["success_rate"] = max(0, _api_health["crossref"]["success_rate"] - 0.05)
-            return None
-        
-        _api_health["crossref"]["failures"] = max(0, _api_health["crossref"]["failures"] - 1)
-        _api_health["crossref"]["success_rate"] = min(1.0, _api_health["crossref"]["success_rate"] + 0.02)
-        
-        items = data.get("message", {}).get("items", [])
-        
-        if not items:
-            return None
-        
-        best = items[0]
-        
-        # Extract fields
-        cand_title = best.get("title", [""])[0] if best.get("title") else ""
-        cand_year = ""
-        issued = best.get("issued") or best.get("published-print") or {}
-        cand_year = str(issued.get("date-parts", [[None]])[0][0]) if issued else ""
-        
-        cand_authors = []
-        for a in best.get("author", [])[:3]:
-            fam = a.get("family", "")
-            if fam:
-                cand_authors.append(fam.lower())
-        
-        # Calculate score
-        score_data = _score(
-            citation, authors, year, 
-            cand_title, cand_authors, cand_year
-        )
-        
-        # Check DOI match
-        doi_match = doi and best.get("DOI", "").lower() == doi.lower()
-        
-        status = _classify(
-            doi_match,
-            score_data["title_score"],
-            score_data["score"],
-            score_data["year_match"]
-        )
-        
-        return {
-            "status": status,
-            "source": "crossref",
-            "score": score_data["score"],
-            "doi": best.get("DOI", ""),
-            "matched_title": cand_title,
-            "matched_year": cand_year,
-            "matched_authors": ", ".join(cand_authors[:3]),
-            "title_score": score_data["title_score"],
-            "author_overlap": score_data["author_overlap"],
-            "author_similarity": score_data["author_similarity"],
-            "year_match": score_data["year_match"]
-        }
-        
-    except Exception as e:
-        _api_health["crossref"]["failures"] += 1
-        return None
-
 
 # ============================================================
-# EXISTING FUNCTIONS (keep as is)
+# ORIGINAL VERIFICATION FUNCTIONS (PRESERVED)
 # ============================================================
 
 _CACHE: Dict[str, Dict[str, Any]] = {}
@@ -450,7 +267,7 @@ _STYLE_ALIASES = {
 
 
 # ---------------------------------------------------------
-# Helpers (keep existing)
+# Helpers (preserved)
 # ---------------------------------------------------------
 
 def _normalize_verify_status(s: str) -> str:
@@ -536,7 +353,7 @@ def _dedupe_preserve(seq: List[str]) -> List[str]:
 
 
 # ---------------------------------------------------------
-# Reference field extraction (keep existing)
+# Reference field extraction (preserved)
 # ---------------------------------------------------------
 
 def _extract_authors_from_left(left: str) -> List[str]:
@@ -664,7 +481,7 @@ def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------
-# Query building (keep existing)
+# Query building (preserved)
 # ---------------------------------------------------------
 
 def _significant_title_words(title: str, limit: int = 6) -> List[str]:
@@ -710,7 +527,7 @@ def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
 
 
 # ---------------------------------------------------------
-# Candidate extraction (keep existing)
+# Candidate extraction (preserved)
 # ---------------------------------------------------------
 
 def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
@@ -753,7 +570,7 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
 
 
 # ---------------------------------------------------------
-# External queries (keep existing)
+# External queries (preserved)
 # ---------------------------------------------------------
 
 def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
@@ -826,7 +643,7 @@ def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[st
 
 
 # ---------------------------------------------------------
-# Scoring and classification (keep existing)
+# Scoring and classification (preserved with LIKELY category)
 # ---------------------------------------------------------
 
 def _score(
@@ -875,6 +692,14 @@ def _score(
 
 
 def _classify(doi_match: bool, title_score: int, score: int, year_match: int) -> str:
+    """
+    Classification thresholds:
+    - verified: High confidence match (≥85 overall OR ≥90 title with year)
+    - likely: Good match but needs quick check (70-84 overall OR ≥80 title with year)
+    - needs_review: Possible match but needs verification (50-69 overall)
+    - not_found: Poor match (<50 overall)
+    """
+    
     if doi_match:
         return "verified"
     
@@ -903,7 +728,7 @@ def _classify(doi_match: bool, title_score: int, score: int, year_match: int) ->
 
 
 # ---------------------------------------------------------
-# Candidate selection (keep existing)
+# Candidate selection (preserved)
 # ---------------------------------------------------------
 
 def _best_candidate(
@@ -938,9 +763,198 @@ def _best_candidate(
 
 
 # ---------------------------------------------------------
-# Public API - UPDATED to use queue
+# Worker with rate limiting
 # ---------------------------------------------------------
 
+def _verify_single_reference_with_rate_limit(
+    ref: str, 
+    style: str, 
+    use_crossref: bool, 
+    use_openalex: bool,
+    openalex_limiter: RateLimiter,
+    crossref_limiter: RateLimiter
+) -> Dict[str, Any]:
+    """Original verification logic with rate limiters"""
+    cache_key = f"{style}::{ref}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    query, ref_authors, ref_year, ref_doi, title_only = _build_query(ref, style)
+    fields = _extract_fields_by_style(ref, style)
+    ref_title = fields.get("title") or ref
+
+    row: Dict[str, Any] = {
+        "reference": ref,
+        "style": style,
+        "status": "offline",
+        "source": "",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "title_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "query_used": query,
+        "author": ", ".join(ref_authors),
+    }
+
+    candidates: List[Dict[str, Any]] = []
+
+    try:
+        # DOI-first shortcut
+        if ref_doi and use_crossref:
+            candidates.extend(_query_crossref_by_doi(ref_doi))
+
+        # stage 1 with rate limiting
+        if use_crossref:
+            if crossref_limiter.wait_and_acquire(timeout=5):
+                candidates.extend(_query_crossref(query, rows=10))
+            else:
+                row["status"] = "offline"
+                row["error"] = "Crossref rate limit reached"
+                
+        if use_openalex:
+            if openalex_limiter.wait_and_acquire(timeout=5):
+                candidates.extend(_query_openalex(query, rows=10))
+            else:
+                if row["status"] == "offline":
+                    row["status"] = "offline"
+                    row["error"] = "OpenAlex rate limit reached"
+
+        best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
+
+        if best:
+            status = _classify(
+                bool(best_meta.get("doi_match")),
+                int(best_meta.get("title_score", 0)),
+                int(best_meta.get("score", 0)),
+                int(best_meta.get("year_match", 0)),
+            )
+
+            # deep fallback only for weak cases (with rate limiting)
+            if status in {"needs_review", "not_found"}:
+                deep_candidates = list(candidates)
+
+                if use_crossref:
+                    if crossref_limiter.wait_and_acquire(timeout=5):
+                        deep_candidates.extend(_query_crossref(query, rows=20))
+                        deep_candidates.extend(_query_crossref_title_only(title_only, rows=12))
+
+                if use_openalex:
+                    if openalex_limiter.wait_and_acquire(timeout=5):
+                        deep_candidates.extend(_query_openalex(query, rows=20))
+                        deep_candidates.extend(_query_openalex_title_only(title_only, rows=12))
+
+                best2, best_meta2 = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, deep_candidates)
+                if best2:
+                    best = best2
+                    best_meta = best_meta2
+                    status = _classify(
+                        bool(best_meta.get("doi_match")),
+                        int(best_meta.get("title_score", 0)),
+                        int(best_meta.get("score", 0)),
+                        int(best_meta.get("year_match", 0)),
+                    )
+
+            row.update({
+                "status": status,
+                "source": _safe_strip(best.get("source")),
+                "score": int(best_meta.get("score", 0)),
+                "doi": _safe_strip(best_meta.get("doi")),
+                "matched_title": _safe_strip(best_meta.get("title")),
+                "matched_year": _safe_strip(best_meta.get("year")),
+                "matched_authors": ", ".join(best_meta.get("authors", [])),
+                "title_score": int(best_meta.get("title_score", 0)),
+                "author_overlap": int(best_meta.get("author_overlap", 0)),
+                "author_similarity": int(best_meta.get("author_similarity", 0)),
+                "year_match": int(best_meta.get("year_match", 0)),
+            })
+        else:
+            row["status"] = "not_found"
+
+    except Exception as e:
+        row["status"] = "offline"
+        row["error"] = str(e)
+
+    row["status"] = _normalize_verify_status(row.get("status"))
+    _cache_set(cache_key, row)
+    return row
+
+
+# ---------------------------------------------------------
+# Public API - UPDATED with queue and rate limiting
+# ---------------------------------------------------------
+
+def verify_references_batch_original(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    rate_limiters: Tuple[RateLimiter, RateLimiter] = None
+) -> List[Dict[str, Any]]:
+    """Original high-quality verification with rate limiters"""
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    if not refs:
+        return []
+
+    normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
+    
+    openalex_limiter = rate_limiters[0] if rate_limiters else _openalex_limiter
+    crossref_limiter = rate_limiters[1] if rate_limiters else _crossref_limiter
+
+    rows: List[Dict[str, Any]] = [None] * len(refs)
+    workers = min(4, max(1, len(refs)))  # Reduced workers to respect rate limits
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(
+                _verify_single_reference_with_rate_limit,
+                ref,
+                normalized_style,
+                use_crossref,
+                use_openalex,
+                openalex_limiter,
+                crossref_limiter,
+            ): i
+            for i, ref in enumerate(refs)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                rows[idx] = future.result()
+            except Exception as e:
+                rows[idx] = {
+                    "reference": refs[idx],
+                    "style": normalized_style,
+                    "status": "offline",
+                    "source": "",
+                    "score": 0,
+                    "doi": "",
+                    "matched_title": "",
+                    "matched_year": "",
+                    "matched_authors": "",
+                    "title_score": 0,
+                    "author_overlap": 0,
+                    "author_similarity": 0,
+                    "year_match": 0,
+                    "query_used": "",
+                    "author": "",
+                    "error": str(e),
+                }
+
+    for r in rows:
+        r["status"] = _normalize_verify_status(r.get("status"))
+
+    return rows
+
+
+# Backward compatibility function
 def verify_references_batch(
     references: List[str],
     style: str = "apa",
@@ -948,9 +962,7 @@ def verify_references_batch(
     use_crossref: bool = True,
     use_openalex: bool = True,
 ) -> List[Dict[str, Any]]:
-    """
-    Legacy synchronous batch verification - use queue for better performance
-    """
+    """Legacy synchronous batch verification - uses queue for better performance"""
     refs = [r for r in (references or []) if _safe_strip(r)]
     if not refs:
         return []
