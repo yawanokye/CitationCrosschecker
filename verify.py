@@ -1,4 +1,4 @@
-# verify.py — Complete with proper progress tracking (returns ALL results)
+# verify.py — Complete with proper progress tracking and debugging
 
 import os
 import re
@@ -58,11 +58,10 @@ def update_job_progress(job_id: str, progress: int):
         if job_id in _jobs:
             job = _jobs[job_id]
             job.progress = progress
-            # Also update the job in main.py's store via a callback
             if progress >= job.total:
                 job.status = "completed"
                 job.completed_at = datetime.now().isoformat()
-            print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")  # Debug line
+            print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     """Get job progress status"""
@@ -707,16 +706,20 @@ def verify_references_batch(
     """
     refs = [r for r in (references or []) if _safe_strip(r)]
     if not refs:
+        print("[DEBUG] No references to verify")
         return []
 
     normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
+    print(f"[DEBUG] Starting verification for {len(refs)} references with style {normalized_style}")
 
     # Create job for progress tracking if job_id provided
     if job_id:
         create_verification_job(job_id, len(refs))
+        print(f"[DEBUG] Created verification job {job_id}")
 
     rows: List[Dict[str, Any]] = [None] * len(refs)
-    workers = min(8, max(1, len(refs)))
+    workers = min(4, max(1, len(refs)))  # Reduce workers to 4 to avoid rate limiting
+    print(f"[DEBUG] Using {workers} workers")
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
@@ -741,9 +744,10 @@ def verify_references_batch(
                 # Update progress if tracking - update for EVERY completed reference
                 if job_id:
                     update_job_progress(job_id, completed_count)
-                    print(f"[DEBUG] Progress: {completed_count}/{len(refs)}")  # Debug line
+                    print(f"[DEBUG] Progress: {completed_count}/{len(refs)} - Status: {rows[idx].get('status')}")
                     
             except Exception as e:
+                print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
                 rows[idx] = {
                     "reference": refs[idx],
                     "style": normalized_style,
@@ -770,6 +774,16 @@ def verify_references_batch(
     if job_id:
         update_job_progress(job_id, len(refs))
 
+    # Count results for debugging
+    result_counts = {
+        "verified": sum(1 for r in rows if r.get("status") == "verified"),
+        "likely": sum(1 for r in rows if r.get("status") == "likely"),
+        "needs_review": sum(1 for r in rows if r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in rows if r.get("status") == "not_found"),
+        "offline": sum(1 for r in rows if r.get("status") == "offline"),
+    }
+    print(f"[DEBUG] Verification results: {result_counts}")
+
     for r in rows:
         r["status"] = _normalize_verify_status(r.get("status"))
 
@@ -785,9 +799,12 @@ def submit_verification(references: List[str], style: str = "apa") -> str:
     Submit a verification job and return job ID (runs in background)
     """
     job_id = uuid.uuid4().hex
+    print(f"[DEBUG] Submitting verification job {job_id} with {len(references)} references")
     
     def run():
-        verify_references_batch(references, style, job_id=job_id)
+        print(f"[DEBUG] Starting background thread for job {job_id}")
+        results = verify_references_batch(references, style, job_id=job_id)
+        print(f"[DEBUG] Background thread completed for job {job_id}, got {len(results)} results")
     
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
