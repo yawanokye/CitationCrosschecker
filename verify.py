@@ -1,4 +1,4 @@
-# verify.py — Complete with all functions (fixed function names)
+# verify.py — Complete with proper progress tracking (returns ALL results)
 
 import os
 import re
@@ -24,27 +24,26 @@ MAILTO = (
 ).strip()
 
 # ============================================================
-# PROGRESS TRACKING
+# PROGRESS TRACKING (Lightweight)
 # ============================================================
 
 @dataclass
 class VerificationJob:
-    """Simple job tracking"""
+    """Simple job tracking - does NOT store results (to avoid duplication)"""
     job_id: str
     total: int
     progress: int = 0
     status: str = "pending"
-    results: List[Dict[str, Any]] = field(default_factory=list)
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
 
-# Simple in-memory job storage
+# Simple in-memory job storage - only for progress, NOT for results
 _jobs: Dict[str, VerificationJob] = {}
 _jobs_lock = threading.Lock()
 
 def create_verification_job(job_id: str, total: int) -> str:
-    """Create a new verification job for tracking"""
+    """Create a new verification job for tracking progress only"""
     with _jobs_lock:
         _jobs[job_id] = VerificationJob(
             job_id=job_id,
@@ -53,20 +52,18 @@ def create_verification_job(job_id: str, total: int) -> str:
         )
     return job_id
 
-def update_job_progress(job_id: str, progress: int, result: Dict[str, Any] = None):
-    """Update job progress"""
+def update_job_progress(job_id: str, progress: int):
+    """Update job progress (does NOT store results)"""
     with _jobs_lock:
         if job_id in _jobs:
             job = _jobs[job_id]
             job.progress = progress
-            if result:
-                job.results.append(result)
             if progress >= job.total:
                 job.status = "completed"
                 job.completed_at = datetime.now().isoformat()
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get job status"""
+    """Get job progress status"""
     with _jobs_lock:
         if job_id not in _jobs:
             return None
@@ -79,8 +76,7 @@ def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
             "percentage": int((job.progress / job.total) * 100) if job.total > 0 else 0,
             "started_at": job.started_at,
             "completed_at": job.completed_at,
-            "error": job.error,
-            "results": job.results if job.status == "completed" else None
+            "error": job.error
         }
 
 def get_queue_stats() -> Dict[str, Any]:
@@ -691,23 +687,8 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
     return row
 
 
-def _verify_single_reference_with_progress(
-    ref: str, 
-    style: str, 
-    use_crossref: bool, 
-    use_openalex: bool,
-    job_id: str,
-    index: int,
-    total: int
-) -> Dict[str, Any]:
-    """Verification with progress tracking"""
-    result = _verify_single_reference(ref, style, use_crossref, use_openalex)
-    update_job_progress(job_id, index + 1, result)
-    return result
-
-
 # ---------------------------------------------------------
-# Public API - FIXED FUNCTION NAMES
+# Public API - Returns ALL results
 # ---------------------------------------------------------
 
 def verify_references_batch(
@@ -720,6 +701,7 @@ def verify_references_batch(
 ) -> List[Dict[str, Any]]:
     """
     Verify references batch with optional progress tracking.
+    ALWAYS returns ALL results.
     """
     refs = [r for r in (references or []) if _safe_strip(r)]
     if not refs:
@@ -728,9 +710,8 @@ def verify_references_batch(
     normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
 
     # Create job for progress tracking if job_id provided
-    tracking_job_id = job_id
-    if tracking_job_id:
-        create_verification_job(tracking_job_id, len(refs))
+    if job_id:
+        create_verification_job(job_id, len(refs))
 
     rows: List[Dict[str, Any]] = [None] * len(refs)
     workers = min(8, max(1, len(refs)))
@@ -739,31 +720,26 @@ def verify_references_batch(
         futures = {}
         
         for i, ref in enumerate(refs):
-            if tracking_job_id:
-                future = executor.submit(
-                    _verify_single_reference_with_progress,
-                    ref,
-                    normalized_style,
-                    use_crossref,
-                    use_openalex,
-                    tracking_job_id,
-                    i,
-                    len(refs)
-                )
-            else:
-                future = executor.submit(
-                    _verify_single_reference,
-                    ref,
-                    normalized_style,
-                    use_crossref,
-                    use_openalex,
-                )
+            future = executor.submit(
+                _verify_single_reference,
+                ref,
+                normalized_style,
+                use_crossref,
+                use_openalex,
+            )
             futures[future] = i
 
+        completed_count = 0
         for future in as_completed(futures):
             idx = futures[future]
             try:
                 rows[idx] = future.result()
+                completed_count += 1
+                
+                # Update progress if tracking
+                if job_id:
+                    update_job_progress(job_id, completed_count)
+                    
             except Exception as e:
                 rows[idx] = {
                     "reference": refs[idx],
@@ -783,6 +759,13 @@ def verify_references_batch(
                     "author": "",
                     "error": str(e),
                 }
+                completed_count += 1
+                if job_id:
+                    update_job_progress(job_id, completed_count)
+
+    # Final status update
+    if job_id:
+        update_job_progress(job_id, len(refs))
 
     for r in rows:
         r["status"] = _normalize_verify_status(r.get("status"))
@@ -791,13 +774,12 @@ def verify_references_batch(
 
 
 # ---------------------------------------------------------
-# Background job submission - FIXED FUNCTION NAMES
+# Background job submission
 # ---------------------------------------------------------
 
 def submit_verification(references: List[str], style: str = "apa") -> str:
     """
     Submit a verification job and return job ID (runs in background)
-    This is the function that main.py imports
     """
     job_id = uuid.uuid4().hex
     
@@ -811,11 +793,11 @@ def submit_verification(references: List[str], style: str = "apa") -> str:
 
 
 def get_verification_status(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get verification job status"""
+    """Get verification job progress (not results)"""
     return get_job_status(job_id)
 
 
-# Also export these for compatibility
-submit_verification_job = submit_verification  # Alias for backward compatibility
+# Alias for compatibility
+submit_verification_job = submit_verification
 get_queue_status = get_queue_stats
 is_server_busy = is_server_busy_check
