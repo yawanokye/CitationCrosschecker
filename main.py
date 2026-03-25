@@ -80,7 +80,8 @@ def store_result(result):
                 "percentage": 0,
                 "started_at": None,
                 "completed_at": None,
-                "results": None
+                "results": None,
+                "verification_job_id": None  # Store the verification job ID for syncing
             }
         }
 
@@ -98,6 +99,32 @@ def update_verification_status(job_id: str, **kwargs):
     with _lock:
         if job_id in _store:
             _store[job_id]["verification"].update(kwargs)
+
+
+def start_progress_sync(job_id: str, verification_job_id: str):
+    """Background thread to sync progress from verify.py to main store"""
+    def sync():
+        while True:
+            status = get_verification_status(verification_job_id)
+            if status:
+                with _lock:
+                    if job_id in _store:
+                        _store[job_id]["verification"]["progress"] = status.get("progress", 0)
+                        _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
+                        _store[job_id]["verification"]["state"] = status.get("status", "running")
+                        
+                        if status.get("status") == "completed":
+                            _store[job_id]["verification"]["state"] = "completed"
+                            _store[job_id]["verification"]["completed_at"] = now()
+                            break
+                        elif status.get("status") == "error":
+                            _store[job_id]["verification"]["state"] = "error"
+                            _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
+                            break
+            time.sleep(1)
+    
+    thread = threading.Thread(target=sync, daemon=True)
+    thread.start()
 
 
 def _norm_text_citation(s: str) -> str:
@@ -274,73 +301,19 @@ async def verify_online(job_id: str = Form(...)):
         started_at=now()
     )
     
-    # Start verification in background thread
-    def run_verification():
-        from verify import verify_references_batch
-        
-        try:
-            results = verify_references_batch(refs, style="apa", job_id=job_id)
-            
-            # Process results
-            summary = {
-                "verified": 0,
-                "likely": 0,
-                "needs_review": 0,
-                "not_found": 0,
-                "offline": 0
-            }
-            
-            for r in results:
-                status = r.get("status", "offline")
-                if status in summary:
-                    summary[status] += 1
-                else:
-                    summary["offline"] += 1
-            
-            # Update job with results
-            with _lock:
-                if job_id in _store:
-                    _store[job_id]["result"]["online_verification"] = {
-                        "rows": results,
-                        "summary": summary
-                    }
-                    
-                    # Compute ACII
-                    try:
-                        _store[job_id]["result"]["acii"] = compute_acii(_store[job_id]["result"], results)
-                    except Exception as e:
-                        _store[job_id]["result"]["acii"] = {"error": str(e)}
-                    
-                    # Rebuild reference mapping
-                    _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                    
-                    # Deduplicate in-text citations
-                    if "reconciliation_intext_to_reference" in _store[job_id]["result"]:
-                        unique_cites = {}
-                        for item in _store[job_id]["result"]["reconciliation_intext_to_reference"]:
-                            cite_text = item.get("in_text", "")
-                            cite_norm = _norm_text_citation(cite_text)
-                            if cite_norm and cite_norm not in unique_cites:
-                                unique_cites[cite_norm] = item
-                        _store[job_id]["result"]["reconciliation_intext_to_reference"] = list(unique_cites.values())
-                    
-                    _store[job_id]["verification"]["state"] = "completed"
-                    _store[job_id]["verification"]["completed_at"] = now()
-                    _store[job_id]["verification"]["results"] = results
-                    
-        except Exception as e:
-            with _lock:
-                if job_id in _store:
-                    _store[job_id]["verification"]["state"] = "error"
-                    _store[job_id]["verification"]["message"] = str(e)
-                    _store[job_id]["verification"]["completed_at"] = now()
+    # Submit to verification queue
+    verification_job_id = submit_verification(refs, style="apa")
     
-    thread = threading.Thread(target=run_verification, daemon=True)
-    thread.start()
+    # Store verification job ID for tracking
+    update_verification_status(job_id, verification_job_id=verification_job_id)
+    
+    # Start progress sync thread
+    start_progress_sync(job_id, verification_job_id)
     
     return {
         "started": True,
         "job_id": job_id,
+        "verification_job_id": verification_job_id,
         "total_references": len(refs),
         "message": "Verification started. Check /online/status for progress."
     }
