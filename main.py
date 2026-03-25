@@ -23,6 +23,8 @@ from verify import (
     get_verification_status,
     get_queue_status,
     is_server_busy
+    get_verification_results,  # ← ADD THIS
+    clear_verification_results  # ← ADD THIS (optional)
 )
 from acii import compute_acii
 
@@ -102,18 +104,45 @@ def update_verification_status(job_id: str, **kwargs):
 
 
 def start_progress_sync(job_id: str, verification_job_id: str):
-    """Background thread to sync progress from verify.py to main store"""
+    """Background thread to sync progress and results from verify.py to main store"""
     def sync():
         while True:
             status = get_verification_status(verification_job_id)
             if status:
                 with _lock:
                     if job_id in _store:
+                        # Update progress
                         _store[job_id]["verification"]["progress"] = status.get("progress", 0)
                         _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
                         _store[job_id]["verification"]["state"] = status.get("status", "running")
                         
+                        # When complete, get the actual results
                         if status.get("status") == "completed":
+                            # Get verification results from verify.py
+                            verification_results = get_verification_results(verification_job_id)
+                            
+                            if verification_results:
+                                print(f"[DEBUG] Retrieved {len(verification_results)} verification results")
+                                
+                                # Store in main result
+                                _store[job_id]["result"]["online_verification"] = {
+                                    "rows": verification_results,
+                                    "summary": _compute_verification_summary(verification_results)
+                                }
+                                
+                                # Update ACII with verification results
+                                try:
+                                    from acii import compute_acii
+                                    _store[job_id]["result"]["acii"] = compute_acii(
+                                        _store[job_id]["result"], 
+                                        verification_results
+                                    )
+                                except Exception as e:
+                                    print(f"[DEBUG] ACII computation error: {e}")
+                                
+                                # Rebuild reference mapping with verification data
+                                _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
+                            
                             _store[job_id]["verification"]["state"] = "completed"
                             _store[job_id]["verification"]["completed_at"] = now()
                             break
@@ -125,7 +154,6 @@ def start_progress_sync(job_id: str, verification_job_id: str):
     
     thread = threading.Thread(target=sync, daemon=True)
     thread.start()
-
 
 def _norm_text_citation(s: str) -> str:
     """Normalize citation text for duplicate detection"""
@@ -172,7 +200,26 @@ def build_reference_to_intext(result):
     
     return result_list
 
-
+# ← ADD THIS NEW FUNCTION RIGHT HERE
+def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Helper to compute verification summary"""
+    summary = {
+        "verified": 0,
+        "likely": 0,
+        "needs_review": 0,
+        "not_found": 0,
+        "offline": 0,
+        "total": len(rows)
+    }
+    
+    for r in rows:
+        status = r.get("status", "offline")
+        if status in summary:
+            summary[status] += 1
+        else:
+            summary["offline"] += 1
+    
+    return summary
 # ============================================================
 # DEBUG ENDPOINTS
 # ============================================================
