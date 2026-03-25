@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
     """Manage background tasks on startup/shutdown"""
     print("🚀 Starting Citation Crosschecker...")
     print(f"📊 Queue system initialized")
+    print(f"🔄 Progress tracking enabled")
     yield
     print("👋 Shutting down...")
 
@@ -61,6 +62,10 @@ _lock = threading.Lock()
 _verification_tasks: Dict[str, Dict[str, Any]] = {}
 _tasks_lock = threading.Lock()
 
+# Debug log for tracking progress
+_debug_log: List[str] = []
+_debug_lock = threading.Lock()
+
 
 # --------------------------------------------------
 # Utility Functions
@@ -70,8 +75,21 @@ def now():
     return datetime.utcnow().isoformat()
 
 
+def debug_log(message: str):
+    """Add debug log entry"""
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    log_entry = f"[{timestamp}] {message}"
+    with _debug_lock:
+        _debug_log.append(log_entry)
+        # Keep last 100 entries
+        if len(_debug_log) > 100:
+            _debug_log.pop(0)
+    print(log_entry)
+
+
 def store_result(result):
     job_id = uuid.uuid4().hex
+    debug_log(f"Created new job: {job_id}")
 
     with _lock:
         _store[job_id] = {
@@ -80,6 +98,7 @@ def store_result(result):
                 "state": "idle",
                 "progress": 0,
                 "total": 0,
+                "percentage": 0,
                 "started_at": None,
                 "completed_at": None
             }
@@ -155,7 +174,16 @@ async def queue_status():
     status["server_busy"] = is_server_busy_check()
     status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
     
+    debug_log(f"Queue status: size={status['queue_size']}, pending={status['pending_jobs']}, busy={status['server_busy']}")
+    
     return status
+
+
+@app.get("/debug/logs")
+async def debug_logs():
+    """Get debug logs for troubleshooting"""
+    with _debug_lock:
+        return {"logs": _debug_log[-50:]}
 
 
 # ============================================================
@@ -182,9 +210,12 @@ async def verify(
 ):
     """Initial document check - extracts citations and references"""
     
+    debug_log(f"Received document: {file.filename}")
+    
     # Check if server is too busy
     if is_server_busy_check():
         queue_stats = get_queue_status()
+        debug_log(f"Server busy, rejecting request: queue_size={queue_stats['queue_size']}")
         return JSONResponse(
             status_code=503,
             content={
@@ -197,6 +228,7 @@ async def verify(
         )
     
     data = await file.read()
+    debug_log(f"File read: {len(data)} bytes")
 
     def run():
         return run_crosscheck(
@@ -207,6 +239,7 @@ async def verify(
         )
 
     result = await run_in_threadpool(run)
+    debug_log(f"Document analysis complete: {len(result.get('references_raw', []))} references, {result.get('summary', {}).get('in_text_citations_found', 0)} citations")
 
     # Build reference -> in-text mapping
     result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
@@ -229,9 +262,12 @@ async def verify(
 async def verify_online(job_id: str = Form(...)):
     """Submit online verification job to queue"""
     
+    debug_log(f"Online verification requested for job: {job_id}")
+    
     # Check if server is too busy
     if is_server_busy_check():
         queue_stats = get_queue_status()
+        debug_log(f"Server busy, rejecting verification: queue_size={queue_stats['queue_size']}")
         return JSONResponse(
             status_code=503,
             content={
@@ -246,10 +282,12 @@ async def verify_online(job_id: str = Form(...)):
     job = get_job(job_id)
 
     if not job:
+        debug_log(f"Job not found: {job_id}")
         raise HTTPException(404, "Job not found")
 
     # Check if already running
     if job["online"]["state"] == "running":
+        debug_log(f"Verification already running for job: {job_id}")
         return {
             "started": False,
             "message": "Verification already in progress",
@@ -260,6 +298,7 @@ async def verify_online(job_id: str = Form(...)):
     
     # Check if already completed
     if job["online"]["state"] == "done":
+        debug_log(f"Verification already completed for job: {job_id}")
         return {
             "started": False,
             "message": "Verification already completed",
@@ -271,6 +310,7 @@ async def verify_online(job_id: str = Form(...)):
     refs = job["result"].get("references_raw", [])
     
     if not refs:
+        debug_log(f"No references to verify for job: {job_id}")
         job["online"]["state"] = "done"
         job["online"]["message"] = "No references to verify"
         return {
@@ -279,21 +319,26 @@ async def verify_online(job_id: str = Form(...)):
             "job_id": job_id
         }
     
+    debug_log(f"Submitting {len(refs)} references for verification")
+    
     # Submit to verification queue
     verification_job_id = submit_verification(refs, style="apa")
+    debug_log(f"Verification job created: {verification_job_id}")
     
     # Store verification job ID for tracking
     with _tasks_lock:
         _verification_tasks[job_id] = {
             "verification_job_id": verification_job_id,
             "started_at": now(),
-            "refs_count": len(refs)
+            "refs_count": len(refs),
+            "last_progress": 0
         }
     
     # Update job status
     job["online"]["state"] = "running"
     job["online"]["total"] = len(refs)
     job["online"]["progress"] = 0
+    job["online"]["percentage"] = 0
     job["online"]["started_at"] = now()
     job["online"]["verification_job_id"] = verification_job_id
     
@@ -320,6 +365,8 @@ def online_status(job_id: str):
     
     # Get verification task progress
     verification_progress = None
+    progress_updated = False
+    
     with _tasks_lock:
         task = _verification_tasks.get(job_id)
         if task:
@@ -329,12 +376,26 @@ def online_status(job_id: str):
                 if verification_status:
                     verification_progress = verification_status
                     
+                    # Get current progress values
+                    current_progress = verification_status.get("progress", 0)
+                    total = verification_status.get("total", 0)
+                    percentage = verification_status.get("percentage", 0)
+                    status = verification_status.get("status", "pending")
+                    
+                    # Check if progress has changed
+                    last_progress = task.get("last_progress", 0)
+                    if current_progress != last_progress:
+                        progress_updated = True
+                        task["last_progress"] = current_progress
+                        debug_log(f"Progress update for job {job_id}: {current_progress}/{total} ({percentage}%) - {status}")
+                    
                     # Update job with progress
-                    job["online"]["progress"] = verification_status.get("progress", 0)
-                    job["online"]["percentage"] = verification_status.get("percentage", 0)
+                    job["online"]["progress"] = current_progress
+                    job["online"]["percentage"] = percentage
                     
                     # If verification is complete, process results
                     if verification_status["status"] == "completed":
+                        debug_log(f"Verification completed for job {job_id}: {current_progress}/{total}")
                         results = verification_status.get("results", [])
                         
                         # Process results
@@ -347,9 +408,9 @@ def online_status(job_id: str):
                         }
                         
                         for r in results:
-                            status = r.get("status", "offline")
-                            if status in summary:
-                                summary[status] += 1
+                            status_val = r.get("status", "offline")
+                            if status_val in summary:
+                                summary[status_val] += 1
                             else:
                                 summary["offline"] += 1
                         
@@ -362,7 +423,9 @@ def online_status(job_id: str):
                         # Compute ACII
                         try:
                             job["result"]["acii"] = compute_acii(job["result"], results)
+                            debug_log(f"ACII computed: {job['result']['acii'].get('ACII', 'N/A')}")
                         except Exception as e:
+                            debug_log(f"ACII computation error: {e}")
                             job["result"]["acii"] = {"error": str(e)}
                         
                         # Rebuild reference mapping
@@ -383,8 +446,10 @@ def online_status(job_id: str):
                         
                         # Clean up task
                         del _verification_tasks[job_id]
+                        debug_log(f"Cleaned up task for job {job_id}")
                     
                     elif verification_status["status"] == "failed":
+                        debug_log(f"Verification failed for job {job_id}: {verification_status.get('error', 'Unknown error')}")
                         job["online"]["state"] = "error"
                         job["online"]["message"] = verification_status.get("error", "Verification failed")
                         job["online"]["completed_at"] = now()
@@ -403,11 +468,16 @@ def online_status(job_id: str):
             "total": verification_progress.get("total", 0),
             "percentage": verification_progress.get("percentage", 0),
             "status": verification_progress.get("status", "pending"),
+            "message": f"Processing: {verification_progress.get('progress', 0)}/{verification_progress.get('total', 0)} ({verification_progress.get('percentage', 0)}%)",
             "estimated_remaining": _estimate_remaining_time(verification_progress)
         }
     
     # Add queue status
     response["queue"] = get_queue_status()
+    
+    # Add debug info if progress was updated
+    if progress_updated:
+        response["_debug"] = {"progress_updated": True}
     
     return response
 
@@ -437,11 +507,11 @@ def _estimate_remaining_time(progress: Dict) -> Optional[str]:
             remaining = estimated_total - elapsed
             
             if remaining < 60:
-                return f"{int(remaining)} seconds remaining"
+                return f"{int(remaining)} seconds"
             elif remaining < 3600:
-                return f"{int(remaining / 60)} minutes remaining"
+                return f"{int(remaining / 60)} minutes"
             else:
-                return f"{int(remaining / 3600)} hours remaining"
+                return f"{int(remaining / 3600)} hours"
     except:
         pass
     
@@ -462,6 +532,7 @@ def health():
         "timestamp": now(),
         "queue": queue_stats,
         "server_busy": queue_stats["is_busy"],
+        "active_verifications": len(_verification_tasks),
         "message": "Server is operational" if not queue_stats["is_busy"] else "Server is busy, some requests may be queued"
     }
 
@@ -473,10 +544,23 @@ def health():
 @app.get("/admin/queue")
 async def admin_queue():
     """Admin endpoint to monitor queue (can be protected later)"""
+    active_tasks_info = []
+    with _tasks_lock:
+        for job_id, task in _verification_tasks.items():
+            active_tasks_info.append({
+                "job_id": job_id,
+                "verification_job_id": task.get("verification_job_id"),
+                "started_at": task.get("started_at"),
+                "refs_count": task.get("refs_count"),
+                "last_progress": task.get("last_progress", 0)
+            })
+    
     return {
         "queue_status": get_queue_status(),
         "active_tasks": len(_verification_tasks),
-        "stored_jobs": len(_store)
+        "active_tasks_details": active_tasks_info,
+        "stored_jobs": len(_store),
+        "debug_logs": _debug_log[-20:] if _debug_log else []
     }
 
 
@@ -486,6 +570,7 @@ async def admin_queue():
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    debug_log(f"HTTP Exception: {exc.status_code} - {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -498,6 +583,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
+    debug_log(f"Unhandled Exception: {type(exc).__name__} - {str(exc)}")
     return JSONResponse(
         status_code=500,
         content={
