@@ -625,6 +625,7 @@ RENDER FUNCTIONS
 
 function renderACII(data) {
     const acii = data?.acii;
+
     if (!acii) return;
 
     if (el.aciiCard) el.aciiCard.style.display = "block";
@@ -642,16 +643,26 @@ function renderACII(data) {
 
     const c = acii.components || {};
 
+    // Verification Integrity
     if ($("aciiV")) $("aciiV").textContent = c.verification_integrity?.score ?? "";
     if ($("aciiVcat")) $("aciiVcat").textContent = c.verification_integrity?.category ?? "";
+    if ($("aciiVremark")) $("aciiVremark").textContent = c.verification_integrity?.remark ?? "Percentage of references verified in scholarly databases";
+
+    // Citation Concentration
     if ($("aciiC")) $("aciiC").textContent = c.citation_concentration?.score ?? "";
     if ($("aciiCcat")) $("aciiCcat").textContent = c.citation_concentration?.category ?? "";
+    if ($("aciiCremark")) $("aciiCremark").textContent = c.citation_concentration?.remark ?? "Measures whether citations rely heavily on few authors";
+
+    // Author Diversity
     if ($("aciiA")) $("aciiA").textContent = c.author_diversity?.score ?? "";
     if ($("aciiAcat")) $("aciiAcat").textContent = c.author_diversity?.category ?? "";
+    if ($("aciiAremark")) $("aciiAremark").textContent = c.author_diversity?.remark ?? "Measures diversity of authors represented in the reference list";
+
+    // Temporal Balance
     if ($("aciiT")) $("aciiT").textContent = c.temporal_balance?.score ?? "";
     if ($("aciiTcat")) $("aciiTcat").textContent = c.temporal_balance?.category ?? "";
+    if ($("aciiTremark")) $("aciiTremark").textContent = c.temporal_balance?.remark ?? "Measures spread of references across publication years";
 }
-
 function normalizeData(payload) {
     const data = payload?.data || payload?.result || payload || {};
     const s = data.summary || {};
