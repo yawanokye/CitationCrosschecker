@@ -1,4 +1,4 @@
-# verify.py — Complete with all functions (no circular imports)
+# verify.py — Complete with all functions (fixed function names)
 
 import os
 import re
@@ -24,7 +24,7 @@ MAILTO = (
 ).strip()
 
 # ============================================================
-# PROGRESS TRACKING (Simple, no circular imports)
+# PROGRESS TRACKING
 # ============================================================
 
 @dataclass
@@ -310,7 +310,7 @@ def _extract_apa_fields(ref: str) -> Dict[str, Any]:
 
 def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
     style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
-    return _extract_apa_fields(ref)  # Only APA/Harvard supported
+    return _extract_apa_fields(ref)
 
 
 # ---------------------------------------------------------
@@ -707,7 +707,7 @@ def _verify_single_reference_with_progress(
 
 
 # ---------------------------------------------------------
-# Public API
+# Public API - FIXED FUNCTION NAMES
 # ---------------------------------------------------------
 
 def verify_references_batch(
@@ -791,11 +791,14 @@ def verify_references_batch(
 
 
 # ---------------------------------------------------------
-# Background job submission
+# Background job submission - FIXED FUNCTION NAMES
 # ---------------------------------------------------------
 
-def submit_verification_job(references: List[str], style: str = "apa") -> str:
-    """Submit a verification job and return job ID (runs in background)"""
+def submit_verification(references: List[str], style: str = "apa") -> str:
+    """
+    Submit a verification job and return job ID (runs in background)
+    This is the function that main.py imports
+    """
     job_id = uuid.uuid4().hex
     
     def run():
@@ -810,3 +813,9 @@ def submit_verification_job(references: List[str], style: str = "apa") -> str:
 def get_verification_status(job_id: str) -> Optional[Dict[str, Any]]:
     """Get verification job status"""
     return get_job_status(job_id)
+
+
+# Also export these for compatibility
+submit_verification_job = submit_verification  # Alias for backward compatibility
+get_queue_status = get_queue_stats
+is_server_busy = is_server_busy_check
