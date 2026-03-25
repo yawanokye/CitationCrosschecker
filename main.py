@@ -1,4 +1,4 @@
-# main.py — Citation Crosschecker with Queue Management and Progress Tracking
+# main.py — Citation Crosschecker with Fixed Imports
 
 import io
 import os
@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 from engine import run_crosscheck
 from verify import (
-    submit_verification,           # This is the correct function name
+    submit_verification,
     get_verification_status,
     get_queue_status,
     is_server_busy
@@ -30,15 +30,14 @@ from acii import compute_acii
 APP_TITLE = "CitationCrosschecker"
 
 # ============================================================
-# LIFESPAN MANAGER for background tasks
+# LIFESPAN MANAGER
 # ============================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage background tasks on startup/shutdown"""
     print("🚀 Starting Citation Crosschecker...")
-    print(f"📊 Queue system initialized")
-    print(f"🔄 Progress tracking enabled")
+    print(f"📊 Job tracking system initialized")
     yield
     print("👋 Shutting down...")
 
@@ -54,6 +53,7 @@ app.mount(
     name="static"
 )
 
+# Persistent job storage
 _store: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
 
@@ -61,7 +61,7 @@ _lock = threading.Lock()
 _verification_tasks: Dict[str, Dict[str, Any]] = {}
 _tasks_lock = threading.Lock()
 
-# Debug log for tracking progress
+# Debug log
 _debug_log: List[str] = []
 _debug_lock = threading.Lock()
 
@@ -80,13 +80,13 @@ def debug_log(message: str):
     log_entry = f"[{timestamp}] {message}"
     with _debug_lock:
         _debug_log.append(log_entry)
-        # Keep last 100 entries
         if len(_debug_log) > 100:
             _debug_log.pop(0)
     print(log_entry)
 
 
 def store_result(result):
+    """Store result and return job ID"""
     job_id = uuid.uuid4().hex
     debug_log(f"Created new job: {job_id}")
 
@@ -99,16 +99,25 @@ def store_result(result):
                 "total": 0,
                 "percentage": 0,
                 "started_at": None,
-                "completed_at": None
+                "completed_at": None,
+                "verification_job_id": None
             }
         }
 
     return job_id
 
 
-def get_job(job_id):
+def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get job by ID"""
     with _lock:
         return _store.get(job_id)
+
+
+def update_job_online_status(job_id: str, **kwargs):
+    """Update job online verification status"""
+    with _lock:
+        if job_id in _store:
+            _store[job_id]["online"].update(kwargs)
 
 
 def _norm_text_citation(s: str) -> str:
@@ -168,19 +177,14 @@ def build_reference_to_intext(result):
 async def queue_status():
     """Get current queue status for monitoring"""
     status = get_queue_status()
-    
-    # Add human-readable busy status
-    status["server_busy"] = is_server_busy_check()
+    status["server_busy"] = is_server_busy()
     status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
-    
-    debug_log(f"Queue status: size={status['queue_size']}, pending={status['pending_jobs']}, busy={status['server_busy']}")
-    
     return status
 
 
 @app.get("/debug/logs")
 async def debug_logs():
-    """Get debug logs for troubleshooting"""
+    """Get debug logs"""
     with _debug_lock:
         return {"logs": _debug_log[-50:]}
 
@@ -198,21 +202,20 @@ def index(request: Request):
 
 
 # ============================================================
-# INITIAL DOCUMENT CHECK (with queue integration)
+# INITIAL DOCUMENT CHECK
 # ============================================================
 
 @app.post("/verify")
 async def verify(
     file: UploadFile = File(...),
-    style: str = Form("apa"),
-    background_tasks: BackgroundTasks = None
+    style: str = Form("apa")
 ):
     """Initial document check - extracts citations and references"""
     
     debug_log(f"Received document: {file.filename}")
     
     # Check if server is too busy
-    if is_server_busy_check():
+    if is_server_busy():
         queue_stats = get_queue_status()
         debug_log(f"Server busy, rejecting request: queue_size={queue_stats['queue_size']}")
         return JSONResponse(
@@ -238,7 +241,8 @@ async def verify(
         )
 
     result = await run_in_threadpool(run)
-    debug_log(f"Document analysis complete: {len(result.get('references_raw', []))} references, {result.get('summary', {}).get('in_text_citations_found', 0)} citations")
+    debug_log(f"Document analysis complete: {len(result.get('references_raw', []))} references, "
+              f"{result.get('summary', {}).get('in_text_citations_found', 0)} citations")
 
     # Build reference -> in-text mapping
     result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
@@ -254,17 +258,17 @@ async def verify(
 
 
 # ============================================================
-# ONLINE VERIFICATION (QUEUE-BASED WITH PROGRESS)
+# ONLINE VERIFICATION
 # ============================================================
 
 @app.post("/verify-online")
 async def verify_online(job_id: str = Form(...)):
-    """Submit online verification job to queue"""
+    """Submit online verification job"""
     
     debug_log(f"Online verification requested for job: {job_id}")
     
     # Check if server is too busy
-    if is_server_busy_check():
+    if is_server_busy():
         queue_stats = get_queue_status()
         debug_log(f"Server busy, rejecting verification: queue_size={queue_stats['queue_size']}")
         return JSONResponse(
@@ -351,7 +355,7 @@ async def verify_online(job_id: str = Form(...)):
 
 
 # ============================================================
-# STATUS POLLING (WITH PROGRESS)
+# STATUS POLLING
 # ============================================================
 
 @app.get("/online/status")
@@ -467,58 +471,17 @@ def online_status(job_id: str):
             "total": verification_progress.get("total", 0),
             "percentage": verification_progress.get("percentage", 0),
             "status": verification_progress.get("status", "pending"),
-            "message": f"Processing: {verification_progress.get('progress', 0)}/{verification_progress.get('total', 0)} ({verification_progress.get('percentage', 0)}%)",
-            "estimated_remaining": _estimate_remaining_time(verification_progress)
+            "message": f"Processing: {verification_progress.get('progress', 0)}/{verification_progress.get('total', 0)} ({verification_progress.get('percentage', 0)}%)"
         }
     
     # Add queue status
     response["queue"] = get_queue_status()
     
-    # Add debug info if progress was updated
-    if progress_updated:
-        response["_debug"] = {"progress_updated": True}
-    
     return response
 
 
-def _estimate_remaining_time(progress: Dict) -> Optional[str]:
-    """Estimate remaining time based on progress"""
-    if not progress:
-        return None
-    
-    progress_pct = progress.get("percentage", 0)
-    if progress_pct <= 0 or progress_pct >= 100:
-        return None
-    
-    started_at = progress.get("started_at")
-    if not started_at:
-        return None
-    
-    try:
-        start_time = datetime.fromisoformat(started_at)
-        elapsed = (datetime.utcnow() - start_time).total_seconds()
-        
-        if elapsed < 5:
-            return "Just started"
-        
-        if progress_pct > 0:
-            estimated_total = elapsed / (progress_pct / 100)
-            remaining = estimated_total - elapsed
-            
-            if remaining < 60:
-                return f"{int(remaining)} seconds"
-            elif remaining < 3600:
-                return f"{int(remaining / 60)} minutes"
-            else:
-                return f"{int(remaining / 3600)} hours"
-    except:
-        pass
-    
-    return "Processing..."
-
-
 # ============================================================
-# HEALTH CHECK (with queue status)
+# HEALTH CHECK
 # ============================================================
 
 @app.get("/health")
@@ -527,12 +490,12 @@ def health():
     queue_stats = get_queue_status()
     
     return {
-        "status": "healthy" if not queue_stats["is_busy"] else "degraded",
+        "status": "healthy" if not queue_stats.get("is_busy", False) else "degraded",
         "timestamp": now(),
         "queue": queue_stats,
-        "server_busy": queue_stats["is_busy"],
+        "server_busy": queue_stats.get("is_busy", False),
         "active_verifications": len(_verification_tasks),
-        "message": "Server is operational" if not queue_stats["is_busy"] else "Server is busy, some requests may be queued"
+        "message": "Server is operational" if not queue_stats.get("is_busy", False) else "Server is busy, some requests may be queued"
     }
 
 
@@ -542,7 +505,7 @@ def health():
 
 @app.get("/admin/queue")
 async def admin_queue():
-    """Admin endpoint to monitor queue (can be protected later)"""
+    """Admin endpoint to monitor queue"""
     active_tasks_info = []
     with _tasks_lock:
         for job_id, task in _verification_tasks.items():
