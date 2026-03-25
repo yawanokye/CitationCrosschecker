@@ -22,9 +22,9 @@ from verify import (
     submit_verification,
     get_verification_status,
     get_queue_status,
-    is_server_busy
-    get_verification_results,  # ← ADD THIS
-    clear_verification_results  # ← ADD THIS (optional)
+    is_server_busy,
+    get_verification_results,  # ADDED
+    clear_verification_results  # ADDED (optional)
 )
 from acii import compute_acii
 
@@ -155,6 +155,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
     thread = threading.Thread(target=sync, daemon=True)
     thread.start()
 
+
 def _norm_text_citation(s: str) -> str:
     """Normalize citation text for duplicate detection"""
     if not s:
@@ -200,7 +201,7 @@ def build_reference_to_intext(result):
     
     return result_list
 
-# ← ADD THIS NEW FUNCTION RIGHT HERE
+
 def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
     """Helper to compute verification summary"""
     summary = {
@@ -220,6 +221,8 @@ def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
             summary["offline"] += 1
     
     return summary
+
+
 # ============================================================
 # DEBUG ENDPOINTS
 # ============================================================
@@ -265,65 +268,61 @@ async def debug_retry_verification(job_id: str):
         return {"error": "No references to verify"}
     
     # Force verification
-    from verify import verify_references_batch
+    from verify import verify_references_batch, get_verification_results
     
     try:
-        results = verify_references_batch(refs, style="apa")
+        # Create a temporary job ID for this debug run
+        temp_job_id = uuid.uuid4().hex
+        results = verify_references_batch(refs, style="apa", job_id=temp_job_id)
         
-        # Process results
-        summary = {
-            "verified": 0,
-            "likely": 0,
-            "needs_review": 0,
-            "not_found": 0,
-            "offline": 0
-        }
+        # Get the stored results
+        stored_results = get_verification_results(temp_job_id)
+        final_results = stored_results if stored_results else results
         
-        for r in results:
-            status = r.get("status", "offline")
-            if status in summary:
-                summary[status] += 1
-            else:
-                summary["offline"] += 1
-        
-        # Update job with results
-        with _lock:
-            if job_id in _store:
-                _store[job_id]["result"]["online_verification"] = {
-                    "rows": results,
-                    "summary": summary
-                }
-                
-                # Compute ACII
-                try:
-                    _store[job_id]["result"]["acii"] = compute_acii(_store[job_id]["result"], results)
-                except Exception as e:
-                    _store[job_id]["result"]["acii"] = {"error": str(e)}
-                
-                # Rebuild reference mapping
-                _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                
-                # Deduplicate in-text citations
-                if "reconciliation_intext_to_reference" in _store[job_id]["result"]:
-                    unique_cites = {}
-                    for item in _store[job_id]["result"]["reconciliation_intext_to_reference"]:
-                        cite_text = item.get("in_text", "")
-                        cite_norm = _norm_text_citation(cite_text)
-                        if cite_norm and cite_norm not in unique_cites:
-                            unique_cites[cite_norm] = item
-                    _store[job_id]["result"]["reconciliation_intext_to_reference"] = list(unique_cites.values())
-                
-                _store[job_id]["verification"]["state"] = "completed"
-                _store[job_id]["verification"]["completed_at"] = now()
-                _store[job_id]["verification"]["results"] = results
-                _store[job_id]["verification"]["progress"] = len(refs)
-                _store[job_id]["verification"]["percentage"] = 100
-        
-        return {
-            "success": True,
-            "summary": summary,
-            "results_count": len(results)
-        }
+        if final_results:
+            # Process results
+            summary = _compute_verification_summary(final_results)
+            
+            # Update job with results
+            with _lock:
+                if job_id in _store:
+                    _store[job_id]["result"]["online_verification"] = {
+                        "rows": final_results,
+                        "summary": summary
+                    }
+                    
+                    # Compute ACII
+                    try:
+                        _store[job_id]["result"]["acii"] = compute_acii(_store[job_id]["result"], final_results)
+                    except Exception as e:
+                        _store[job_id]["result"]["acii"] = {"error": str(e)}
+                    
+                    # Rebuild reference mapping
+                    _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
+                    
+                    # Deduplicate in-text citations
+                    if "reconciliation_intext_to_reference" in _store[job_id]["result"]:
+                        unique_cites = {}
+                        for item in _store[job_id]["result"]["reconciliation_intext_to_reference"]:
+                            cite_text = item.get("in_text", "")
+                            cite_norm = _norm_text_citation(cite_text)
+                            if cite_norm and cite_norm not in unique_cites:
+                                unique_cites[cite_norm] = item
+                        _store[job_id]["result"]["reconciliation_intext_to_reference"] = list(unique_cites.values())
+                    
+                    _store[job_id]["verification"]["state"] = "completed"
+                    _store[job_id]["verification"]["completed_at"] = now()
+                    _store[job_id]["verification"]["results"] = final_results
+                    _store[job_id]["verification"]["progress"] = len(refs)
+                    _store[job_id]["verification"]["percentage"] = 100
+            
+            return {
+                "success": True,
+                "summary": summary,
+                "results_count": len(final_results)
+            }
+        else:
+            return {"error": "No results returned"}
         
     except Exception as e:
         return {"error": str(e)}
