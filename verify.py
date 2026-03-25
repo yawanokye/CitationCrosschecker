@@ -42,6 +42,27 @@ class VerificationJob:
 _jobs: Dict[str, VerificationJob] = {}
 _jobs_lock = threading.Lock()
 
+# Store verification RESULTS (different from progress tracking)
+_verification_results: Dict[str, List[Dict[str, Any]]] = {}
+_verification_results_lock = threading.Lock()
+
+def store_verification_results(job_id: str, results: List[Dict[str, Any]]):
+    """Store completed verification results"""
+    with _verification_results_lock:
+        _verification_results[job_id] = results
+        print(f"[DEBUG] Stored {len(results)} results for job {job_id}")
+
+def get_verification_results(job_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Get stored verification results"""
+    with _verification_results_lock:
+        return _verification_results.get(job_id)
+
+def clear_verification_results(job_id: str):
+    """Clear verification results (optional cleanup)"""
+    with _verification_results_lock:
+        if job_id in _verification_results:
+            del _verification_results[job_id]
+
 def create_verification_job(job_id: str, total: int) -> str:
     """Create a new verification job for tracking progress only"""
     with _jobs_lock:
@@ -770,10 +791,6 @@ def verify_references_batch(
                 if job_id:
                     update_job_progress(job_id, completed_count)
 
-    # Final status update
-    if job_id:
-        update_job_progress(job_id, len(refs))
-
     # Count results for debugging
     result_counts = {
         "verified": sum(1 for r in rows if r.get("status") == "verified"),
@@ -786,6 +803,12 @@ def verify_references_batch(
 
     for r in rows:
         r["status"] = _normalize_verify_status(r.get("status"))
+
+    # Store results if job_id was provided
+    if job_id:
+        update_job_progress(job_id, len(refs))  # Final progress update
+        store_verification_results(job_id, rows)  # Store the actual results
+        print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
 
     return rows
 
