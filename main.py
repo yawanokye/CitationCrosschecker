@@ -175,114 +175,6 @@ esult_list.sort(key=lambda x: x["times_cited"], reverse=True)
     
     return result_list
 
-# ============================================================
-# DEBUG ENDPOINTS (Add this section after build_reference_to_intext)
-# ============================================================
-
-@app.get("/debug/job/{job_id}")
-async def debug_job(job_id: str):
-    """Debug endpoint to check job status"""
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    return {
-        "job_id": job_id,
-        "verification": job["verification"],
-        "has_result": bool(job.get("result")),
-        "has_online_verification": "online_verification" in job.get("result", {}),
-        "references_count": len(job.get("result", {}).get("references_raw", [])),
-        "verification_job_id": job["verification"].get("verification_job_id")
-    }
-
-
-@app.get("/debug/verify-status/{verification_job_id}")
-async def debug_verify_status(verification_job_id: str):
-    """Debug endpoint to check verify.py job status"""
-    from verify import get_verification_status
-    
-    status = get_verification_status(verification_job_id)
-    if not status:
-        return {"error": "Verification job not found"}
-    
-    return status
-
-
-@app.post("/debug/retry-verification/{job_id}")
-async def debug_retry_verification(job_id: str):
-    """Manually trigger verification for debugging"""
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    refs = job["result"].get("references_raw", [])
-    if not refs:
-        return {"error": "No references to verify"}
-    
-    # Force verification
-    from verify import verify_references_batch
-    
-    try:
-        results = verify_references_batch(refs, style="apa")
-        
-        # Process results
-        summary = {
-            "verified": 0,
-            "likely": 0,
-            "needs_review": 0,
-            "not_found": 0,
-            "offline": 0
-        }
-        
-        for r in results:
-            status = r.get("status", "offline")
-            if status in summary:
-                summary[status] += 1
-            else:
-                summary["offline"] += 1
-        
-        # Update job with results
-        with _lock:
-            if job_id in _store:
-                _store[job_id]["result"]["online_verification"] = {
-                    "rows": results,
-                    "summary": summary
-                }
-                
-                # Compute ACII
-                try:
-                    _store[job_id]["result"]["acii"] = compute_acii(_store[job_id]["result"], results)
-                except Exception as e:
-                    _store[job_id]["result"]["acii"] = {"error": str(e)}
-                
-                # Rebuild reference mapping
-                _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                
-                # Deduplicate in-text citations
-                if "reconciliation_intext_to_reference" in _store[job_id]["result"]:
-                    unique_cites = {}
-                    for item in _store[job_id]["result"]["reconciliation_intext_to_reference"]:
-                        cite_text = item.get("in_text", "")
-                        cite_norm = _norm_text_citation(cite_text)
-                        if cite_norm and cite_norm not in unique_cites:
-                            unique_cites[cite_norm] = item
-                    _store[job_id]["result"]["reconciliation_intext_to_reference"] = list(unique_cites.values())
-                
-                _store[job_id]["verification"]["state"] = "completed"
-                _store[job_id]["verification"]["completed_at"] = now()
-                _store[job_id]["verification"]["results"] = results
-                _store[job_id]["verification"]["progress"] = len(refs)
-                _store[job_id]["verification"]["percentage"] = 100
-        
-        return {
-            "success": True,
-            "summary": summary,
-            "results_count": len(results)
-        }
-        
-    except Exception as e:
-        return {"error": str(e)}
-
 
 # ============================================================
 # DEBUG ENDPOINTS (Add this section after build_reference_to_intext)
@@ -392,8 +284,9 @@ async def debug_retry_verification(job_id: str):
     except Exception as e:
         return {"error": str(e)}
 
+
 # ============================================================
-# QUEUE STATUS ENDPOINT
+# QUEUE STATUS ENDPOINT (THIS ALREADY EXISTS)
 # ============================================================
 
 @app.get("/queue/status")
@@ -468,7 +361,7 @@ async def verify(
 
 
 # ============================================================
-# ONLINE VERIFICATION - SINGLE JOB ID
+# ONLINE VERIFICATION - SINGLE JOB ID (WITH DEBUG PRINTS)
 # ============================================================
 
 @app.post("/verify-online")
@@ -520,24 +413,87 @@ async def verify_online(job_id: str = Form(...)):
         started_at=now()
     )
     
-    # Submit to verification queue
-    verification_job_id = submit_verification(refs, style="apa")
+    # Start verification in background thread
+    def run_verification():
+        from verify import verify_references_batch
+        
+        try:
+            print(f"[DEBUG] Starting verification for job {job_id} with {len(refs)} references")
+            results = verify_references_batch(refs, style="apa", job_id=job_id)
+            print(f"[DEBUG] Verification completed for job {job_id}: {len(results)} results")
+            
+            # Process results
+            summary = {
+                "verified": 0,
+                "likely": 0,
+                "needs_review": 0,
+                "not_found": 0,
+                "offline": 0
+            }
+            
+            for r in results:
+                status = r.get("status", "offline")
+                if status in summary:
+                    summary[status] += 1
+                else:
+                    summary["offline"] += 1
+            
+            print(f"[DEBUG] Summary for job {job_id}: {summary}")
+            
+            # Update job with results
+            with _lock:
+                if job_id in _store:
+                    _store[job_id]["result"]["online_verification"] = {
+                        "rows": results,
+                        "summary": summary
+                    }
+                    
+                    # Compute ACII
+                    try:
+                        _store[job_id]["result"]["acii"] = compute_acii(_store[job_id]["result"], results)
+                        print(f"[DEBUG] ACII computed: {_store[job_id]['result']['acii'].get('ACII', 'N/A')}")
+                    except Exception as e:
+                        print(f"[DEBUG] ACII error: {e}")
+                        _store[job_id]["result"]["acii"] = {"error": str(e)}
+                    
+                    # Rebuild reference mapping
+                    _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
+                    
+                    # Deduplicate in-text citations
+                    if "reconciliation_intext_to_reference" in _store[job_id]["result"]:
+                        unique_cites = {}
+                        for item in _store[job_id]["result"]["reconciliation_intext_to_reference"]:
+                            cite_text = item.get("in_text", "")
+                            cite_norm = _norm_text_citation(cite_text)
+                            if cite_norm and cite_norm not in unique_cites:
+                                unique_cites[cite_norm] = item
+                        _store[job_id]["result"]["reconciliation_intext_to_reference"] = list(unique_cites.values())
+                    
+                    _store[job_id]["verification"]["state"] = "completed"
+                    _store[job_id]["verification"]["completed_at"] = now()
+                    _store[job_id]["verification"]["results"] = results
+                    _store[job_id]["verification"]["progress"] = len(refs)
+                    _store[job_id]["verification"]["percentage"] = 100
+                    
+        except Exception as e:
+            print(f"[DEBUG] Verification failed for job {job_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            with _lock:
+                if job_id in _store:
+                    _store[job_id]["verification"]["state"] = "error"
+                    _store[job_id]["verification"]["message"] = str(e)
+                    _store[job_id]["verification"]["completed_at"] = now()
     
-    # Store verification job ID for tracking
-    update_verification_status(job_id, verification_job_id=verification_job_id)
-    
-    # Start progress sync thread
-    start_progress_sync(job_id, verification_job_id)
+    thread = threading.Thread(target=run_verification, daemon=True)
+    thread.start()
     
     return {
         "started": True,
         "job_id": job_id,
-        "verification_job_id": verification_job_id,
         "total_references": len(refs),
         "message": "Verification started. Check /online/status for progress."
     }
-
-
 # ============================================================
 # STATUS POLLING - SINGLE SOURCE
 # ============================================================
