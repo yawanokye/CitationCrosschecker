@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (WITH IMPROVED PROGRESS TRACKING) */
+/* static/app.js — Citation Crosschecker Dashboard (WITH IMPROVED PROGRESS TRACKING - FIXED) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -80,7 +80,7 @@ function setStatus(msg, tone = "muted") {
 }
 
 /* -------------------------------------------------------
-PROGRESS BAR UPDATE (IMPROVED)
+PROGRESS BAR UPDATE
 ------------------------------------------------------- */
 
 function updateProgress(progress, total, status = "processing", message = null) {
@@ -88,12 +88,10 @@ function updateProgress(progress, total, status = "processing", message = null) 
     
     const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
     
-    // Update progress bar width and text
     el.progressBar.style.width = `${percentage}%`;
     el.progressBar.textContent = `${percentage}%`;
     el.progressBar.setAttribute('aria-valuenow', percentage);
     
-    // Set color based on status
     if (status === "completed") {
         el.progressBar.style.backgroundColor = "#27ae60";
         const msg = message || `✅ Complete! ${progress}/${total} citations verified`;
@@ -122,7 +120,7 @@ function updateProgress(progress, total, status = "processing", message = null) 
 }
 
 /* -------------------------------------------------------
-QUEUE STATUS DISPLAY (IMPROVED)
+QUEUE STATUS DISPLAY
 ------------------------------------------------------- */
 
 async function updateQueueStatus() {
@@ -164,7 +162,6 @@ RESET VERIFICATION UI
 function resetVerificationUI() {
     console.log("[UI] Resetting verification UI");
     
-    // Reset verification dashboard
     if (el.verifyDash) {
         el.verifyDash.innerHTML = `
             <div class="kpi">✅ Verified: 0</div>
@@ -175,25 +172,21 @@ function resetVerificationUI() {
         `;
     }
     
-    // Reset verification table
     if (el.verifyBody) {
         el.verifyBody.innerHTML = `\
-            <tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></tr>
+             <tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></tr>
         `;
     }
     
-    // Reset progress
     updateProgress(0, 0, "processing", "Ready to verify");
     if (el.verifyProgress) {
         el.verifyProgress.style.display = "none";
     }
     
-    // Reset remaining time
     if (el.estimatedRemaining) {
         el.estimatedRemaining.textContent = "";
     }
     
-    // Disable verification export button
     if (el.btnExportVerify) {
         el.btnExportVerify.disabled = true;
     }
@@ -230,6 +223,95 @@ tabs.forEach(tab => {
         if (pane) pane.classList.add("active");
     });
 });
+
+/* -------------------------------------------------------
+STATUS POLLING FUNCTIONS (DEFINED EARLY)
+------------------------------------------------------- */
+
+async function fetchStatus() {
+    if (!LAST_JOB_ID) return;
+    
+    try {
+        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
+        const js = await res.json();
+        
+        // Update progress from online status
+        if (js.online) {
+            const progress = js.online.progress || 0;
+            const total = js.online.total || 0;
+            const percentage = js.online.percentage || 0;
+            const state = js.online.state || "processing";
+            
+            if (total > 0) {
+                updateProgress(progress, total, state, 
+                    `Verifying: ${progress}/${total} (${percentage}%)`);
+                console.log(`[Progress] ${progress}/${total} (${percentage}%) - ${state}`);
+            }
+        }
+        
+        // Update from progress object if present
+        if (js.progress) {
+            if (js.online && js.progress.current === js.online.progress) {
+                // Already updated
+            } else if (!js.online) {
+                updateProgress(js.progress.current, js.progress.total, js.progress.status,
+                    `${js.progress.message || `Processing: ${js.progress.current}/${js.progress.total} (${js.progress.percentage}%)`}`);
+            }
+        }
+        
+        // Update queue status
+        if (js.queue && el.queueStatus) {
+            const busyClass = js.queue.is_busy ? 'busy' : 'ready';
+            el.queueStatus.innerHTML = `
+                <div class="queue-info ${busyClass}">
+                    <span>📊 Queue: ${js.queue.queue_size || 0}</span>
+                    <span>⏳ Pending: ${js.queue.pending_jobs || 0}</span>
+                    <span>⚙️ Processing: ${js.queue.processing_jobs || 0}</span>
+                </div>
+            `;
+        }
+        
+        if (js.result) {
+            renderAll(js.result);
+        }
+        
+        // Check completion
+        if (js.online?.state === "completed") {
+            setStatus("Online verification complete", "good");
+            VERIFICATION_IN_PROGRESS = false;
+            if (el.btnVerify) el.btnVerify.disabled = false;
+            const total = js.online.total || 0;
+            updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
+            stopPolling();
+            if (el.btnExportVerify) el.btnExportVerify.disabled = false;
+        }
+        
+        if (js.online?.state === "error") {
+            setStatus(js.online?.message || "Verification failed", "warn");
+            VERIFICATION_IN_PROGRESS = false;
+            if (el.btnVerify) el.btnVerify.disabled = false;
+            updateProgress(0, 0, "error", js.online?.message || "Verification failed");
+            stopPolling();
+        }
+        
+    } catch (err) {
+        console.error("Status fetch error:", err);
+    }
+}
+
+function startPolling() {
+    if (POLL_TIMER) clearInterval(POLL_TIMER);
+    POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
+    console.log("[Polling] Started");
+}
+
+function stopPolling() {
+    if (POLL_TIMER) {
+        clearInterval(POLL_TIMER);
+        POLL_TIMER = null;
+        console.log("[Polling] Stopped");
+    }
+}
 
 /* -------------------------------------------------------
 ACII SCORE DESCRIPTION
@@ -275,7 +357,7 @@ function getUniqueCitationsWithCount(c2rRows) {
 }
 
 /* -------------------------------------------------------
-EXPORT FUNCTIONS (keep existing)
+EXPORT FUNCTIONS
 ------------------------------------------------------- */
 
 function escapeCsv(str) {
@@ -436,10 +518,6 @@ function exportCSV(data) {
     URL.revokeObjectURL(url);
 }
 
-/* -------------------------------------------------------
-EXPORT WORD FILE (FIXED)
-------------------------------------------------------- */
-
 function exportWordFile(data) {
     if (!data) {
         alert("No data to export. Run a check first.");
@@ -459,7 +537,6 @@ function exportWordFile(data) {
     const timestamp = new Date().toLocaleString();
     const aciiRating = getACIIRating(acii.ACII);
 
-    // Build HTML content for Word (same as before, but truncated for brevity)
     let html = `<!DOCTYPE html>
 <html>
 <head>
@@ -492,13 +569,13 @@ function exportWordFile(data) {
     
     <h2>📈 Summary</h2>
     <table class="summary-table">
-        <tr><th>Metric</th><th>Value</th>   </tr>
-        <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
-        <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
-        <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
-        <tr><td>Missing in references (unique)</td><td><strong>${s.missing_in_references || 0}</strong></td></tr>
-        <tr><td>Uncited references</td><td><strong>${s.uncited_references || 0}</strong></td></tr>
-        <tr><td>Match rate</td><td><strong>${s.match_rate || 0}%</strong></td></tr>
+         <tr><th>Metric</th><th>Value</th></tr>
+         <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
+         <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
+         <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
+         <tr><td>Missing in references (unique)</td><td><strong>${s.missing_in_references || 0}</strong></td></tr>
+         <tr><td>Uncited references</td><td><strong>${s.uncited_references || 0}</strong></td></tr>
+         <tr><td>Match rate</td><td><strong>${s.match_rate || 0}%</strong></td></tr>
     </table>
     
     <h2>📊 ACII Score</h2>
@@ -543,12 +620,11 @@ function exportWordFile(data) {
 }
 
 /* -------------------------------------------------------
-ACII HELPERS
+RENDER FUNCTIONS
 ------------------------------------------------------- */
 
 function renderACII(data) {
     const acii = data?.acii;
-
     if (!acii) return;
 
     if (el.aciiCard) el.aciiCard.style.display = "block";
@@ -576,10 +652,6 @@ function renderACII(data) {
     if ($("aciiTcat")) $("aciiTcat").textContent = c.temporal_balance?.category ?? "";
 }
 
-/* -------------------------------------------------------
-DATA NORMALIZATION
-------------------------------------------------------- */
-
 function normalizeData(payload) {
     const data = payload?.data || payload?.result || payload || {};
     const s = data.summary || {};
@@ -595,26 +667,18 @@ function normalizeData(payload) {
     return data;
 }
 
-/* -------------------------------------------------------
-SUMMARY
-------------------------------------------------------- */
-
 function renderSummaryTable(data) {
     const s = data?.summary || {};
     if (!el.summaryTable) return;
 
     el.summaryTable.innerHTML = `
-        <tr><td>In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
-        <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
-        <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
-        <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
-        <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
+         <tr><td>In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
+         <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
+         <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
+         <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
+         <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
     `;
 }
-
-/* -------------------------------------------------------
-MISSING, UNCITED, C2R, R2C, VERIFY (keep existing)
-------------------------------------------------------- */
 
 function renderMissing(data) {
     const rows = data?.missing_in_references || [];
@@ -637,9 +701,14 @@ function renderC2R(data) {
     if (!uniqueCitations.length) { el.c2rBody.innerHTML = `<tr><td colspan="6">No mapping available</td></tr>`; return; }
     el.c2rBody.innerHTML = uniqueCitations.map((item, i) => {
         let statusClass = item.status === 'matched' ? 'verified' : (item.status === 'not_found' ? 'not_found' : '');
-        return `<tr><td>${i + 1}</td><td><span class="badge ${statusClass}">${esc(item.status || '')}</span></td>
-                <td style="max-width:300px;">${esc(item.citation)}</td><td style="text-align:center"><strong>${item.count}</strong></td>
-                <td style="max-width:400px;">${esc(item.matched_reference || '')}</td><td>${esc(item.flags || '')}</td></tr>`;
+        return `<tr>
+            <td>${i + 1}</td>
+            <td><span class="badge ${statusClass}">${esc(item.status || '')}</span></td>
+            <td style="max-width:300px;">${esc(item.citation)}</td>
+            <td style="text-align:center"><strong>${item.count}</strong></td>
+            <td style="max-width:400px;">${esc(item.matched_reference || '')}</td>
+            <td>${esc(item.flags || '')}</td>
+        </tr>`;
     }).join("");
 }
 
@@ -647,8 +716,12 @@ function renderR2C(data) {
     const rows = data?.reconciliation_reference_to_intext || [];
     if (!el.r2cBody) return;
     if (!rows.length) { el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`; return; }
-    el.r2cBody.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.times_cited ?? 0)}</td>
-                <td style="max-width:500px;">${esc(r.reference || '')}</td><td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td></tr>`).join("");
+    el.r2cBody.innerHTML = rows.map((r, i) => `<tr>
+        <td>${i + 1}</td>
+        <td>${esc(r.times_cited ?? 0)}</td>
+        <td style="max-width:500px;">${esc(r.reference || '')}</td>
+        <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
+    </tr>`).join("");
 }
 
 function renderVerify(data) {
@@ -669,19 +742,21 @@ function renderVerify(data) {
 
     el.verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
         let badgeClass = r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : (r.status === 'not_found' ? 'not_found' : 'offline')));
-        return `<tr><td>${i + 1}</td><td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
-                <td>${esc(r.source || '—')}</td><td>${esc(r.score || '—')}</td><td>${esc(r.doi || '—')}</td>
-                <td>${esc(r.matched_year || '—')}</td><td>${esc(r.matched_authors || '—')}</td>
-                <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
-                <td>${esc(r.query_used || '—')}</td></tr>`;
+        return `<tr>
+            <td>${i + 1}  \n
+            <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span>  \n
+            <td>${esc(r.source || '—')}  \n
+            <td>${esc(r.score || '—')}  \n
+            <td>${esc(r.doi || '—')}  \n
+            <td>${esc(r.matched_year || '—')}  \n
+            <td>${esc(r.matched_authors || '—')}  \n
+            <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}  \n
+            <td>${esc(r.query_used || '—')}  \n
+         \)n`;
     }).join("");
     
     if (el.btnExportVerify && rows.length > 0) el.btnExportVerify.disabled = false;
 }
-
-/* -------------------------------------------------------
-MASTER RENDER
-------------------------------------------------------- */
 
 function renderAll(data) {
     if (!data) return;
@@ -786,7 +861,7 @@ async function runOnlineVerification() {
         
         if (js.started) {
             setStatus("Verification in progress...", "info");
-            startPolling();
+            startPolling();  // This is now defined above
         } else if (js.completed) {
             setStatus("Verification already completed", "good");
             VERIFICATION_IN_PROGRESS = false;
@@ -803,88 +878,6 @@ async function runOnlineVerification() {
         setStatus("Error: " + err.message, "bad");
         VERIFICATION_IN_PROGRESS = false;
         if (el.btnVerify) el.btnVerify.disabled = false;
-    }
-}
-
-/* -------------------------------------------------------
-STATUS POLLING WITH PROGRESS - SINGLE JOB ID
-------------------------------------------------------- */
-
-async function fetchStatus() {
-    if (!LAST_JOB_ID) return;
-    
-    try {
-        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
-        const js = await res.json();
-        
-        // Update progress from online status (single source)
-        if (js.online) {
-            const progress = js.online.progress || 0;
-            const total = js.online.total || 0;
-            const percentage = js.online.percentage || 0;
-            const state = js.online.state || "processing";
-            
-            if (total > 0) {
-                // Always use the same progress value - no jumping
-                const currentProgress = progress;
-                const currentTotal = total;
-                const currentPercentage = percentage;
-                
-                updateProgress(currentProgress, currentTotal, state, 
-                    `Verifying: ${currentProgress}/${currentTotal} (${currentPercentage}%)`);
-                
-                console.log(`[Progress] ${currentProgress}/${currentTotal} (${currentPercentage}%) - ${state}`);
-            }
-        }
-        
-        // Also handle progress object if present (for consistency)
-        if (js.progress) {
-            // Only update if it matches online status (prevents jumps)
-            if (js.online && js.progress.current === js.online.progress) {
-                // Already updated above
-            } else if (!js.online) {
-                updateProgress(js.progress.current, js.progress.total, js.progress.status,
-                    `${js.progress.message || `Processing: ${js.progress.current}/${js.progress.total} (${js.progress.percentage}%)`}`);
-            }
-        }
-        
-        // Update queue status
-        if (js.queue && el.queueStatus) {
-            const busyClass = js.queue.is_busy ? 'busy' : 'ready';
-            el.queueStatus.innerHTML = `
-                <div class="queue-info ${busyClass}">
-                    <span>📊 Queue: ${js.queue.queue_size || 0}</span>
-                    <span>⏳ Pending: ${js.queue.pending_jobs || 0}</span>
-                    <span>⚙️ Processing: ${js.queue.processing_jobs || 0}</span>
-                </div>
-            `;
-        }
-        
-        if (js.result) {
-            renderAll(js.result);
-        }
-        
-        // Check completion
-        if (js.online?.state === "completed") {
-            setStatus("Online verification complete", "good");
-            VERIFICATION_IN_PROGRESS = false;
-            if (el.btnVerify) el.btnVerify.disabled = false;
-            const total = js.online.total || 0;
-            updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
-            stopPolling();
-            if (el.btnExportVerify) el.btnExportVerify.disabled = false;
-        }
-        
-        if (js.online?.state === "error") {
-            setStatus(js.online?.message || "Verification failed", "warn");
-            VERIFICATION_IN_PROGRESS = false;
-            if (el.btnVerify) el.btnVerify.disabled = false;
-            updateProgress(0, 0, "error", js.online?.message || "Verification failed");
-            stopPolling();
-        }
-        
-    } catch (err) {
-        console.error("Status fetch error:", err);
     }
 }
 
