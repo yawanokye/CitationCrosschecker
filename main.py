@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -19,11 +19,10 @@ from starlette.concurrency import run_in_threadpool
 
 from engine import run_crosscheck
 from verify import (
-    submit_verification, 
-    get_verification_status, 
-    get_queue_status, 
-    is_server_busy_check,
-    verify_references_batch
+    submit_verification,           # This is the correct function name
+    get_verification_status,
+    get_queue_status,
+    is_server_busy
 )
 from acii import compute_acii
 
