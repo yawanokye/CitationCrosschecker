@@ -183,8 +183,8 @@ def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 30) -> Optional[dict]:
-    """Increased timeout to 30 seconds for better reliability"""
+def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 45) -> Optional[dict]:
+    """Increased timeout to 45 seconds for better reliability"""
     try:
         headers = {
             "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
@@ -426,15 +426,31 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
 
 
 # ---------------------------------------------------------
-# External queries
+# External queries with retry logic
 # ---------------------------------------------------------
+
+def _query_with_retry(query_func, *args, max_retries=3, delay=2):
+    """Execute query with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            result = query_func(*args)
+            if result:
+                return result
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+        except Exception as e:
+            print(f"[DEBUG] Query attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+    return []
+
 
 def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
     if not doi:
         return []
     url = f"https://api.crossref.org/works/{doi}"
     params = {"mailto": MAILTO} if MAILTO else None
-    data = _safe_get_json(url, params=params, timeout=30)
+    data = _safe_get_json(url, params=params, timeout=45)
     if not data or "message" not in data:
         return []
     return [{"source": "crossref", "item": data["message"]}]
@@ -452,7 +468,7 @@ def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     }
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=30)
+    data = _safe_get_json(url, params=params, timeout=45)
     items = (data or {}).get("message", {}).get("items", [])
     return [{"source": "crossref", "item": it} for it in items]
 
@@ -469,7 +485,7 @@ def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[st
     }
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=30)
+    data = _safe_get_json(url, params=params, timeout=45)
     items = (data or {}).get("message", {}).get("items", [])
     return [{"source": "crossref", "item": it} for it in items]
 
@@ -481,7 +497,7 @@ def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     params: Dict[str, Any] = {"search": query, "per-page": rows}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=30)
+    data = _safe_get_json(url, params=params, timeout=45)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "item": it} for it in items]
 
@@ -493,7 +509,7 @@ def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[st
     params: Dict[str, Any] = {"search": title_query, "per-page": rows}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=30)
+    data = _safe_get_json(url, params=params, timeout=45)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "item": it} for it in items]
 
@@ -611,11 +627,11 @@ def _best_candidate(
 
 
 # ---------------------------------------------------------
-# Main verification function
+# Main verification function with improved error handling
 # ---------------------------------------------------------
 
 def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
-    """Original fast verification function"""
+    """Original fast verification function with improved error handling"""
     cache_key = f"{style}::{ref}"
     cached = _cache_get(cache_key)
     if cached:
@@ -651,10 +667,17 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             candidates.extend(_query_crossref_by_doi(ref_doi))
 
         # stage 1
-        if use_crossref:
+        if use_crossref and query:
             candidates.extend(_query_crossref(query, rows=10))
-        if use_openalex:
+        if use_openalex and query:
             candidates.extend(_query_openalex(query, rows=10))
+
+        # If no candidates from query, try title-only search
+        if not candidates and title_only:
+            if use_crossref:
+                candidates.extend(_query_crossref_title_only(title_only, rows=8))
+            if use_openalex:
+                candidates.extend(_query_openalex_title_only(title_only, rows=8))
 
         best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
 
@@ -670,13 +693,15 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             if status in {"needs_review", "not_found"}:
                 deep_candidates = list(candidates)
 
-                if use_crossref:
+                if use_crossref and query:
                     deep_candidates.extend(_query_crossref(query, rows=20))
-                    deep_candidates.extend(_query_crossref_title_only(title_only, rows=12))
+                    if title_only:
+                        deep_candidates.extend(_query_crossref_title_only(title_only, rows=15))
 
-                if use_openalex:
+                if use_openalex and query:
                     deep_candidates.extend(_query_openalex(query, rows=20))
-                    deep_candidates.extend(_query_openalex_title_only(title_only, rows=12))
+                    if title_only:
+                        deep_candidates.extend(_query_openalex_title_only(title_only, rows=15))
 
                 best2, best_meta2 = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, deep_candidates)
                 if best2:
@@ -703,11 +728,12 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 "year_match": int(best_meta.get("year_match", 0)),
             })
         else:
+            # Even with no matches, mark as not_found (not offline)
             row["status"] = "not_found"
 
     except Exception as e:
         print(f"[DEBUG] Error verifying reference: {e}")
-        row["status"] = "offline"
+        row["status"] = "not_found"  # Changed from offline to not_found for consistency
         row["error"] = str(e)
 
     row["status"] = _normalize_verify_status(row.get("status"))
@@ -741,7 +767,7 @@ def verify_references_batch(
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Starting verification for {total_refs} references")
     print(f"[DEBUG] Style: {normalized_style}")
-    print(f"[DEBUG] Estimated time: ~{total_refs * 3} seconds ({total_refs * 3 / 60:.1f} minutes)")
+    print(f"[DEBUG] Estimated time: ~{total_refs * 4} seconds ({total_refs * 4 / 60:.1f} minutes)")
     print(f"[DEBUG] ========================================")
 
     # Create job for progress tracking if job_id provided
@@ -750,9 +776,9 @@ def verify_references_batch(
         print(f"[DEBUG] Created verification job {job_id}")
 
     rows: List[Dict[str, Any]] = [None] * total_refs
-    # Use fewer workers to avoid rate limiting, but process all references
-    workers = min(3, max(1, total_refs))  # Max 3 workers to avoid API rate limits
-    print(f"[DEBUG] Using {workers} workers (limited to avoid rate limits)")
+    # Use single worker to avoid rate limiting and ensure all references are processed
+    workers = 1  # Process one at a time to avoid rate limits
+    print(f"[DEBUG] Using {workers} worker (sequential processing to avoid rate limits)")
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
@@ -778,16 +804,19 @@ def verify_references_batch(
                 if job_id:
                     update_job_progress(job_id, completed_count)
                     
-                    # Print progress every 10 references to avoid spam
-                    if completed_count % 10 == 0 or completed_count == total_refs:
+                    # Print progress every 5 references to track
+                    if completed_count % 5 == 0 or completed_count == total_refs:
                         print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%)")
+                
+                # Small delay to avoid rate limiting
+                time.sleep(0.5)
                     
             except Exception as e:
                 print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
                 rows[idx] = {
                     "reference": refs[idx],
                     "style": normalized_style,
-                    "status": "offline",
+                    "status": "not_found",  # Changed from offline
                     "source": "",
                     "score": 0,
                     "doi": "",
@@ -817,10 +846,12 @@ def verify_references_batch(
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Verification COMPLETE for {total_refs} references")
     print(f"[DEBUG] Results: {result_counts}")
+    print(f"[DEBUG] Total processed: {len([r for r in rows if r is not None])}")
     print(f"[DEBUG] ========================================")
 
     for r in rows:
-        r["status"] = _normalize_verify_status(r.get("status"))
+        if r:
+            r["status"] = _normalize_verify_status(r.get("status"))
 
     # Store results if job_id was provided
     if job_id:
@@ -845,7 +876,7 @@ def submit_verification(references: List[str], style: str = "apa") -> str:
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Submitting verification job {job_id}")
     print(f"[DEBUG] Total references: {total_refs}")
-    print(f"[DEBUG] Estimated time: ~{total_refs * 3} seconds ({total_refs * 3 / 60:.1f} minutes)")
+    print(f"[DEBUG] Estimated time: ~{total_refs * 4} seconds ({total_refs * 4 / 60:.1f} minutes)")
     print(f"[DEBUG] ========================================")
     
     def run():
@@ -856,6 +887,13 @@ def submit_verification(references: List[str], style: str = "apa") -> str:
         print(f"[DEBUG] Background thread completed for job {job_id}")
         print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
         print(f"[DEBUG] Results count: {len(results)}")
+        
+        # Print final summary
+        verified = sum(1 for r in results if r.get("status") == "verified")
+        likely = sum(1 for r in results if r.get("status") == "likely")
+        needs_review = sum(1 for r in results if r.get("status") == "needs_review")
+        not_found = sum(1 for r in results if r.get("status") == "not_found")
+        print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
     
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
