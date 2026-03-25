@@ -417,9 +417,314 @@ function exportCSV(data) {
     URL.revokeObjectURL(url);
 }
 
+/* -------------------------------------------------------
+EXPORT WORD FILE (FIXED)
+------------------------------------------------------- */
+
 function exportWordFile(data) {
-    // Keep existing exportWordFile function - unchanged
-    alert("Word export functionality available. Use CSV for structured data export.");
+    if (!data) {
+        alert("No data to export. Run a check first.");
+        return;
+    }
+
+    const normalized = normalizeData(data);
+    const s = normalized.summary || {};
+    const missing = normalized.missing_in_references || [];
+    const uncited = normalized.uncited_references || [];
+    const c2rRaw = normalized.reconciliation_intext_to_reference || [];
+    const r2c = normalized.reconciliation_reference_to_intext || [];
+    const acii = normalized.acii || {};
+    const ov = normalized.online_verification || {};
+    
+    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
+    const timestamp = new Date().toLocaleString();
+    const aciiRating = getACIIRating(acii.ACII);
+
+    // Build HTML content for Word
+    let html = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Citation Crosscheck Report</title>
+    <style>
+        body { 
+            font-family: 'Times New Roman', Times, serif; 
+            margin: 2.54cm 3.17cm;  /* Standard Word margins */
+            line-height: 1.5;
+            font-size: 12pt;
+        }
+        h1 { 
+            color: #2c3e50; 
+            border-bottom: 2px solid #3498db; 
+            padding-bottom: 10px;
+            font-size: 24pt;
+            margin-top: 0;
+        }
+        h2 { 
+            color: #34495e; 
+            margin-top: 25px; 
+            border-left: 4px solid #3498db; 
+            padding-left: 10px;
+            font-size: 18pt;
+        }
+        h3 { 
+            color: #555; 
+            margin-top: 15px;
+            font-size: 14pt;
+        }
+        table { 
+            border-collapse: collapse; 
+            width: 100%; 
+            margin-bottom: 20px;
+            font-size: 10pt;
+        }
+        th, td { 
+            border: 1px solid #ddd; 
+            padding: 8px 12px; 
+            text-align: left; 
+            vertical-align: top;
+        }
+        th { 
+            background-color: #f2f2f2; 
+            font-weight: bold;
+        }
+        tr:hover { 
+            background-color: #f5f5f5; 
+        }
+        .summary-table { 
+            width: auto;
+            min-width: 300px;
+        }
+        .badge { 
+            display: inline-block; 
+            padding: 2px 6px; 
+            border-radius: 4px; 
+            font-size: 9pt;
+        }
+        .badge.verified { background: #27ae60; color: white; }
+        .badge.not_found { background: #e74c3c; color: white; }
+        .badge.likely { background: #f39c12; color: white; }
+        .badge.needs_review { background: #e67e22; color: white; }
+        .badge.offline { background: #95a5a6; color: white; }
+        .footer { 
+            margin-top: 30px; 
+            font-size: 9pt; 
+            color: #7f8c8d; 
+            text-align: center; 
+            border-top: 1px solid #ddd; 
+            padding-top: 15px;
+        }
+        .citation-count { 
+            color: #3498db; 
+            font-weight: bold; 
+        }
+        .occurrence-note { 
+            background: #f8f9fa; 
+            padding: 10px; 
+            border-left: 4px solid #3498db; 
+            margin-bottom: 15px; 
+            font-size: 10pt;
+        }
+        .acii-card { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white; 
+            padding: 20px; 
+            border-radius: 10px; 
+            margin-bottom: 20px;
+        }
+        .acii-score { 
+            font-size: 48px; 
+            font-weight: bold; 
+        }
+        .acii-rating { 
+            font-size: 24px; 
+        }
+        .acii-description { 
+            margin-top: 10px; 
+            font-size: 12px; 
+            opacity: 0.9;
+        }
+        .kpi-grid { 
+            display: flex; 
+            gap: 15px; 
+            flex-wrap: wrap; 
+            margin-bottom: 15px;
+        }
+        .kpi { 
+            background: #f8f9fa; 
+            padding: 10px 15px; 
+            border-radius: 8px; 
+            border-left: 4px solid #3498db;
+        }
+        .excellent { color: #27ae60; }
+        .very-good { color: #2ecc71; }
+        .good { color: #f39c12; }
+        .moderate { color: #e67e22; }
+        .weak { color: #e74c3c; }
+        .poor { color: #c0392b; }
+        .reference-text {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 9pt;
+            word-break: break-word;
+        }
+        @media print {
+            body { margin: 2.54cm 3.17cm; }
+            .no-print { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <h1>📊 Citation Crosscheck Report</h1>
+    <p><strong>Generated:</strong> ${timestamp}</p>
+    <p><strong>File:</strong> ${esc(normalized.filename || 'N/A')}</p>
+    <p><strong>Style:</strong> ${esc(normalized.style || 'APA/Harvard')}</p>
+    <p><strong>Job ID:</strong> ${esc(normalized.job_id || 'N/A')}</p>
+    
+    <h2>📈 Summary</h2>
+    <table class="summary-table">
+        <tr><th>Metric</th><th>Value</th>  </tr>
+        <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
+        <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
+        <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
+        <tr><td>Missing in references (unique)</td><td><strong style="color: ${s.missing_in_references > 0 ? '#e67e22' : '#27ae60'}">${s.missing_in_references || 0}</strong></td></tr>
+        <tr><td>Uncited references</td><td><strong style="color: ${s.uncited_references > 0 ? '#e67e22' : '#27ae60'}">${s.uncited_references || 0}</strong></td></tr>
+        <tr><td>Match rate</td><td><strong style="color: ${s.match_rate >= 80 ? '#27ae60' : '#e67e22'}">${s.match_rate || 0}%</strong></td></tr>
+    </table>
+    
+    <h2>📊 ACII Score (Academic Citation Integrity Index)</h2>
+    <div class="acii-card">
+        <div class="acii-score">${acii.ACII || '—'}</div>
+        <div class="acii-rating ${aciiRating.class}">${aciiRating.text}</div>
+        <div class="acii-description">${aciiRating.description}</div>
+    </div>
+    
+    ${acii.components ? `
+    <h3>Component Scores</h3>
+    <div class="kpi-grid">
+        <div class="kpi"><strong>Verification Integrity:</strong> ${acii.components.verification_integrity?.score || '—'} (${acii.components.verification_integrity?.category || '—'})</div>
+        <div class="kpi"><strong>Citation Concentration:</strong> ${acii.components.citation_concentration?.score || '—'} (${acii.components.citation_concentration?.category || '—'})</div>
+        <div class="kpi"><strong>Author Diversity:</strong> ${acii.components.author_diversity?.score || '—'} (${acii.components.author_diversity?.category || '—'})</div>
+        <div class="kpi"><strong>Temporal Balance:</strong> ${acii.components.temporal_balance?.score || '—'} (${acii.components.temporal_balance?.category || '—'})</div>
+    </div>
+    ` : ''}
+    
+    <h2>❌ Missing Citations</h2>
+    ${missing.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Citation</th><th>Occurrences</th></tr></thead>
+        <tbody>
+            ${missing.map((item, idx) => {
+                const citation = (typeof item === 'string') ? item : (item.citation_in_text || item);
+                const count = (typeof item === 'string') ? 1 : (item.count_in_text || 1);
+                return `<tr><td>${idx + 1}</td><td>${esc(citation)}</td><td>${count}</td></tr>`;
+            }).join('')}
+        </tbody>
+    </table>
+    ` : '<p>✅ No missing citations found!</p>'}
+    
+    <h2>📌 Uncited References</h2>
+    ${uncited.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Reference</th></tr></thead>
+        <tbody>
+            ${uncited.slice(0, 50).map((ref, idx) => `<tr><td>${idx + 1}</td><td class="reference-text">${esc(ref.substring(0, 200))}${ref.length > 200 ? '...' : ''}</td></tr>`).join('')}
+            ${uncited.length > 50 ? `<tr><td colspan="2">... and ${uncited.length - 50} more</td></tr>` : ''}
+        </tbody>
+    </table>
+    ` : '<p>✅ All references are cited!</p>'}
+    
+    <div class="occurrence-note">
+        📌 <strong>Note:</strong> ${s.in_text_citations_found || 0} total citation occurrences found in the document. 
+        The table below shows <strong>${uniqueCitations.length} unique citations</strong> with their occurrence counts.
+    </div>
+    
+    <h2>📝 Citation to Reference Mapping <span class="citation-count">(Unique Citations: ${uniqueCitations.length})</span></h2>
+    ${uniqueCitations.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Occurrences</th><th>Matched Reference</th><th>Flags</th></tr></thead>
+        <tbody>
+            ${uniqueCitations.map((item, idx) => `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td>${item.status === 'matched' ? '✓ Matched' : '✗ Not Found'}</td>
+                    <td>${esc(item.citation)}</td>
+                    <td style="text-align:center"><strong>${item.count}</strong></td>
+                    <td class="reference-text">${esc((item.matched_reference || '').substring(0, 150))}${(item.matched_reference || '').length > 150 ? '...' : ''}</td>
+                    <td>${esc(item.flags || '')}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    </table>
+    ` : '<p>No mapping available.</p>'}
+    
+    <h2>📖 Reference to Citation Mapping</h2>
+    ${r2c.length > 0 ? `
+    <table>
+        <thead><tr><th>#</th><th>Times Cited</th><th>Reference</th><th>Cited By (sample)</th></tr></thead>
+        <tbody>
+            ${r2c.slice(0, 100).map((item, idx) => `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td style="text-align:center"><strong>${item.times_cited || 0}</strong></td>
+                    <td class="reference-text">${esc((item.reference || '').substring(0, 150))}${(item.reference || '').length > 150 ? '...' : ''}</td>
+                    <td>${esc((item.cited_by || []).slice(0, 2).join("; "))}</td>
+                </tr>
+            `).join('')}
+            ${r2c.length > 100 ? `<tr><td colspan="4">... and ${r2c.length - 100} more references</td></tr>` : ''}
+        </tbody>
+    </table>
+    ` : '<p>No mapping available.</p>'}
+    
+    ${ov.rows && ov.rows.length > 0 ? `
+    <h2>🔍 Online Verification Results</h2>
+    <div class="kpi-grid">
+        <div class="kpi">✅ Verified: ${ov.summary?.verified || 0}</div>
+        <div class="kpi">🔍 Likely: ${ov.summary?.likely || 0}</div>
+        <div class="kpi">⚠️ Needs Review: ${ov.summary?.needs_review || 0}</div>
+        <div class="kpi">❌ Not Found: ${ov.summary?.not_found || 0}</div>
+        <div class="kpi">📡 Offline: ${ov.summary?.offline || 0}</div>
+    </div>
+    <table>
+        <thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Matched Year</th><th>Matched Authors</th><th>Matched Title</th></tr></thead>
+        <tbody>
+            ${ov.rows.slice(0, 50).map((r, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td>${r.status || ''}</td>
+                    <td>${esc(r.source || '—')}</td>
+                    <td>${r.score || '—'}</td>
+                    <td>${r.doi || '—'}</td>
+                    <td>${r.matched_year || '—'}</td>
+                    <td>${esc((r.matched_authors || '').substring(0, 50))}</td>
+                    <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
+                </tr>
+            `).join('')}
+            ${ov.rows.length > 50 ? `<tr><td colspan="8">... and ${ov.rows.length - 50} more verification results</td></tr>` : ''}
+        </tbody>
+    </table>
+    ` : ''}
+    
+    <div class="footer">
+        <p>Report generated by Citation Crosschecker | Engine: ${esc(normalized.engine_build || 'N/A')}</p>
+        <p>${esc(normalized.reference_detection_message || '')}</p>
+        <p><em>This report was generated automatically. For verification of specific citations, please consult the original sources.</em></p>
+    </div>
+</body>
+</html>`;
+
+    // Create and download Word file
+    const blob = new Blob([html], { type: "application/msword" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `citation_report_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.doc`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    // Optional: Show success message
+    console.log("Word report exported successfully");
 }
 
 /* -------------------------------------------------------
