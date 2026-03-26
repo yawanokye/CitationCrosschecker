@@ -63,13 +63,13 @@ security = HTTPBasic()
 USERNAME = "admin"
 PASSWORD = "Ano77kye7509#"  # change this
 
-def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+def authenticate(credentials: HTTPBasicCredentials):
     correct_username = secrets.compare_digest(credentials.username, USERNAME)
     correct_password = secrets.compare_digest(credentials.password, PASSWORD)
 
     if not (correct_username and correct_password):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=401,
             detail="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="Secure Area"'},
         )
@@ -679,7 +679,9 @@ def online_status(job_id: str):
     return response
 
 @app.get("/private-stats")
-def get_stats(credentials: HTTPBasicCredentials = Depends(authenticate)):
+def get_stats(credentials: HTTPBasicCredentials = Depends(security)):
+
+    authenticate(credentials)   # ✅ manually validate
 
     try:
         with open(COUNTER_FILE) as f:
