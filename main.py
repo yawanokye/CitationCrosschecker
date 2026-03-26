@@ -66,7 +66,7 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
-            headers={"WWW-Authenticate": "Basic"},
+            headers={"WWW-Authenticate": 'Basic realm="Secure Area"'},
         )
 
 
