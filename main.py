@@ -28,6 +28,50 @@ from verify import (
 )
 from acii import compute_acii
 
+29 from acii import compute_acii
+
+
+# ===============================
+# COUNTER SETUP  ← INSERT HERE (line 31)
+# ===============================
+
+COUNTER_FILE = "verify_count.txt"
+
+def increment_counter():
+    if not os.path.exists(COUNTER_FILE):
+        with open(COUNTER_FILE, "w") as f:
+            f.write("0")
+
+    with open(COUNTER_FILE, "r+") as f:
+        count = int(f.read().strip() or 0)
+        count += 1
+        f.seek(0)
+        f.write(str(count))
+        f.truncate()
+
+# ===============================
+# AUTH SETUP  ← INSERT HERE (~line 45)
+# ===============================
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
+
+security = HTTPBasic()
+
+USERNAME = "admin"
+PASSWORD = "Ano77kye7509#"  # change this
+
+def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = secrets.compare_digest(credentials.username, USERNAME)
+    correct_password = secrets.compare_digest(credentials.password, PASSWORD)
+
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
 
 APP_TITLE = "CitationCrosschecker"
 
@@ -496,7 +540,7 @@ async def verify(
 
     # Build reference -> in-text mapping
     result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
-    
+    increment_counter()
     # Store result and get job ID
     job_id = store_result(result)
 
@@ -632,7 +676,16 @@ def online_status(job_id: str):
     
     return response
 
+@app.get("/private-stats")
+def get_stats(credentials: HTTPBasicCredentials = Depends(authenticate)):
 
+    try:
+        with open(COUNTER_FILE) as f:
+            count = int(f.read())
+    except:
+        count = 0
+
+    return {"manuscripts_checked": count}
 # ============================================================
 # HEALTH CHECK
 # ============================================================
