@@ -17,6 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends
+import secrets
+
+security = HTTPBasic()
 from engine import run_crosscheck
 from verify import (
     submit_verification,
