@@ -449,6 +449,15 @@ def index(request: Request):
 
 
 # ============================================================
+# PRIVACY POLICY
+# ============================================================
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy(request: Request):
+    """Privacy policy page"""
+    return templates.TemplateResponse("privacy.html", {"request": request})
+
+# ============================================================
 # INITIAL DOCUMENT CHECK
 # ============================================================
 
