@@ -28,9 +28,6 @@ from verify import (
 )
 from acii import compute_acii
 
-29 from acii import compute_acii
-
-
 # ===============================
 # COUNTER SETUP  ← INSERT HERE (line 31)
 # ===============================
