@@ -11,17 +11,14 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
-
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi import Depends
 import secrets
 
-security = HTTPBasic()
 from engine import run_crosscheck
 from verify import (
     submit_verification,
@@ -34,7 +31,7 @@ from verify import (
 from acii import compute_acii
 
 # ===============================
-# COUNTER SETUP  ← INSERT HERE (line 31)
+# COUNTER SETUP
 # ===============================
 
 COUNTER_FILE = "verify_count.txt"
@@ -52,18 +49,15 @@ def increment_counter():
         f.truncate()
 
 # ===============================
-# AUTH SETUP  ← INSERT HERE (~line 45)
+# AUTH SETUP
 # ===============================
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-import secrets
 
 security = HTTPBasic()
 
 USERNAME = "admin"
 PASSWORD = "Ano77kye7509#"  # change this
 
-def authenticate(credentials: HTTPBasicCredentials):
+def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
     correct_username = secrets.compare_digest(credentials.username, USERNAME)
     correct_password = secrets.compare_digest(credentials.password, PASSWORD)
 
@@ -82,7 +76,7 @@ APP_TITLE = "CitationCrosschecker"
 # ============================================================
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app_instance: FastAPI):
     """Manage background tasks on startup/shutdown"""
     print("🚀 Starting Citation Crosschecker...")
     print(f"📊 Single job tracking system initialized")
@@ -122,6 +116,74 @@ _lock = threading.Lock()
 
 def now():
     return datetime.utcnow().isoformat()
+
+
+def _norm_text_citation(s: str) -> str:
+    """Normalize citation text for duplicate detection"""
+    if not s:
+        return ""
+    s = s.lower()
+    s = re.sub(r'[^a-z0-9]', '', s)
+    return s.strip()
+
+
+def build_reference_to_intext(result):
+    """Build mapping from references to in-text citations"""
+    mapping = {}
+    rows = result.get("reconciliation_intext_to_reference", [])
+    
+    citation_counter = defaultdict(int)
+    citation_samples = defaultdict(list)
+    seen_samples = defaultdict(set)
+    
+    for r in rows:
+        ref = r.get("matched_reference")
+        if not ref:
+            continue
+            
+        in_text = r.get("in_text", "")
+        in_text_norm = _norm_text_citation(in_text)
+        
+        citation_counter[ref] += 1
+        
+        if in_text_norm and in_text_norm not in seen_samples[ref]:
+            if len(citation_samples[ref]) < 6:
+                seen_samples[ref].add(in_text_norm)
+                citation_samples[ref].append(in_text)
+    
+    for ref in citation_counter:
+        mapping[ref] = {
+            "reference": ref,
+            "times_cited": citation_counter[ref],
+            "cited_by": citation_samples.get(ref, [])
+        }
+    
+    result_list = list(mapping.values())
+    result_list.sort(key=lambda x: x["times_cited"], reverse=True)
+    
+    return result_list
+
+
+def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Helper to compute verification summary"""
+    summary = {
+        "verified": 0,
+        "likely": 0,
+        "needs_review": 0,
+        "not_found": 0,
+        "offline": 0,
+        "total": len(rows)
+    }
+    
+    for r in rows:
+        if r:
+            status = r.get("status", "offline")
+            if status in summary:
+                summary[status] += 1
+            else:
+                summary["offline"] += 1
+    
+    return summary
 
 
 def store_result(result):
@@ -258,74 +320,6 @@ def start_progress_sync(job_id: str, verification_job_id: str):
     thread = threading.Thread(target=sync, daemon=True)
     thread.start()
     return thread
-
-
-def _norm_text_citation(s: str) -> str:
-    """Normalize citation text for duplicate detection"""
-    if not s:
-        return ""
-    s = s.lower()
-    s = re.sub(r'[^a-z0-9]', '', s)
-    return s.strip()
-
-
-def build_reference_to_intext(result):
-    """Build mapping from references to in-text citations"""
-    mapping = {}
-    rows = result.get("reconciliation_intext_to_reference", [])
-    
-    citation_counter = defaultdict(int)
-    citation_samples = defaultdict(list)
-    seen_samples = defaultdict(set)
-    
-    for r in rows:
-        ref = r.get("matched_reference")
-        if not ref:
-            continue
-            
-        in_text = r.get("in_text", "")
-        in_text_norm = _norm_text_citation(in_text)
-        
-        citation_counter[ref] += 1
-        
-        if in_text_norm and in_text_norm not in seen_samples[ref]:
-            if len(citation_samples[ref]) < 6:
-                seen_samples[ref].add(in_text_norm)
-                citation_samples[ref].append(in_text)
-    
-    for ref in citation_counter:
-        mapping[ref] = {
-            "reference": ref,
-            "times_cited": citation_counter[ref],
-            "cited_by": citation_samples.get(ref, [])
-        }
-    
-    result_list = list(mapping.values())
-    result_list.sort(key=lambda x: x["times_cited"], reverse=True)
-    
-    return result_list
-
-
-def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
-    """Helper to compute verification summary"""
-    summary = {
-        "verified": 0,
-        "likely": 0,
-        "needs_review": 0,
-        "not_found": 0,
-        "offline": 0,
-        "total": len(rows)
-    }
-    
-    for r in rows:
-        if r:
-            status = r.get("status", "offline")
-            if status in summary:
-                summary[status] += 1
-            else:
-                summary["offline"] += 1
-    
-    return summary
 
 
 # ============================================================
@@ -678,10 +672,15 @@ def online_status(job_id: str):
     
     return response
 
+
+# ============================================================
+# PRIVATE STATS ENDPOINT
+# ============================================================
+
 @app.get("/private-stats")
 def get_stats(credentials: HTTPBasicCredentials = Depends(security)):
-
-    authenticate(credentials)   # ✅ manually validate
+    """Get manuscript check count (protected endpoint)"""
+    authenticate(credentials)  # ✅ manually validate
 
     try:
         with open(COUNTER_FILE) as f:
@@ -690,6 +689,8 @@ def get_stats(credentials: HTTPBasicCredentials = Depends(security)):
         count = 0
 
     return {"manuscripts_checked": count}
+
+
 # ============================================================
 # HEALTH CHECK
 # ============================================================
@@ -734,7 +735,3 @@ async def general_exception_handler(request: Request, exc: Exception):
             "timestamp": now()
         }
     )
-
-
-# Ensure app is exported for Gunicorn
-app = app
