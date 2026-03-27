@@ -1102,7 +1102,19 @@ def health():
         "message": "Server is operational" if not queue_stats.get("is_busy", False) else "Server is busy, some requests may be queued"
     }
 
+# ============================================================
+# STATISTICS WEB PAGE
+# ============================================================
 
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page(request: Request):
+    """Statistics dashboard page - requires authentication"""
+    # The actual stats data will be loaded via JavaScript
+    # that calls the /private-stats API with authentication
+    return templates.TemplateResponse(
+        "stats.html",
+        {"request": request}
+    )
 # ============================================================
 # ERROR HANDLERS
 # ============================================================
