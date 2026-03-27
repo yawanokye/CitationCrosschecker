@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Statistics Dashboard - Citation Crosschecker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-card h3 {
+            color: #666;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+        }
+        
+        .stat-number {
+            font-size: 48px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .stat-label {
+            color: #999;
+            font-size: 14px;
+        }
+        
+        .success-rate {
+            color: #10b981;
+        }
+        
+        .warning-rate {
+            color: #f59e0b;
+        }
+        
+        .chart-container {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        
+        .chart-container h3 {
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        .daily-stats {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            overflow-x: auto;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        
+        .daily-stats h3 {
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        
+        th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .badge-success {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        
+        .badge-warning {
+            background-color: #fed7aa;
+            color: #92400e;
+        }
+        
+        .badge-danger {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+        
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-bottom: 20px;
+            transition: background 0.3s;
+        }
+        
+        .refresh-btn:hover {
+            background: #5a67d8;
+        }
+        
+        .nav-links {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+            margin-right: 20px;
+        }
+        
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: white;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .spinner {
+            border: 4px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top: 4px solid white;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Statistics Dashboard</h1>
+            <p>Document upload and verification analytics</p>
+            <div class="nav-links">
+                <a href="/">← Back to Checker</a>
+                <a href="#" onclick="refreshStats()">🔄 Refresh Data</a>
+            </div>
+        </div>
+        
+        <div id="stats-content">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>Loading statistics...</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        async function refreshStats() {
+            const contentDiv = document.getElementById('stats-content');
+            contentDiv.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading statistics...</p>
+                </div>
+            `;
+            
+            try {
+                // Fetch stats from API
+                const response = await fetch('/private-stats?detailed=true&days=30');
+                
+                if (response.status === 401) {
+                    // Show login form
+                    showLoginForm();
+                    return;
+                }
+                
+                const data = await response.json();
+                renderStats(data);
+            } catch (error) {
+                contentDiv.innerHTML = `
+                    <div class="stat-card">
+                        <h3>Error</h3>
+                        <p style="color: red;">Failed to load statistics. Please check your connection.</p>
+                        <button class="refresh-btn" onclick="refreshStats()">Try Again</button>
+                    </div>
+                `;
+            }
+        }
+        
+        function showLoginForm() {
+            // Simple authentication - browser will handle basic auth
+            window.location.reload();
+        }
+        
+        function renderStats(data) {
+            const totalStats = data.total_stats;
+            const dailyStats = data.daily_stats;
+            const systemInfo = data.system_info;
+            
+            const html = `
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Total Uploads</h3>
+                        <div class="stat-number">${totalStats.total_uploads}</div>
+                        <div class="stat-label">Documents processed</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <h3>Success Rate</h3>
+                        <div class="stat-number success-rate">${totalStats.success_rate}%</div>
+                        <div class="stat-label">${totalStats.total_processed} successful / ${totalStats.total_failed} failed</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <h3>References Checked</h3>
+                        <div class="stat-number">${totalStats.total_references_checked.toLocaleString()}</div>
+                        <div class="stat-label">Total citations verified</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <h3>Avg Processing Time</h3>
+                        <div class="stat-number">${totalStats.average_processing_time}s</div>
+                        <div class="stat-label">Per document</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <h3>Online Verifications</h3>
+                        <div class="stat-number">${totalStats.total_verifications}</div>
+                        <div class="stat-label">References verified online</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <h3>System Status</h3>
+                        <div class="stat-number ${systemInfo.server_busy ? 'warning-rate' : 'success-rate'}">
+                            ${systemInfo.server_busy ? 'Busy' : 'Ready'}
+                        </div>
+                        <div class="stat-label">Active jobs: ${systemInfo.active_jobs}</div>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <h3>📈 Performance Metrics</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                        <div>
+                            <strong>References per upload:</strong><br>
+                            ${(totalStats.total_references_checked / Math.max(totalStats.total_uploads, 1)).toFixed(1)}
+                        </div>
+                        <div>
+                            <strong>Uploads per day (avg):</strong><br>
+                            ${calculateAvgUploadsPerDay(totalStats.total_uploads, totalStats.start_date)}
+                        </div>
+                        <div>
+                            <strong>Total failed uploads:</strong><br>
+                            ${totalStats.total_failed}
+                        </div>
+                        <div>
+                            <strong>First upload:</strong><br>
+                            ${new Date(totalStats.start_date).toLocaleDateString()}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="daily-stats">
+                    <h3>📅 Daily Statistics (Last 30 Days)</h3>
+                    ${dailyStats && Object.keys(dailyStats).length > 0 ? `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Uploads</th>
+                                    <th>Processed</th>
+                                    <th>Failed</th>
+                                    <th>References</th>
+                                    <th>Avg Time</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${Object.entries(dailyStats).sort((a,b) => b[0].localeCompare(a[0])).map(([date, stats]) => `
+                                    <tr>
+                                        <td>${date}</td>
+                                        <td>${stats.uploads}</td>
+                                        <td>${stats.processed}</td>
+                                        <td>${stats.failed || 0}</td>
+                                        <td>${stats.references}</td>
+                                        <td>${stats.avg_processing_time || 0}s</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    ` : '<p>No daily data available yet.</p>'}
+                </div>
+                
+                <div class="daily-stats">
+                    <h3>🔄 Recent Uploads</h3>
+                    ${data.recent_uploads && data.recent_uploads.length > 0 ? `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Filename</th>
+                                    <th>References</th>
+                                    <th>Processing Time</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.recent_uploads.map(upload => `
+                                    <tr>
+                                        <td>${new Date(upload.timestamp).toLocaleString()}</td>
+                                        <td>${upload.filename}</td>
+                                        <td>${upload.references_count}</td>
+                                        <td>${upload.processing_time ? upload.processing_time.toFixed(2) + 's' : 'N/A'}</td>
+                                        <td>
+                                            <span class="badge ${upload.success ? 'badge-success' : 'badge-danger'}">
+                                                ${upload.success ? '✓ Success' : '✗ Failed'}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    ` : '<p>No recent uploads yet.</p>'}
+                </div>
+            `;
+            
+            document.getElementById('stats-content').innerHTML = html;
+        }
+        
+        function calculateAvgUploadsPerDay(totalUploads, startDate) {
+            const start = new Date(startDate);
+            const now = new Date();
+            const days = Math.max(1, Math.floor((now - start) / (1000 * 60 * 60 * 24)));
+            const avg = totalUploads / days;
+            return avg.toFixed(1) + ' per day';
+        }
+        
+        // Load stats on page load
+        refreshStats();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(refreshStats, 30000);
+    </script>
+</body>
+</html>
