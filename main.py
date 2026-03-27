@@ -34,32 +34,53 @@ from verify import (
 from acii import compute_acii
 
 # ===============================
-# COUNTER SETUP (Lines 40-55)
+# FILE PATHS - Use /tmp on Render for persistence
 # ===============================
 
-COUNTER_FILE = "verify_count.txt"
+# Use /tmp directory (writable on Render) for stats storage
+STATS_DIR = '/tmp/citation_stats'
+os.makedirs(STATS_DIR, exist_ok=True)
+
+COUNTER_FILE = os.path.join(STATS_DIR, "verify_count.txt")
+STATS_FILE = os.path.join(STATS_DIR, "upload_stats.json")
+DETAILED_STATS_FILE = os.path.join(STATS_DIR, "detailed_uploads.json")
+
+print(f"📁 Stats directory: {STATS_DIR}")
+print(f"   Counter file: {COUNTER_FILE}")
+print(f"   Stats file: {STATS_FILE}")
+print(f"   Detailed file: {DETAILED_STATS_FILE}")
+
+# ===============================
+# COUNTER SETUP
+# ===============================
 
 def increment_counter():
-    if not os.path.exists(COUNTER_FILE):
-        with open(COUNTER_FILE, "w") as f:
-            f.write("0")
+    """Increment the counter with persistence"""
+    try:
+        if not os.path.exists(COUNTER_FILE):
+            with open(COUNTER_FILE, "w") as f:
+                f.write("0")
+                print(f"Created counter file at {COUNTER_FILE}")
 
-    with open(COUNTER_FILE, "r+") as f:
-        count = int(f.read().strip() or 0)
-        count += 1
-        f.seek(0)
-        f.write(str(count))
-        f.truncate()
+        with open(COUNTER_FILE, "r+") as f:
+            count = int(f.read().strip() or 0)
+            count += 1
+            f.seek(0)
+            f.write(str(count))
+            f.truncate()
+        
+        print(f"Counter incremented to {count}")
+        return count
+    except Exception as e:
+        print(f"⚠️ Error incrementing counter: {e}")
+        return 0
 
 # ===============================
-# STATS TRACKING SYSTEM (Lines 58-250)
+# STATS TRACKING SYSTEM - File-based for Render
 # ===============================
-
-STATS_FILE = "upload_stats.json"
-DETAILED_STATS_FILE = "detailed_uploads.pkl"
 
 class UploadStats:
-    """Track detailed upload and processing statistics"""
+    """Track detailed upload and processing statistics with file persistence"""
     
     def __init__(self):
         self.stats_file = STATS_FILE
@@ -87,8 +108,8 @@ class UploadStats:
             # Load detailed upload history
             if os.path.exists(self.detailed_file):
                 try:
-                    with open(self.detailed_file, 'rb') as f:
-                        self.detailed_uploads = pickle.load(f)
+                    with open(self.detailed_file, 'r') as f:
+                        self.detailed_uploads = json.load(f)
                         print(f"✅ Loaded {len(self.detailed_uploads)} detailed upload records")
                 except Exception as e:
                     print(f"⚠️ Error loading detailed stats: {e}")
@@ -155,20 +176,25 @@ class UploadStats:
                 with open(self.stats_file, 'w') as f:
                     json.dump(self.stats, f, indent=2, default=str)
                 print(f"💾 Saved stats: {self.stats['total_uploads']} total uploads")
+                return True
             except Exception as e:
                 print(f"❌ Error saving stats: {e}")
+                return False
     
     def _save_detailed_uploads(self):
         """Save detailed upload history"""
         with self._lock:
             try:
+                # Keep only last 1000 entries to prevent file bloat
                 if len(self.detailed_uploads) > 1000:
                     self.detailed_uploads = self.detailed_uploads[-1000:]
-                with open(self.detailed_file, 'wb') as f:
-                    pickle.dump(self.detailed_uploads, f)
+                with open(self.detailed_file, 'w') as f:
+                    json.dump(self.detailed_uploads, f, indent=2, default=str)
                 print(f"💾 Saved {len(self.detailed_uploads)} detailed upload records")
+                return True
             except Exception as e:
                 print(f"❌ Error saving detailed stats: {e}")
+                return False
     
     def add_upload(self, filename: str, file_size: int, references_count: int, 
                    processing_time: float = None, success: bool = True, 
@@ -330,11 +356,12 @@ class UploadStats:
         self._save_stats()
         self._save_detailed_uploads()
 
-# Initialize stats tracker (Line 252)
+# Initialize stats tracker
 stats_tracker = UploadStats()
+print(f"✅ Using file-based stats storage at {STATS_DIR}")
 
 # ===============================
-# AUTH SETUP (Lines 255-275)
+# AUTH SETUP
 # ===============================
 
 security = HTTPBasic()
@@ -356,7 +383,7 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
 APP_TITLE = "CitationCrosschecker"
 
 # ============================================================
-# LIFESPAN MANAGER (Lines 278-286)
+# LIFESPAN MANAGER
 # ============================================================
 
 @asynccontextmanager
@@ -396,7 +423,7 @@ _lock = threading.Lock()
 
 
 # --------------------------------------------------
-# Utility Functions (Lines 315-430)
+# Utility Functions
 # --------------------------------------------------
 
 def now():
@@ -579,7 +606,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
 
 
 # ============================================================
-# DEBUG ENDPOINTS (Lines 432-590)
+# DEBUG ENDPOINTS
 # ============================================================
 
 @app.get("/debug/job/{job_id}")
@@ -712,7 +739,7 @@ async def debug_retry_verification(job_id: str):
 
 
 # ============================================================
-# QUEUE STATUS ENDPOINT (Lines 592-600)
+# QUEUE STATUS ENDPOINT
 # ============================================================
 
 @app.get("/queue/status")
@@ -725,7 +752,7 @@ async def queue_status():
 
 
 # ============================================================
-# INDEX (Lines 602-612)
+# INDEX
 # ============================================================
 
 @app.get("/", response_class=HTMLResponse)
@@ -737,7 +764,7 @@ def index(request: Request):
 
 
 # ============================================================
-# PRIVACY POLICY (Lines 614-622)
+# PRIVACY POLICY
 # ============================================================
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -746,7 +773,7 @@ def privacy(request: Request):
     return templates.TemplateResponse("privacy.html", {"request": request})
 
 # ============================================================
-# INITIAL DOCUMENT CHECK (Lines 624-690)
+# INITIAL DOCUMENT CHECK
 # ============================================================
 
 @app.post("/verify")
@@ -835,7 +862,7 @@ async def verify(
 
 
 # ============================================================
-# ONLINE VERIFICATION (Lines 692-760)
+# ONLINE VERIFICATION
 # ============================================================
 
 @app.post("/verify-online")
@@ -911,7 +938,7 @@ async def verify_online(job_id: str = Form(...)):
 
 
 # ============================================================
-# STATUS POLLING (Lines 762-810)
+# STATUS POLLING
 # ============================================================
 
 @app.get("/online/status")
@@ -964,7 +991,7 @@ def online_status(job_id: str):
 
 
 # ============================================================
-# STATISTICS WEB PAGE (Lines 812-820)
+# STATISTICS WEB PAGE
 # ============================================================
 
 @app.get("/stats", response_class=HTMLResponse)
@@ -977,7 +1004,7 @@ def stats_page(request: Request):
 
 
 # ============================================================
-# PRIVATE STATS ENDPOINTS (Lines 822-920)
+# PRIVATE STATS ENDPOINTS
 # ============================================================
 
 @app.get("/private-stats")
@@ -1096,7 +1123,7 @@ def get_performance_stats(
 
 
 # ============================================================
-# DEBUG STATS ENDPOINT (Lines 922-940)
+# DEBUG STATS ENDPOINT
 # ============================================================
 
 @app.get("/debug/stats-file")
@@ -1122,7 +1149,7 @@ def debug_stats_file(credentials: HTTPBasicCredentials = Depends(security)):
 
 
 # ============================================================
-# HEALTH CHECK (Lines 942-960)
+# HEALTH CHECK
 # ============================================================
 
 @app.get("/health")
@@ -1140,7 +1167,7 @@ def health():
 
 
 # ============================================================
-# ERROR HANDLERS (Lines 962-990)
+# ERROR HANDLERS
 # ============================================================
 
 @app.exception_handler(HTTPException)
