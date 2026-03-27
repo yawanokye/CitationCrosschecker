@@ -95,16 +95,12 @@
             box-shadow: 0 10px 30px rgba(0,0,0,0.1);
         }
         
-        .chart-container h3 {
-            margin-bottom: 20px;
-            color: #333;
-        }
-        
         .daily-stats {
             background: white;
             border-radius: 15px;
             padding: 25px;
             overflow-x: auto;
+            margin-bottom: 30px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.1);
         }
         
@@ -147,11 +143,6 @@
             color: #065f46;
         }
         
-        .badge-warning {
-            background-color: #fed7aa;
-            color: #92400e;
-        }
-        
         .badge-danger {
             background-color: #fee2e2;
             color: #991b1b;
@@ -165,7 +156,6 @@
             border-radius: 8px;
             cursor: pointer;
             font-size: 14px;
-            margin-bottom: 20px;
             transition: background 0.3s;
         }
         
@@ -192,7 +182,16 @@
         .loading {
             text-align: center;
             padding: 50px;
-            color: white;
+            background: white;
+            border-radius: 15px;
+        }
+        
+        .error-message {
+            color: #dc2626;
+            padding: 20px;
+            text-align: center;
+            background: white;
+            border-radius: 15px;
         }
         
         @keyframes spin {
@@ -201,13 +200,27 @@
         }
         
         .spinner {
-            border: 4px solid rgba(255,255,255,0.3);
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
             border-radius: 50%;
-            border-top: 4px solid white;
             width: 40px;
             height: 40px;
             animation: spin 1s linear infinite;
             margin: 0 auto 20px;
+        }
+        
+        .auth-message {
+            text-align: center;
+            padding: 50px;
+            background: white;
+            border-radius: 15px;
+        }
+        
+        .auth-message input {
+            padding: 10px;
+            margin: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
         }
     </style>
 </head>
@@ -218,7 +231,7 @@
             <p>Document upload and verification analytics</p>
             <div class="nav-links">
                 <a href="/">← Back to Checker</a>
-                <a href="#" onclick="refreshStats()">🔄 Refresh Data</a>
+                <button class="refresh-btn" onclick="refreshStats()">🔄 Refresh Data</button>
             </div>
         </div>
         
@@ -231,8 +244,19 @@
     </div>
     
     <script>
+        // Store credentials for the session
+        let username = '';
+        let password = '';
+        
         async function refreshStats() {
             const contentDiv = document.getElementById('stats-content');
+            
+            // If we don't have credentials yet, prompt for them
+            if (!username || !password) {
+                showAuthPrompt();
+                return;
+            }
+            
             contentDiv.innerHTML = `
                 <div class="loading">
                     <div class="spinner"></div>
@@ -241,37 +265,72 @@
             `;
             
             try {
-                // Fetch stats from API
-                const response = await fetch('/private-stats?detailed=true&days=30');
+                // Create auth header
+                const auth = btoa(`${username}:${password}`);
+                
+                const response = await fetch('/private-stats?detailed=true&days=30', {
+                    headers: {
+                        'Authorization': `Basic ${auth}`
+                    }
+                });
                 
                 if (response.status === 401) {
-                    // Show login form
-                    showLoginForm();
+                    // Auth failed, clear credentials and prompt again
+                    username = '';
+                    password = '';
+                    showAuthPrompt('Invalid credentials. Please try again.');
                     return;
+                }
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 
                 const data = await response.json();
                 renderStats(data);
             } catch (error) {
+                console.error('Error fetching stats:', error);
                 contentDiv.innerHTML = `
-                    <div class="stat-card">
-                        <h3>Error</h3>
-                        <p style="color: red;">Failed to load statistics. Please check your connection.</p>
+                    <div class="error-message">
+                        <h3>❌ Failed to load statistics</h3>
+                        <p>${error.message}</p>
                         <button class="refresh-btn" onclick="refreshStats()">Try Again</button>
                     </div>
                 `;
             }
         }
         
-        function showLoginForm() {
-            // Simple authentication - browser will handle basic auth
-            window.location.reload();
+        function showAuthPrompt(errorMsg = '') {
+            const contentDiv = document.getElementById('stats-content');
+            contentDiv.innerHTML = `
+                <div class="auth-message">
+                    <h3>🔒 Authentication Required</h3>
+                    ${errorMsg ? `<p style="color: red;">${errorMsg}</p>` : ''}
+                    <form onsubmit="event.preventDefault(); submitAuth()">
+                        <div>
+                            <input type="text" id="username" placeholder="Username" autocomplete="username">
+                        </div>
+                        <div>
+                            <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+                        </div>
+                        <div>
+                            <button type="submit" class="refresh-btn">Login</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+        }
+        
+        function submitAuth() {
+            username = document.getElementById('username').value;
+            password = document.getElementById('password').value;
+            refreshStats();
         }
         
         function renderStats(data) {
             const totalStats = data.total_stats;
             const dailyStats = data.daily_stats;
-            const systemInfo = data.system_info;
+            const systemInfo = data.system_info || {};
             
             const html = `
                 <div class="stats-grid">
@@ -283,7 +342,7 @@
                     
                     <div class="stat-card">
                         <h3>Success Rate</h3>
-                        <div class="stat-number success-rate">${totalStats.success_rate}%</div>
+                        <div class="stat-number ${totalStats.success_rate >= 90 ? 'success-rate' : 'warning-rate'}">${totalStats.success_rate}%</div>
                         <div class="stat-label">${totalStats.total_processed} successful / ${totalStats.total_failed} failed</div>
                     </div>
                     
@@ -310,7 +369,7 @@
                         <div class="stat-number ${systemInfo.server_busy ? 'warning-rate' : 'success-rate'}">
                             ${systemInfo.server_busy ? 'Busy' : 'Ready'}
                         </div>
-                        <div class="stat-label">Active jobs: ${systemInfo.active_jobs}</div>
+                        <div class="stat-label">Active jobs: ${systemInfo.active_jobs || 0}</div>
                     </div>
                 </div>
                 
@@ -351,7 +410,7 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                ${Object.entries(dailyStats).sort((a,b) => b[0].localeCompare(a[0])).map(([date, stats]) => `
+                                ${Object.entries(dailyStats).sort((a,b) => b[0].localeCompare(a[0])).slice(0, 30).map(([date, stats]) => `
                                     <tr>
                                         <td>${date}</td>
                                         <td>${stats.uploads}</td>
@@ -380,7 +439,7 @@
                                 </tr>
                             </thead>
                             <tbody>
-                                ${data.recent_uploads.map(upload => `
+                                ${data.recent_uploads.slice().reverse().slice(0, 20).map(upload => `
                                     <tr>
                                         <td>${new Date(upload.timestamp).toLocaleString()}</td>
                                         <td>${upload.filename}</td>
@@ -403,14 +462,18 @@
         }
         
         function calculateAvgUploadsPerDay(totalUploads, startDate) {
-            const start = new Date(startDate);
-            const now = new Date();
-            const days = Math.max(1, Math.floor((now - start) / (1000 * 60 * 60 * 24)));
-            const avg = totalUploads / days;
-            return avg.toFixed(1) + ' per day';
+            try {
+                const start = new Date(startDate);
+                const now = new Date();
+                const days = Math.max(1, Math.floor((now - start) / (1000 * 60 * 60 * 24)));
+                const avg = totalUploads / days;
+                return avg.toFixed(1) + ' per day';
+            } catch (e) {
+                return 'N/A';
+            }
         }
         
-        // Load stats on page load
+        // Try to load stats on page load
         refreshStats();
         
         // Auto-refresh every 30 seconds
