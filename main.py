@@ -34,7 +34,7 @@ from verify import (
 from acii import compute_acii
 
 # ===============================
-# COUNTER SETUP
+# COUNTER SETUP (Lines 40-55)
 # ===============================
 
 COUNTER_FILE = "verify_count.txt"
@@ -52,7 +52,7 @@ def increment_counter():
         f.truncate()
 
 # ===============================
-# ENHANCED STATS TRACKING SYSTEM
+# STATS TRACKING SYSTEM (Lines 58-250)
 # ===============================
 
 STATS_FILE = "upload_stats.json"
@@ -64,29 +64,70 @@ class UploadStats:
     def __init__(self):
         self.stats_file = STATS_FILE
         self.detailed_file = DETAILED_STATS_FILE
+        self._lock = threading.Lock()
         self._load_stats()
     
     def _load_stats(self):
         """Load existing stats from files"""
-        # Load main stats
-        if os.path.exists(self.stats_file):
-            try:
-                with open(self.stats_file, 'r') as f:
-                    self.stats = json.load(f)
-            except:
+        with self._lock:
+            # Load main stats
+            if os.path.exists(self.stats_file):
+                try:
+                    with open(self.stats_file, 'r') as f:
+                        loaded_stats = json.load(f)
+                        self.stats = self._ensure_stats_structure(loaded_stats)
+                        print(f"✅ Loaded existing stats: {self.stats['total_uploads']} total uploads")
+                except Exception as e:
+                    print(f"⚠️ Error loading stats file: {e}")
+                    self.stats = self._init_stats()
+            else:
+                print("📊 No existing stats file found, initializing new stats")
                 self.stats = self._init_stats()
-        else:
-            self.stats = self._init_stats()
-        
-        # Load detailed upload history
-        if os.path.exists(self.detailed_file):
-            try:
-                with open(self.detailed_file, 'rb') as f:
-                    self.detailed_uploads = pickle.load(f)
-            except:
+            
+            # Load detailed upload history
+            if os.path.exists(self.detailed_file):
+                try:
+                    with open(self.detailed_file, 'rb') as f:
+                        self.detailed_uploads = pickle.load(f)
+                        print(f"✅ Loaded {len(self.detailed_uploads)} detailed upload records")
+                except Exception as e:
+                    print(f"⚠️ Error loading detailed stats: {e}")
+                    self.detailed_uploads = []
+            else:
                 self.detailed_uploads = []
-        else:
-            self.detailed_uploads = []
+    
+    def _ensure_stats_structure(self, stats: Dict) -> Dict:
+        """Ensure all required fields exist in stats dictionary"""
+        required_fields = {
+            "total_uploads": 0,
+            "total_processed": 0,
+            "total_failed": 0,
+            "total_verifications": 0,
+            "total_references_checked": 0,
+            "total_unique_users": 0,
+            "daily_stats": {},
+            "monthly_stats": {},
+            "hourly_stats": {},
+            "average_processing_time": 0,
+            "processing_times": [],
+            "start_date": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat()
+        }
+        
+        for field, default_value in required_fields.items():
+            if field not in stats:
+                stats[field] = default_value
+        
+        if "daily_stats" not in stats:
+            stats["daily_stats"] = {}
+        if "monthly_stats" not in stats:
+            stats["monthly_stats"] = {}
+        if "hourly_stats" not in stats:
+            stats["hourly_stats"] = {}
+        if "processing_times" not in stats:
+            stats["processing_times"] = []
+        
+        return stats
     
     def _init_stats(self):
         """Initialize stats structure"""
@@ -108,196 +149,192 @@ class UploadStats:
     
     def _save_stats(self):
         """Save stats to file"""
-        self.stats["last_updated"] = datetime.now().isoformat()
-        with open(self.stats_file, 'w') as f:
-            json.dump(self.stats, f, indent=2)
+        with self._lock:
+            try:
+                self.stats["last_updated"] = datetime.now().isoformat()
+                with open(self.stats_file, 'w') as f:
+                    json.dump(self.stats, f, indent=2, default=str)
+                print(f"💾 Saved stats: {self.stats['total_uploads']} total uploads")
+            except Exception as e:
+                print(f"❌ Error saving stats: {e}")
     
     def _save_detailed_uploads(self):
         """Save detailed upload history"""
-        # Keep only last 1000 entries to prevent file bloat
-        if len(self.detailed_uploads) > 1000:
-            self.detailed_uploads = self.detailed_uploads[-1000:]
-        with open(self.detailed_file, 'wb') as f:
-            pickle.dump(self.detailed_uploads, f)
+        with self._lock:
+            try:
+                if len(self.detailed_uploads) > 1000:
+                    self.detailed_uploads = self.detailed_uploads[-1000:]
+                with open(self.detailed_file, 'wb') as f:
+                    pickle.dump(self.detailed_uploads, f)
+                print(f"💾 Saved {len(self.detailed_uploads)} detailed upload records")
+            except Exception as e:
+                print(f"❌ Error saving detailed stats: {e}")
     
     def add_upload(self, filename: str, file_size: int, references_count: int, 
                    processing_time: float = None, success: bool = True, 
                    ip_address: str = None, error: str = None):
         """Record a new upload"""
         
-        now = datetime.now()
-        date_key = now.strftime("%Y-%m-%d")
-        month_key = now.strftime("%Y-%m")
-        hour_key = now.strftime("%Y-%m-%d %H:00")
-        
-        # Update main counters
-        self.stats["total_uploads"] += 1
-        if success:
-            self.stats["total_processed"] += 1
-        else:
-            self.stats["total_failed"] += 1
-        
-        self.stats["total_references_checked"] += references_count
-        
-        # Update daily stats
-        if date_key not in self.stats["daily_stats"]:
-            self.stats["daily_stats"][date_key] = {
-                "uploads": 0,
-                "processed": 0,
-                "failed": 0,
-                "references": 0,
-                "processing_times": []
+        with self._lock:
+            now = datetime.now()
+            date_key = now.strftime("%Y-%m-%d")
+            month_key = now.strftime("%Y-%m")
+            hour_key = now.strftime("%Y-%m-%d %H:00")
+            
+            # Update main counters
+            self.stats["total_uploads"] += 1
+            if success:
+                self.stats["total_processed"] += 1
+            else:
+                self.stats["total_failed"] += 1
+            
+            self.stats["total_references_checked"] += references_count
+            
+            # Update daily stats
+            if date_key not in self.stats["daily_stats"]:
+                self.stats["daily_stats"][date_key] = {
+                    "uploads": 0,
+                    "processed": 0,
+                    "failed": 0,
+                    "references": 0,
+                    "processing_times": []
+                }
+            self.stats["daily_stats"][date_key]["uploads"] += 1
+            if success:
+                self.stats["daily_stats"][date_key]["processed"] += 1
+            else:
+                self.stats["daily_stats"][date_key]["failed"] += 1
+            self.stats["daily_stats"][date_key]["references"] += references_count
+            if processing_time:
+                self.stats["daily_stats"][date_key]["processing_times"].append(processing_time)
+            
+            # Update monthly stats
+            if month_key not in self.stats["monthly_stats"]:
+                self.stats["monthly_stats"][month_key] = {
+                    "uploads": 0,
+                    "processed": 0,
+                    "failed": 0,
+                    "references": 0
+                }
+            self.stats["monthly_stats"][month_key]["uploads"] += 1
+            if success:
+                self.stats["monthly_stats"][month_key]["processed"] += 1
+            else:
+                self.stats["monthly_stats"][month_key]["failed"] += 1
+            self.stats["monthly_stats"][month_key]["references"] += references_count
+            
+            # Update hourly stats
+            if hour_key not in self.stats["hourly_stats"]:
+                self.stats["hourly_stats"][hour_key] = {
+                    "uploads": 0,
+                    "processed": 0,
+                    "failed": 0
+                }
+            self.stats["hourly_stats"][hour_key]["uploads"] += 1
+            if success:
+                self.stats["hourly_stats"][hour_key]["processed"] += 1
+            else:
+                self.stats["hourly_stats"][hour_key]["failed"] += 1
+            
+            # Update average processing time
+            if processing_time:
+                self.stats["processing_times"].append(processing_time)
+                if len(self.stats["processing_times"]) > 100:
+                    self.stats["processing_times"] = self.stats["processing_times"][-100:]
+                self.stats["average_processing_time"] = sum(self.stats["processing_times"]) / len(self.stats["processing_times"])
+            
+            # Add to detailed uploads
+            upload_record = {
+                "timestamp": now.isoformat(),
+                "filename": filename,
+                "file_size": file_size,
+                "references_count": references_count,
+                "processing_time": processing_time,
+                "success": success,
+                "ip_address": ip_address,
+                "error": error
             }
-        self.stats["daily_stats"][date_key]["uploads"] += 1
-        if success:
-            self.stats["daily_stats"][date_key]["processed"] += 1
-        else:
-            self.stats["daily_stats"][date_key]["failed"] += 1
-        self.stats["daily_stats"][date_key]["references"] += references_count
-        if processing_time:
-            self.stats["daily_stats"][date_key]["processing_times"].append(processing_time)
+            self.detailed_uploads.append(upload_record)
         
-        # Update monthly stats
-        if month_key not in self.stats["monthly_stats"]:
-            self.stats["monthly_stats"][month_key] = {
-                "uploads": 0,
-                "processed": 0,
-                "failed": 0,
-                "references": 0
-            }
-        self.stats["monthly_stats"][month_key]["uploads"] += 1
-        if success:
-            self.stats["monthly_stats"][month_key]["processed"] += 1
-        else:
-            self.stats["monthly_stats"][month_key]["failed"] += 1
-        self.stats["monthly_stats"][month_key]["references"] += references_count
-        
-        # Update hourly stats
-        if hour_key not in self.stats["hourly_stats"]:
-            self.stats["hourly_stats"][hour_key] = {
-                "uploads": 0,
-                "processed": 0,
-                "failed": 0
-            }
-        self.stats["hourly_stats"][hour_key]["uploads"] += 1
-        if success:
-            self.stats["hourly_stats"][hour_key]["processed"] += 1
-        else:
-            self.stats["hourly_stats"][hour_key]["failed"] += 1
-        
-        # Update average processing time
-        if processing_time:
-            self.stats["processing_times"].append(processing_time)
-            # Keep only last 100
-            if len(self.stats["processing_times"]) > 100:
-                self.stats["processing_times"] = self.stats["processing_times"][-100:]
-            self.stats["average_processing_time"] = sum(self.stats["processing_times"]) / len(self.stats["processing_times"])
-        
-        # Add to detailed uploads
-        upload_record = {
-            "timestamp": now.isoformat(),
-            "filename": filename,
-            "file_size": file_size,
-            "references_count": references_count,
-            "processing_time": processing_time,
-            "success": success,
-            "ip_address": ip_address,
-            "error": error
-        }
-        self.detailed_uploads.append(upload_record)
-        
-        # Save stats
         self._save_stats()
         self._save_detailed_uploads()
+        print(f"📊 Recorded upload: {filename} - {references_count} refs - {'Success' if success else 'Failed'}")
     
     def add_verification(self, job_id: str, references_count: int, success: bool = True):
         """Record a verification run"""
-        self.stats["total_verifications"] += 1
+        with self._lock:
+            self.stats["total_verifications"] += 1
         self._save_stats()
     
     def get_stats(self, detailed: bool = False, days: int = None) -> Dict:
         """Get statistics"""
         
-        now = datetime.now()
-        
-        # Prepare response
-        response = {
-            "total_stats": {
-                "total_uploads": self.stats["total_uploads"],
-                "total_processed": self.stats["total_processed"],
-                "total_failed": self.stats["total_failed"],
-                "success_rate": round((self.stats["total_processed"] / max(self.stats["total_uploads"], 1)) * 100, 2),
-                "total_references_checked": self.stats["total_references_checked"],
-                "total_verifications": self.stats["total_verifications"],
-                "average_processing_time": round(self.stats["average_processing_time"], 2) if self.stats["average_processing_time"] else 0,
-                "start_date": self.stats["start_date"],
-                "last_updated": self.stats["last_updated"]
+        with self._lock:
+            now = datetime.now()
+            
+            response = {
+                "total_stats": {
+                    "total_uploads": self.stats.get("total_uploads", 0),
+                    "total_processed": self.stats.get("total_processed", 0),
+                    "total_failed": self.stats.get("total_failed", 0),
+                    "success_rate": round((self.stats.get("total_processed", 0) / max(self.stats.get("total_uploads", 1), 1)) * 100, 2),
+                    "total_references_checked": self.stats.get("total_references_checked", 0),
+                    "total_verifications": self.stats.get("total_verifications", 0),
+                    "average_processing_time": round(self.stats.get("average_processing_time", 0), 2),
+                    "start_date": self.stats.get("start_date", now.isoformat()),
+                    "last_updated": self.stats.get("last_updated", now.isoformat())
+                }
             }
-        }
-        
-        # Add daily stats for last N days
-        if days:
-            daily_stats = {}
-            for i in range(days):
-                date_key = (now - timedelta(days=i)).strftime("%Y-%m-%d")
-                if date_key in self.stats["daily_stats"]:
-                    daily_stats[date_key] = self.stats["daily_stats"][date_key].copy()
-                    # Calculate average processing time for the day
-                    if daily_stats[date_key]["processing_times"]:
-                        daily_stats[date_key]["avg_processing_time"] = round(
-                            sum(daily_stats[date_key]["processing_times"]) / len(daily_stats[date_key]["processing_times"]), 2
-                        )
-                    else:
-                        daily_stats[date_key]["avg_processing_time"] = 0
-                    del daily_stats[date_key]["processing_times"]  # Clean up for response
-            response["daily_stats"] = daily_stats
-        
-        # Add monthly stats for last 6 months
-        monthly_stats = {}
-        months_to_show = 6
-        for i in range(months_to_show):
-            month_key = (now - timedelta(days=30*i)).strftime("%Y-%m")
-            if month_key in self.stats["monthly_stats"]:
-                monthly_stats[month_key] = self.stats["monthly_stats"][month_key]
-        response["monthly_stats"] = monthly_stats
-        
-        # Add recent uploads if detailed
-        if detailed:
-            response["recent_uploads"] = self.detailed_uploads[-20:]  # Last 20 uploads
-        
-        return response
+            
+            if days and self.stats.get("daily_stats"):
+                daily_stats = {}
+                for i in range(min(days, 30)):
+                    date_key = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+                    if date_key in self.stats["daily_stats"]:
+                        daily_stats[date_key] = self.stats["daily_stats"][date_key].copy()
+                        if daily_stats[date_key].get("processing_times"):
+                            daily_stats[date_key]["avg_processing_time"] = round(
+                                sum(daily_stats[date_key]["processing_times"]) / len(daily_stats[date_key]["processing_times"]), 2
+                            )
+                        else:
+                            daily_stats[date_key]["avg_processing_time"] = 0
+                        if "processing_times" in daily_stats[date_key]:
+                            del daily_stats[date_key]["processing_times"]
+                response["daily_stats"] = daily_stats
+            
+            if detailed and self.detailed_uploads:
+                response["recent_uploads"] = self.detailed_uploads[-20:]
+            
+            return response
     
     def clear_stats(self, keep_last_days: int = 30):
-        """Clear old stats (keep last N days)"""
-        
-        cutoff_date = datetime.now() - timedelta(days=keep_last_days)
-        
-        # Clear daily stats
-        daily_keys_to_remove = []
-        for date_key in self.stats["daily_stats"]:
-            try:
-                date_obj = datetime.strptime(date_key, "%Y-%m-%d")
-                if date_obj < cutoff_date:
-                    daily_keys_to_remove.append(date_key)
-            except:
-                pass
-        
-        for key in daily_keys_to_remove:
-            del self.stats["daily_stats"][key]
-        
-        # Clear old detailed uploads
-        self.detailed_uploads = [u for u in self.detailed_uploads 
-                                  if datetime.fromisoformat(u["timestamp"]) > cutoff_date]
+        """Clear old stats"""
+        with self._lock:
+            cutoff_date = datetime.now() - timedelta(days=keep_last_days)
+            
+            daily_keys_to_remove = []
+            for date_key in list(self.stats.get("daily_stats", {}).keys()):
+                try:
+                    date_obj = datetime.strptime(date_key, "%Y-%m-%d")
+                    if date_obj < cutoff_date:
+                        daily_keys_to_remove.append(date_key)
+                except:
+                    pass
+            
+            for key in daily_keys_to_remove:
+                del self.stats["daily_stats"][key]
+            
+            self.detailed_uploads = [u for u in self.detailed_uploads 
+                                      if datetime.fromisoformat(u["timestamp"]) > cutoff_date]
         
         self._save_stats()
         self._save_detailed_uploads()
 
-
-# Initialize stats tracker
+# Initialize stats tracker (Line 252)
 stats_tracker = UploadStats()
 
 # ===============================
-# AUTH SETUP
+# AUTH SETUP (Lines 255-275)
 # ===============================
 
 security = HTTPBasic()
@@ -316,11 +353,10 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": 'Basic realm="Secure Area"'},
         )
 
-
 APP_TITLE = "CitationCrosschecker"
 
 # ============================================================
-# LIFESPAN MANAGER
+# LIFESPAN MANAGER (Lines 278-286)
 # ============================================================
 
 @asynccontextmanager
@@ -360,7 +396,7 @@ _lock = threading.Lock()
 
 
 # --------------------------------------------------
-# Utility Functions
+# Utility Functions (Lines 315-430)
 # --------------------------------------------------
 
 def now():
@@ -443,16 +479,16 @@ def store_result(result):
         _store[job_id] = {
             "result": result,
             "verification": {
-                "state": "idle",           # idle, running, completed, error
+                "state": "idle",
                 "progress": 0,
                 "total": 0,
                 "percentage": 0,
                 "started_at": None,
                 "completed_at": None,
                 "results": None,
-                "verification_job_id": None,  # Store the verification job ID for syncing
-                "summary": None,  # Store verification summary
-                "results_count": 0  # Store count of results
+                "verification_job_id": None,
+                "summary": None,
+                "results_count": 0
             }
         }
 
@@ -473,69 +509,48 @@ def update_verification_status(job_id: str, **kwargs):
 
 
 def start_progress_sync(job_id: str, verification_job_id: str):
-    """Background thread to sync progress and results from verify.py to main store"""
+    """Background thread to sync progress and results"""
     def sync():
-        print(f"[DEBUG] ========================================")
         print(f"[DEBUG] Sync thread started for job {job_id}")
-        print(f"[DEBUG] Verification job ID: {verification_job_id}")
-        print(f"[DEBUG] ========================================")
         
         while True:
             status = get_verification_status(verification_job_id)
             if status:
-                print(f"[DEBUG] Sync status: {status.get('status')} - Progress: {status.get('progress')}/{status.get('total')} ({status.get('percentage')}%)")
-                
                 with _lock:
                     if job_id in _store:
-                        # Update progress
                         _store[job_id]["verification"]["progress"] = status.get("progress", 0)
                         _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
                         _store[job_id]["verification"]["state"] = status.get("status", "running")
                         _store[job_id]["verification"]["total"] = status.get("total", 0)
                         
-                        # When complete, get the actual results
                         if status.get("status") == "completed":
-                            print(f"[DEBUG] Job {verification_job_id} marked as completed!")
-                            print(f"[DEBUG] Attempting to retrieve verification results...")
-                            
-                            # Try multiple times to get results
                             verification_results = None
                             max_attempts = 10
                             for attempt in range(max_attempts):
                                 verification_results = get_verification_results(verification_job_id)
                                 if verification_results:
-                                    print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
                                     break
                                 if attempt < max_attempts - 1:
-                                    print(f"[DEBUG] No results yet, attempt {attempt + 1}/{max_attempts}, waiting 2 seconds...")
                                     time.sleep(2)
                             
                             if verification_results:
-                                print(f"[DEBUG] Successfully retrieved {len(verification_results)} verification results")
-                                
-                                # Store in main result
                                 summary = _compute_verification_summary(verification_results)
-                                print(f"[DEBUG] Summary: {summary}")
                                 
                                 _store[job_id]["result"]["online_verification"] = {
                                     "rows": verification_results,
                                     "summary": summary
                                 }
                                 
-                                # Update ACII with verification results
                                 try:
                                     _store[job_id]["result"]["acii"] = compute_acii(
                                         _store[job_id]["result"], 
                                         verification_results
                                     )
-                                    print(f"[DEBUG] ACII updated: {_store[job_id]['result']['acii'].get('ACII', 'N/A')}")
                                 except Exception as e:
                                     print(f"[DEBUG] ACII computation error: {e}")
                                 
-                                # Rebuild reference mapping with verification data
                                 try:
                                     _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                                    print(f"[DEBUG] Reference mapping rebuilt")
                                 except Exception as e:
                                     print(f"[DEBUG] Error rebuilding reference mapping: {e}")
                                 
@@ -543,28 +558,20 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                 _store[job_id]["verification"]["results_count"] = len(verification_results)
                                 _store[job_id]["verification"]["summary"] = summary
                             else:
-                                print(f"[DEBUG] WARNING: No verification results found after {max_attempts} attempts!")
                                 _store[job_id]["verification"]["state"] = "error"
                                 _store[job_id]["verification"]["message"] = "No results retrieved after completion"
                             
                             _store[job_id]["verification"]["state"] = "completed"
                             _store[job_id]["verification"]["completed_at"] = now()
-                            print(f"[DEBUG] Job {job_id} marked as completed with {_store[job_id]['verification'].get('results_count', 0)} results")
                             break
                             
                         elif status.get("status") == "error":
-                            print(f"[DEBUG] Job {verification_job_id} errored: {status.get('error', 'Unknown error')}")
                             with _lock:
                                 if job_id in _store:
                                     _store[job_id]["verification"]["state"] = "error"
                                     _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
                             break
-            else:
-                print(f"[DEBUG] No status found for verification job {verification_job_id}, waiting...")
-            
             time.sleep(2)
-        
-        print(f"[DEBUG] Sync thread exiting for job {job_id}")
     
     thread = threading.Thread(target=sync, daemon=True)
     thread.start()
@@ -572,7 +579,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
 
 
 # ============================================================
-# DEBUG ENDPOINTS
+# DEBUG ENDPOINTS (Lines 432-590)
 # ============================================================
 
 @app.get("/debug/job/{job_id}")
@@ -649,23 +656,18 @@ async def debug_retry_verification(job_id: str):
     if not refs:
         return {"error": "No references to verify"}
     
-    # Force verification
     from verify import verify_references_batch, get_verification_results
     
     try:
-        # Create a temporary job ID for this debug run
         temp_job_id = uuid.uuid4().hex
         results = verify_references_batch(refs, style="apa", job_id=temp_job_id)
         
-        # Get the stored results
         stored_results = get_verification_results(temp_job_id)
         final_results = stored_results if stored_results else results
         
         if final_results:
-            # Process results
             summary = _compute_verification_summary(final_results)
             
-            # Update job with results
             with _lock:
                 if job_id in _store:
                     _store[job_id]["result"]["online_verification"] = {
@@ -673,16 +675,13 @@ async def debug_retry_verification(job_id: str):
                         "summary": summary
                     }
                     
-                    # Compute ACII
                     try:
                         _store[job_id]["result"]["acii"] = compute_acii(_store[job_id]["result"], final_results)
                     except Exception as e:
                         _store[job_id]["result"]["acii"] = {"error": str(e)}
                     
-                    # Rebuild reference mapping
                     _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
                     
-                    # Deduplicate in-text citations
                     if "reconciliation_intext_to_reference" in _store[job_id]["result"]:
                         unique_cites = {}
                         for item in _store[job_id]["result"]["reconciliation_intext_to_reference"]:
@@ -713,7 +712,7 @@ async def debug_retry_verification(job_id: str):
 
 
 # ============================================================
-# QUEUE STATUS ENDPOINT
+# QUEUE STATUS ENDPOINT (Lines 592-600)
 # ============================================================
 
 @app.get("/queue/status")
@@ -726,7 +725,7 @@ async def queue_status():
 
 
 # ============================================================
-# INDEX
+# INDEX (Lines 602-612)
 # ============================================================
 
 @app.get("/", response_class=HTMLResponse)
@@ -738,7 +737,7 @@ def index(request: Request):
 
 
 # ============================================================
-# PRIVACY POLICY
+# PRIVACY POLICY (Lines 614-622)
 # ============================================================
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -747,7 +746,7 @@ def privacy(request: Request):
     return templates.TemplateResponse("privacy.html", {"request": request})
 
 # ============================================================
-# INITIAL DOCUMENT CHECK
+# INITIAL DOCUMENT CHECK (Lines 624-690)
 # ============================================================
 
 @app.post("/verify")
@@ -836,7 +835,7 @@ async def verify(
 
 
 # ============================================================
-# ONLINE VERIFICATION - SINGLE JOB ID
+# ONLINE VERIFICATION (Lines 692-760)
 # ============================================================
 
 @app.post("/verify-online")
@@ -912,7 +911,7 @@ async def verify_online(job_id: str = Form(...)):
 
 
 # ============================================================
-# STATUS POLLING - SINGLE SOURCE
+# STATUS POLLING (Lines 762-810)
 # ============================================================
 
 @app.get("/online/status")
@@ -965,7 +964,20 @@ def online_status(job_id: str):
 
 
 # ============================================================
-# ENHANCED PRIVATE STATS ENDPOINTS
+# STATISTICS WEB PAGE (Lines 812-820)
+# ============================================================
+
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page(request: Request):
+    """Statistics dashboard page"""
+    return templates.TemplateResponse(
+        "stats.html",
+        {"request": request}
+    )
+
+
+# ============================================================
+# PRIVATE STATS ENDPOINTS (Lines 822-920)
 # ============================================================
 
 @app.get("/private-stats")
@@ -996,7 +1008,7 @@ def get_private_stats(
 
 @app.get("/private-stats/count")
 def get_simple_count(credentials: HTTPBasicCredentials = Depends(security)):
-    """Simple manuscript count (protected endpoint) - backward compatible"""
+    """Simple manuscript count (protected endpoint)"""
     
     authenticate(credentials)
     
@@ -1041,7 +1053,6 @@ def export_stats(
     stats = stats_tracker.get_stats(detailed=True, days=365)
     
     if format == "csv":
-        # Create CSV from detailed uploads
         import csv
         output = io.StringIO()
         
@@ -1069,7 +1080,6 @@ def get_performance_stats(
     
     stats = stats_tracker.get_stats(detailed=False)
     
-    # Calculate additional metrics
     days_online = max((datetime.now() - datetime.fromisoformat(stats["total_stats"]["start_date"])).days, 1)
     
     performance = {
@@ -1086,7 +1096,33 @@ def get_performance_stats(
 
 
 # ============================================================
-# HEALTH CHECK
+# DEBUG STATS ENDPOINT (Lines 922-940)
+# ============================================================
+
+@app.get("/debug/stats-file")
+def debug_stats_file(credentials: HTTPBasicCredentials = Depends(security)):
+    """Debug endpoint to check stats file content"""
+    authenticate(credentials)
+    
+    try:
+        with open(STATS_FILE, 'r') as f:
+            stats_content = json.load(f)
+        
+        return {
+            "file_exists": True,
+            "content": stats_content,
+            "total_uploads": stats_content.get("total_uploads", 0),
+            "detailed_records_count": len(stats_tracker.detailed_uploads)
+        }
+    except Exception as e:
+        return {
+            "file_exists": os.path.exists(STATS_FILE),
+            "error": str(e)
+        }
+
+
+# ============================================================
+# HEALTH CHECK (Lines 942-960)
 # ============================================================
 
 @app.get("/health")
@@ -1102,21 +1138,9 @@ def health():
         "message": "Server is operational" if not queue_stats.get("is_busy", False) else "Server is busy, some requests may be queued"
     }
 
-# ============================================================
-# STATISTICS WEB PAGE
-# ============================================================
 
-@app.get("/stats", response_class=HTMLResponse)
-def stats_page(request: Request):
-    """Statistics dashboard page - requires authentication"""
-    # The actual stats data will be loaded via JavaScript
-    # that calls the /private-stats API with authentication
-    return templates.TemplateResponse(
-        "stats.html",
-        {"request": request}
-    )
 # ============================================================
-# ERROR HANDLERS
+# ERROR HANDLERS (Lines 962-990)
 # ============================================================
 
 @app.exception_handler(HTTPException)
