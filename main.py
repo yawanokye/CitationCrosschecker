@@ -34,331 +34,640 @@ from verify import (
 from acii import compute_acii
 
 # ===============================
-# FILE PATHS - Use /tmp on Render for persistence
+# DATABASE SETUP - PERSISTENT STATS
 # ===============================
 
-# Use /tmp directory (writable on Render) for stats storage
+import os
+import psycopg2
+from contextlib import contextmanager
+
+# Get database URL from environment (Render adds this automatically)
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# Fallback file paths for when database is not available
 STATS_DIR = '/tmp/citation_stats'
 os.makedirs(STATS_DIR, exist_ok=True)
-
 COUNTER_FILE = os.path.join(STATS_DIR, "verify_count.txt")
 STATS_FILE = os.path.join(STATS_DIR, "upload_stats.json")
 DETAILED_STATS_FILE = os.path.join(STATS_DIR, "detailed_uploads.json")
 
-print(f"📁 Stats directory: {STATS_DIR}")
-print(f"   Counter file: {COUNTER_FILE}")
-print(f"   Stats file: {STATS_FILE}")
-print(f"   Detailed file: {DETAILED_STATS_FILE}")
+print(f"📁 Fallback stats directory: {STATS_DIR}")
+
+if DATABASE_URL:
+    print("✅ PostgreSQL database found - stats will persist forever!")
+    
+    @contextmanager
+    def get_db_connection():
+        """Get database connection with proper error handling"""
+        conn = None
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            yield conn
+            conn.commit()
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            print(f"❌ Database error: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
+    
+    def init_database():
+        """Create tables if they don't exist"""
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    # Create stats table
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS stats (
+                            id INTEGER PRIMARY KEY DEFAULT 1,
+                            total_uploads INTEGER DEFAULT 0,
+                            total_processed INTEGER DEFAULT 0,
+                            total_failed INTEGER DEFAULT 0,
+                            total_verifications INTEGER DEFAULT 0,
+                            total_references_checked INTEGER DEFAULT 0,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    
+                    # Create uploads table for detailed records
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS uploads (
+                            id SERIAL PRIMARY KEY,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            filename TEXT,
+                            file_size INTEGER,
+                            references_count INTEGER,
+                            processing_time FLOAT,
+                            success BOOLEAN,
+                            ip_address TEXT,
+                            error TEXT
+                        )
+                    """)
+                    
+                    # Create daily_stats table
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS daily_stats (
+                            date DATE PRIMARY KEY,
+                            uploads INTEGER DEFAULT 0,
+                            processed INTEGER DEFAULT 0,
+                            failed INTEGER DEFAULT 0,
+                            references_count INTEGER DEFAULT 0,
+                            total_processing_time FLOAT DEFAULT 0,
+                            processing_count INTEGER DEFAULT 0
+                        )
+                    """)
+                    
+                    # Insert initial stats if not exists
+                    cur.execute("""
+                        INSERT INTO stats (id, total_uploads, total_processed, total_failed, total_references_checked)
+                        SELECT 1, 0, 0, 0, 0
+                        WHERE NOT EXISTS (SELECT 1 FROM stats WHERE id = 1)
+                    """)
+                    
+                    conn.commit()
+                    print("✅ Database tables created/verified")
+        except Exception as e:
+            print(f"❌ Failed to initialize database: {e}")
+    
+    # Initialize database
+    init_database()
+    
+    class DatabaseStats:
+        """Stats tracker using PostgreSQL - PERSISTENT across deployments"""
+        
+        def add_upload(self, filename: str, file_size: int, references_count: int, 
+                       processing_time: float = None, success: bool = True, 
+                       ip_address: str = None, error: str = None):
+            """Record a new upload in database"""
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Insert upload record
+                        cur.execute("""
+                            INSERT INTO uploads 
+                            (filename, file_size, references_count, processing_time, success, ip_address, error)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (filename, file_size, references_count, processing_time, success, ip_address, error))
+                        
+                        # Update main stats
+                        if success:
+                            cur.execute("""
+                                UPDATE stats 
+                                SET total_uploads = total_uploads + 1,
+                                    total_processed = total_processed + 1,
+                                    total_references_checked = total_references_checked + %s,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = 1
+                            """, (references_count,))
+                        else:
+                            cur.execute("""
+                                UPDATE stats 
+                                SET total_uploads = total_uploads + 1,
+                                    total_failed = total_failed + 1,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = 1
+                            """)
+                        
+                        # Update daily stats
+                        cur.execute("""
+                            INSERT INTO daily_stats (date, uploads, processed, failed, references_count)
+                            VALUES (CURRENT_DATE, 1, %s, %s, %s)
+                            ON CONFLICT (date) DO UPDATE SET
+                                uploads = daily_stats.uploads + 1,
+                                processed = daily_stats.processed + %s,
+                                failed = daily_stats.failed + %s,
+                                references_count = daily_stats.references_count + %s
+                        """, (1 if success else 0, 0 if success else 1, references_count if success else 0,
+                              1 if success else 0, 0 if success else 1, references_count if success else 0))
+                        
+                        # Update processing time
+                        if processing_time and success:
+                            cur.execute("""
+                                UPDATE daily_stats 
+                                SET total_processing_time = total_processing_time + %s,
+                                    processing_count = processing_count + 1
+                                WHERE date = CURRENT_DATE
+                            """, (processing_time,))
+                        
+                        conn.commit()
+                        print(f"📊 Recorded in DB: {filename} - {references_count} refs")
+                        return True
+            except Exception as e:
+                print(f"❌ Database error in add_upload: {e}")
+                return False
+        
+        def add_verification(self, job_id: str, references_count: int, success: bool = True):
+            """Record a verification run"""
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE stats 
+                            SET total_verifications = total_verifications + 1,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = 1
+                        """)
+                        conn.commit()
+            except Exception as e:
+                print(f"❌ Database error in add_verification: {e}")
+        
+        def get_stats(self, detailed: bool = False, days: int = 30):
+            """Get statistics from database"""
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Get main stats
+                        cur.execute("SELECT * FROM stats WHERE id = 1")
+                        row = cur.fetchone()
+                        
+                        if row:
+                            total_uploads = row[1]
+                            total_processed = row[2]
+                            total_failed = row[3]
+                            total_verifications = row[4]
+                            total_references = row[5]
+                            updated_at = row[6]
+                        else:
+                            total_uploads = total_processed = total_failed = total_verifications = total_references = 0
+                            updated_at = datetime.now()
+                        
+                        success_rate = round((total_processed / max(total_uploads, 1)) * 100, 2)
+                        
+                        # Get average processing time
+                        cur.execute("""
+                            SELECT AVG(processing_time) 
+                            FROM uploads 
+                            WHERE success = true AND processing_time IS NOT NULL
+                        """)
+                        avg_time = cur.fetchone()[0]
+                        avg_processing_time = round(avg_time, 2) if avg_time else 0
+                        
+                        # Get daily stats
+                        daily_stats = {}
+                        if days:
+                            cur.execute("""
+                                SELECT date, uploads, processed, failed, references_count,
+                                       CASE WHEN processing_count > 0 
+                                            THEN total_processing_time / processing_count 
+                                            ELSE 0 END as avg_time
+                                FROM daily_stats
+                                WHERE date >= CURRENT_DATE - INTERVAL '%s days'
+                                ORDER BY date DESC
+                            """, (days,))
+                            
+                            for row in cur.fetchall():
+                                daily_stats[row[0].isoformat()] = {
+                                    "uploads": row[1],
+                                    "processed": row[2],
+                                    "failed": row[3],
+                                    "references": row[4],
+                                    "avg_processing_time": round(row[5], 2) if row[5] else 0
+                                }
+                        
+                        # Get recent uploads
+                        recent_uploads = []
+                        if detailed:
+                            cur.execute("""
+                                SELECT timestamp, filename, references_count, processing_time, success, error
+                                FROM uploads
+                                ORDER BY timestamp DESC
+                                LIMIT 20
+                            """)
+                            for row in cur.fetchall():
+                                recent_uploads.append({
+                                    "timestamp": row[0].isoformat(),
+                                    "filename": row[1],
+                                    "references_count": row[2],
+                                    "processing_time": row[3],
+                                    "success": row[4],
+                                    "error": row[5]
+                                })
+                        
+                        # Get start date
+                        cur.execute("SELECT MIN(timestamp) FROM uploads")
+                        start_date_row = cur.fetchone()
+                        start_date = start_date_row[0].isoformat() if start_date_row[0] else datetime.now().isoformat()
+                        
+                        return {
+                            "total_stats": {
+                                "total_uploads": total_uploads,
+                                "total_processed": total_processed,
+                                "total_failed": total_failed,
+                                "success_rate": success_rate,
+                                "total_references_checked": total_references,
+                                "total_verifications": total_verifications,
+                                "average_processing_time": avg_processing_time,
+                                "start_date": start_date,
+                                "last_updated": updated_at.isoformat() if hasattr(updated_at, 'isoformat') else str(updated_at)
+                            },
+                            "daily_stats": daily_stats,
+                            "recent_uploads": recent_uploads if detailed else None
+                        }
+            except Exception as e:
+                print(f"❌ Database error in get_stats: {e}")
+                return {
+                    "total_stats": {
+                        "total_uploads": 0,
+                        "total_processed": 0,
+                        "total_failed": 0,
+                        "success_rate": 0,
+                        "total_references_checked": 0,
+                        "total_verifications": 0,
+                        "average_processing_time": 0,
+                        "start_date": datetime.now().isoformat(),
+                        "last_updated": datetime.now().isoformat()
+                    }
+                }
+        
+        def clear_stats(self, keep_last_days: int = 30):
+            """Clear old stats"""
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        # Delete old uploads
+                        cur.execute("""
+                            DELETE FROM uploads 
+                            WHERE timestamp < CURRENT_DATE - INTERVAL '%s days'
+                        """, (keep_last_days,))
+                        
+                        # Delete old daily stats
+                        cur.execute("""
+                            DELETE FROM daily_stats 
+                            WHERE date < CURRENT_DATE - INTERVAL '%s days'
+                        """, (keep_last_days,))
+                        
+                        # Recalculate totals
+                        cur.execute("""
+                            UPDATE stats 
+                            SET total_uploads = (SELECT COUNT(*) FROM uploads),
+                                total_processed = (SELECT COUNT(*) FROM uploads WHERE success = true),
+                                total_failed = (SELECT COUNT(*) FROM uploads WHERE success = false),
+                                total_references_checked = (SELECT COALESCE(SUM(references_count), 0) FROM uploads),
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = 1
+                        """)
+                        
+                        conn.commit()
+                        print(f"✅ Cleared stats older than {keep_last_days} days")
+            except Exception as e:
+                print(f"❌ Database error in clear_stats: {e}")
+    
+    # Use database stats
+    stats_tracker = DatabaseStats()
+    print("✅ Using PostgreSQL for persistent statistics storage")
+
+else:
+    print("⚠️ No DATABASE_URL found - using temporary file storage (stats will reset on deploy)")
+    
+    # ===============================
+    # FALLBACK: FILE-BASED STATS (for local development)
+    # ===============================
+    
+    class UploadStats:
+        """Track detailed upload and processing statistics with file persistence (fallback)"""
+        
+        def __init__(self):
+            self.stats_file = STATS_FILE
+            self.detailed_file = DETAILED_STATS_FILE
+            self._lock = threading.Lock()
+            self._load_stats()
+        
+        def _load_stats(self):
+            """Load existing stats from files"""
+            with self._lock:
+                if os.path.exists(self.stats_file):
+                    try:
+                        with open(self.stats_file, 'r') as f:
+                            loaded_stats = json.load(f)
+                            self.stats = self._ensure_stats_structure(loaded_stats)
+                            print(f"✅ Loaded existing stats: {self.stats['total_uploads']} total uploads")
+                    except Exception as e:
+                        print(f"⚠️ Error loading stats file: {e}")
+                        self.stats = self._init_stats()
+                else:
+                    print("📊 No existing stats file found, initializing new stats")
+                    self.stats = self._init_stats()
+                
+                if os.path.exists(self.detailed_file):
+                    try:
+                        with open(self.detailed_file, 'r') as f:
+                            self.detailed_uploads = json.load(f)
+                            print(f"✅ Loaded {len(self.detailed_uploads)} detailed upload records")
+                    except Exception as e:
+                        print(f"⚠️ Error loading detailed stats: {e}")
+                        self.detailed_uploads = []
+                else:
+                    self.detailed_uploads = []
+        
+        def _ensure_stats_structure(self, stats: Dict) -> Dict:
+            """Ensure all required fields exist in stats dictionary"""
+            required_fields = {
+                "total_uploads": 0,
+                "total_processed": 0,
+                "total_failed": 0,
+                "total_verifications": 0,
+                "total_references_checked": 0,
+                "total_unique_users": 0,
+                "daily_stats": {},
+                "monthly_stats": {},
+                "hourly_stats": {},
+                "average_processing_time": 0,
+                "processing_times": [],
+                "start_date": datetime.now().isoformat(),
+                "last_updated": datetime.now().isoformat()
+            }
+            
+            for field, default_value in required_fields.items():
+                if field not in stats:
+                    stats[field] = default_value
+            
+            if "daily_stats" not in stats:
+                stats["daily_stats"] = {}
+            if "monthly_stats" not in stats:
+                stats["monthly_stats"] = {}
+            if "hourly_stats" not in stats:
+                stats["hourly_stats"] = {}
+            if "processing_times" not in stats:
+                stats["processing_times"] = []
+            
+            return stats
+        
+        def _init_stats(self):
+            """Initialize stats structure"""
+            return {
+                "total_uploads": 0,
+                "total_processed": 0,
+                "total_failed": 0,
+                "total_verifications": 0,
+                "total_references_checked": 0,
+                "total_unique_users": 0,
+                "daily_stats": {},
+                "monthly_stats": {},
+                "hourly_stats": {},
+                "average_processing_time": 0,
+                "processing_times": [],
+                "start_date": datetime.now().isoformat(),
+                "last_updated": datetime.now().isoformat()
+            }
+        
+        def _save_stats(self):
+            """Save stats to file"""
+            with self._lock:
+                try:
+                    self.stats["last_updated"] = datetime.now().isoformat()
+                    with open(self.stats_file, 'w') as f:
+                        json.dump(self.stats, f, indent=2, default=str)
+                    print(f"💾 Saved stats: {self.stats['total_uploads']} total uploads")
+                    return True
+                except Exception as e:
+                    print(f"❌ Error saving stats: {e}")
+                    return False
+        
+        def _save_detailed_uploads(self):
+            """Save detailed upload history"""
+            with self._lock:
+                try:
+                    if len(self.detailed_uploads) > 1000:
+                        self.detailed_uploads = self.detailed_uploads[-1000:]
+                    with open(self.detailed_file, 'w') as f:
+                        json.dump(self.detailed_uploads, f, indent=2, default=str)
+                    print(f"💾 Saved {len(self.detailed_uploads)} detailed upload records")
+                    return True
+                except Exception as e:
+                    print(f"❌ Error saving detailed stats: {e}")
+                    return False
+        
+        def add_upload(self, filename: str, file_size: int, references_count: int, 
+                       processing_time: float = None, success: bool = True, 
+                       ip_address: str = None, error: str = None):
+            """Record a new upload"""
+            
+            with self._lock:
+                now = datetime.now()
+                date_key = now.strftime("%Y-%m-%d")
+                month_key = now.strftime("%Y-%m")
+                hour_key = now.strftime("%Y-%m-%d %H:00")
+                
+                self.stats["total_uploads"] += 1
+                if success:
+                    self.stats["total_processed"] += 1
+                else:
+                    self.stats["total_failed"] += 1
+                
+                self.stats["total_references_checked"] += references_count
+                
+                if date_key not in self.stats["daily_stats"]:
+                    self.stats["daily_stats"][date_key] = {
+                        "uploads": 0,
+                        "processed": 0,
+                        "failed": 0,
+                        "references": 0,
+                        "processing_times": []
+                    }
+                self.stats["daily_stats"][date_key]["uploads"] += 1
+                if success:
+                    self.stats["daily_stats"][date_key]["processed"] += 1
+                else:
+                    self.stats["daily_stats"][date_key]["failed"] += 1
+                self.stats["daily_stats"][date_key]["references"] += references_count
+                if processing_time:
+                    self.stats["daily_stats"][date_key]["processing_times"].append(processing_time)
+                
+                if month_key not in self.stats["monthly_stats"]:
+                    self.stats["monthly_stats"][month_key] = {
+                        "uploads": 0,
+                        "processed": 0,
+                        "failed": 0,
+                        "references": 0
+                    }
+                self.stats["monthly_stats"][month_key]["uploads"] += 1
+                if success:
+                    self.stats["monthly_stats"][month_key]["processed"] += 1
+                else:
+                    self.stats["monthly_stats"][month_key]["failed"] += 1
+                self.stats["monthly_stats"][month_key]["references"] += references_count
+                
+                if hour_key not in self.stats["hourly_stats"]:
+                    self.stats["hourly_stats"][hour_key] = {
+                        "uploads": 0,
+                        "processed": 0,
+                        "failed": 0
+                    }
+                self.stats["hourly_stats"][hour_key]["uploads"] += 1
+                if success:
+                    self.stats["hourly_stats"][hour_key]["processed"] += 1
+                else:
+                    self.stats["hourly_stats"][hour_key]["failed"] += 1
+                
+                if processing_time:
+                    self.stats["processing_times"].append(processing_time)
+                    if len(self.stats["processing_times"]) > 100:
+                        self.stats["processing_times"] = self.stats["processing_times"][-100:]
+                    self.stats["average_processing_time"] = sum(self.stats["processing_times"]) / len(self.stats["processing_times"])
+                
+                upload_record = {
+                    "timestamp": now.isoformat(),
+                    "filename": filename,
+                    "file_size": file_size,
+                    "references_count": references_count,
+                    "processing_time": processing_time,
+                    "success": success,
+                    "ip_address": ip_address,
+                    "error": error
+                }
+                self.detailed_uploads.append(upload_record)
+            
+            self._save_stats()
+            self._save_detailed_uploads()
+            print(f"📊 Recorded upload: {filename} - {references_count} refs - {'Success' if success else 'Failed'}")
+        
+        def add_verification(self, job_id: str, references_count: int, success: bool = True):
+            """Record a verification run"""
+            with self._lock:
+                self.stats["total_verifications"] += 1
+            self._save_stats()
+        
+        def get_stats(self, detailed: bool = False, days: int = None) -> Dict:
+            """Get statistics"""
+            with self._lock:
+                now = datetime.now()
+                
+                response = {
+                    "total_stats": {
+                        "total_uploads": self.stats.get("total_uploads", 0),
+                        "total_processed": self.stats.get("total_processed", 0),
+                        "total_failed": self.stats.get("total_failed", 0),
+                        "success_rate": round((self.stats.get("total_processed", 0) / max(self.stats.get("total_uploads", 1), 1)) * 100, 2),
+                        "total_references_checked": self.stats.get("total_references_checked", 0),
+                        "total_verifications": self.stats.get("total_verifications", 0),
+                        "average_processing_time": round(self.stats.get("average_processing_time", 0), 2),
+                        "start_date": self.stats.get("start_date", now.isoformat()),
+                        "last_updated": self.stats.get("last_updated", now.isoformat())
+                    }
+                }
+                
+                if days and self.stats.get("daily_stats"):
+                    daily_stats = {}
+                    for i in range(min(days, 30)):
+                        date_key = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+                        if date_key in self.stats["daily_stats"]:
+                            daily_stats[date_key] = self.stats["daily_stats"][date_key].copy()
+                            if daily_stats[date_key].get("processing_times"):
+                                daily_stats[date_key]["avg_processing_time"] = round(
+                                    sum(daily_stats[date_key]["processing_times"]) / len(daily_stats[date_key]["processing_times"]), 2
+                                )
+                            else:
+                                daily_stats[date_key]["avg_processing_time"] = 0
+                            if "processing_times" in daily_stats[date_key]:
+                                del daily_stats[date_key]["processing_times"]
+                    response["daily_stats"] = daily_stats
+                
+                if detailed and self.detailed_uploads:
+                    response["recent_uploads"] = self.detailed_uploads[-20:]
+                
+                return response
+        
+        def clear_stats(self, keep_last_days: int = 30):
+            """Clear old stats"""
+            with self._lock:
+                cutoff_date = datetime.now() - timedelta(days=keep_last_days)
+                
+                daily_keys_to_remove = []
+                for date_key in list(self.stats.get("daily_stats", {}).keys()):
+                    try:
+                        date_obj = datetime.strptime(date_key, "%Y-%m-%d")
+                        if date_obj < cutoff_date:
+                            daily_keys_to_remove.append(date_key)
+                    except:
+                        pass
+                
+                for key in daily_keys_to_remove:
+                    del self.stats["daily_stats"][key]
+                
+                self.detailed_uploads = [u for u in self.detailed_uploads 
+                                          if datetime.fromisoformat(u["timestamp"]) > cutoff_date]
+            
+            self._save_stats()
+            self._save_detailed_uploads()
+    
+    stats_tracker = UploadStats()
+    print(f"✅ Using file-based stats storage at {STATS_DIR}")
+
 
 # ===============================
-# COUNTER SETUP
+# COUNTER SETUP (Updated for database)
 # ===============================
 
 def increment_counter():
-    """Increment the counter with persistence"""
-    try:
-        if not os.path.exists(COUNTER_FILE):
-            with open(COUNTER_FILE, "w") as f:
-                f.write("0")
-                print(f"Created counter file at {COUNTER_FILE}")
+    """Increment counter - uses database if available"""
+    if DATABASE_URL:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT total_uploads FROM stats WHERE id = 1")
+                    row = cur.fetchone()
+                    return row[0] if row else 0
+        except:
+            return 0
+    else:
+        # Fallback to file
+        try:
+            if not os.path.exists(COUNTER_FILE):
+                with open(COUNTER_FILE, "w") as f:
+                    f.write("0")
+            with open(COUNTER_FILE, "r+") as f:
+                count = int(f.read().strip() or 0)
+                count += 1
+                f.seek(0)
+                f.write(str(count))
+                f.truncate()
+            return count
+        except Exception as e:
+            print(f"⚠️ Error incrementing counter: {e}")
+            return 0
 
-        with open(COUNTER_FILE, "r+") as f:
-            count = int(f.read().strip() or 0)
-            count += 1
-            f.seek(0)
-            f.write(str(count))
-            f.truncate()
-        
-        print(f"Counter incremented to {count}")
-        return count
-    except Exception as e:
-        print(f"⚠️ Error incrementing counter: {e}")
-        return 0
-
-# ===============================
-# STATS TRACKING SYSTEM - File-based for Render
-# ===============================
-
-class UploadStats:
-    """Track detailed upload and processing statistics with file persistence"""
-    
-    def __init__(self):
-        self.stats_file = STATS_FILE
-        self.detailed_file = DETAILED_STATS_FILE
-        self._lock = threading.Lock()
-        self._load_stats()
-    
-    def _load_stats(self):
-        """Load existing stats from files"""
-        with self._lock:
-            # Load main stats
-            if os.path.exists(self.stats_file):
-                try:
-                    with open(self.stats_file, 'r') as f:
-                        loaded_stats = json.load(f)
-                        self.stats = self._ensure_stats_structure(loaded_stats)
-                        print(f"✅ Loaded existing stats: {self.stats['total_uploads']} total uploads")
-                except Exception as e:
-                    print(f"⚠️ Error loading stats file: {e}")
-                    self.stats = self._init_stats()
-            else:
-                print("📊 No existing stats file found, initializing new stats")
-                self.stats = self._init_stats()
-            
-            # Load detailed upload history
-            if os.path.exists(self.detailed_file):
-                try:
-                    with open(self.detailed_file, 'r') as f:
-                        self.detailed_uploads = json.load(f)
-                        print(f"✅ Loaded {len(self.detailed_uploads)} detailed upload records")
-                except Exception as e:
-                    print(f"⚠️ Error loading detailed stats: {e}")
-                    self.detailed_uploads = []
-            else:
-                self.detailed_uploads = []
-    
-    def _ensure_stats_structure(self, stats: Dict) -> Dict:
-        """Ensure all required fields exist in stats dictionary"""
-        required_fields = {
-            "total_uploads": 0,
-            "total_processed": 0,
-            "total_failed": 0,
-            "total_verifications": 0,
-            "total_references_checked": 0,
-            "total_unique_users": 0,
-            "daily_stats": {},
-            "monthly_stats": {},
-            "hourly_stats": {},
-            "average_processing_time": 0,
-            "processing_times": [],
-            "start_date": datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat()
-        }
-        
-        for field, default_value in required_fields.items():
-            if field not in stats:
-                stats[field] = default_value
-        
-        if "daily_stats" not in stats:
-            stats["daily_stats"] = {}
-        if "monthly_stats" not in stats:
-            stats["monthly_stats"] = {}
-        if "hourly_stats" not in stats:
-            stats["hourly_stats"] = {}
-        if "processing_times" not in stats:
-            stats["processing_times"] = []
-        
-        return stats
-    
-    def _init_stats(self):
-        """Initialize stats structure"""
-        return {
-            "total_uploads": 0,
-            "total_processed": 0,
-            "total_failed": 0,
-            "total_verifications": 0,
-            "total_references_checked": 0,
-            "total_unique_users": 0,
-            "daily_stats": {},
-            "monthly_stats": {},
-            "hourly_stats": {},
-            "average_processing_time": 0,
-            "processing_times": [],
-            "start_date": datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat()
-        }
-    
-    def _save_stats(self):
-        """Save stats to file"""
-        with self._lock:
-            try:
-                self.stats["last_updated"] = datetime.now().isoformat()
-                with open(self.stats_file, 'w') as f:
-                    json.dump(self.stats, f, indent=2, default=str)
-                print(f"💾 Saved stats: {self.stats['total_uploads']} total uploads")
-                return True
-            except Exception as e:
-                print(f"❌ Error saving stats: {e}")
-                return False
-    
-    def _save_detailed_uploads(self):
-        """Save detailed upload history"""
-        with self._lock:
-            try:
-                # Keep only last 1000 entries to prevent file bloat
-                if len(self.detailed_uploads) > 1000:
-                    self.detailed_uploads = self.detailed_uploads[-1000:]
-                with open(self.detailed_file, 'w') as f:
-                    json.dump(self.detailed_uploads, f, indent=2, default=str)
-                print(f"💾 Saved {len(self.detailed_uploads)} detailed upload records")
-                return True
-            except Exception as e:
-                print(f"❌ Error saving detailed stats: {e}")
-                return False
-    
-    def add_upload(self, filename: str, file_size: int, references_count: int, 
-                   processing_time: float = None, success: bool = True, 
-                   ip_address: str = None, error: str = None):
-        """Record a new upload"""
-        
-        with self._lock:
-            now = datetime.now()
-            date_key = now.strftime("%Y-%m-%d")
-            month_key = now.strftime("%Y-%m")
-            hour_key = now.strftime("%Y-%m-%d %H:00")
-            
-            # Update main counters
-            self.stats["total_uploads"] += 1
-            if success:
-                self.stats["total_processed"] += 1
-            else:
-                self.stats["total_failed"] += 1
-            
-            self.stats["total_references_checked"] += references_count
-            
-            # Update daily stats
-            if date_key not in self.stats["daily_stats"]:
-                self.stats["daily_stats"][date_key] = {
-                    "uploads": 0,
-                    "processed": 0,
-                    "failed": 0,
-                    "references": 0,
-                    "processing_times": []
-                }
-            self.stats["daily_stats"][date_key]["uploads"] += 1
-            if success:
-                self.stats["daily_stats"][date_key]["processed"] += 1
-            else:
-                self.stats["daily_stats"][date_key]["failed"] += 1
-            self.stats["daily_stats"][date_key]["references"] += references_count
-            if processing_time:
-                self.stats["daily_stats"][date_key]["processing_times"].append(processing_time)
-            
-            # Update monthly stats
-            if month_key not in self.stats["monthly_stats"]:
-                self.stats["monthly_stats"][month_key] = {
-                    "uploads": 0,
-                    "processed": 0,
-                    "failed": 0,
-                    "references": 0
-                }
-            self.stats["monthly_stats"][month_key]["uploads"] += 1
-            if success:
-                self.stats["monthly_stats"][month_key]["processed"] += 1
-            else:
-                self.stats["monthly_stats"][month_key]["failed"] += 1
-            self.stats["monthly_stats"][month_key]["references"] += references_count
-            
-            # Update hourly stats
-            if hour_key not in self.stats["hourly_stats"]:
-                self.stats["hourly_stats"][hour_key] = {
-                    "uploads": 0,
-                    "processed": 0,
-                    "failed": 0
-                }
-            self.stats["hourly_stats"][hour_key]["uploads"] += 1
-            if success:
-                self.stats["hourly_stats"][hour_key]["processed"] += 1
-            else:
-                self.stats["hourly_stats"][hour_key]["failed"] += 1
-            
-            # Update average processing time
-            if processing_time:
-                self.stats["processing_times"].append(processing_time)
-                if len(self.stats["processing_times"]) > 100:
-                    self.stats["processing_times"] = self.stats["processing_times"][-100:]
-                self.stats["average_processing_time"] = sum(self.stats["processing_times"]) / len(self.stats["processing_times"])
-            
-            # Add to detailed uploads
-            upload_record = {
-                "timestamp": now.isoformat(),
-                "filename": filename,
-                "file_size": file_size,
-                "references_count": references_count,
-                "processing_time": processing_time,
-                "success": success,
-                "ip_address": ip_address,
-                "error": error
-            }
-            self.detailed_uploads.append(upload_record)
-        
-        self._save_stats()
-        self._save_detailed_uploads()
-        print(f"📊 Recorded upload: {filename} - {references_count} refs - {'Success' if success else 'Failed'}")
-    
-    def add_verification(self, job_id: str, references_count: int, success: bool = True):
-        """Record a verification run"""
-        with self._lock:
-            self.stats["total_verifications"] += 1
-        self._save_stats()
-    
-    def get_stats(self, detailed: bool = False, days: int = None) -> Dict:
-        """Get statistics"""
-        
-        with self._lock:
-            now = datetime.now()
-            
-            response = {
-                "total_stats": {
-                    "total_uploads": self.stats.get("total_uploads", 0),
-                    "total_processed": self.stats.get("total_processed", 0),
-                    "total_failed": self.stats.get("total_failed", 0),
-                    "success_rate": round((self.stats.get("total_processed", 0) / max(self.stats.get("total_uploads", 1), 1)) * 100, 2),
-                    "total_references_checked": self.stats.get("total_references_checked", 0),
-                    "total_verifications": self.stats.get("total_verifications", 0),
-                    "average_processing_time": round(self.stats.get("average_processing_time", 0), 2),
-                    "start_date": self.stats.get("start_date", now.isoformat()),
-                    "last_updated": self.stats.get("last_updated", now.isoformat())
-                }
-            }
-            
-            if days and self.stats.get("daily_stats"):
-                daily_stats = {}
-                for i in range(min(days, 30)):
-                    date_key = (now - timedelta(days=i)).strftime("%Y-%m-%d")
-                    if date_key in self.stats["daily_stats"]:
-                        daily_stats[date_key] = self.stats["daily_stats"][date_key].copy()
-                        if daily_stats[date_key].get("processing_times"):
-                            daily_stats[date_key]["avg_processing_time"] = round(
-                                sum(daily_stats[date_key]["processing_times"]) / len(daily_stats[date_key]["processing_times"]), 2
-                            )
-                        else:
-                            daily_stats[date_key]["avg_processing_time"] = 0
-                        if "processing_times" in daily_stats[date_key]:
-                            del daily_stats[date_key]["processing_times"]
-                response["daily_stats"] = daily_stats
-            
-            if detailed and self.detailed_uploads:
-                response["recent_uploads"] = self.detailed_uploads[-20:]
-            
-            return response
-    
-    def clear_stats(self, keep_last_days: int = 30):
-        """Clear old stats"""
-        with self._lock:
-            cutoff_date = datetime.now() - timedelta(days=keep_last_days)
-            
-            daily_keys_to_remove = []
-            for date_key in list(self.stats.get("daily_stats", {}).keys()):
-                try:
-                    date_obj = datetime.strptime(date_key, "%Y-%m-%d")
-                    if date_obj < cutoff_date:
-                        daily_keys_to_remove.append(date_key)
-                except:
-                    pass
-            
-            for key in daily_keys_to_remove:
-                del self.stats["daily_stats"][key]
-            
-            self.detailed_uploads = [u for u in self.detailed_uploads 
-                                      if datetime.fromisoformat(u["timestamp"]) > cutoff_date]
-        
-        self._save_stats()
-        self._save_detailed_uploads()
-
-# Initialize stats tracker
-stats_tracker = UploadStats()
-print(f"✅ Using file-based stats storage at {STATS_DIR}")
 
 # ===============================
 # AUTH SETUP
@@ -391,7 +700,8 @@ async def lifespan(app_instance: FastAPI):
     """Manage background tasks on startup/shutdown"""
     print("🚀 Starting Citation Crosschecker...")
     print(f"📊 Single job tracking system initialized")
-    print(f"📈 Stats tracker loaded: {stats_tracker.stats['total_uploads']} total uploads")
+    stats = stats_tracker.get_stats(detailed=False)
+    print(f"📈 Stats tracker loaded: {stats['total_stats']['total_uploads']} total uploads")
     yield
     print("👋 Shutting down...")
 
@@ -423,7 +733,7 @@ _lock = threading.Lock()
 
 
 # --------------------------------------------------
-# Utility Functions
+# Utility Functions (keep all existing utility functions)
 # --------------------------------------------------
 
 def now():
@@ -606,7 +916,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
 
 
 # ============================================================
-# DEBUG ENDPOINTS
+# DEBUG ENDPOINTS (keep all existing debug endpoints)
 # ============================================================
 
 @app.get("/debug/job/{job_id}")
@@ -1039,6 +1349,16 @@ def get_simple_count(credentials: HTTPBasicCredentials = Depends(security)):
     
     authenticate(credentials)
     
+    if DATABASE_URL:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT total_uploads FROM stats WHERE id = 1")
+                    row = cur.fetchone()
+                    return {"manuscripts_checked": row[0] if row else 0}
+        except:
+            pass
+    
     try:
         with open(COUNTER_FILE) as f:
             count = int(f.read())
@@ -1131,21 +1451,30 @@ def debug_stats_file(credentials: HTTPBasicCredentials = Depends(security)):
     """Debug endpoint to check stats file content"""
     authenticate(credentials)
     
-    try:
-        with open(STATS_FILE, 'r') as f:
-            stats_content = json.load(f)
-        
+    if DATABASE_URL:
         return {
-            "file_exists": True,
-            "content": stats_content,
-            "total_uploads": stats_content.get("total_uploads", 0),
-            "detailed_records_count": len(stats_tracker.detailed_uploads)
+            "storage": "database",
+            "database_url": "configured",
+            "stats": stats_tracker.get_stats(detailed=False)
         }
-    except Exception as e:
-        return {
-            "file_exists": os.path.exists(STATS_FILE),
-            "error": str(e)
-        }
+    else:
+        try:
+            with open(STATS_FILE, 'r') as f:
+                stats_content = json.load(f)
+            
+            return {
+                "storage": "file",
+                "file_exists": True,
+                "content": stats_content,
+                "total_uploads": stats_content.get("total_uploads", 0),
+                "detailed_records_count": len(stats_tracker.detailed_uploads)
+            }
+        except Exception as e:
+            return {
+                "storage": "file",
+                "file_exists": os.path.exists(STATS_FILE),
+                "error": str(e)
+            }
 
 
 # ============================================================
