@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (WITH IMPROVED PROGRESS TRACKING - FIXED) */
+/* static/app.js — Citation Crosschecker Dashboard (WITH ALL FIXES) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -479,7 +479,7 @@ function exportCSV(data) {
     csv.push("=== UNCITED REFERENCES ===");
     csv.push(`"#","Reference"`);
     uncited.forEach((ref, idx) => {
-        csv.push(`"${idx + 1}","${escapeCsv(ref)}"`);
+        csv.push(`"${idx + 1}","${escapeCsv(ref.reference || ref)}"`);
     });
     csv.push(``);
 
@@ -546,6 +546,7 @@ function exportWordFile(data) {
         body { font-family: 'Times New Roman', Times, serif; margin: 2.54cm 3.17cm; line-height: 1.5; font-size: 12pt; }
         h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; font-size: 24pt; }
         h2 { color: #34495e; margin-top: 25px; border-left: 4px solid #3498db; padding-left: 10px; font-size: 18pt; }
+        h3 { color: #555; margin-top: 20px; font-size: 14pt; }
         table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 10pt; }
         th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; vertical-align: top; }
         th { background-color: #f2f2f2; font-weight: bold; }
@@ -554,11 +555,12 @@ function exportWordFile(data) {
         .badge.verified { background: #27ae60; color: white; }
         .badge.not_found { background: #e74c3c; color: white; }
         .badge.likely { background: #f39c12; color: white; }
+        .badge.matched { background: #27ae60; color: white; }
         .acii-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
         .acii-score { font-size: 48px; font-weight: bold; }
-        .kpi-grid { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
-        .kpi { background: #f8f9fa; padding: 10px 15px; border-radius: 8px; border-left: 4px solid #3498db; }
         .footer { margin-top: 30px; font-size: 9pt; color: #7f8c8d; text-align: center; border-top: 1px solid #ddd; padding-top: 15px; }
+        .page-break { page-break-before: always; }
+        .uncited-row { background-color: #fff3cd; }
     </style>
 </head>
 <body>
@@ -569,13 +571,15 @@ function exportWordFile(data) {
     
     <h2>📈 Summary</h2>
     <table class="summary-table">
-         <tr><th>Metric</th><th>Value</th></tr>
-         <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
-         <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
-         <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
-         <tr><td>Missing in references (unique)</td><td><strong>${s.missing_in_references || 0}</strong></td></tr>
-         <tr><td>Uncited references</td><td><strong>${s.uncited_references || 0}</strong></td></tr>
-         <tr><td>Match rate</td><td><strong>${s.match_rate || 0}%</strong></td></tr>
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody>
+            <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
+            <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
+            <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
+            <tr><td>Missing in references (unique)</td><td><strong>${s.missing_in_references || 0}</strong></td></tr>
+            <tr><td>Uncited references</td><td><strong>${s.uncited_references || 0}</strong></td></tr>
+            <tr><td>Match rate</td><td><strong>${s.match_rate || 0}%</strong></td></tr>
+        </tbody>
     </table>
     
     <h2>📊 ACII Score</h2>
@@ -583,10 +587,28 @@ function exportWordFile(data) {
         <div class="acii-score">${acii.ACII || '—'}</div>
         <div>${aciiRating.text}</div>
         <div style="font-size:12px; margin-top:10px;">${aciiRating.description}</div>
-    </div>
-    
-    <h2>❌ Missing Citations</h2>
-    ${missing.length > 0 ? `
+    </div>`;
+
+    // ACII Components
+    if (acii.components) {
+        html += `
+    <h2>📊 ACII Components</h2>
+    <table>
+        <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
+        <tbody>
+            <tr><td>Verification Integrity</td><td>${acii.components.verification_integrity?.score || '—'}</td><td>${acii.components.verification_integrity?.category || '—'}</td><td>${esc(acii.components.verification_integrity?.remark || '—')}</td></tr>
+            <tr><td>Citation Concentration</td><td>${acii.components.citation_concentration?.score || '—'}</td><td>${acii.components.citation_concentration?.category || '—'}</td><td>${esc(acii.components.citation_concentration?.remark || '—')}</td></tr>
+            <tr><td>Author Diversity</td><td>${acii.components.author_diversity?.score || '—'}</td><td>${acii.components.author_diversity?.category || '—'}</td><td>${esc(acii.components.author_diversity?.remark || '—')}</td></tr>
+            <tr><td>Temporal Balance</td><td>${acii.components.temporal_balance?.score || '—'}</td><td>${acii.components.temporal_balance?.category || '—'}</td><td>${esc(acii.components.temporal_balance?.remark || '—')}</td></tr>
+        </tbody>
+    </table>`;
+    }
+
+    // Missing Citations
+    html += `
+    <h2>❌ Missing Citations</h2>`;
+    if (missing.length > 0) {
+        html += `
     <table>
         <thead><tr><th>#</th><th>Citation</th><th>Occurrences</th></tr></thead>
         <tbody>
@@ -596,11 +618,95 @@ function exportWordFile(data) {
                 return `<tr><td>${idx + 1}</td><td>${esc(citation)}</td><td>${count}</td></tr>`;
             }).join('')}
         </tbody>
-    </table>
-    ` : '<p>✅ No missing citations found!</p>'}
-    
+    </table>`;
+    } else {
+        html += `<p>✅ No missing citations found!</p>`;
+    }
+
+    // Uncited References
+    html += `
+    <h2>📚 Uncited References</h2>`;
+    if (uncited.length > 0) {
+        html += `
+    <table>
+        <thead><tr><th>#</th><th>Reference</th></tr></thead>
+        <tbody>
+            ${uncited.map((ref, idx) => `<tr class="uncited-row"><td>${idx + 1}</td><td>${esc(ref.reference || ref)}</td></tr>`).join('')}
+        </tbody>
+    </table>`;
+    } else {
+        html += `<p>✅ All references are cited!</p>`;
+    }
+
+    // Citation to Reference Mapping
+    html += `
+    <h2>🔗 Citation to Reference Mapping</h2>
+    <table>
+        <thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Count</th><th>Matched Reference</th><th>Flags</th></tr></thead>
+        <tbody>
+            ${uniqueCitations.slice(0, 50).map((item, idx) => {
+                let statusClass = item.status === 'matched' ? 'matched' : 'not_found';
+                return `<tr>
+                    <td>${idx + 1}</td>
+                    <td><span class="badge ${statusClass}">${esc(item.status || '')}</span></td>
+                    <td>${esc(item.citation)}</td>
+                    <td><strong>${item.count}</strong></td>
+                    <td>${esc(item.matched_reference || '—')}</td>
+                    <td>${esc(item.flags || '—')}</td>
+                </tr>`;
+            }).join('')}
+        </tbody>
+    </table>`;
+
+    // Reference to Citation Mapping (INCLUDES UNCITED)
+    html += `
+    <h2>📖 Reference to Citation Mapping</h2>
+    <table>
+        <thead><tr><th>#</th><th>Times Cited</th><th>Reference</th><th>Cited By (sample)</th></tr></thead>
+        <tbody>
+            ${r2c.map((item, idx) => {
+                const timesCited = item.times_cited || 0;
+                const citedBySample = (item.cited_by || []).slice(0, 3).join("; ");
+                const uncitedClass = timesCited === 0 ? 'class="uncited-row"' : '';
+                const statusText = timesCited === 0 ? ' (UNCITED)' : '';
+                return `<tr ${uncitedClass}>
+                    <td>${idx + 1}</td>
+                    <td><strong>${timesCited}</strong>${statusText}</td>
+                    <td>${esc(item.reference || '')}</td>
+                    <td>${esc(citedBySample || '—')}</td>
+                </tr>`;
+            }).join('')}
+        </tbody>
+    </table>`;
+
+    // Online Verification Results (if available)
+    if (ov.rows && ov.rows.length > 0) {
+        html += `
+    <div class="page-break"></div>
+    <h2>🌐 Online Verification Results</h2>
+    <table>
+        <thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th></tr></thead>
+        <tbody>
+            ${ov.rows.slice(0, 100).map((r, idx) => {
+                let badgeClass = r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'));
+                return `<tr>
+                    <td>${idx + 1}</td>
+                    <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
+                    <td>${esc(r.source || '—')}</td>
+                    <td>${esc(r.score || '—')}</td>
+                    <td>${esc(r.doi || '—')}</td>
+                    <td>${esc(r.matched_year || '—')}</td>
+                    <td>${esc(r.matched_authors || '—')}</td>
+                    <td>${esc((r.matched_title || '').substring(0, 60))}</td>
+                </tr>`;
+            }).join('')}
+        </tbody>
+    </table>`;
+    }
+
+    html += `
     <div class="footer">
-        <p>Report generated by Citation Crosschecker</p>
+        <p>Report generated by Citation Integrity Analyzer</p>
         <p>${esc(normalized.reference_detection_message || '')}</p>
     </div>
 </body>
@@ -616,7 +722,7 @@ function exportWordFile(data) {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
     
-    console.log("Word report exported successfully");
+    console.log("Word report exported successfully with complete data");
 }
 
 /* -------------------------------------------------------
@@ -663,6 +769,7 @@ function renderACII(data) {
     if ($("aciiTcat")) $("aciiTcat").textContent = c.temporal_balance?.category ?? "";
     if ($("aciiTremark")) $("aciiTremark").textContent = c.temporal_balance?.remark ?? "Measures spread of references across publication years";
 }
+
 function normalizeData(payload) {
     const data = payload?.data || payload?.result || payload || {};
     const s = data.summary || {};
@@ -683,25 +790,30 @@ function renderSummaryTable(data) {
     if (!el.summaryTable) return;
 
     el.summaryTable.innerHTML = `
-         <tr><td>In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
-         <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
-         <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
-         <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
-         <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
+         <tr><td style="width:220px;">In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td>
+        </tr>
+         <tr><td>References</td><td>${esc(s.reference_entries_found)}</td>
+        </tr>
+         <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td>
+        </tr>
+         <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td>
+        </tr>
+         <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td>
+        </tr>
     `;
 }
 
 function renderMissing(data) {
     const rows = data?.missing_in_references || [];
     if (!el.missingBody) return;
-    if (!rows.length) { el.missingBody.innerHTML = `<tr><td colspan="3">None</td></tr>`; return; }
+    if (!rows.length) { el.missingBody.innerHTML = `<tr><td colspan="3">None</td>`; return; }
     el.missingBody.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.citation_in_text || r)}</td><td>${esc(r.count_in_text || "")}</td></tr>`).join("");
 }
 
 function renderUncited(data) {
     const rows = data?.uncited_references || [];
     if (!el.uncitedBody) return;
-    if (!rows.length) { el.uncitedBody.innerHTML = `<tr><td colspan="2">None</td></tr>`; return; }
+    if (!rows.length) { el.uncitedBody.innerHTML = `<tr><td colspan="2">None</td>`; return; }
     el.uncitedBody.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.reference || r)}</td></tr>`).join("");
 }
 
@@ -709,7 +821,7 @@ function renderC2R(data) {
     const c2rRaw = data?.reconciliation_intext_to_reference || [];
     const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
     if (!el.c2rBody) return;
-    if (!uniqueCitations.length) { el.c2rBody.innerHTML = `<tr><td colspan="6">No mapping available</td></tr>`; return; }
+    if (!uniqueCitations.length) { el.c2rBody.innerHTML = `<tr><td colspan="6">No mapping available</td>`; return; }
     el.c2rBody.innerHTML = uniqueCitations.map((item, i) => {
         let statusClass = item.status === 'matched' ? 'verified' : (item.status === 'not_found' ? 'not_found' : '');
         return `<tr>
@@ -726,7 +838,7 @@ function renderC2R(data) {
 function renderR2C(data) {
     const rows = data?.reconciliation_reference_to_intext || [];
     if (!el.r2cBody) return;
-    if (!rows.length) { el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`; return; }
+    if (!rows.length) { el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td>`; return; }
     el.r2cBody.innerHTML = rows.map((r, i) => `<tr>
         <td>${i + 1}</td>
         <td>${esc(r.times_cited ?? 0)}</td>
@@ -749,21 +861,21 @@ function renderVerify(data) {
     }
 
     if (!el.verifyBody) return;
-    if (!rows.length) { el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></tr>`; return; }
+    if (!rows.length) { el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td>`; return; }
 
     el.verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
         let badgeClass = r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : (r.status === 'not_found' ? 'not_found' : 'offline')));
         return `<tr>
-            <td>${i + 1}  \n
-            <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span>  \n
-            <td>${esc(r.source || '—')}  \n
-            <td>${esc(r.score || '—')}  \n
-            <td>${esc(r.doi || '—')}  \n
-            <td>${esc(r.matched_year || '—')}  \n
-            <td>${esc(r.matched_authors || '—')}  \n
-            <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}  \n
-            <td>${esc(r.query_used || '—')}  \n
-         \)n`;
+            <td>${i + 1}</td>
+            <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
+            <td>${esc(r.source || '—')}</td>
+            <td>${esc(r.score || '—')}</td>
+            <td>${esc(r.doi || '—')}</td>
+            <td>${esc(r.matched_year || '—')}</td>
+            <td>${esc(r.matched_authors || '—')}</td>
+            <td>${esc((r.matched_title || '').substring(0, 50))}${(r.matched_title || '').length > 50 ? '…' : ''}</td>
+            <td>${esc(r.query_used || '—')}</td>
+        </tr>`;
     }).join("");
     
     if (el.btnExportVerify && rows.length > 0) el.btnExportVerify.disabled = false;
@@ -793,12 +905,51 @@ function renderAll(data) {
 }
 
 /* -------------------------------------------------------
-RUN INITIAL CHECK
+FILE VALIDATION - REJECT PDF FILES
+------------------------------------------------------- */
+
+function validateFile(file) {
+    if (!file) return { valid: false, message: "No file selected" };
+    
+    const fileName = file.name.toLowerCase();
+    const fileExtension = fileName.split('.').pop();
+    
+    // Reject PDF files
+    if (fileExtension === 'pdf') {
+        return { 
+            valid: false, 
+            message: "PDF files are not supported. Please convert to DOCX first: Open blank Word → File → Open → Select PDF → Click OK → Save as .docx" 
+        };
+    }
+    
+    // Accept only DOCX files
+    if (fileExtension !== 'docx') {
+        return { 
+            valid: false, 
+            message: "Only DOCX files are accepted. Please convert PDF to DOCX: Open blank Word → File → Open → Select PDF → Click OK → Save as .docx" 
+        };
+    }
+    
+    return { valid: true, message: "DOCX file selected. Ready to run check." };
+}
+
+/* -------------------------------------------------------
+RUN INITIAL CHECK (WITH PDF REJECTION)
 ------------------------------------------------------- */
 
 async function runInitialCheck() {
     const f = el.file?.files?.[0];
     if (!f) { setStatus("Please choose a file first", "warn"); return; }
+    
+    // Validate file type - REJECT PDF
+    const validation = validateFile(f);
+    if (!validation.valid) {
+        setStatus(validation.message, "warn");
+        updateProgress(0, 0, "error", validation.message);
+        // Clear the file input
+        el.file.value = '';
+        return;
+    }
 
     if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
     VERIFICATION_IN_PROGRESS = false;
@@ -814,6 +965,16 @@ async function runInitialCheck() {
 
     try {
         const res = await fetch("/verify", { method: "POST", body: fd });
+        
+        // Handle backend PDF rejection
+        if (res.status === 400) {
+            const js = await res.json();
+            const errorMsg = js.message || "Invalid file format. Please use DOCX files only.";
+            setStatus(errorMsg, "warn");
+            updateProgress(0, 0, "error", errorMsg);
+            el.file.value = '';
+            return;
+        }
         
         if (res.status === 503) {
             const js = await res.json();
@@ -835,6 +996,28 @@ async function runInitialCheck() {
     } catch (err) {
         setStatus("Error: " + err.message, "bad");
     }
+}
+
+/* -------------------------------------------------------
+FILE SELECTION VALIDATION
+------------------------------------------------------- */
+
+if (el.file) {
+    el.file.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            const validation = validateFile(file);
+            if (!validation.valid) {
+                setStatus(validation.message, "warn");
+                el.file.value = ''; // Clear the file input
+                if (el.btnCheck) el.btnCheck.disabled = true;
+                if (el.btnVerify) el.btnVerify.disabled = true;
+            } else {
+                setStatus(validation.message, "good");
+                if (el.btnCheck) el.btnCheck.disabled = false;
+            }
+        }
+    });
 }
 
 /* -------------------------------------------------------
@@ -872,7 +1055,7 @@ async function runOnlineVerification() {
         
         if (js.started) {
             setStatus("Verification in progress...", "info");
-            startPolling();  // This is now defined above
+            startPolling();
         } else if (js.completed) {
             setStatus("Verification already completed", "good");
             VERIFICATION_IN_PROGRESS = false;
