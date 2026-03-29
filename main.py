@@ -800,6 +800,36 @@ async def verify(
 ):
     """Initial document check - extracts citations and references"""
     
+    # ============================================================
+    # STEP 1: FILE TYPE VALIDATION - REJECT PDF FILES
+    # ============================================================
+    
+    # Check if file is PDF - REJECT immediately
+    if file.filename and file.filename.lower().endswith('.pdf'):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "PDF files are not supported",
+                "message": "Please convert PDF to DOCX first: Open blank Word → File → Open → Select PDF → Click OK → Save as .docx",
+                "instruction": "DOCX is the recommended format. Convert your PDF to Word before uploading."
+            }
+        )
+    
+    # Check if file is DOCX - if not, reject
+    if not (file.filename and file.filename.lower().endswith('.docx')):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Invalid file format",
+                "message": "Only DOCX files are accepted. Please convert your PDF to DOCX format.",
+                "instruction": "Open blank Word → File → Open → Select PDF → Click OK → Save as .docx"
+            }
+        )
+    
+    # ============================================================
+    # STEP 2: CHECK SERVER LOAD
+    # ============================================================
+    
     # Check if server is too busy
     if is_server_busy():
         queue_stats = get_queue_status()
@@ -813,6 +843,10 @@ async def verify(
                 "retry_after": 30
             }
         )
+    
+    # ============================================================
+    # STEP 3: PROCESS THE FILE
+    # ============================================================
     
     start_time = time.time()
     data = await file.read()
