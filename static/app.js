@@ -295,7 +295,24 @@ async function fetchStatus() {
         }
         
     } catch (err) {
-        console.error("Status fetch error:", err);
+    console.error("Status fetch error:", err);
+
+    if (RETRY_COUNT < 5) {
+        RETRY_COUNT++;
+
+        setStatus(`⚠️ Connection issue... retrying (${RETRY_COUNT}/5)`, "warn");
+
+        setTimeout(() => {
+            fetchStatus();
+        }, CONFIG.RETRY_DELAY);
+
+    } else {
+        setStatus("❌ Connection lost. Verification may still be running in background.", "warn");
+
+        stopPolling();
+        VERIFICATION_IN_PROGRESS = false;
+
+        if (el.btnVerify) el.btnVerify.disabled = false;
     }
 }
 
