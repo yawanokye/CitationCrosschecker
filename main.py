@@ -440,15 +440,19 @@ def _norm_text_citation(s: str) -> str:
 
 
 def build_reference_to_intext(result):
-    """Build mapping from references to in-text citations"""
+    """Build mapping from references to in-text citations - INCLUDES uncited references"""
     mapping = {}
-    rows = result.get("reconciliation_intext_to_reference", [])
     
+    # Get all references from the result
+    all_references = result.get("references_raw", [])
+    reconciliation_rows = result.get("reconciliation_intext_to_reference", [])
+    
+    # First, build citation counts for matched references
     citation_counter = defaultdict(int)
     citation_samples = defaultdict(list)
     seen_samples = defaultdict(set)
     
-    for r in rows:
+    for r in reconciliation_rows:
         ref = r.get("matched_reference")
         if not ref:
             continue
@@ -463,15 +467,27 @@ def build_reference_to_intext(result):
                 seen_samples[ref].add(in_text_norm)
                 citation_samples[ref].append(in_text)
     
-    for ref in citation_counter:
-        mapping[ref] = {
-            "reference": ref,
-            "times_cited": citation_counter[ref],
-            "cited_by": citation_samples.get(ref, [])
-        }
+    # Create mapping for ALL references (including uncited ones)
+    for ref in all_references:
+        if ref and ref.strip():
+            mapping[ref] = {
+                "reference": ref,
+                "times_cited": citation_counter.get(ref, 0),
+                "cited_by": citation_samples.get(ref, [])
+            }
     
+    # Also include any matched references that might not be in all_references
+    for ref in citation_counter:
+        if ref not in mapping:
+            mapping[ref] = {
+                "reference": ref,
+                "times_cited": citation_counter[ref],
+                "cited_by": citation_samples.get(ref, [])
+            }
+    
+    # Sort by times_cited (descending), with uncited references at the end
     result_list = list(mapping.values())
-    result_list.sort(key=lambda x: x["times_cited"], reverse=True)
+    result_list.sort(key=lambda x: (x["times_cited"] == 0, -x["times_cited"]))
     
     return result_list
 
