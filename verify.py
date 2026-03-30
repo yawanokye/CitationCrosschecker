@@ -24,6 +24,17 @@ MAILTO = (
 ).strip()
 
 # ============================================================
+# TIMEOUT SETTINGS - ADDED FOR LARGE REFERENCE SETS
+# ============================================================
+
+# Timeout settings (in seconds)
+API_TIMEOUT = 60  # Increased from 45 to 60 seconds per API call
+VERIFICATION_TIMEOUT = None  # No timeout for the overall verification (None = infinite)
+WORKER_THREADS = 2  # Reduce to 2 workers to avoid rate limiting
+RETRY_ATTEMPTS = 2  # Number of retries for failed API calls
+BATCH_DELAY = 0.5  # Delay between references to avoid rate limits
+
+# ============================================================
 # PROGRESS TRACKING (Lightweight)
 # ============================================================
 
@@ -85,7 +96,9 @@ def update_job_progress(job_id: str, progress: int):
                 job.completed_at = datetime.now().isoformat()
                 print(f"[DEBUG] Job {job_id}: COMPLETED - {progress}/{job.total}")
             else:
-                print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")
+                # Print progress every 10 references to avoid spam
+                if progress % 10 == 0:
+                    print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     """Get job progress status"""
@@ -183,8 +196,11 @@ def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = 45) -> Optional[dict]:
-    """Increased timeout to 45 seconds for better reliability"""
+def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
+    """Get JSON from URL with configurable timeout"""
+    if timeout is None:
+        timeout = API_TIMEOUT  # Use the global timeout setting
+    
     try:
         headers = {
             "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
@@ -429,8 +445,11 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
 # External queries with retry logic
 # ---------------------------------------------------------
 
-def _query_with_retry(query_func, *args, max_retries=3, delay=2):
+def _query_with_retry(query_func, *args, max_retries=None, delay=2):
     """Execute query with retry logic"""
+    if max_retries is None:
+        max_retries = RETRY_ATTEMPTS
+    
     for attempt in range(max_retries):
         try:
             result = query_func(*args)
@@ -450,7 +469,7 @@ def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
         return []
     url = f"https://api.crossref.org/works/{doi}"
     params = {"mailto": MAILTO} if MAILTO else None
-    data = _safe_get_json(url, params=params, timeout=45)
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     if not data or "message" not in data:
         return []
     return [{"source": "crossref", "item": data["message"]}]
@@ -468,7 +487,7 @@ def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     }
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=45)
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("message", {}).get("items", [])
     return [{"source": "crossref", "item": it} for it in items]
 
@@ -485,7 +504,7 @@ def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[st
     }
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=45)
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("message", {}).get("items", [])
     return [{"source": "crossref", "item": it} for it in items]
 
@@ -497,7 +516,7 @@ def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     params: Dict[str, Any] = {"search": query, "per-page": rows}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=45)
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "item": it} for it in items]
 
@@ -509,7 +528,7 @@ def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[st
     params: Dict[str, Any] = {"search": title_query, "per-page": rows}
     if MAILTO:
         params["mailto"] = MAILTO
-    data = _safe_get_json(url, params=params, timeout=45)
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "item": it} for it in items]
 
@@ -733,7 +752,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
 
     except Exception as e:
         print(f"[DEBUG] Error verifying reference: {e}")
-        row["status"] = "not_found"  # Changed from offline to not_found for consistency
+        row["status"] = "not_found"
         row["error"] = str(e)
 
     row["status"] = _normalize_verify_status(row.get("status"))
@@ -764,10 +783,21 @@ def verify_references_batch(
 
     normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
     total_refs = len(refs)
+    
+    # Calculate estimated time
+    est_seconds = total_refs * (API_TIMEOUT / 2)  # Estimate based on API timeout
+    est_minutes = est_seconds / 60
+    est_hours = est_minutes / 60
+    
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Starting verification for {total_refs} references")
     print(f"[DEBUG] Style: {normalized_style}")
-    print(f"[DEBUG] Estimated time: ~{total_refs * 4} seconds ({total_refs * 4 / 60:.1f} minutes)")
+    if est_hours >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
+    elif est_minutes >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_minutes:.1f} minutes")
+    else:
+        print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
     print(f"[DEBUG] ========================================")
 
     # Create job for progress tracking if job_id provided
@@ -776,10 +806,12 @@ def verify_references_batch(
         print(f"[DEBUG] Created verification job {job_id}")
 
     rows: List[Dict[str, Any]] = [None] * total_refs
-    # Use single worker to avoid rate limiting and ensure all references are processed
-    workers = 1  # Process one at a time to avoid rate limits
-    print(f"[DEBUG] Using {workers} worker (sequential processing to avoid rate limits)")
+    # Use WORKER_THREADS to control concurrency
+    workers = min(WORKER_THREADS, max(1, total_refs))
+    print(f"[DEBUG] Using {workers} workers (to avoid rate limits)")
 
+    start_time = time.time()
+    
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {}
         
@@ -797,26 +829,29 @@ def verify_references_batch(
         for future in as_completed(futures):
             idx = futures[future]
             try:
-                rows[idx] = future.result()
+                rows[idx] = future.result(timeout=API_TIMEOUT + 10)  # Add buffer to API timeout
                 completed_count += 1
                 
-                # Update progress if tracking - update for EVERY completed reference
+                # Update progress if tracking
                 if job_id:
                     update_job_progress(job_id, completed_count)
                     
-                    # Print progress every 5 references to track
-                    if completed_count % 5 == 0 or completed_count == total_refs:
-                        print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%)")
+                    # Print progress every 10 references or at completion
+                    if completed_count % 10 == 0 or completed_count == total_refs:
+                        elapsed = time.time() - start_time
+                        rate = completed_count / elapsed if elapsed > 0 else 0
+                        remaining = (total_refs - completed_count) / rate if rate > 0 else 0
+                        print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%) - Rate: {rate:.1f}/sec - Est. remaining: {remaining/60:.1f} min")
                 
                 # Small delay to avoid rate limiting
-                time.sleep(0.5)
+                time.sleep(BATCH_DELAY)
                     
             except Exception as e:
                 print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
                 rows[idx] = {
                     "reference": refs[idx],
                     "style": normalized_style,
-                    "status": "not_found",  # Changed from offline
+                    "status": "not_found",
                     "source": "",
                     "score": 0,
                     "doi": "",
@@ -837,11 +872,11 @@ def verify_references_batch(
 
     # Count results for debugging
     result_counts = {
-        "verified": sum(1 for r in rows if r.get("status") == "verified"),
-        "likely": sum(1 for r in rows if r.get("status") == "likely"),
-        "needs_review": sum(1 for r in rows if r.get("status") == "needs_review"),
-        "not_found": sum(1 for r in rows if r.get("status") == "not_found"),
-        "offline": sum(1 for r in rows if r.get("status") == "offline"),
+        "verified": sum(1 for r in rows if r and r.get("status") == "verified"),
+        "likely": sum(1 for r in rows if r and r.get("status") == "likely"),
+        "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
+        "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
     }
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Verification COMPLETE for {total_refs} references")
@@ -873,10 +908,19 @@ def submit_verification(references: List[str], style: str = "apa") -> str:
     """
     job_id = uuid.uuid4().hex
     total_refs = len(references)
+    est_seconds = total_refs * (API_TIMEOUT / 2)
+    est_minutes = est_seconds / 60
+    est_hours = est_minutes / 60
+    
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Submitting verification job {job_id}")
     print(f"[DEBUG] Total references: {total_refs}")
-    print(f"[DEBUG] Estimated time: ~{total_refs * 4} seconds ({total_refs * 4 / 60:.1f} minutes)")
+    if est_hours >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
+    elif est_minutes >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_minutes:.1f} minutes")
+    else:
+        print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
     print(f"[DEBUG] ========================================")
     
     def run():
