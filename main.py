@@ -552,69 +552,124 @@ def update_verification_status(job_id: str, **kwargs):
 
 
 def start_progress_sync(job_id: str, verification_job_id: str):
-    """Background thread to sync progress and results"""
+    """Background thread to sync progress and results - NO TIME LIMIT"""
     def sync():
+        print(f"[DEBUG] ========================================")
         print(f"[DEBUG] Sync thread started for job {job_id}")
+        print(f"[DEBUG] Verification job ID: {verification_job_id}")
+        print(f"[DEBUG] ========================================")
+        
+        last_progress = -1
+        no_progress_count = 0
+        max_no_progress = 300  # 10 minutes without progress (300 * 2 seconds = 600 seconds)
         
         while True:
-            status = get_verification_status(verification_job_id)
-            if status:
-                with _lock:
-                    if job_id in _store:
-                        _store[job_id]["verification"]["progress"] = status.get("progress", 0)
-                        _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
-                        _store[job_id]["verification"]["state"] = status.get("status", "running")
-                        _store[job_id]["verification"]["total"] = status.get("total", 0)
-                        
-                        if status.get("status") == "completed":
-                            verification_results = None
-                            max_attempts = 10
-                            for attempt in range(max_attempts):
-                                verification_results = get_verification_results(verification_job_id)
+            try:
+                status = get_verification_status(verification_job_id)
+                
+                if status:
+                    current_progress = status.get("progress", 0)
+                    total = status.get("total", 0)
+                    
+                    # Check for stalled progress (no movement for a long time)
+                    if current_progress == last_progress:
+                        no_progress_count += 1
+                        if no_progress_count > max_no_progress and current_progress < total:
+                            print(f"[DEBUG] WARNING: No progress for {no_progress_count * 2} seconds. Job may be stalled but continuing...")
+                    else:
+                        if no_progress_count > 0:
+                            print(f"[DEBUG] Progress resumed after {no_progress_count * 2} seconds")
+                        no_progress_count = 0
+                        last_progress = current_progress
+                    
+                    print(f"[DEBUG] Sync status: {status.get('status')} - Progress: {current_progress}/{total} ({status.get('percentage')}%)")
+                    
+                    with _lock:
+                        if job_id in _store:
+                            # Update progress
+                            _store[job_id]["verification"]["progress"] = current_progress
+                            _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
+                            _store[job_id]["verification"]["state"] = status.get("status", "running")
+                            _store[job_id]["verification"]["total"] = total
+                            
+                            # When complete, get the actual results
+                            if status.get("status") == "completed":
+                                print(f"[DEBUG] Job {verification_job_id} marked as completed!")
+                                print(f"[DEBUG] Attempting to retrieve verification results...")
+                                
+                                # Try multiple times to get results
+                                verification_results = None
+                                max_attempts = 20  # More attempts for large jobs
+                                for attempt in range(max_attempts):
+                                    verification_results = get_verification_results(verification_job_id)
+                                    if verification_results:
+                                        print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
+                                        break
+                                    if attempt < max_attempts - 1:
+                                        if attempt % 5 == 0:
+                                            print(f"[DEBUG] No results yet, attempt {attempt + 1}/{max_attempts}, waiting 2 seconds...")
+                                        time.sleep(2)
+                                
                                 if verification_results:
-                                    break
-                                if attempt < max_attempts - 1:
-                                    time.sleep(2)
-                            
-                            if verification_results:
-                                summary = _compute_verification_summary(verification_results)
-                                
-                                _store[job_id]["result"]["online_verification"] = {
-                                    "rows": verification_results,
-                                    "summary": summary
-                                }
-                                
-                                try:
-                                    _store[job_id]["result"]["acii"] = compute_acii(
-                                        _store[job_id]["result"], 
-                                        verification_results
-                                    )
-                                except Exception as e:
-                                    print(f"[DEBUG] ACII computation error: {e}")
-                                
-                                try:
-                                    _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                                except Exception as e:
-                                    print(f"[DEBUG] Error rebuilding reference mapping: {e}")
-                                
-                                _store[job_id]["verification"]["results"] = verification_results
-                                _store[job_id]["verification"]["results_count"] = len(verification_results)
-                                _store[job_id]["verification"]["summary"] = summary
-                            else:
-                                _store[job_id]["verification"]["state"] = "error"
-                                _store[job_id]["verification"]["message"] = "No results retrieved after completion"
-                            
-                            _store[job_id]["verification"]["state"] = "completed"
-                            _store[job_id]["verification"]["completed_at"] = now()
-                            break
-                            
-                        elif status.get("status") == "error":
-                            with _lock:
-                                if job_id in _store:
+                                    print(f"[DEBUG] Successfully retrieved {len(verification_results)} verification results")
+                                    
+                                    # Store in main result
+                                    summary = _compute_verification_summary(verification_results)
+                                    print(f"[DEBUG] Summary: {summary}")
+                                    
+                                    _store[job_id]["result"]["online_verification"] = {
+                                        "rows": verification_results,
+                                        "summary": summary
+                                    }
+                                    
+                                    # Update ACII with verification results
+                                    try:
+                                        _store[job_id]["result"]["acii"] = compute_acii(
+                                            _store[job_id]["result"], 
+                                            verification_results
+                                        )
+                                        print(f"[DEBUG] ACII updated: {_store[job_id]['result']['acii'].get('ACII', 'N/A')}")
+                                    except Exception as e:
+                                        print(f"[DEBUG] ACII computation error: {e}")
+                                    
+                                    # Rebuild reference mapping with verification data
+                                    try:
+                                        _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
+                                        print(f"[DEBUG] Reference mapping rebuilt")
+                                    except Exception as e:
+                                        print(f"[DEBUG] Error rebuilding reference mapping: {e}")
+                                    
+                                    _store[job_id]["verification"]["results"] = verification_results
+                                    _store[job_id]["verification"]["results_count"] = len(verification_results)
+                                    _store[job_id]["verification"]["summary"] = summary
+                                else:
+                                    print(f"[DEBUG] WARNING: No verification results found after {max_attempts} attempts!")
                                     _store[job_id]["verification"]["state"] = "error"
-                                    _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
-                            break
+                                    _store[job_id]["verification"]["message"] = "No results retrieved after completion"
+                                
+                                _store[job_id]["verification"]["state"] = "completed"
+                                _store[job_id]["verification"]["completed_at"] = now()
+                                print(f"[DEBUG] Job {job_id} marked as completed with {_store[job_id]['verification'].get('results_count', 0)} results")
+                                break
+                                
+                            elif status.get("status") == "error":
+                                print(f"[DEBUG] Job {verification_job_id} errored: {status.get('error', 'Unknown error')}")
+                                with _lock:
+                                    if job_id in _store:
+                                        _store[job_id]["verification"]["state"] = "error"
+                                        _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
+                                break
+                else:
+                    print(f"[DEBUG] No status found for verification job {verification_job_id}, waiting...")
+                
+            except Exception as e:
+                print(f"[DEBUG] Error in sync thread: {e}")
+                import traceback
+                traceback.print_exc()
+            
             time.sleep(2)
+        
+        print(f"[DEBUG] Sync thread exiting for job {job_id}")
     
     thread = threading.Thread(target=sync, daemon=True)
     thread.start()
@@ -654,6 +709,55 @@ async def debug_job(job_id: str):
         "references_count": len(result.get("references_raw", [])),
         "acii_score": result.get("acii", {}).get("ACII", "N/A")
     }
+
+
+@app.get("/debug/job-progress/{job_id}")
+async def job_progress(job_id: str):
+    """Check progress of a specific job with time estimation"""
+    job = get_job(job_id)
+    if not job:
+        return {"error": "Job not found"}
+    
+    verification = job.get("verification", {})
+    
+    # Calculate elapsed time
+    elapsed_seconds = 0
+    if verification.get("started_at"):
+        started = datetime.fromisoformat(verification["started_at"])
+        elapsed_seconds = (datetime.utcnow() - started).total_seconds()
+    
+    # Estimate remaining time
+    progress = verification.get("progress", 0)
+    total = verification.get("total", 0)
+    estimated_remaining = 0
+    if progress > 0 and elapsed_seconds > 0:
+        rate = progress / elapsed_seconds
+        estimated_remaining = (total - progress) / rate if rate > 0 else 0
+    
+    return {
+        "job_id": job_id,
+        "state": verification.get("state"),
+        "progress": progress,
+        "total": total,
+        "percentage": verification.get("percentage"),
+        "started_at": verification.get("started_at"),
+        "completed_at": verification.get("completed_at"),
+        "elapsed_seconds": round(elapsed_seconds, 1),
+        "elapsed_formatted": format_time(elapsed_seconds),
+        "estimated_remaining_seconds": round(estimated_remaining, 1),
+        "estimated_remaining_formatted": format_time(estimated_remaining),
+        "has_results": verification.get("results_count", 0) > 0,
+        "verification_job_id": verification.get("verification_job_id")
+    }
+
+
+def format_time(seconds):
+    """Format seconds into human readable time"""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+    return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
 
 @app.get("/debug/verify-status/{verification_job_id}")
@@ -788,6 +892,7 @@ def privacy(request: Request):
     """Privacy policy page"""
     return templates.TemplateResponse("privacy.html", {"request": request})
 
+
 # ============================================================
 # INITIAL DOCUMENT CHECK
 # ============================================================
@@ -800,11 +905,7 @@ async def verify(
 ):
     """Initial document check - extracts citations and references"""
     
-    # ============================================================
     # STEP 1: FILE TYPE VALIDATION - REJECT PDF FILES
-    # ============================================================
-    
-    # Check if file is PDF - REJECT immediately
     if file.filename and file.filename.lower().endswith('.pdf'):
         return JSONResponse(
             status_code=400,
@@ -826,11 +927,7 @@ async def verify(
             }
         )
     
-    # ============================================================
     # STEP 2: CHECK SERVER LOAD
-    # ============================================================
-    
-    # Check if server is too busy
     if is_server_busy():
         queue_stats = get_queue_status()
         return JSONResponse(
@@ -844,10 +941,7 @@ async def verify(
             }
         )
     
-    # ============================================================
     # STEP 3: PROCESS THE FILE
-    # ============================================================
-    
     start_time = time.time()
     data = await file.read()
     file_size = len(data)
@@ -906,7 +1000,8 @@ async def verify(
             references_count=0,
             processing_time=processing_time,
             success=False,
-            error=str(e)
+            error=str(e),
+            ip_address=request.client.host if request and request.client else None
         )
         raise
 
@@ -954,7 +1049,10 @@ async def verify_online(job_id: str = Form(...)):
             "job_id": job_id
         }
     
+    print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Starting verification for job {job_id} with {len(refs)} references")
+    print(f"[DEBUG] Estimated time: ~{len(refs) * 4} seconds ({len(refs) * 4 / 60:.1f} minutes)")
+    print(f"[DEBUG] ========================================")
     
     # Update job status
     update_verification_status(
@@ -983,6 +1081,8 @@ async def verify_online(job_id: str = Form(...)):
         "job_id": job_id,
         "verification_job_id": verification_job_id,
         "total_references": len(refs),
+        "estimated_time_seconds": len(refs) * 4,
+        "estimated_time_formatted": format_time(len(refs) * 4),
         "message": "Verification started. Check /online/status for progress."
     }
 
@@ -1002,6 +1102,20 @@ def online_status(job_id: str):
     verification = job["verification"]
     result = job.get("result", {})
     
+    # Calculate elapsed and estimated remaining time
+    elapsed_seconds = 0
+    remaining_seconds = None
+    
+    if verification.get("started_at") and verification["state"] == "running":
+        started = datetime.fromisoformat(verification["started_at"])
+        elapsed_seconds = (datetime.utcnow() - started).total_seconds()
+        
+        progress = verification.get("progress", 0)
+        total = verification.get("total", 0)
+        if progress > 0 and elapsed_seconds > 0:
+            rate = progress / elapsed_seconds
+            remaining_seconds = (total - progress) / rate if rate > 0 else 0
+    
     # Build response
     response = {
         "online": {
@@ -1012,7 +1126,11 @@ def online_status(job_id: str):
             "started_at": verification["started_at"],
             "completed_at": verification["completed_at"],
             "summary": verification.get("summary", {}),
-            "results_count": verification.get("results_count", 0)
+            "results_count": verification.get("results_count", 0),
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "elapsed_formatted": format_time(elapsed_seconds),
+            "remaining_seconds": round(remaining_seconds, 1) if remaining_seconds else None,
+            "remaining_formatted": format_time(remaining_seconds) if remaining_seconds else None
         },
         "result": result if verification["state"] in ["completed", "error"] else None
     }
@@ -1026,12 +1144,17 @@ def online_status(job_id: str):
     
     # Add progress details
     if verification["total"] > 0:
+        time_msg = f"Processing: {verification['progress']}/{verification['total']} ({verification['percentage']}%)"
+        if remaining_seconds:
+            time_msg += f" - Est. remaining: {format_time(remaining_seconds)}"
         response["progress"] = {
             "current": verification["progress"],
             "total": verification["total"],
             "percentage": verification["percentage"],
             "status": verification["state"],
-            "message": f"Processing: {verification['progress']}/{verification['total']} ({verification['percentage']}%)"
+            "message": time_msg,
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "remaining_seconds": round(remaining_seconds, 1) if remaining_seconds else None
         }
     
     # Add queue status
