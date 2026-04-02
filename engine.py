@@ -1795,6 +1795,9 @@ def _generate_citation_fixes(
     # ============================================================
     # Case 0: Fix malformed year (204 → 2024)
     # ============================================================
+        # ============================================================
+    # Case 0: Fix malformed year (204 → 2024)
+    # ============================================================
     if len(year) < 4 and year.isdigit():
         year_int = int(year)
         possible_years = []
@@ -1824,16 +1827,24 @@ def _generate_citation_fixes(
             parts = auth.split(' and ')
             author_variations.extend(parts)
         
+        # Also try to extract just the first word of the author
+        first_word = auth.split()[0] if auth else ""
+        if first_word and first_word not in author_variations:
+            author_variations.append(first_word)
+        
         for alt_year in possible_years:
             alt_year_str = str(alt_year)
             for test_auth in author_variations:
                 test_auth = test_auth.strip()
-                if not test_auth:
+                if not test_auth or len(test_auth) < 2:
                     continue
                 alt_key = f"{test_auth}|{alt_year_str}".lower()
                 if alt_key in ref_map:
-                    # Replace the malformed year
+                    # Replace the malformed year - handle multiple citations in same parentheses
+                    # Use word boundary to ensure we only replace the specific malformed year
                     alt_citation = re.sub(r'\b' + re.escape(year) + r'\b', alt_year_str, citation)
+                    # Also handle case where year is directly after comma without space
+                    alt_citation = re.sub(r',' + re.escape(year) + r'\b', ',' + alt_year_str, alt_citation)
                     return FixSuggestion(
                         original=citation,
                         suggested=alt_citation,
@@ -1841,7 +1852,6 @@ def _generate_citation_fixes(
                         confidence=0.90,
                         reason=f"Malformed year '{year}' corrected to '{alt_year_str}' based on reference for '{test_auth}'"
                     )
-    
     # Case 1: Year typo (off by 1 or more) - only for 4-digit years
     if len(year) == 4 and year.isdigit():
         try:
