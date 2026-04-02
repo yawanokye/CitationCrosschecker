@@ -966,6 +966,7 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     """Parse author and year from APA/Harvard citation.
     
     Now handles malformed years (2-3 digits like '204' -> '2024')
+    and citations with multiple entries separated by semicolons.
     """
     s = norm_space(cite)
     if not s:
@@ -983,16 +984,27 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
         year_start = ym.start()
     else:
         # Try to find malformed years (2-3 digit numbers that could be years)
-        # Look for numbers like 204, 04, 24 that appear after an author name
-        malformed_pat = re.compile(r"[,&]\s*([A-Za-z\s]+?)?\s*(\d{2,3})\s*[\),]")
+        # Look for numbers like 204, 04, 24 anywhere in the citation
+        # Pattern matches standalone numbers or numbers after commas/ampersands
+        malformed_pat = re.compile(r"(?:^|[,&;]|\s)\s*(\d{2,3})(?:[;,)&]|\s|$)")
         malformed_match = malformed_pat.search(s)
         
         if malformed_match:
-            year_candidate = malformed_match.group(2)
+            year_candidate = malformed_match.group(1)
             # Check if it's a plausible year (0-999)
             if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
                 year = year_candidate
-                year_start = malformed_match.start(2)
+                year_start = malformed_match.start(1)
+        
+        # Also try standalone 2-3 digit numbers with parentheses
+        if not year:
+            paren_pat = re.compile(r"\([^)]*?(\d{2,3})[^)]*?\)")
+            paren_match = paren_pat.search(s)
+            if paren_match:
+                year_candidate = paren_match.group(1)
+                if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
+                    year = year_candidate
+                    year_start = paren_match.start(1)
         
         # Also try standalone 2-3 digit numbers
         if not year:
@@ -1007,9 +1019,16 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     if not year:
         return None
     
-    # Extract left part (author section)
+    # Extract left part (author section) - take text before the year
     if year_start:
+        # Get the part before the year
         left = s[:year_start].strip(" ,;()")
+        # If left is empty, try to get author from the citation differently
+        if not left:
+            # Try to extract author before the year in the whole citation
+            author_match = re.match(r"^([A-Za-z\s&]+?)(?:,|\s+)(?:\d)", s)
+            if author_match:
+                left = author_match.group(1).strip()
     else:
         left = ""
 
@@ -1037,11 +1056,20 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
 
     author_key = _first_author_or_org_key(left)
     if not author_key:
+        # Try to extract just the first author if the author extraction failed
+        simple_author_match = re.match(r"^([A-Z][a-z]+)\s+&\s+([A-Z][a-z]+)", left)
+        if simple_author_match:
+            author_key = simple_author_match.group(1).lower()
+        else:
+            simple_author_match = re.match(r"^([A-Z][a-z]+)", left)
+            if simple_author_match:
+                author_key = simple_author_match.group(1).lower()
+    
+    if not author_key:
         return None
     if author_key.lower() in NON_NAME_AUTHOR_KEYS:
         return None
     return author_key, year
-
 
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
