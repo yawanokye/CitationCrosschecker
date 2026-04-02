@@ -1,4 +1,4 @@
-/* static/app.js — Citation Crosschecker Dashboard (WITH TIMEOUT HANDLING FIXES) */
+/* static/app.js — Citation Crosschecker Dashboard (WITH AUTO-FIX & TIMEOUT HANDLING) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -25,8 +25,12 @@ const $ = (id) => document.getElementById(id);
 const el = {
     file: $("file"),
     style: $("style"),
+    autofix: $("autofix"),
+    onlineVerify: $("onlineVerify"),
     btnCheck: $("btnCheck"),
     btnVerify: $("btnVerify"),
+    btnApplyAutofix: $("btnApplyAutofix"),
+    btnExportFixed: $("btnExportFixed"),
     btnExportVerify: $("btnExportVerify"),
     status: $("status"),
     resultsCard: $("resultsCard"),
@@ -46,7 +50,11 @@ const el = {
     progressText: $("progressText"),
     queueStatus: $("queueStatus"),
     serverStatus: $("serverStatus"),
-    estimatedRemaining: $("estimatedRemaining")
+    estimatedRemaining: $("estimatedRemaining"),
+    fixLogPanel: $("fixLogPanel"),
+    fixLogContent: $("fixLogContent"),
+    fixSuggestionsPanel: $("fixSuggestionsPanel"),
+    fixSuggestionsContent: $("fixSuggestionsContent")
 };
 
 let LAST_JOB_ID = null;
@@ -57,6 +65,8 @@ let RETRY_COUNT = 0;
 let POLL_ATTEMPT_COUNT = 0;
 let LAST_PROGRESS = 0;
 let LAST_PROGRESS_TIME = null;
+let AUTO_FIX_APPLIED = false;
+let FIX_SUGGESTIONS = null;
 
 // Store latest results for export
 window.latestResults = null;
@@ -88,6 +98,239 @@ function formatTime(seconds) {
     if (seconds < 60) return `${Math.round(seconds)}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function showNotification(message, type = "info") {
+    const notification = document.createElement("div");
+    notification.className = `notification ${type}`;
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        background: ${type === "success" ? "#27ae60" : type === "error" ? "#e74c3c" : "#3498db"};
+        color: white;
+        border-radius: 8px;
+        z-index: 10000;
+        animation: slideIn 0.3s ease;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    `;
+    document.body.appendChild(notification);
+    setTimeout(() => {
+        notification.style.animation = "slideOut 0.3s ease";
+        setTimeout(() => notification.remove(), 300);
+    }, 4000);
+}
+
+/* -------------------------------------------------------
+AUTO-FIX FUNCTIONS
+------------------------------------------------------- */
+
+async function getAutoFixSuggestions() {
+    if (!LAST_JOB_ID) {
+        showNotification("Run document check first", "error");
+        return null;
+    }
+    
+    try {
+        setStatus("Fetching auto-fix suggestions...", "info");
+        const response = await fetch(`/autofix-suggestions/${encodeURIComponent(LAST_JOB_ID)}`);
+        const data = await response.json();
+        
+        if (data.available) {
+            FIX_SUGGESTIONS = data;
+            displayFixSuggestions(data);
+            setStatus(`Auto-fix suggestions available (${data.auto_fixable_count} auto-fixable)`, "good");
+            if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
+            return data;
+        } else {
+            setStatus(data.message || "No auto-fix suggestions available", "warn");
+            return null;
+        }
+    } catch (err) {
+        console.error("Error fetching auto-fix suggestions:", err);
+        setStatus("Error fetching auto-fix suggestions", "bad");
+        return null;
+    }
+}
+
+function displayFixSuggestions(data) {
+    if (!el.fixSuggestionsPanel) return;
+    
+    const summary = data.summary || {};
+    const citations = data.citations || [];
+    const references = data.references || [];
+    
+    el.fixSuggestionsPanel.style.display = "block";
+    
+    let html = `
+        <div class="fix-summary">
+            <h4>🔧 Auto-Fix Summary</h4>
+            <div class="fix-stats">
+                <span class="stat high">✓ Auto-fixable: ${data.auto_fixable_count || 0}</span>
+                <span class="stat medium">⚠️ Needs review: ${data.review_needed_count || 0}</span>
+                <span class="stat total">📋 Total: ${summary.total_suggestions || 0}</span>
+            </div>
+        </div>
+    `;
+    
+    if (citations.length > 0) {
+        html += `
+            <div class="fix-section">
+                <h5>📝 Citation Fixes (${citations.length})</h5>
+                <div class="fix-list">
+                    ${citations.slice(0, 20).map(fix => `
+                        <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : fix.confidence >= 0.7 ? 'med-conf' : 'low-conf'}">
+                            <div class="fix-original">❌ ${esc(fix.original)}</div>
+                            <div class="fix-arrow">→</div>
+                            <div class="fix-suggested">✅ ${esc(fix.suggested)}</div>
+                            <div class="fix-meta">
+                                <span class="fix-type">${esc(fix.type)}</span>
+                                <span class="fix-confidence">${Math.round(fix.confidence * 100)}% confidence</span>
+                                <span class="fix-reason">${esc(fix.reason)}</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                    ${citations.length > 20 ? `<div class="fix-more">... and ${citations.length - 20} more citation fixes</div>` : ''}
+                </div>
+            </div>
+        `;
+    }
+    
+    if (references.length > 0) {
+        html += `
+            <div class="fix-section">
+                <h5>📚 Reference Fixes (${references.length})</h5>
+                <div class="fix-list">
+                    ${references.slice(0, 10).map(fix => `
+                        <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
+                            <div class="fix-original">${esc(fix.original.substring(0, 100))}${fix.original.length > 100 ? '…' : ''}</div>
+                            <div class="fix-arrow">→</div>
+                            <div class="fix-suggested">${esc(fix.suggested.substring(0, 100))}${fix.suggested.length > 100 ? '…' : ''}</div>
+                            <div class="fix-meta">
+                                <span class="fix-type">${esc(fix.type)}</span>
+                                <span class="fix-confidence">${Math.round(fix.confidence * 100)}%</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+    
+    if (citations.length === 0 && references.length === 0) {
+        html += `<div class="fix-empty">✨ No fix suggestions available. Document looks good!</div>`;
+    }
+    
+    el.fixSuggestionsContent.innerHTML = html;
+}
+
+async function applyAutoFix() {
+    if (!LAST_JOB_ID) {
+        showNotification("Run document check first", "error");
+        return;
+    }
+    
+    if (AUTO_FIX_APPLIED) {
+        showNotification("Auto-fix already applied to this document", "info");
+        return;
+    }
+    
+    try {
+        setStatus("Applying auto-fixes...", "info");
+        const formData = new FormData();
+        formData.append("job_id", LAST_JOB_ID);
+        
+        const response = await fetch("/apply-autofix", { method: "POST", body: formData });
+        const result = await response.json();
+        
+        if (result.success) {
+            AUTO_FIX_APPLIED = true;
+            setStatus(`Applied ${result.fixes_applied_count} fixes`, "good");
+            showNotification(`✅ Applied ${result.fixes_applied_count} auto-fixes`, "success");
+            
+            if (el.btnExportFixed) el.btnExportFixed.disabled = false;
+            
+            // Show fix log
+            await showFixLog();
+        } else {
+            showNotification("Failed to apply auto-fixes", "error");
+        }
+    } catch (err) {
+        console.error("Error applying auto-fix:", err);
+        setStatus("Error applying auto-fixes", "bad");
+        showNotification("Error applying auto-fixes", "error");
+    }
+}
+
+async function showFixLog() {
+    if (!LAST_JOB_ID) {
+        showNotification("Run document check first", "error");
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/fix-log/${encodeURIComponent(LAST_JOB_ID)}`);
+        const data = await response.json();
+        
+        if (!el.fixLogPanel) return;
+        
+        el.fixLogPanel.style.display = "block";
+        
+        if (data.fixes && data.fixes.length > 0) {
+            let html = `
+                <div class="fix-log-header">
+                    <h4>📋 Auto-Fix Log</h4>
+                    <span class="fix-count">${data.total_fixes} fixes applied</span>
+                </div>
+                <div class="fix-log-list">
+            `;
+            
+            data.fixes.forEach((fix, idx) => {
+                html += `
+                    <div class="fix-log-entry">
+                        <div class="fix-log-num">${idx + 1}</div>
+                        <div class="fix-log-details">
+                            <div class="fix-log-original">${esc(fix.original)}</div>
+                            <div class="fix-log-arrow">→</div>
+                            <div class="fix-log-suggested">${esc(fix.suggested)}</div>
+                            <div class="fix-log-meta">
+                                <span class="fix-type-badge">${esc(fix.type)}</span>
+                                <span class="fix-reason">${esc(fix.reason)}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += `</div>`;
+            el.fixLogContent.innerHTML = html;
+        } else {
+            el.fixLogContent.innerHTML = `<div class="fix-log-empty">✨ No fixes have been applied yet. Click "Apply Auto-Fix" to generate fixes.</div>`;
+        }
+    } catch (err) {
+        console.error("Error fetching fix log:", err);
+        if (el.fixLogContent) {
+            el.fixLogContent.innerHTML = `<div class="fix-log-error">Error loading fix log: ${err.message}</div>`;
+        }
+    }
+}
+
+function downloadFixedDocument() {
+    if (!LAST_JOB_ID) {
+        showNotification("Run document check first", "error");
+        return;
+    }
+    
+    if (!AUTO_FIX_APPLIED) {
+        showNotification("Please apply auto-fix first before downloading", "error");
+        return;
+    }
+    
+    // Open download in new tab
+    window.open(`/export-fixed-document/${encodeURIComponent(LAST_JOB_ID)}?format=txt`, '_blank');
+    showNotification("Downloading fixed document...", "info");
 }
 
 /* -------------------------------------------------------
@@ -205,7 +448,7 @@ function resetVerificationUI() {
     
     if (el.verifyBody) {
         el.verifyBody.innerHTML = `\
-              <tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></tr>
+              <tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></td>
         `;
     }
     
@@ -669,7 +912,7 @@ function exportWordFile(data) {
     
     <h2>📈 Summary</h2>
     <table class="summary-table">
-        <thead> <tr><th>Metric</th><th>Value</th></tr> </thead>
+        <thead> tr<th>Metric</th><th>Value</th> </thead>
         <tbody>
             <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
             <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
@@ -692,7 +935,7 @@ function exportWordFile(data) {
         html += `
     <h2>📊 ACII Components</h2>
     <table>
-        <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
+        <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th> </thead>
         <tbody>
             <tr><td>Verification Integrity</td><td>${acii.components.verification_integrity?.score || '—'}</td><td>${acii.components.verification_integrity?.category || '—'}</td><td>${esc(acii.components.verification_integrity?.remark || '—')}</td></tr>
             <tr><td>Citation Concentration</td><td>${acii.components.citation_concentration?.score || '—'}</td><td>${acii.components.citation_concentration?.category || '—'}</td><td>${esc(acii.components.citation_concentration?.remark || '—')}</td></tr>
@@ -708,7 +951,7 @@ function exportWordFile(data) {
     if (missing.length > 0) {
         html += `
     <table>
-        <thead><tr><th>#</th><th>Citation</th><th>Occurrences</th></tr></thead>
+        <thead><tr><th>#</th><th>Citation</th><th>Occurrences</th> </thead>
         <tbody>
             ${missing.map((item, idx) => {
                 const citation = (typeof item === 'string') ? item : (item.citation_in_text || item);
@@ -727,7 +970,7 @@ function exportWordFile(data) {
     if (uncited.length > 0) {
         html += `
     <table>
-        <thead><tr><th>#</th><th>Reference</th></tr></thead>
+        <thead><tr><th>#</th><th>Reference</th> </thead>
         <tbody>
             ${uncited.map((ref, idx) => `<tr class="uncited-row"><td>${idx + 1}</td><td>${esc(ref.reference || ref)}</td></tr>`).join('')}
         </tbody>
@@ -739,8 +982,8 @@ function exportWordFile(data) {
     // Citation to Reference Mapping
     html += `
     <h2>🔗 Citation to Reference Mapping</h2>
-    <table>
-        <thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Count</th><th>Matched Reference</th><th>Flags</th></tr></thead>
+    能
+        <thead> <th>#</th><th>Status</th><th>Citation</th><th>Count</th><th>Matched Reference</th><th>Flags</th> </thead>
         <tbody>
             ${uniqueCitations.slice(0, 50).map((item, idx) => {
                 let statusClass = item.status === 'matched' ? 'matched' : 'not_found';
@@ -760,7 +1003,7 @@ function exportWordFile(data) {
     html += `
     <h2>📖 Reference to Citation Mapping</h2>
     能
-        <thead> <tr><th>#</th><th>Times Cited</th><th>Reference</th><th>Cited By (sample)</th></tr> </thead>
+        <thead> <th>#</th><th>Times Cited</th><th>Reference</th><th>Cited By (sample)</th> </thead>
         <tbody>
             ${r2c.map((item, idx) => {
                 const timesCited = item.times_cited || 0;
@@ -775,31 +1018,31 @@ function exportWordFile(data) {
                 </tr>`;
             }).join('')}
         </tbody>
-     </table>`;
+      </table>`;
 
     // Online Verification Results (if available)
     if (ov.rows && ov.rows.length > 0) {
         html += `
     <div class="page-break"></div>
     <h2>🌐 Online Verification Results</h2>
-     <table>
-        <thead> <tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th></tr> </thead>
+    能
+        <thead> <th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th> </thead>
         <tbody>
             ${ov.rows.slice(0, 100).map((r, idx) => {
                 let badgeClass = r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'));
                 return `<tr>
-                     <td>${idx + 1}</td>
-                     <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
-                     <td>${esc(r.source || '—')}</td>
-                     <td>${esc(r.score || '—')}</td>
-                     <td>${esc(r.doi || '—')}</td>
-                     <td>${esc(r.matched_year || '—')}</td>
-                     <td>${esc(r.matched_authors || '—')}</td>
-                     <td>${esc((r.matched_title || '').substring(0, 60))}</td>
-                 </tr>`;
+                    <td>${idx + 1}</td>
+                    <td><span class="badge ${badgeClass}">${esc(r.status || '')}</span></td>
+                    <td>${esc(r.source || '—')}</td>
+                    <td>${esc(r.score || '—')}</td>
+                    <td>${esc(r.doi || '—')}</td>
+                    <td>${esc(r.matched_year || '—')}</td>
+                    <td>${esc(r.matched_authors || '—')}</td>
+                    <td>${esc((r.matched_title || '').substring(0, 60))}</td>
+                </tr>`;
             }).join('')}
         </tbody>
-     </table>`;
+    </table>`;
     }
 
     html += `
@@ -827,6 +1070,8 @@ function exportWordFile(data) {
 RENDER FUNCTIONS (unchanged)
 ------------------------------------------------------- */
 
+// Add to app.js - update renderACII function
+
 function renderACII(data) {
     const acii = data?.acii;
 
@@ -845,25 +1090,50 @@ function renderACII(data) {
         }
     }
 
-    const c = acii.components || {};
+    // Display the new remark
+    if (el.aciiRemark && acii.remark) {
+        el.aciiRemark.innerHTML = `<span class="acii-remark">📝 ${esc(acii.remark)}</span>`;
+    }
 
-    if ($("aciiV")) $("aciiV").textContent = c.verification_integrity?.score ?? "";
-    if ($("aciiVcat")) $("aciiVcat").textContent = c.verification_integrity?.category ?? "";
-    if ($("aciiVremark")) $("aciiVremark").textContent = c.verification_integrity?.remark ?? "Percentage of references verified in scholarly databases";
+    // Display components (updated structure)
+    const comp = acii.components || {};
 
-    if ($("aciiC")) $("aciiC").textContent = c.citation_concentration?.score ?? "";
-    if ($("aciiCcat")) $("aciiCcat").textContent = c.citation_concentration?.category ?? "";
-    if ($("aciiCremark")) $("aciiCremark").textContent = c.citation_concentration?.remark ?? "Measures whether citations rely heavily on few authors";
+    if ($("aciiV")) $("aciiV").textContent = comp.verification_integrity?.score ?? "";
+    if ($("aciiVcat")) $("aciiVcat").textContent = comp.verification_integrity?.category ?? "";
+    if ($("aciiVremark")) $("aciiVremark").textContent = comp.verification_integrity?.remark ?? "";
 
-    if ($("aciiA")) $("aciiA").textContent = c.author_diversity?.score ?? "";
-    if ($("aciiAcat")) $("aciiAcat").textContent = c.author_diversity?.category ?? "";
-    if ($("aciiAremark")) $("aciiAremark").textContent = c.author_diversity?.remark ?? "Measures diversity of authors represented in the reference list";
+    if ($("aciiC")) $("aciiC").textContent = comp.citation_concentration?.score ?? "";
+    if ($("aciiCcat")) $("aciiCcat").textContent = comp.citation_concentration?.category ?? "";
+    if ($("aciiCremark")) $("aciiCremark").textContent = comp.citation_concentration?.remark ?? "";
 
-    if ($("aciiT")) $("aciiT").textContent = c.temporal_balance?.score ?? "";
-    if ($("aciiTcat")) $("aciiTcat").textContent = c.temporal_balance?.category ?? "";
-    if ($("aciiTremark")) $("aciiTremark").textContent = c.temporal_balance?.remark ?? "Measures spread of references across publication years";
+    if ($("aciiA")) $("aciiA").textContent = comp.author_diversity?.score ?? "";
+    if ($("aciiAcat")) $("aciiAcat").textContent = comp.author_diversity?.category ?? "";
+    if ($("aciiAremark")) $("aciiAremark").textContent = comp.author_diversity?.remark ?? "";
+
+    // NEW: Display recency and temporal balance
+    if ($("aciiRecency")) $("aciiRecency").textContent = comp.recency?.score ?? "";
+    if ($("aciiRecencyCat")) $("aciiRecencyCat").textContent = comp.recency?.category ?? "";
+    if ($("aciiRecencyRemark")) $("aciiRecencyRemark").textContent = comp.recency?.remark ?? "";
+
+    if ($("aciiTempBalance")) $("aciiTempBalance").textContent = comp.temporal_balance?.score ?? "";
+    if ($("aciiTempBalanceCat")) $("aciiTempBalanceCat").textContent = comp.temporal_balance?.category ?? "";
+    if ($("aciiTempBalanceRemark")) $("aciiTempBalanceRemark").textContent = comp.temporal_balance?.remark ?? "";
+
+    if ($("aciiTempQuality")) $("aciiTempQuality").textContent = comp.temporal_quality?.score ?? "";
+    if ($("aciiTempQualityCat")) $("aciiTempQualityCat").textContent = comp.temporal_quality?.category ?? "";
+
+    // NEW: Display recommendations
+    const recs = acii.recommendations || {};
+    if ($("aciiRecommendations")) {
+        let recHtml = '<div class="recommendations-list">';
+        if (recs.recency) recHtml += `<div class="rec-item">📅 ${esc(recs.recency)}</div>`;
+        if (recs.verification) recHtml += `<div class="rec-item">🔍 ${esc(recs.verification)}</div>`;
+        if (recs.diversity) recHtml += `<div class="rec-item">👥 ${esc(recs.diversity)}</div>`;
+        if (recs.priority) recHtml += `<div class="rec-item priority">🎯 ${esc(recs.priority)}</div>`;
+        recHtml += '</div>';
+        $("aciiRecommendations").innerHTML = recHtml;
+    }
 }
-
 function normalizeData(payload) {
     const data = payload?.data || payload?.result || payload || {};
     const s = data.summary || {};
@@ -991,6 +1261,13 @@ function renderAll(data) {
     renderC2R(CURRENT_DATA);
     renderR2C(CURRENT_DATA);
     renderVerify(CURRENT_DATA);
+    
+    // Check for auto-fix suggestions if autofix was enabled
+    if (CURRENT_DATA.autofix && CURRENT_DATA.autofix.suggestions) {
+        FIX_SUGGESTIONS = CURRENT_DATA.autofix;
+        displayFixSuggestions(FIX_SUGGESTIONS);
+        if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
+    }
 }
 
 /* -------------------------------------------------------
@@ -1021,7 +1298,7 @@ function validateFile(file) {
 }
 
 /* -------------------------------------------------------
-RUN INITIAL CHECK (WITH PDF REJECTION)
+RUN INITIAL CHECK (WITH PDF REJECTION & AUTO-FIX)
 ------------------------------------------------------- */
 
 async function runInitialCheck() {
@@ -1038,6 +1315,7 @@ async function runInitialCheck() {
 
     if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
     VERIFICATION_IN_PROGRESS = false;
+    AUTO_FIX_APPLIED = false;
     LAST_JOB_ID = null;
     RETRY_COUNT = 0;
     resetVerificationUI();
@@ -1047,6 +1325,12 @@ async function runInitialCheck() {
     const fd = new FormData();
     fd.append("file", f);
     fd.append("style", el.style?.value || "apa");
+    
+    // Add auto-fix and online verification flags
+    const autofixEnabled = el.autofix?.checked || false;
+    const onlineVerifyEnabled = el.onlineVerify?.checked || false;
+    fd.append("enable_autofix", autofixEnabled.toString());
+    fd.append("enable_online_verification", onlineVerifyEnabled.toString());
 
     try {
         const res = await fetch("/verify", { method: "POST", body: fd });
@@ -1075,7 +1359,18 @@ async function runInitialCheck() {
         setStatus("Analysis complete", "good");
         RETRY_COUNT = 0;
         updateQueueStatus();
+        
         if (el.btnVerify) el.btnVerify.disabled = false;
+        
+        // If auto-fix was enabled and suggestions are available, show them
+        if (autofixEnabled && js.data?.autofix) {
+            showNotification("Auto-fix suggestions available! Click 'Get Fix Suggestions' to review.", "info");
+        }
+        
+        // If online verification auto-started, start polling
+        if (js.online_verification_started) {
+            startPolling();
+        }
         
     } catch (err) {
         setStatus("Error: " + err.message, "bad");
@@ -1096,6 +1391,8 @@ if (el.file) {
                 el.file.value = '';
                 if (el.btnCheck) el.btnCheck.disabled = true;
                 if (el.btnVerify) el.btnVerify.disabled = true;
+                if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = true;
+                if (el.btnExportFixed) el.btnExportFixed.disabled = true;
             } else {
                 setStatus(validation.message, "good");
                 if (el.btnCheck) el.btnCheck.disabled = false;
@@ -1182,6 +1479,8 @@ BUTTON EVENTS
 
 if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
 if (el.btnVerify) { el.btnVerify.disabled = true; el.btnVerify.addEventListener("click", runOnlineVerification); }
+if (el.btnApplyAutofix) { el.btnApplyAutofix.disabled = true; el.btnApplyAutofix.addEventListener("click", applyAutoFix); }
+if (el.btnExportFixed) { el.btnExportFixed.disabled = true; el.btnExportFixed.addEventListener("click", downloadFixedDocument); }
 if (el.btnExportVerify) { el.btnExportVerify.disabled = true; el.btnExportVerify.addEventListener("click", exportVerificationResults); }
 
 const exportCsv = document.getElementById("btnExportCsvTop");
@@ -1207,6 +1506,6 @@ if (exportWord) {
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[App] Initialized successfully with timeout handling for large reference sets");
+console.log("[App] Initialized successfully with auto-fix and timeout handling");
 
 });
