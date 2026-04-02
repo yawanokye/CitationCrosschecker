@@ -1958,7 +1958,6 @@ def get_author_signature(author_part: str) -> str:
         return ""
     
     # Sort surnames to create a consistent key regardless of order
-    # But keep the original order for the first author distinction
     sorted_surnames = sorted(surnames)
     
     if len(surnames) == 1:
@@ -1969,27 +1968,25 @@ def get_author_signature(author_part: str) -> str:
         return f"multi|{'|'.join(sorted_surnames)}"
 
 
-def get_reference_signature(ref_full: str) -> Tuple[str, str, str]:
-    """
-    Extract author signature and year from a reference.
-    Returns (author_signature, year, full_author_string)
-    """
-    ym = YEAR_RE.search(ref_full)
-    if not ym:
-        return "", "", ""
+def extract_author_part_from_citation(citation: str) -> str:
+    """Extract just the author part from a citation string."""
+    s = norm_space(citation)
+    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
     
-    year = ym.group(1)
-    author_part = ref_full[:ym.start()].strip()
+    # Find the year
+    ym = YEAR_RE.search(s)
+    if ym:
+        return s[:ym.start()].strip(" ,;()")
     
-    # Clean author part
-    author_part = re.sub(r"\bet\s+al\.?\b", "", author_part, flags=re.I).strip()
-    author_part = re.sub(r"\([^)]*\)", "", author_part).strip()
+    # Try malformed year
+    malformed_pat = re.compile(r"\b(\d{2,3})\b")
+    mm = malformed_pat.search(s)
+    if mm:
+        return s[:mm.start()].strip(" ,;()")
     
-    # Get the author signature
-    signature = get_author_signature(author_part)
-    
-    return signature, year, author_part
-    
+    return ""
+
+
 def build_reference_lookup(refs):
     """
     Build a lookup dictionary using author SIGNATURES (not just first author)
@@ -2052,7 +2049,7 @@ def find_best_match(citation_author_part: str, cite_year: str, lookup: Dict) -> 
             if c["year"] == cite_year:
                 return cite_year
         
-        # Check for malformed year
+        # Check for malformed year (204 -> 2024)
         if len(cite_year) < 4 and cite_year.isdigit():
             year_int = int(cite_year)
             possible_years = [
@@ -2075,11 +2072,11 @@ def find_best_match(citation_author_part: str, cite_year: str, lookup: Dict) -> 
             return candidates[0]["year"] if candidates else None
     
     # If no signature match, try to match by first author only (legacy behavior)
-    # but with a lower confidence
     first_author = _first_author_or_org_key(citation_author_part)
     if first_author:
         for sig, candidates in lookup.items():
-            if f"|{first_author}" in sig or sig.endswith(f"|{first_author}"):
+            # Check if this signature contains our first author
+            if f"|{first_author}" in sig or sig.endswith(f"|{first_author}") or sig == f"single|{first_author}":
                 for c in candidates:
                     if c["year"] == cite_year:
                         return cite_year
@@ -2091,62 +2088,6 @@ def find_best_match(citation_author_part: str, cite_year: str, lookup: Dict) -> 
                                 return py
     
     return None
-
-
-def extract_author_part_from_citation(citation: str) -> str:
-    """Extract just the author part from a citation string."""
-    s = norm_space(citation)
-    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
-    
-    # Find the year
-    ym = YEAR_RE.search(s)
-    if ym:
-        return s[:ym.start()].strip(" ,;()")
-    
-    # Try malformed year
-    malformed_pat = re.compile(r"\b(\d{2,3})\b")
-    mm = malformed_pat.search(s)
-    if mm:
-        return s[:mm.start()].strip(" ,;()")
-    
-    return ""
-
-def find_best_year(author_key, cite_year, lookup):
-    """Find the best matching year for an author from reference list"""
-    candidates = lookup.get(author_key.lower(), [])
-
-    if not candidates:
-        return None
-
-    # Exact match
-    for c in candidates:
-        if c["year"] == cite_year:
-            return cite_year
-
-    # Handle malformed years (204 -> 2024)
-    if len(cite_year) < 4 and cite_year.isdigit():
-        year_int = int(cite_year)
-        possible_years = [
-            str(2000 + year_int),
-            str(2000 + year_int + 10),
-            str(2000 + year_int + 20),
-            str(1900 + year_int),
-        ]
-        for py in possible_years:
-            for c in candidates:
-                if c["year"] == py:
-                    return py
-
-    # Fallback: closest year
-    try:
-        cy = int(_base_year(cite_year))
-        best = min(
-            candidates,
-            key=lambda x: abs(int(_base_year(x["year"])) - cy)
-        )
-        return best["year"]
-    except:
-        return candidates[0]["year"] if candidates else None
 
 
 def fix_citation_string(citation, lookup):
@@ -2184,12 +2125,14 @@ def fix_citation_string(citation, lookup):
 
     return "; ".join(fixed_parts)
 
+
 def run_autofix(main_text, citations, refs, c2r):
     """
     Improved Auto-Fix:
     - Uses full reference list (NOT c2r)
     - Fixes semicolon citations
     - Fixes wrong years
+    - Distinguishes between single/multiple authors
     - Works even when reconciliation fails
     """
     lookup = build_reference_lookup(refs)
