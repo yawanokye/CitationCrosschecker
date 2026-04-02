@@ -1,4 +1,4 @@
-# engine.py
+# engine.py (COMPLETE - with auto-fix, preserves all original behavior)
 __version__ = "1.5.0"
 
 import re
@@ -567,7 +567,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
 
 
 # -----------------------------
-# PDF extraction
+# PDF extraction (fallback, but process_pdf is preferred)
 # -----------------------------
 def read_pdf_text(file_bytes: bytes) -> str:
     if not PDF_OK:
@@ -1701,8 +1701,221 @@ def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[s
     return total
 
 
+# ============================================================================
+# AUTO-FIX MODULE (NON-INVASIVE)
+# ============================================================================
+
+@dataclass
+class FixSuggestion:
+    original: str
+    suggested: str
+    fix_type: str
+    confidence: float
+    reason: str
+
+
+def _generate_citation_fixes(
+    citation: str, 
+    references: List[RefAY],
+    ref_map: Dict[str, str]
+) -> Optional[FixSuggestion]:
+    """Generate fix suggestions for problematic citations."""
+    
+    parsed = _parse_author_year_from_cite(citation)
+    if not parsed:
+        return None
+    
+    auth, year = parsed
+    year_base = _base_year(year)
+    
+    # Case 1: Year typo (off by 1)
+    try:
+        year_int = int(year[:4])
+        for offset in [-1, 1]:
+            alt_year = str(year_int + offset)
+            alt_key = f"{auth}|{alt_year}".lower()
+            if alt_key in ref_map:
+                alt_citation = citation.replace(year, alt_year)
+                return FixSuggestion(
+                    original=citation,
+                    suggested=alt_citation,
+                    fix_type="year_typo",
+                    confidence=0.85,
+                    reason=f"Year {year} corrected to {alt_year} (off by {abs(offset)})"
+                )
+    except (ValueError, TypeError):
+        pass
+    
+    # Case 2: Author name variation using fuzzy matching
+    if FUZZ_OK and fuzz:
+        auth_norm = strip_punct(auth.lower())
+        best_match = None
+        best_score = 0
+        
+        for ref in references:
+            ym = YEAR_RE.search(ref.reference_full)
+            if ym and _base_year(ym.group(1)) == year_base:
+                left = ref.reference_full[:ym.start()].strip(" ,;()")
+                ref_auth = _first_author_or_org_key(left)
+                if ref_auth:
+                    score = fuzz.ratio(auth_norm, ref_auth.lower())
+                    if score > best_score and score >= 85:
+                        best_score = score
+                        best_match = ref_auth
+        
+        if best_match and best_match.lower() != auth.lower():
+            alt_citation = citation.replace(auth, best_match, 1)
+            return FixSuggestion(
+                original=citation,
+                suggested=alt_citation,
+                fix_type="author_normalization",
+                confidence=best_score / 100,
+                reason=f"Author '{auth}' normalized to '{best_match}'"
+            )
+    
+    # Case 3: Missing "et al." pattern
+    if "et al" not in citation.lower() and len(citation.split(",")[0].split()) > 2:
+        first_author = auth.split()[0] if auth else ""
+        for ref in references:
+            if first_author and first_author.lower() in ref.reference_full.lower():
+                if "et al" in ref.reference_full.lower():
+                    alt_citation = f"{first_author} et al., {year}"
+                    return FixSuggestion(
+                        original=citation,
+                        suggested=alt_citation,
+                        fix_type="add_et_al",
+                        confidence=0.70,
+                        reason=f"Added 'et al.' for {first_author}"
+                    )
+    
+    return None
+
+
+def _generate_reference_fixes(ref: RefAY) -> List[FixSuggestion]:
+    """Generate fix suggestions for reference entries."""
+    suggestions = []
+    ref_text = ref.reference_full
+    
+    # Fix 1: Add DOI prefix if DOI exists but missing prefix
+    if "doi:" not in ref_text.lower() and "https://doi.org" not in ref_text.lower():
+        doi_match = _DOI_RE.search(ref_text)
+        if doi_match:
+            doi = doi_match.group(0)
+            fixed = re.sub(rf"({re.escape(doi)})", r"DOI: \1", ref_text, flags=re.I)
+            if fixed != ref_text:
+                suggestions.append(FixSuggestion(
+                    original=ref_text,
+                    suggested=fixed,
+                    fix_type="add_doi_prefix",
+                    confidence=0.95,
+                    reason="Added 'DOI:' prefix"
+                ))
+    
+    # Fix 2: Add missing period at end
+    if ref_text and not ref_text.rstrip().endswith('.'):
+        suggestions.append(FixSuggestion(
+            original=ref_text,
+            suggested=ref_text.rstrip() + '.',
+            fix_type="add_period",
+            confidence=0.60,
+            reason="Added trailing period"
+        ))
+    
+    # Fix 3: Fix common URL scheme
+    if "http://" in ref_text and "https://" not in ref_text:
+        fixed = ref_text.replace("http://", "https://")
+        suggestions.append(FixSuggestion(
+            original=ref_text,
+            suggested=fixed,
+            fix_type="fix_url_scheme",
+            confidence=0.90,
+            reason="Updated HTTP to HTTPS"
+        ))
+    
+    return suggestions
+
+
+def generate_autofix_suggestions(
+    c2r: List[Dict[str, Any]], 
+    missing_rows: List[Dict[str, Any]],
+    references: List[RefAY],
+    ref_map: Dict[str, str]
+) -> Dict[str, Any]:
+    """Generate auto-fix suggestions without modifying original data."""
+    
+    fix_suggestions: List[FixSuggestion] = []
+    seen_citations = set()
+    
+    # Generate fixes for missing citations
+    for missing in missing_rows:
+        citation = missing.get("citation_in_text", "")
+        if citation and citation not in seen_citations:
+            seen_citations.add(citation)
+            suggestion = _generate_citation_fixes(citation, references, ref_map)
+            if suggestion:
+                fix_suggestions.append(suggestion)
+    
+    # Generate fixes for unmatched citations in c2r
+    for item in c2r:
+        if item.get("status") == "not_found":
+            citation = item.get("in_text", "")
+            if citation and citation not in seen_citations:
+                seen_citations.add(citation)
+                suggestion = _generate_citation_fixes(citation, references, ref_map)
+                if suggestion:
+                    fix_suggestions.append(suggestion)
+    
+    # Generate fixes for references
+    ref_fixes = []
+    for ref in references:
+        suggestions = _generate_reference_fixes(ref)
+        ref_fixes.extend(suggestions)
+    
+    # Calculate statistics
+    high_conf = [f for f in fix_suggestions + ref_fixes if f.confidence >= 0.85]
+    med_conf = [f for f in fix_suggestions + ref_fixes if 0.70 <= f.confidence < 0.85]
+    low_conf = [f for f in fix_suggestions + ref_fixes if f.confidence < 0.70]
+    
+    # Group by type
+    by_type = {}
+    for f in fix_suggestions + ref_fixes:
+        by_type[f.fix_type] = by_type.get(f.fix_type, 0) + 1
+    
+    return {
+        "citations": [
+            {
+                "original": f.original,
+                "suggested": f.suggested,
+                "type": f.fix_type,
+                "confidence": f.confidence,
+                "reason": f.reason
+            }
+            for f in fix_suggestions
+        ],
+        "references": [
+            {
+                "original": f.original,
+                "suggested": f.suggested,
+                "type": f.fix_type,
+                "confidence": f.confidence,
+                "reason": f.reason
+            }
+            for f in ref_fixes
+        ],
+        "statistics": {
+            "total_suggestions": len(fix_suggestions) + len(ref_fixes),
+            "high_confidence": len(high_conf),
+            "medium_confidence": len(med_conf),
+            "low_confidence": len(low_conf),
+            "by_type": by_type
+        },
+        "auto_fixable_count": len(high_conf),
+        "review_needed_count": len(med_conf) + len(low_conf)
+    }
+
+
 # -----------------------------
-# Public API: run_crosscheck
+# Public API: run_crosscheck (ORIGINAL - UNCHANGED)
 # -----------------------------
 def run_crosscheck(
     file_bytes: bytes,
@@ -1723,6 +1936,7 @@ def run_crosscheck(
     style_hint = "numeric" if is_numeric else "apa"
 
     if name.endswith(".docx"):
+        # DOCX: Use native DOCX extraction (NO process_pdf)
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
         references_raw = _merge_reference_lines(ref_block_lines)
         if style_hint == "numeric":
@@ -1730,6 +1944,7 @@ def run_crosscheck(
 
     
     elif name.endswith(".pdf"):
+        # PDF: Use process_pdf pipeline (ONLY for PDF)
         try:
             pdf_data = process_pdf(file_bytes)
     
@@ -1819,7 +2034,7 @@ def run_crosscheck(
     if intext_count > 0:
         match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
 
-    return {
+    result = {
         "filename": filename,
         "style": style_s,
         "engine_build": ENGINE_BUILD,
@@ -1838,3 +2053,81 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+    
+    return result
+
+
+# ============================================================================
+# ENHANCED API WITH AUTO-FIX (OPTIONAL - DOES NOT REPLACE ORIGINAL)
+# ============================================================================
+
+def run_crosscheck_with_autofix(
+    file_bytes: bytes,
+    filename: str,
+    style: str = "apa",
+    verify_online: bool = False,
+    verify_mode: str = "all",
+    max_verify: int = 0,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    enable_autofix: bool = False,  # Set to True to get fix suggestions
+) -> Dict[str, Any]:
+    """
+    Enhanced version with auto-fix suggestions.
+    Calls original run_crosscheck and adds fix suggestions.
+    Works with both DOCX and PDF files via their respective pipelines.
+    """
+    
+    # Call the original function (which handles DOCX and PDF correctly)
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style,
+        verify_online=verify_online,
+        verify_mode=verify_mode,
+        max_verify=max_verify,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=use_openalex
+    )
+    
+    # Add auto-fix data if requested and no error
+    if enable_autofix and "error" not in result:
+        style_s = (style or "apa").strip().lower()
+        is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
+        
+        # Only generate fixes for APA/Harvard style
+        if not is_numeric and style_s not in ["ieee", "vancouver"]:
+            references_raw = result.get("references_raw", [])
+            refs = [parse_reference_author_year(r) for r in references_raw]
+            refs = [r for r in refs if r is not None]
+            
+            # Build ref_map for lookups
+            ref_map = {r.key: r.reference_full for r in refs}
+            
+            # Generate fix suggestions
+            autofix_data = generate_autofix_suggestions(
+                c2r=result.get("reconciliation_intext_to_reference", []),
+                missing_rows=result.get("missing_in_references", []),
+                references=refs,
+                ref_map=ref_map
+            )
+            
+            result["autofix"] = {
+                "enabled": True,
+                "suggestions": autofix_data,
+                "summary": {
+                    "total_suggestions": autofix_data["statistics"]["total_suggestions"],
+                    "auto_fixable": autofix_data["auto_fixable_count"],
+                    "needs_review": autofix_data["review_needed_count"]
+                }
+            }
+        else:
+            result["autofix"] = {
+                "enabled": True,
+                "message": f"Auto-fix primarily supports APA/Harvard style. Current style: {style_s}",
+                "suggestions": {"citations": [], "references": [], "statistics": {"total_suggestions": 0}}
+            }
+    
+    return result
