@@ -1932,7 +1932,64 @@ def _generate_citation_fixes(
 # ============================
 # NEW: STRONG REFERENCE LOOKUP
 # ============================
+# ============================
+# AUTHOR SIGNATURE GENERATION
+# ============================
 
+def get_author_signature(author_part: str) -> str:
+    """
+    Generate a unique signature for an author string.
+    Distinguishes between:
+    - "Xue" (single author)
+    - "Xue et al." (first author + et al)
+    - "Xue, J., Newman, I., Shell, D. F., & Fang, X." (full author list)
+    """
+    if not author_part:
+        return ""
+    
+    # Remove common suffixes and clean
+    author_part = re.sub(r"\bet\s+al\.?\b", "", author_part, flags=re.I).strip()
+    author_part = re.sub(r"(’s|'s)\b", "", author_part)
+    
+    # Get all surnames
+    surnames = _surnames_from_author_blob(author_part)
+    
+    if not surnames:
+        return ""
+    
+    # Sort surnames to create a consistent key regardless of order
+    # But keep the original order for the first author distinction
+    sorted_surnames = sorted(surnames)
+    
+    if len(surnames) == 1:
+        # Single author
+        return f"single|{surnames[0]}"
+    else:
+        # Multiple authors - use sorted list to create a unique key
+        return f"multi|{'|'.join(sorted_surnames)}"
+
+
+def get_reference_signature(ref_full: str) -> Tuple[str, str, str]:
+    """
+    Extract author signature and year from a reference.
+    Returns (author_signature, year, full_author_string)
+    """
+    ym = YEAR_RE.search(ref_full)
+    if not ym:
+        return "", "", ""
+    
+    year = ym.group(1)
+    author_part = ref_full[:ym.start()].strip()
+    
+    # Clean author part
+    author_part = re.sub(r"\bet\s+al\.?\b", "", author_part, flags=re.I).strip()
+    author_part = re.sub(r"\([^)]*\)", "", author_part).strip()
+    
+    # Get the author signature
+    signature = get_author_signature(author_part)
+    
+    return signature, year, author_part
+    
 def build_reference_lookup(refs):
     """Build a lookup dictionary for author -> years"""
     lookup = {}
