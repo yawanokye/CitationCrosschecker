@@ -1929,6 +1929,140 @@ def _generate_citation_fixes(
     
     return None
 
+# ============================
+# NEW: STRONG REFERENCE LOOKUP
+# ============================
+
+def build_reference_lookup(refs):
+    """Build a lookup dictionary for author -> years"""
+    lookup = {}
+
+    for ref in refs:
+        s = ref.reference_full
+
+        ym = YEAR_RE.search(s)
+        if not ym:
+            continue
+
+        year = ym.group(1)
+        author_part = s[:ym.start()].strip()
+
+        author_key = _first_author_or_org_key(author_part)
+        if not author_key:
+            continue
+
+        lookup.setdefault(author_key.lower(), []).append({
+            "year": year,
+            "reference": s
+        })
+
+    return lookup
+
+
+def find_best_year(author_key, cite_year, lookup):
+    """Find the best matching year for an author from reference list"""
+    candidates = lookup.get(author_key.lower(), [])
+
+    if not candidates:
+        return None
+
+    # Exact match
+    for c in candidates:
+        if c["year"] == cite_year:
+            return cite_year
+
+    # Handle malformed years (204 -> 2024)
+    if len(cite_year) < 4 and cite_year.isdigit():
+        year_int = int(cite_year)
+        possible_years = [
+            str(2000 + year_int),
+            str(2000 + year_int + 10),
+            str(2000 + year_int + 20),
+            str(1900 + year_int),
+        ]
+        for py in possible_years:
+            for c in candidates:
+                if c["year"] == py:
+                    return py
+
+    # Fallback: closest year
+    try:
+        cy = int(_base_year(cite_year))
+        best = min(
+            candidates,
+            key=lambda x: abs(int(_base_year(x["year"])) - cy)
+        )
+        return best["year"]
+    except:
+        return candidates[0]["year"] if candidates else None
+
+
+def fix_citation_string(citation, lookup):
+    """Fix a single citation string (may contain semicolons)"""
+    # Split by semicolon for multiple citations in one parentheses
+    parts = re.split(r';\s*', citation)
+    fixed_parts = []
+
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+            
+        parsed = _parse_author_year_from_cite(p)
+        if not parsed:
+            fixed_parts.append(p)
+            continue
+
+        author, year = parsed
+        correct_year = find_best_year(author, year, lookup)
+
+        if correct_year and correct_year != year:
+            fixed_parts.append(p.replace(year, correct_year))
+        else:
+            fixed_parts.append(p)
+
+    return "; ".join(fixed_parts)
+
+
+def run_autofix(main_text, citations, refs, c2r):
+    """
+    Improved Auto-Fix:
+    - Uses full reference list (NOT c2r)
+    - Fixes semicolon citations
+    - Fixes wrong years
+    - Works even when reconciliation fails
+    """
+    lookup = build_reference_lookup(refs)
+
+    fixed_text = main_text
+    fix_log = []
+
+    # Process unique citations to avoid duplicate work
+    seen = set()
+    for cite in citations:
+        if cite in seen:
+            continue
+        seen.add(cite)
+        
+        fixed = fix_citation_string(cite, lookup)
+
+        if fixed != cite:
+            # Replace in text (handle both with and without parentheses)
+            fixed_text = fixed_text.replace(cite, fixed)
+            # Also handle case where citation has parentheses but stored doesn't
+            if not cite.startswith('('):
+                fixed_text = fixed_text.replace(f'({cite})', f'({fixed})')
+            
+            fix_log.append({
+                "original": cite,
+                "fixed": fixed,
+                "type": "year_malformed" if len(cite.split(',')) > 1 and len(cite.split(',')[1].strip()) < 4 else "year_typo"
+            })
+
+    return {
+        "fixed_main_text": fixed_text,
+        "fix_log": fix_log
+    }
 
 def _generate_reference_fixes(ref: RefAY) -> List[FixSuggestion]:
     """Generate fix suggestions for reference entries."""
