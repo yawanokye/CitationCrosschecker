@@ -2345,15 +2345,14 @@ def run_crosscheck_with_autofix(
     throttle_s: float = 0.12,
     use_crossref: bool = True,
     use_openalex: bool = True,
-    enable_autofix: bool = False,  # Set to True to get fix suggestions
+    enable_autofix: bool = False,
 ) -> Dict[str, Any]:
     """
     Enhanced version with auto-fix suggestions.
     Calls original run_crosscheck and adds fix suggestions.
-    Works with both DOCX and PDF files via their respective pipelines.
     """
     
-    # Call the original function (which handles DOCX and PDF correctly)
+    # Call the original function
     result = run_crosscheck(
         file_bytes=file_bytes,
         filename=filename,
@@ -2374,29 +2373,60 @@ def run_crosscheck_with_autofix(
         # Only generate fixes for APA/Harvard style
         if not is_numeric and style_s not in ["ieee", "vancouver"]:
             references_raw = result.get("references_raw", [])
+            main_text = result.get("main_text", "")
+            
+            # Parse references
             refs = [parse_reference_author_year(r) for r in references_raw]
             refs = [r for r in refs if r is not None]
             
-            # Build ref_map for lookups
-            ref_map = {r.key: r.reference_full for r in refs}
+            # Extract citations from main text
+            citations = extract_author_year_citations(main_text)
             
-            # Generate fix suggestions
-            autofix_data = generate_autofix_suggestions(
-                c2r=result.get("reconciliation_intext_to_reference", []),
-                missing_rows=result.get("missing_in_references", []),
-                references=refs,
-                ref_map=ref_map
-            )
+            # Get c2r data
+            c2r = result.get("reconciliation_intext_to_reference", [])
+            
+            # ============================================================
+            # NEW: Run improved auto-fix
+            # ============================================================
+            autofix_result = run_autofix(main_text, citations, refs, c2r)
+            
+            # Build the suggestions format expected by frontend
+            fix_suggestions = []
+            for log in autofix_result["fix_log"]:
+                fix_suggestions.append({
+                    "original": log["original"],
+                    "suggested": log["fixed"],
+                    "type": log.get("type", "year_correction"),
+                    "confidence": 0.90,
+                    "reason": f"Corrected year based on reference list"
+                })
             
             result["autofix"] = {
                 "enabled": True,
-                "suggestions": autofix_data,
+                "suggestions": {
+                    "citations": fix_suggestions,
+                    "references": [],
+                    "statistics": {
+                        "total_suggestions": len(fix_suggestions),
+                        "high_confidence": len(fix_suggestions),
+                        "medium_confidence": 0,
+                        "low_confidence": 0,
+                        "by_type": {"year_correction": len(fix_suggestions)}
+                    },
+                    "auto_fixable_count": len(fix_suggestions),
+                    "review_needed_count": 0
+                },
                 "summary": {
-                    "total_suggestions": autofix_data["statistics"]["total_suggestions"],
-                    "auto_fixable": autofix_data["auto_fixable_count"],
-                    "needs_review": autofix_data["review_needed_count"]
+                    "total_suggestions": len(fix_suggestions),
+                    "auto_fixable": len(fix_suggestions),
+                    "needs_review": 0
                 }
             }
+            
+            # Also store the fixed text for download
+            if autofix_result["fixed_main_text"] != main_text:
+                result["fixed_main_text"] = autofix_result["fixed_main_text"]
+                result["autofix_applied"] = True
         else:
             result["autofix"] = {
                 "enabled": True,
