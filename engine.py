@@ -1767,6 +1767,22 @@ def _generate_citation_fixes(
     # ============================================================
     # Case 0: Fix malformed year (204 → 2024)
     # ============================================================
+    def _generate_citation_fixes(
+    citation: str, 
+    references: List[RefAY],
+    ref_map: Dict[str, str]
+) -> Optional[FixSuggestion]:
+    """Generate fix suggestions for problematic citations."""
+    
+    parsed = _parse_author_year_from_cite(citation)
+    if not parsed:
+        return None
+    
+    auth, year = parsed
+    
+    # ============================================================
+    # Case 0: Fix malformed year (204 → 2024)
+    # ============================================================
     if len(year) < 4 and year.isdigit():
         year_int = int(year)
         possible_years = []
@@ -1873,6 +1889,8 @@ def _generate_citation_fixes(
                 confidence=best_score / 100,
                 reason=f"Author '{auth}' normalized to '{best_match}'"
             )
+    
+    return None
     
     return None
     
