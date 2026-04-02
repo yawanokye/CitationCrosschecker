@@ -1915,7 +1915,7 @@ def generate_autofix_suggestions(
 
 
 # -----------------------------
-# Public API: run_crosscheck (ORIGINAL - UNCHANGED)
+# Public API: run_crosscheck (UPDATED - includes main_text)
 # -----------------------------
 def run_crosscheck(
     file_bytes: bytes,
@@ -2037,6 +2037,7 @@ def run_crosscheck(
     result = {
         "filename": filename,
         "style": style_s,
+        "main_text": main_text,  # <-- CRITICAL: Add original document text for auto-fix
         "engine_build": ENGINE_BUILD,
         "verify_mode_used": (verify_mode or "all"),
         "reference_detection_message": ref_msg,
