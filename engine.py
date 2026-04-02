@@ -963,7 +963,10 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
 # ============================================================================
 
 def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
-    """Parse author and year from APA/Harvard citation."""
+    """Parse author and year from APA/Harvard citation.
+    
+    Now handles malformed years (2-3 digits like '204' -> '2024')
+    """
     s = norm_space(cite)
     if not s:
         return None
@@ -972,46 +975,43 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     
     # First try to match standard 4-digit years
     ym = YEAR_RE.search(s)
+    year = None
+    year_start = None
     
-    # If no 4-digit year found, try to find malformed years (2-3 digits)
-    if not ym:
-        # Look for 2-3 digit numbers that could be malformed years
-        malformed_pat = re.compile(r"\b(\d{2,3})\b")
+    if ym:
+        year = ym.group(1)
+        year_start = ym.start()
+    else:
+        # Try to find malformed years (2-3 digit numbers that could be years)
+        # Look for numbers like 204, 04, 24 that appear after an author name
+        malformed_pat = re.compile(r"[,&]\s*([A-Za-z\s]+?)?\s*(\d{2,3})\s*[\),]")
         malformed_match = malformed_pat.search(s)
+        
         if malformed_match:
-            year_candidate = malformed_match.group(1)
-            # Only consider if it's a reasonable year (00-99 or 000-999)
-            if 0 <= int(year_candidate) <= 999:
-                # Return with the malformed year - will be fixed later
-                left = s[: malformed_match.start()].strip(" ,;()")
-                # Parse author from left side
-                if left:
-                    prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
-                    pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
-                    while True:
-                        new_left = pref_re.sub("", left).strip(" ,;()")
-                        if new_left == left:
-                            break
-                        left = new_left
-                
-                for _ in range(3):
-                    if "," not in left:
-                        break
-                    first, rest = left.split(",", 1)
-                    if re.search(r"\b[A-Z][A-Za-z'\-]+\b", first):
-                        break
-                    left = rest.strip(" ,;()")
-                
-                left = re.sub(r"(’s|'s)\b", "", left).strip()
-                
-                if not _is_likely_narrative_citation(left, year_candidate, s):
-                    author_key = _first_author_or_org_key(left)
-                    if author_key and author_key.lower() not in NON_NAME_AUTHOR_KEYS:
-                        return author_key, year_candidate
+            year_candidate = malformed_match.group(2)
+            # Check if it's a plausible year (0-999)
+            if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
+                year = year_candidate
+                year_start = malformed_match.start(2)
+        
+        # Also try standalone 2-3 digit numbers
+        if not year:
+            standalone_pat = re.compile(r"\b(\d{2,3})\b")
+            standalone_match = standalone_pat.search(s)
+            if standalone_match:
+                year_candidate = standalone_match.group(1)
+                if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
+                    year = year_candidate
+                    year_start = standalone_match.start(1)
+    
+    if not year:
         return None
     
-    year = ym.group(1)
-    left = s[: ym.start()].strip(" ,;()")
+    # Extract left part (author section)
+    if year_start:
+        left = s[:year_start].strip(" ,;()")
+    else:
+        left = ""
 
     if left:
         prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
@@ -1763,67 +1763,61 @@ def _generate_citation_fixes(
         return None
     
     auth, year = parsed
-    year_base = _base_year(year) if len(year) == 4 else year
     
     # ============================================================
-    # Case 0: Fix malformed year (204 → 2004 or 2024)
+    # Case 0: Fix malformed year (204 → 2024)
     # ============================================================
     if len(year) < 4 and year.isdigit():
         year_int = int(year)
         possible_years = []
         
-        # 3-digit year (e.g., 204) → 2004, 2014, 2024, 1904
         if len(year) == 3:
+            # 204 → 2004, 2014, 2024, 1904
             possible_years = [
                 2000 + year_int,           # 204 → 2004
                 2000 + year_int + 10,      # 204 → 2014
                 2000 + year_int + 20,      # 204 → 2024
                 1900 + year_int,           # 204 → 1904
             ]
-        # 2-digit year (e.g., 04, 24) → 2004, 2024, 1904
         elif len(year) == 2:
-            possible_years = [
-                2000 + year_int,
-                1900 + year_int,
-            ]
-        # 1-digit year (e.g., 4) → 2004, 2014, 2024
+            # 04 → 2004, 1904
+            possible_years = [2000 + year_int, 1900 + year_int]
         elif len(year) == 1:
-            possible_years = [
-                2000 + year_int,
-                2000 + year_int + 10,
-                2000 + year_int + 20,
-            ]
+            possible_years = [2000 + year_int, 2000 + year_int + 10, 2000 + year_int + 20]
         
-        # Check each possible corrected year against references
+        # Try different author variations
+        author_variations = [auth]
+        
+        # Handle "Kim & Karr" -> try "Kim" and "Karr" separately
+        if ' & ' in auth:
+            parts = auth.split(' & ')
+            author_variations.extend(parts)
+        if ' and ' in auth:
+            parts = auth.split(' and ')
+            author_variations.extend(parts)
+        
         for alt_year in possible_years:
             alt_year_str = str(alt_year)
-            # Try different author variations
-            author_variations = [auth]
-            
-            # Try with just first author if auth contains multiple names
-            if ' & ' in auth or ' and ' in auth:
-                first_author = auth.split(' & ')[0].split(' and ')[0].strip()
-                author_variations.append(first_author)
-            
             for test_auth in author_variations:
+                test_auth = test_auth.strip()
+                if not test_auth:
+                    continue
                 alt_key = f"{test_auth}|{alt_year_str}".lower()
                 if alt_key in ref_map:
-                    # Replace the malformed year in the citation
+                    # Replace the malformed year
                     alt_citation = re.sub(r'\b' + re.escape(year) + r'\b', alt_year_str, citation)
                     return FixSuggestion(
                         original=citation,
                         suggested=alt_citation,
                         fix_type="year_malformed",
                         confidence=0.90,
-                        reason=f"Malformed year '{year}' corrected to '{alt_year_str}'"
+                        reason=f"Malformed year '{year}' corrected to '{alt_year_str}' based on reference for '{test_auth}'"
                     )
     
     # Case 1: Year typo (off by 1 or more) - only for 4-digit years
     if len(year) == 4 and year.isdigit():
         try:
             year_int = int(year[:4])
-            
-            # Check off by 1, 2, 3, 4, 5
             for offset in [-5, -4, -3, -2, -1, 1, 2, 3, 4, 5]:
                 alt_year = str(year_int + offset)
                 if len(alt_year) != 4:
@@ -1848,14 +1842,13 @@ def _generate_citation_fixes(
         best_match = None
         best_score = 0
         
-        # Determine target years to check
+        # Try to match with 4-digit year versions of the malformed year
         target_years = []
         if len(year) == 4:
             target_years.append(year)
-            # Also try variations for malformed years if the original year is short
-            if len(year) < 4 and year.isdigit():
-                y_int = int(year)
-                target_years.extend([str(2000 + y_int), str(1900 + y_int)])
+        elif year.isdigit() and len(year) < 4:
+            y_int = int(year)
+            target_years = [str(2000 + y_int), str(2000 + y_int + 10), str(2000 + y_int + 20), str(1900 + y_int)]
         
         for ref in references:
             ym = YEAR_RE.search(ref.reference_full)
@@ -1880,6 +1873,8 @@ def _generate_citation_fixes(
                 confidence=best_score / 100,
                 reason=f"Author '{auth}' normalized to '{best_match}'"
             )
+    
+    return None
     
     # Case 3: Missing "et al." pattern
     if "et al" not in citation.lower() and len(citation.split(",")[0].split()) > 2:
