@@ -1991,7 +1991,13 @@ def get_reference_signature(ref_full: str) -> Tuple[str, str, str]:
     return signature, year, author_part
     
 def build_reference_lookup(refs):
-    """Build a lookup dictionary for author -> years"""
+    """
+    Build a lookup dictionary using author SIGNATURES (not just first author)
+    This distinguishes between:
+    - Xue (2002) [single author]
+    - Xue et al. (2005) [et al]
+    - Xue, Newman, Shell, & Fang (2005) [full list]
+    """
     lookup = {}
 
     for ref in refs:
@@ -2004,17 +2010,106 @@ def build_reference_lookup(refs):
         year = ym.group(1)
         author_part = s[:ym.start()].strip()
 
-        author_key = _first_author_or_org_key(author_part)
-        if not author_key:
-            continue
+        # Get the unique author signature
+        signature = get_author_signature(author_part)
+        
+        if not signature:
+            # Fallback to first author
+            first_author = _first_author_or_org_key(author_part)
+            if first_author:
+                signature = f"single|{first_author}"
+            else:
+                continue
 
-        lookup.setdefault(author_key.lower(), []).append({
+        lookup.setdefault(signature, []).append({
             "year": year,
-            "reference": s
+            "reference": s,
+            "author_string": author_part
         })
 
     return lookup
 
+
+def find_best_match(citation_author_part: str, cite_year: str, lookup: Dict) -> Optional[str]:
+    """
+    Find the best matching year for a citation using author signature.
+    """
+    # Get signature for the citation
+    citation_signature = get_author_signature(citation_author_part)
+    
+    if not citation_signature:
+        # Fallback to simple first author
+        first_author = _first_author_or_org_key(citation_author_part)
+        if first_author:
+            citation_signature = f"single|{first_author}"
+    
+    # Try exact signature match first
+    if citation_signature in lookup:
+        candidates = lookup[citation_signature]
+        
+        # Check for exact year match
+        for c in candidates:
+            if c["year"] == cite_year:
+                return cite_year
+        
+        # Check for malformed year
+        if len(cite_year) < 4 and cite_year.isdigit():
+            year_int = int(cite_year)
+            possible_years = [
+                str(2000 + year_int),
+                str(2000 + year_int + 10),
+                str(2000 + year_int + 20),
+                str(1900 + year_int),
+            ]
+            for py in possible_years:
+                for c in candidates:
+                    if c["year"] == py:
+                        return py
+        
+        # Return closest year
+        try:
+            cy = int(_base_year(cite_year))
+            best = min(candidates, key=lambda x: abs(int(_base_year(x["year"])) - cy))
+            return best["year"]
+        except:
+            return candidates[0]["year"] if candidates else None
+    
+    # If no signature match, try to match by first author only (legacy behavior)
+    # but with a lower confidence
+    first_author = _first_author_or_org_key(citation_author_part)
+    if first_author:
+        for sig, candidates in lookup.items():
+            if f"|{first_author}" in sig or sig.endswith(f"|{first_author}"):
+                for c in candidates:
+                    if c["year"] == cite_year:
+                        return cite_year
+                    if len(cite_year) < 4 and cite_year.isdigit():
+                        year_int = int(cite_year)
+                        possible_years = [str(2000 + year_int), str(2000 + year_int + 20), str(1900 + year_int)]
+                        for py in possible_years:
+                            if c["year"] == py:
+                                return py
+    
+    return None
+
+
+def extract_author_part_from_citation(citation: str) -> str:
+    """Extract just the author part from a citation string."""
+    s = norm_space(citation)
+    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
+    
+    # Find the year
+    ym = YEAR_RE.search(s)
+    if ym:
+        return s[:ym.start()].strip(" ,;()")
+    
+    # Try malformed year
+    malformed_pat = re.compile(r"\b(\d{2,3})\b")
+    mm = malformed_pat.search(s)
+    if mm:
+        return s[:mm.start()].strip(" ,;()")
+    
+    return ""
 
 def find_best_year(author_key, cite_year, lookup):
     """Find the best matching year for an author from reference list"""
@@ -2065,21 +2160,29 @@ def fix_citation_string(citation, lookup):
         if not p:
             continue
             
+        # Parse author and year
         parsed = _parse_author_year_from_cite(p)
         if not parsed:
             fixed_parts.append(p)
             continue
 
         author, year = parsed
-        correct_year = find_best_year(author, year, lookup)
+        
+        # Extract the full author part for signature matching
+        author_part = extract_author_part_from_citation(p)
+        if not author_part:
+            author_part = author
+        
+        # Find correct year using signature-based matching
+        correct_year = find_best_match(author_part, year, lookup)
 
         if correct_year and correct_year != year:
+            # Replace the year
             fixed_parts.append(p.replace(year, correct_year))
         else:
             fixed_parts.append(p)
 
     return "; ".join(fixed_parts)
-
 
 def run_autofix(main_text, citations, refs, c2r):
     """
