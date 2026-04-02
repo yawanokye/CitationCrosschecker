@@ -1936,64 +1936,75 @@ def _generate_citation_fixes(
 # AUTHOR SIGNATURE GENERATION
 # ============================
 
+# ============================
+# AUTHOR SIGNATURE GENERATION - STRICT VERSION
+# ============================
+
 def get_author_signature(author_part: str) -> str:
     """
-    Generate a unique signature for an author string.
-    Distinguishes between:
-    - "Xue" (single author)
-    - "Xue et al." (first author + et al)
-    - "Xue, J., Newman, I., Shell, D. F., & Fang, X." (full author list)
+    Generate a UNIQUE signature for an author string.
+    Strictly distinguishes between:
+    - "Xue" (single author) -> signature: "1|xue"
+    - "Xue et al." -> signature: "1|xue|etal"
+    - "Xue, Newman, Shell, & Fang" (4 authors) -> signature: "4|fang|newman|shell|xue"
     """
     if not author_part:
         return ""
     
-    # Remove common suffixes and clean
-    author_part = re.sub(r"\bet\s+al\.?\b", "", author_part, flags=re.I).strip()
-    author_part = re.sub(r"(’s|'s)\b", "", author_part)
+    # Check for "et al" pattern FIRST (before removing it)
+    has_et_al = bool(re.search(r"\bet\s+al\.?\b", author_part, re.I))
+    
+    # Remove common suffixes and clean for surname extraction
+    author_part_clean = re.sub(r"\bet\s+al\.?\b", "", author_part, flags=re.I).strip()
+    author_part_clean = re.sub(r"(’s|'s)\b", "", author_part_clean)
     
     # Get all surnames
-    surnames = _surnames_from_author_blob(author_part)
+    surnames = _surnames_from_author_blob(author_part_clean)
     
     if not surnames:
         return ""
     
-    # Sort surnames to create a consistent key regardless of order
-    sorted_surnames = sorted(surnames)
+    # Count authors
+    author_count = len(surnames)
     
-    if len(surnames) == 1:
-        # Single author
-        return f"single|{surnames[0]}"
+    # Sort surnames alphabetically for consistent key
+    sorted_surnames = sorted([s.lower() for s in surnames])
+    
+    if has_et_al:
+        # This is an "et al." citation - mark it specially
+        # Even if we only have one surname, it's still "et al."
+        return f"{author_count}|{'|'.join(sorted_surnames)}|etal"
     else:
-        # Multiple authors - use sorted list to create a unique key
-        return f"multi|{'|'.join(sorted_surnames)}"
+        return f"{author_count}|{'|'.join(sorted_surnames)}"
 
 
-def extract_author_part_from_citation(citation: str) -> str:
-    """Extract just the author part from a citation string."""
+def extract_author_part_from_citation(citation: str) -> Tuple[str, bool]:
+    """
+    Extract author part from citation and detect if it has "et al."
+    Returns (author_part, has_et_al)
+    """
     s = norm_space(citation)
     s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
+    
+    has_et_al = bool(re.search(r"\bet\s+al\.?\b", s, re.I))
     
     # Find the year
     ym = YEAR_RE.search(s)
     if ym:
-        return s[:ym.start()].strip(" ,;()")
+        return s[:ym.start()].strip(" ,;()"), has_et_al
     
     # Try malformed year
     malformed_pat = re.compile(r"\b(\d{2,3})\b")
     mm = malformed_pat.search(s)
     if mm:
-        return s[:mm.start()].strip(" ,;()")
+        return s[:mm.start()].strip(" ,;()"), has_et_al
     
-    return ""
+    return s, has_et_al
 
 
 def build_reference_lookup(refs):
     """
-    Build a lookup dictionary using author SIGNATURES (not just first author)
-    This distinguishes between:
-    - Xue (2002) [single author]
-    - Xue et al. (2005) [et al]
-    - Xue, Newman, Shell, & Fang (2005) [full list]
+    Build a lookup dictionary using STRICT author signatures.
     """
     lookup = {}
 
@@ -2011,10 +2022,10 @@ def build_reference_lookup(refs):
         signature = get_author_signature(author_part)
         
         if not signature:
-            # Fallback to first author
+            # Fallback to first author with count 1
             first_author = _first_author_or_org_key(author_part)
             if first_author:
-                signature = f"single|{first_author}"
+                signature = f"1|{first_author.lower()}"
             else:
                 continue
 
@@ -2027,20 +2038,33 @@ def build_reference_lookup(refs):
     return lookup
 
 
-def find_best_match(citation_author_part: str, cite_year: str, lookup: Dict) -> Optional[str]:
+def find_best_match(citation_author_part: str, cite_year: str, has_et_al: bool, lookup: Dict) -> Optional[str]:
     """
-    Find the best matching year for a citation using author signature.
+    Find the best matching year for a citation using STRICT author signature.
+    Only matches if author count and et al status match exactly.
     """
-    # Get signature for the citation
-    citation_signature = get_author_signature(citation_author_part)
+    # Get the citation signature
+    if has_et_al:
+        # For et al citations, we need to be careful
+        surnames = _surnames_from_author_blob(citation_author_part)
+        if surnames:
+            sorted_surnames = sorted([s.lower() for s in surnames])
+            citation_signature = f"{len(surnames)}|{'|'.join(sorted_surnames)}|etal"
+        else:
+            # Fallback: just use first author with etal flag
+            first_author = _first_author_or_org_key(citation_author_part)
+            if first_author:
+                citation_signature = f"1|{first_author.lower()}|etal"
+            else:
+                return None
+    else:
+        # Regular citation - get full signature
+        citation_signature = get_author_signature(citation_author_part)
     
     if not citation_signature:
-        # Fallback to simple first author
-        first_author = _first_author_or_org_key(citation_author_part)
-        if first_author:
-            citation_signature = f"single|{first_author}"
+        return None
     
-    # Try exact signature match first
+    # STRICT: Only match exact signature
     if citation_signature in lookup:
         candidates = lookup[citation_signature]
         
@@ -2063,30 +2087,18 @@ def find_best_match(citation_author_part: str, cite_year: str, lookup: Dict) -> 
                     if c["year"] == py:
                         return py
         
-        # Return closest year
+        # Return closest year within the same signature group
         try:
             cy = int(_base_year(cite_year))
             best = min(candidates, key=lambda x: abs(int(_base_year(x["year"])) - cy))
-            return best["year"]
+            # Only allow if within 5 years
+            if abs(int(_base_year(best["year"])) - cy) <= 5:
+                return best["year"]
         except:
-            return candidates[0]["year"] if candidates else None
+            pass
     
-    # If no signature match, try to match by first author only (legacy behavior)
-    first_author = _first_author_or_org_key(citation_author_part)
-    if first_author:
-        for sig, candidates in lookup.items():
-            # Check if this signature contains our first author
-            if f"|{first_author}" in sig or sig.endswith(f"|{first_author}") or sig == f"single|{first_author}":
-                for c in candidates:
-                    if c["year"] == cite_year:
-                        return cite_year
-                    if len(cite_year) < 4 and cite_year.isdigit():
-                        year_int = int(cite_year)
-                        possible_years = [str(2000 + year_int), str(2000 + year_int + 20), str(1900 + year_int)]
-                        for py in possible_years:
-                            if c["year"] == py:
-                                return py
-    
+    # NO FALLBACK - if signature doesn't match exactly, return None
+    # This prevents wrong matches like single author matching multi-author
     return None
 
 
@@ -2109,13 +2121,13 @@ def fix_citation_string(citation, lookup):
 
         author, year = parsed
         
-        # Extract the full author part for signature matching
-        author_part = extract_author_part_from_citation(p)
+        # Extract author part and detect et al
+        author_part, has_et_al = extract_author_part_from_citation(p)
         if not author_part:
             author_part = author
         
-        # Find correct year using signature-based matching
-        correct_year = find_best_match(author_part, year, lookup)
+        # Find correct year using STRICT signature matching
+        correct_year = find_best_match(author_part, year, has_et_al, lookup)
 
         if correct_year and correct_year != year:
             # Replace the year
@@ -2128,19 +2140,17 @@ def fix_citation_string(citation, lookup):
 
 def run_autofix(main_text, citations, refs, c2r):
     """
-    Improved Auto-Fix:
-    - Uses full reference list (NOT c2r)
-    - Fixes semicolon citations
-    - Fixes wrong years
-    - Distinguishes between single/multiple authors
-    - Works even when reconciliation fails
+    Improved Auto-Fix with STRICT author matching:
+    - Single author NEVER matches multi-author
+    - "et al." citations are tracked separately
+    - Only exact author count matches are allowed
     """
     lookup = build_reference_lookup(refs)
 
     fixed_text = main_text
     fix_log = []
 
-    # Process unique citations to avoid duplicate work
+    # Process unique citations
     seen = set()
     for cite in citations:
         if cite in seen:
@@ -2150,16 +2160,22 @@ def run_autofix(main_text, citations, refs, c2r):
         fixed = fix_citation_string(cite, lookup)
 
         if fixed != cite:
-            # Replace in text (handle both with and without parentheses)
+            # Replace in text
             fixed_text = fixed_text.replace(cite, fixed)
-            # Also handle case where citation has parentheses but stored doesn't
             if not cite.startswith('('):
                 fixed_text = fixed_text.replace(f'({cite})', f'({fixed})')
+            
+            # Determine fix type
+            fix_type = "year_malformed"
+            if len(cite.split(',')) > 1:
+                year_part = cite.split(',')[1].strip().rstrip(')')
+                if len(year_part) == 4 and year_part.isdigit():
+                    fix_type = "year_typo"
             
             fix_log.append({
                 "original": cite,
                 "fixed": fixed,
-                "type": "year_malformed" if len(cite.split(',')) > 1 and len(cite.split(',')[1].strip()) < 4 else "year_typo"
+                "type": fix_type
             })
 
     return {
