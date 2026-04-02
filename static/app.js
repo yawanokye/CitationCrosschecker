@@ -9,11 +9,11 @@ CONFIG - UPDATED FOR LONG-RUNNING JOBS
 ------------------------------------------------------- */
 
 const CONFIG = {
-    POLL_INTERVAL: 3000,  // Increased from 1500 to 3000ms (3 seconds) to reduce server load
+    POLL_INTERVAL: 3000,
     MAX_VERIFY_DISPLAY: 500,
-    RETRY_DELAY: 30000,   // 30 seconds
-    MAX_POLL_ATTEMPTS: 1200,  // 1200 * 3 seconds = 1 hour max polling
-    STALL_TIMEOUT: 300000  // 5 minutes without progress = stalled (300,000 ms)
+    RETRY_DELAY: 30000,
+    MAX_POLL_ATTEMPTS: 1200,
+    STALL_TIMEOUT: 300000
 };
 
 /* -------------------------------------------------------
@@ -54,7 +54,17 @@ const el = {
     fixLogPanel: $("fixLogPanel"),
     fixLogContent: $("fixLogContent"),
     fixSuggestionsPanel: $("fixSuggestionsPanel"),
-    fixSuggestionsContent: $("fixSuggestionsContent")
+    fixSuggestionsContent: $("fixSuggestionsContent"),
+    // New elements for enhanced ACII
+    aciiCenterpiece: $("aciiCenterpiece"),
+    aciiScoreLarge: $("aciiScoreLarge"),
+    aciiRatingBadge: $("aciiRatingBadge"),
+    aciiRecommendationText: $("aciiRecommendationText"),
+    // Process feedback elements
+    stepUpload: $("stepUpload"),
+    stepExtract: $("stepExtract"),
+    stepMatch: $("stepMatch"),
+    stepACII: $("stepACII")
 };
 
 let LAST_JOB_ID = null;
@@ -100,6 +110,29 @@ function formatTime(seconds) {
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+function updateProcessFeedback(step, status) {
+    const stepEl = el[`step${step}`];
+    if (stepEl) {
+        stepEl.className = `feedback-step ${status}`;
+        if (status === "completed") {
+            stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "✓");
+        } else if (status === "active") {
+            stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "🔄");
+        }
+    }
+}
+
+function resetProcessFeedback() {
+    const steps = ["Upload", "Extract", "Match", "ACII"];
+    steps.forEach(step => {
+        const stepEl = el[`step${step}`];
+        if (stepEl) {
+            stepEl.className = "feedback-step";
+            stepEl.innerHTML = stepEl.innerHTML.replace("✓", "⏳").replace("🔄", "⏳");
+        }
+    });
+}
+
 function showNotification(message, type = "info") {
     const notification = document.createElement("div");
     notification.className = `notification ${type}`;
@@ -121,6 +154,49 @@ function showNotification(message, type = "info") {
         notification.style.animation = "slideOut 0.3s ease";
         setTimeout(() => notification.remove(), 300);
     }, 4000);
+}
+
+/* -------------------------------------------------------
+FILE AREA CLICK HANDLER - FIX FOR UPLOAD ACTIVATION
+------------------------------------------------------- */
+
+function setupFileArea() {
+    const fileArea = document.getElementById("fileArea");
+    const fileInput = el.file;
+    
+    if (fileArea && fileInput) {
+        // Click on file area triggers file input
+        fileArea.addEventListener("click", function(e) {
+            // Don't trigger if clicking on already selected file name
+            if (e.target.classList && e.target.classList.contains("file-name")) {
+                return;
+            }
+            fileInput.click();
+        });
+        
+        // Drag and drop support
+        fileArea.addEventListener("dragover", function(e) {
+            e.preventDefault();
+            fileArea.classList.add("drag-over");
+        });
+        
+        fileArea.addEventListener("dragleave", function(e) {
+            e.preventDefault();
+            fileArea.classList.remove("drag-over");
+        });
+        
+        fileArea.addEventListener("drop", function(e) {
+            e.preventDefault();
+            fileArea.classList.remove("drag-over");
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                // Trigger change event
+                const changeEvent = new Event('change', { bubbles: true });
+                fileInput.dispatchEvent(changeEvent);
+            }
+        });
+    }
 }
 
 /* -------------------------------------------------------
@@ -252,7 +328,6 @@ async function applyAutoFix() {
             
             if (el.btnExportFixed) el.btnExportFixed.disabled = false;
             
-            // Show fix log
             await showFixLog();
         } else {
             showNotification("Failed to apply auto-fixes", "error");
@@ -328,7 +403,6 @@ function downloadFixedDocument() {
         return;
     }
     
-    // Open download in new tab
     window.open(`/export-fixed-document/${encodeURIComponent(LAST_JOB_ID)}?format=txt`, '_blank');
     showNotification("Downloading fixed document...", "info");
 }
@@ -346,7 +420,6 @@ function updateProgress(progress, total, status = "processing", message = null, 
     el.progressBar.textContent = `${percentage}%`;
     el.progressBar.setAttribute('aria-valuenow', percentage);
     
-    // Update estimated remaining time display
     if (el.estimatedRemaining && remainingSeconds !== null && remainingSeconds > 0 && status === "processing") {
         el.estimatedRemaining.textContent = `⏱️ Est. remaining: ${formatTime(remainingSeconds)}`;
     } else if (el.estimatedRemaining && status !== "processing") {
@@ -422,6 +495,15 @@ async function updateQueueStatus() {
             `;
         }
         
+        // Update header stats
+        const statUploads = document.getElementById("statUploads");
+        const statQueue = document.getElementById("statQueue");
+        const statProcessed = document.getElementById("statProcessed");
+        
+        if (statUploads) statUploads.textContent = data.total_jobs || 0;
+        if (statQueue) statQueue.textContent = data.queue_size || 0;
+        if (statProcessed) statProcessed.textContent = (data.total_jobs || 0) - (data.queue_size || 0);
+        
         return data;
     } catch (err) {
         console.error("Queue status error:", err);
@@ -448,7 +530,7 @@ function resetVerificationUI() {
     
     if (el.verifyBody) {
         el.verifyBody.innerHTML = `\
-              <tr><td colspan="9">No verification results. Click "Run Online Verification" to start.</td></td>
+              <tr><td colspan="9">No verification results. Click "Run Online Verification" to start. </div> </div>
         `;
     }
     
@@ -479,13 +561,15 @@ TAB NAVIGATION
 const tabs = document.querySelectorAll(".tab");
 const panes = document.querySelectorAll(".tabPane");
 
-panes.forEach((pane, index) => {
-    if (index === 0) {
-        pane.classList.add("active");
-    } else {
-        pane.classList.remove("active");
-    }
-});
+if (panes.length > 0) {
+    panes.forEach((pane, index) => {
+        if (index === 0) {
+            pane.classList.add("active");
+        } else {
+            pane.classList.remove("active");
+        }
+    });
+}
 
 tabs.forEach(tab => {
     tab.addEventListener("click", () => {
@@ -502,7 +586,7 @@ tabs.forEach(tab => {
 });
 
 /* -------------------------------------------------------
-STATUS POLLING FUNCTIONS (WITH TIMEOUT HANDLING)
+STATUS POLLING FUNCTIONS
 ------------------------------------------------------- */
 
 async function fetchStatus() {
@@ -510,7 +594,6 @@ async function fetchStatus() {
     
     POLL_ATTEMPT_COUNT++;
     
-    // Check if we've exceeded max poll attempts
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
         console.log("[Polling] Max attempts reached, stopping polling");
         setStatus("Verification taking too long. Check back later or refresh.", "warn");
@@ -523,16 +606,13 @@ async function fetchStatus() {
     try {
         const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
         
-        // Handle timeout or server error
         if (res.status === 504) {
             console.log("[DEBUG] Request timeout, but job may still be running...");
-            // Don't stop polling - the job is still running
             return;
         }
         
         const js = await res.json();
         
-        // Update progress from online status
         if (js.online) {
             const progress = js.online.progress || 0;
             const total = js.online.total || 0;
@@ -541,7 +621,6 @@ async function fetchStatus() {
             const startedAt = js.online.started_at;
             
             if (total > 0) {
-                // Calculate elapsed time
                 let elapsedSeconds = 0;
                 let remainingSeconds = null;
                 
@@ -550,14 +629,12 @@ async function fetchStatus() {
                     const now = Date.now();
                     elapsedSeconds = (now - startTime) / 1000;
                     
-                    // Calculate estimated remaining time based on rate
                     if (progress > 0 && elapsedSeconds > 0) {
                         const rate = progress / elapsedSeconds;
                         remainingSeconds = (total - progress) / rate;
                     }
                 }
                 
-                // Check for stalled progress (no movement for too long)
                 if (progress === LAST_PROGRESS && LAST_PROGRESS_TIME) {
                     const stallDuration = Date.now() - LAST_PROGRESS_TIME;
                     if (stallDuration > CONFIG.STALL_TIMEOUT && progress < total && state === "processing") {
@@ -576,17 +653,15 @@ async function fetchStatus() {
                         elapsedSeconds, remainingSeconds);
                 }
                 
-                // Update tracking variables
                 if (progress !== LAST_PROGRESS) {
                     LAST_PROGRESS = progress;
                     LAST_PROGRESS_TIME = Date.now();
                 }
                 
-                console.log(`[Progress] ${progress}/${total} (${percentage}%) - ${state} - Elapsed: ${formatTime(elapsedSeconds)} - Est. remaining: ${remainingSeconds ? formatTime(remainingSeconds) : 'calculating...'}`);
+                console.log(`[Progress] ${progress}/${total} (${percentage}%) - ${state} - Elapsed: ${formatTime(elapsedSeconds)}`);
             }
         }
         
-        // Update from progress object if present
         if (js.progress) {
             if (js.online && js.progress.current === js.online.progress) {
                 // Already updated
@@ -596,7 +671,6 @@ async function fetchStatus() {
             }
         }
         
-        // Update queue status
         if (js.queue && el.queueStatus) {
             const busyClass = js.queue.is_busy ? 'busy' : 'ready';
             el.queueStatus.innerHTML = `
@@ -612,7 +686,6 @@ async function fetchStatus() {
             renderAll(js.result);
         }
         
-        // Check completion
         if (js.online?.state === "completed") {
             setStatus("Online verification complete", "good");
             VERIFICATION_IN_PROGRESS = false;
@@ -633,7 +706,6 @@ async function fetchStatus() {
         
     } catch (err) {
         console.error("Status fetch error:", err);
-        // Don't stop polling on error - job may still be running
     }
 }
 
@@ -669,7 +741,7 @@ function getACIIRating(score) {
 }
 
 /* -------------------------------------------------------
-UNIQUE CITATION DEDUPLICATION (WITH COUNT)
+UNIQUE CITATION DEDUPLICATION
 ------------------------------------------------------- */
 
 function getUniqueCitationsWithCount(c2rRows) {
@@ -698,7 +770,7 @@ function getUniqueCitationsWithCount(c2rRows) {
 }
 
 /* -------------------------------------------------------
-EXPORT FUNCTIONS (unchanged - keeping existing functionality)
+EXPORT FUNCTIONS
 ------------------------------------------------------- */
 
 function escapeCsv(str) {
@@ -912,14 +984,14 @@ function exportWordFile(data) {
     
     <h2>📈 Summary</h2>
     <table class="summary-table">
-        <thead> tr<th>Metric</th><th>Value</th> </thead>
+        <thead><tr><th>Metric</th><th>Value</th> </thead>
         <tbody>
-            <tr><td>Total in-text citations (occurrences)</td><td><strong>${s.in_text_citations_found || 0}</strong></td></tr>
-            <tr><td>Unique citations</td><td><strong>${uniqueCitations.length}</strong></td></tr>
-            <tr><td>Reference entries found</td><td>${s.reference_entries_found || 0}</td></tr>
-            <tr><td>Missing in references (unique)</td><td><strong>${s.missing_in_references || 0}</strong></td></tr>
-            <tr><td>Uncited references</td><td><strong>${s.uncited_references || 0}</strong></td></tr>
-            <tr><td>Match rate</td><td><strong>${s.match_rate || 0}%</strong></td></tr>
+            <tr><td>Total in-text citations (occurrences)</div><td><strong>${s.in_text_citations_found || 0}</strong></div></tr>
+            <tr><td>Unique citations</div><td><strong>${uniqueCitations.length}</strong></div></tr>
+            <tr><td>Reference entries found</div><td>${s.reference_entries_found || 0}</div></tr>
+            <tr><td>Missing in references (unique)</div><td><strong>${s.missing_in_references || 0}</strong></div></tr>
+            <tr><td>Uncited references</div><td><strong>${s.uncited_references || 0}</strong></div></tr>
+            <tr><td>Match rate</div><td><strong>${s.match_rate || 0}%</strong></div></tr>
         </tbody>
     </table>
     
@@ -930,22 +1002,20 @@ function exportWordFile(data) {
         <div style="font-size:12px; margin-top:10px;">${aciiRating.description}</div>
     </div>`;
 
-    // ACII Components
     if (acii.components) {
         html += `
     <h2>📊 ACII Components</h2>
     <table>
         <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th> </thead>
         <tbody>
-            <tr><td>Verification Integrity</td><td>${acii.components.verification_integrity?.score || '—'}</td><td>${acii.components.verification_integrity?.category || '—'}</td><td>${esc(acii.components.verification_integrity?.remark || '—')}</td></tr>
-            <tr><td>Citation Concentration</td><td>${acii.components.citation_concentration?.score || '—'}</td><td>${acii.components.citation_concentration?.category || '—'}</td><td>${esc(acii.components.citation_concentration?.remark || '—')}</td></tr>
-            <tr><td>Author Diversity</td><td>${acii.components.author_diversity?.score || '—'}</td><td>${acii.components.author_diversity?.category || '—'}</td><td>${esc(acii.components.author_diversity?.remark || '—')}</td></tr>
-            <tr><td>Temporal Balance</td><td>${acii.components.temporal_balance?.score || '—'}</td><td>${acii.components.temporal_balance?.category || '—'}</td><td>${esc(acii.components.temporal_balance?.remark || '—')}</td></tr>
+            <tr><td>Verification Integrity</td><td>${acii.components.verification_integrity?.score || '—'}</td><td>${acii.components.verification_integrity?.category || '—'}</td><td>${esc(acii.components.verification_integrity?.remark || '—')}</td> </tr>
+            <tr><td>Citation Concentration</td><td>${acii.components.citation_concentration?.score || '—'}</td><td>${acii.components.citation_concentration?.category || '—'}</td><td>${esc(acii.components.citation_concentration?.remark || '—')}</td> </tr>
+            <tr><td>Author Diversity</td><td>${acii.components.author_diversity?.score || '—'}</td><td>${acii.components.author_diversity?.category || '—'}</td><td>${esc(acii.components.author_diversity?.remark || '—')}</td> </tr>
+            <tr><td>Temporal Balance</td><td>${acii.components.temporal_balance?.score || '—'}</td><td>${acii.components.temporal_balance?.category || '—'}</td><td>${esc(acii.components.temporal_balance?.remark || '—')}</td> </tr>
         </tbody>
     </table>`;
     }
 
-    // Missing Citations
     html += `
     <h2>❌ Missing Citations</h2>`;
     if (missing.length > 0) {
@@ -964,7 +1034,6 @@ function exportWordFile(data) {
         html += `<p>✅ No missing citations found!</p>`;
     }
 
-    // Uncited References
     html += `
     <h2>📚 Uncited References</h2>`;
     if (uncited.length > 0) {
@@ -979,10 +1048,9 @@ function exportWordFile(data) {
         html += `<p>✅ All references are cited!</p>`;
     }
 
-    // Citation to Reference Mapping
     html += `
     <h2>🔗 Citation to Reference Mapping</h2>
-    能
+    <table>
         <thead> <th>#</th><th>Status</th><th>Citation</th><th>Count</th><th>Matched Reference</th><th>Flags</th> </thead>
         <tbody>
             ${uniqueCitations.slice(0, 50).map((item, idx) => {
@@ -999,7 +1067,6 @@ function exportWordFile(data) {
         </tbody>
     </table>`;
 
-    // Reference to Citation Mapping (INCLUDES UNCITED)
     html += `
     <h2>📖 Reference to Citation Mapping</h2>
     能
@@ -1020,7 +1087,6 @@ function exportWordFile(data) {
         </tbody>
       </table>`;
 
-    // Online Verification Results (if available)
     if (ov.rows && ov.rows.length > 0) {
         html += `
     <div class="page-break"></div>
@@ -1067,18 +1133,48 @@ function exportWordFile(data) {
 }
 
 /* -------------------------------------------------------
-RENDER FUNCTIONS (unchanged)
+RENDER FUNCTIONS
 ------------------------------------------------------- */
-
-// Add to app.js - update renderACII function
 
 function renderACII(data) {
     const acii = data?.acii;
 
     if (!acii) return;
 
-    if (el.aciiCard) el.aciiCard.style.display = "block";
+    // Show ACII centerpiece
+    if (el.aciiCenterpiece) {
+        el.aciiCenterpiece.style.display = "block";
+    }
+    
+    if (el.aciiCard) {
+        el.aciiCard.style.display = "block";
+    }
 
+    // Update large score display
+    if (el.aciiScoreLarge) {
+        const score = acii.ACII ?? "--";
+        el.aciiScoreLarge.textContent = score;
+        
+        // Update rating badge
+        if (el.aciiRatingBadge && score !== "--") {
+            const rating = getACIIRating(score);
+            el.aciiRatingBadge.textContent = rating.text;
+            el.aciiRatingBadge.className = `acii-rating-badge ${rating.class}`;
+        }
+        
+        // Update recommendation text
+        if (el.aciiRecommendationText && acii.recommendations) {
+            const recs = acii.recommendations;
+            let recHtml = "";
+            if (recs.recency) recHtml += `<div>📅 ${esc(recs.recency)}</div>`;
+            if (recs.verification) recHtml += `<div>🔍 ${esc(recs.verification)}</div>`;
+            if (recs.diversity) recHtml += `<div>👥 ${esc(recs.diversity)}</div>`;
+            if (recs.priority) recHtml += `<div class="priority">🎯 ${esc(recs.priority)}</div>`;
+            el.aciiRecommendationText.innerHTML = recHtml || "<div>No specific recommendations available.</div>";
+        }
+    }
+
+    // Update detailed ACII card
     if (el.aciiValue) {
         const score = acii.ACII ?? "--";
         el.aciiValue.textContent = score;
@@ -1090,12 +1186,6 @@ function renderACII(data) {
         }
     }
 
-    // Display the new remark
-    if (el.aciiRemark && acii.remark) {
-        el.aciiRemark.innerHTML = `<span class="acii-remark">📝 ${esc(acii.remark)}</span>`;
-    }
-
-    // Display components (updated structure)
     const comp = acii.components || {};
 
     if ($("aciiV")) $("aciiV").textContent = comp.verification_integrity?.score ?? "";
@@ -1110,30 +1200,11 @@ function renderACII(data) {
     if ($("aciiAcat")) $("aciiAcat").textContent = comp.author_diversity?.category ?? "";
     if ($("aciiAremark")) $("aciiAremark").textContent = comp.author_diversity?.remark ?? "";
 
-    // NEW: Display recency and temporal balance
-    if ($("aciiRecency")) $("aciiRecency").textContent = comp.recency?.score ?? "";
-    if ($("aciiRecencyCat")) $("aciiRecencyCat").textContent = comp.recency?.category ?? "";
-    if ($("aciiRecencyRemark")) $("aciiRecencyRemark").textContent = comp.recency?.remark ?? "";
-
-    if ($("aciiTempBalance")) $("aciiTempBalance").textContent = comp.temporal_balance?.score ?? "";
-    if ($("aciiTempBalanceCat")) $("aciiTempBalanceCat").textContent = comp.temporal_balance?.category ?? "";
-    if ($("aciiTempBalanceRemark")) $("aciiTempBalanceRemark").textContent = comp.temporal_balance?.remark ?? "";
-
-    if ($("aciiTempQuality")) $("aciiTempQuality").textContent = comp.temporal_quality?.score ?? "";
-    if ($("aciiTempQualityCat")) $("aciiTempQualityCat").textContent = comp.temporal_quality?.category ?? "";
-
-    // NEW: Display recommendations
-    const recs = acii.recommendations || {};
-    if ($("aciiRecommendations")) {
-        let recHtml = '<div class="recommendations-list">';
-        if (recs.recency) recHtml += `<div class="rec-item">📅 ${esc(recs.recency)}</div>`;
-        if (recs.verification) recHtml += `<div class="rec-item">🔍 ${esc(recs.verification)}</div>`;
-        if (recs.diversity) recHtml += `<div class="rec-item">👥 ${esc(recs.diversity)}</div>`;
-        if (recs.priority) recHtml += `<div class="rec-item priority">🎯 ${esc(recs.priority)}</div>`;
-        recHtml += '</div>';
-        $("aciiRecommendations").innerHTML = recHtml;
-    }
+    if ($("aciiT")) $("aciiT").textContent = comp.temporal_balance?.score ?? "";
+    if ($("aciiTcat")) $("aciiTcat").textContent = comp.temporal_balance?.category ?? "";
+    if ($("aciiTremark")) $("aciiTremark").textContent = comp.temporal_balance?.remark ?? "";
 }
+
 function normalizeData(payload) {
     const data = payload?.data || payload?.result || payload || {};
     const s = data.summary || {};
@@ -1152,13 +1223,26 @@ function normalizeData(payload) {
 function renderSummaryTable(data) {
     const s = data?.summary || {};
     if (!el.summaryTable) return;
+    
+    // Update KPI dashboard
+    const kpiCitations = document.getElementById("kpiCitations");
+    const kpiReferences = document.getElementById("kpiReferences");
+    const kpiMissing = document.getElementById("kpiMissing");
+    const kpiUncited = document.getElementById("kpiUncited");
+    const kpiMatchRate = document.getElementById("kpiMatchRate");
+    
+    if (kpiCitations) kpiCitations.textContent = s.in_text_citations_found || 0;
+    if (kpiReferences) kpiReferences.textContent = s.reference_entries_found || 0;
+    if (kpiMissing) kpiMissing.textContent = s.missing_in_references || 0;
+    if (kpiUncited) kpiUncited.textContent = s.uncited_references || 0;
+    if (kpiMatchRate) kpiMatchRate.textContent = `${s.match_rate || 0}%`;
 
     el.summaryTable.innerHTML = `
-         <tr><td style="width:220px;">In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
-         <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
-         <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
-         <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
-         <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
+        <tr><td style="width:220px;">In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
+        <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
+        <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
+        <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
+        <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
     `;
 }
 
@@ -1262,7 +1346,12 @@ function renderAll(data) {
     renderR2C(CURRENT_DATA);
     renderVerify(CURRENT_DATA);
     
-    // Check for auto-fix suggestions if autofix was enabled
+    // Update process feedback
+    updateProcessFeedback("Upload", "completed");
+    updateProcessFeedback("Extract", "completed");
+    updateProcessFeedback("Match", "completed");
+    updateProcessFeedback("ACII", "completed");
+    
     if (CURRENT_DATA.autofix && CURRENT_DATA.autofix.suggestions) {
         FIX_SUGGESTIONS = CURRENT_DATA.autofix;
         displayFixSuggestions(FIX_SUGGESTIONS);
@@ -1271,7 +1360,7 @@ function renderAll(data) {
 }
 
 /* -------------------------------------------------------
-FILE VALIDATION - REJECT PDF FILES
+FILE VALIDATION
 ------------------------------------------------------- */
 
 function validateFile(file) {
@@ -1283,14 +1372,14 @@ function validateFile(file) {
     if (fileExtension === 'pdf') {
         return { 
             valid: false, 
-            message: "PDF files are not supported. Please convert to DOCX first: Open blank Word → File → Open → Select PDF → Click OK → Save as .docx" 
+            message: "PDF files are not supported. Please convert to DOCX first." 
         };
     }
     
     if (fileExtension !== 'docx') {
         return { 
             valid: false, 
-            message: "Only DOCX files are accepted. Please convert PDF to DOCX: Open blank Word → File → Open → Select PDF → Click OK → Save as .docx" 
+            message: "Only DOCX files are accepted. Please upload a Word document." 
         };
     }
     
@@ -1298,7 +1387,7 @@ function validateFile(file) {
 }
 
 /* -------------------------------------------------------
-RUN INITIAL CHECK (WITH PDF REJECTION & AUTO-FIX)
+RUN INITIAL CHECK
 ------------------------------------------------------- */
 
 async function runInitialCheck() {
@@ -1310,8 +1399,15 @@ async function runInitialCheck() {
         setStatus(validation.message, "warn");
         updateProgress(0, 0, "error", validation.message);
         el.file.value = '';
+        // Reset file name display
+        const fileNameSpan = document.getElementById("fileName");
+        if (fileNameSpan) fileNameSpan.textContent = "";
         return;
     }
+
+    // Reset process feedback
+    resetProcessFeedback();
+    updateProcessFeedback("Upload", "active");
 
     if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
     VERIFICATION_IN_PROGRESS = false;
@@ -1326,7 +1422,6 @@ async function runInitialCheck() {
     fd.append("file", f);
     fd.append("style", el.style?.value || "apa");
     
-    // Add auto-fix and online verification flags
     const autofixEnabled = el.autofix?.checked || false;
     const onlineVerifyEnabled = el.onlineVerify?.checked || false;
     fd.append("enable_autofix", autofixEnabled.toString());
@@ -1337,9 +1432,8 @@ async function runInitialCheck() {
         
         if (res.status === 400) {
             const js = await res.json();
-            const errorMsg = js.message || "Invalid file format. Please use DOCX files only.";
-            setStatus(errorMsg, "warn");
-            updateProgress(0, 0, "error", errorMsg);
+            setStatus(js.message || "Invalid file format.", "warn");
+            updateProgress(0, 0, "error", js.message);
             el.file.value = '';
             return;
         }
@@ -1347,14 +1441,16 @@ async function runInitialCheck() {
         if (res.status === 503) {
             const js = await res.json();
             setStatus(js.message || "Server is busy, please wait...", "warn");
-            updateProgress(0, 0, "error", `Server busy: ${js.message || "Please wait"}`);
             if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runInitialCheck, CONFIG.RETRY_DELAY); }
-            else { setStatus("Server is busy. Please try again later.", "warn"); RETRY_COUNT = 0; }
             return;
         }
         
         const js = await res.json();
         LAST_JOB_ID = js.job_id;
+        
+        updateProcessFeedback("Extract", "completed");
+        updateProcessFeedback("Match", "active");
+        
         renderAll(js);
         setStatus("Analysis complete", "good");
         RETRY_COUNT = 0;
@@ -1362,12 +1458,10 @@ async function runInitialCheck() {
         
         if (el.btnVerify) el.btnVerify.disabled = false;
         
-        // If auto-fix was enabled and suggestions are available, show them
         if (autofixEnabled && js.data?.autofix) {
-            showNotification("Auto-fix suggestions available! Click 'Get Fix Suggestions' to review.", "info");
+            showNotification("Auto-fix suggestions available!", "info");
         }
         
-        // If online verification auto-started, start polling
         if (js.online_verification_started) {
             startPolling();
         }
@@ -1378,25 +1472,31 @@ async function runInitialCheck() {
 }
 
 /* -------------------------------------------------------
-FILE SELECTION VALIDATION
+FILE SELECTION & DISPLAY
 ------------------------------------------------------- */
 
 if (el.file) {
+    // Display selected file name
     el.file.addEventListener('change', function(e) {
         const file = e.target.files[0];
+        const fileNameSpan = document.getElementById("fileName");
         if (file) {
             const validation = validateFile(file);
             if (!validation.valid) {
                 setStatus(validation.message, "warn");
                 el.file.value = '';
+                if (fileNameSpan) fileNameSpan.textContent = "";
                 if (el.btnCheck) el.btnCheck.disabled = true;
                 if (el.btnVerify) el.btnVerify.disabled = true;
                 if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = true;
                 if (el.btnExportFixed) el.btnExportFixed.disabled = true;
             } else {
                 setStatus(validation.message, "good");
+                if (fileNameSpan) fileNameSpan.textContent = `📄 ${file.name}`;
                 if (el.btnCheck) el.btnCheck.disabled = false;
             }
+        } else {
+            if (fileNameSpan) fileNameSpan.textContent = "";
         }
     });
 }
@@ -1425,7 +1525,6 @@ async function runOnlineVerification() {
         if (res.status === 503) {
             const js = await res.json();
             setStatus(js.message || "Server is busy, please wait...", "warn");
-            updateProgress(0, 0, "error", `Server busy: ${js.message || "Please wait"}`);
             VERIFICATION_IN_PROGRESS = false;
             if (el.btnVerify) el.btnVerify.disabled = false;
             if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runOnlineVerification, CONFIG.RETRY_DELAY); }
@@ -1477,6 +1576,9 @@ function exportVerificationResults() {
 BUTTON EVENTS
 ------------------------------------------------------- */
 
+// Setup file area click handler
+setupFileArea();
+
 if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
 if (el.btnVerify) { el.btnVerify.disabled = true; el.btnVerify.addEventListener("click", runOnlineVerification); }
 if (el.btnApplyAutofix) { el.btnApplyAutofix.disabled = true; el.btnApplyAutofix.addEventListener("click", applyAutoFix); }
@@ -1502,10 +1604,16 @@ if (exportWord) {
     });
 }
 
+// Get Fix Suggestions button if exists
+const btnGetFixes = document.getElementById("btnGetFixes");
+if (btnGetFixes) {
+    btnGetFixes.addEventListener("click", getAutoFixSuggestions);
+}
+
 // Periodic queue status update
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[App] Initialized successfully with auto-fix and timeout handling");
+console.log("[App] Initialized successfully with auto-fix, timeout handling, and file upload activation");
 
 });
