@@ -20,7 +20,6 @@
             line-height: 1.5;
         }
 
-        /* Header - Reduced Logo Size */
         .header {
             background: white;
             border-bottom: 1px solid #e2e8f0;
@@ -91,14 +90,12 @@
             letter-spacing: 0.5px;
         }
 
-        /* Main Container */
         .container {
             max-width: 1400px;
             margin: 0 auto;
             padding: 40px;
         }
 
-        /* Hero Section */
         .hero {
             text-align: center;
             margin-bottom: 48px;
@@ -141,7 +138,6 @@
             font-weight: bold;
         }
 
-        /* Upload Card */
         .upload-card {
             background: white;
             border-radius: 24px;
@@ -192,7 +188,6 @@
             display: none;
         }
 
-        /* Options */
         .options-row {
             display: flex;
             gap: 24px;
@@ -209,7 +204,6 @@
             color: #334155;
         }
 
-        /* Buttons - Premium Style */
         .button-group {
             display: flex;
             gap: 16px;
@@ -276,7 +270,6 @@
             cursor: not-allowed;
         }
 
-        /* Status Bar */
         .status-bar {
             background: #f1f5f9;
             border-radius: 40px;
@@ -293,7 +286,6 @@
         .status.warn { color: #e67e22; }
         .status.bad { color: #e74c3c; }
 
-        /* Why This Matters Section */
         .why-matters {
             background: linear-gradient(135deg, #f0f9ff 0%, #e6f7ec 100%);
             border-radius: 24px;
@@ -330,7 +322,6 @@
             color: #475569;
         }
 
-        /* Process Feedback */
         .process-feedback {
             display: flex;
             gap: 16px;
@@ -358,7 +349,6 @@
             font-weight: 500;
         }
 
-        /* ACII Centerpiece */
         .acii-centerpiece {
             background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
             border-radius: 24px;
@@ -404,7 +394,14 @@
             font-size: 14px;
         }
 
-        /* Tabs */
+        .acii-recommendation .priority {
+            color: #f39c12;
+            font-weight: 500;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+        }
+
         .tabs {
             display: flex;
             gap: 4px;
@@ -443,7 +440,6 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* Cards */
         .card {
             background: white;
             border-radius: 20px;
@@ -462,7 +458,6 @@
             gap: 10px;
         }
 
-        /* KPI Dashboard */
         .kpi-dashboard {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -489,7 +484,6 @@
             margin-top: 5px;
         }
 
-        /* Export Section */
         .export-section {
             display: flex;
             gap: 12px;
@@ -504,7 +498,6 @@
             font-size: 12px;
         }
 
-        /* Trust Element */
         .trust-badge {
             text-align: center;
             padding: 20px;
@@ -519,7 +512,6 @@
             content: "🔒 ";
         }
 
-        /* Footer */
         .footer {
             text-align: center;
             padding: 30px;
@@ -534,7 +526,10 @@
             text-decoration: none;
         }
 
-        /* Tables */
+        .tableWrap {
+            overflow-x: auto;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -551,6 +546,8 @@
             background: #f8fafc;
             font-weight: 600;
             color: #475569;
+            position: sticky;
+            top: 0;
         }
 
         .badge {
@@ -558,11 +555,14 @@
             padding: 2px 8px;
             border-radius: 12px;
             font-size: 11px;
+            font-weight: 500;
         }
         .badge.verified { background: #19b36b; color: white; }
         .badge.likely { background: #f39c12; color: white; }
         .badge.not_found { background: #e74c3c; color: white; }
         .badge.matched { background: #27ae60; color: white; }
+        .badge.needs_review { background: #e67e22; color: white; }
+        .badge.offline { background: #95a5a6; color: white; }
 
         .progress-container {
             background: #e2e8f0;
@@ -579,7 +579,6 @@
             transition: width 0.3s ease;
         }
 
-        /* Fix Items */
         .fix-item {
             background: #f8fafc;
             border-radius: 12px;
@@ -589,8 +588,8 @@
         .fix-item.high-conf { border-left: 4px solid #19b36b; }
         .fix-item.med-conf { border-left: 4px solid #f39c12; }
         .fix-item.low-conf { border-left: 4px solid #e74c3c; }
-        .fix-original { color: #e74c3c; text-decoration: line-through; }
-        .fix-suggested { color: #19b36b; }
+        .fix-original { color: #e74c3c; text-decoration: line-through; font-size: 13px; }
+        .fix-suggested { color: #19b36b; font-size: 13px; margin-top: 5px; }
         .fix-meta { font-size: 11px; color: #64748b; margin-top: 8px; }
 
         .fix-log-entry {
@@ -598,13 +597,29 @@
             border-radius: 12px;
             padding: 12px;
             margin-bottom: 10px;
-            display: flex;
-            gap: 12px;
-            align-items: flex-start;
         }
-        .fix-log-original { color: #e74c3c; text-decoration: line-through; flex: 1; }
-        .fix-log-suggested { color: #19b36b; flex: 1; }
-        .fix-log-arrow { font-size: 18px; }
+        .fix-log-original { color: #e74c3c; text-decoration: line-through; font-size: 13px; }
+        .fix-log-suggested { color: #19b36b; font-size: 13px; margin-top: 5px; }
+        .fix-log-meta { font-size: 11px; color: #64748b; margin-top: 5px; }
+
+        .queue-info {
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            font-size: 13px;
+            border-left: 4px solid #3498db;
+        }
+
+        .dashboard {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
 
         @media (max-width: 768px) {
             .container { padding: 20px; }
@@ -612,7 +627,7 @@
             .hero-subheadline { font-size: 16px; }
             .value-bullets { gap: 16px; }
             .kpi-dashboard { grid-template-columns: repeat(2, 1fr); }
-            .fix-log-entry { flex-direction: column; }
+            .acii-score-large { font-size: 48px; }
         }
     </style>
 </head>
@@ -639,7 +654,6 @@
 </header>
 
 <main class="container">
-    <!-- Hero Section -->
     <div class="hero">
         <h1>Fix, verify, and elevate your citations<br>before submission.</h1>
         <div class="hero-subheadline">Prepare your manuscript for publication with professional citation integrity analysis</div>
@@ -651,7 +665,6 @@
         </div>
     </div>
 
-    <!-- Upload Card -->
     <div class="upload-card">
         <div class="file-area" id="fileArea">
             <div class="file-icon">📑</div>
@@ -672,7 +685,6 @@
             <button class="btn btn-success" id="btnApplyAutofix" disabled>✨ Auto-Fix & Download</button>
         </div>
 
-        <!-- Process Feedback -->
         <div class="process-feedback" id="processFeedback">
             <div class="feedback-step" id="stepUpload">⏳ Document ready</div>
             <div class="feedback-step" id="stepExtract">⏳ Citations extracted</div>
@@ -684,7 +696,6 @@
             <div class="status" id="status">System ready. Upload your manuscript to begin.</div>
         </div>
 
-        <!-- Progress Bar -->
         <div id="verifyProgress" style="display: none; margin-top: 16px;">
             <div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
             <div id="progressText" style="font-size: 12px; margin-top: 8px;"></div>
@@ -700,7 +711,6 @@
         <div class="acii-recommendation" id="aciiRecommendationText"></div>
     </div>
 
-    <!-- Why This Matters -->
     <div class="why-matters">
         <h3>Why use CiteIntegrity?</h3>
         <div class="benefits-grid">
@@ -711,68 +721,133 @@
         </div>
     </div>
 
-    <!-- Tabs -->
-    <div class="tabs">
-        <div class="tab active" data-tab="summary">📊 Summary</div>
-        <div class="tab" data-tab="citations">🔗 Citations</div>
-        <div class="tab" data-tab="references">📚 References</div>
-        <div class="tab" data-tab="verification">✅ Verification</div>
-        <div class="tab" data-tab="fixes">🔧 Fixes</div>
+    <!-- Queue Status -->
+    <div id="queueStatus" class="queue-info">
+        <span>📊 Loading queue status...</span>
     </div>
 
-    <!-- Tab Panes -->
-    <div id="summary" class="tabPane active">
-        <div class="card">
-            <h3>📈 Analysis Summary</h3>
-            <div class="kpi-dashboard" id="kpiDashboard">
-                <div class="kpi"><div class="kpi-value" id="kpiCitations">--</div><div class="kpi-label">In-text Citations</div></div>
-                <div class="kpi"><div class="kpi-value" id="kpiReferences">--</div><div class="kpi-label">References</div></div>
-                <div class="kpi"><div class="kpi-value" id="kpiMissing">--</div><div class="kpi-label">Missing</div></div>
-                <div class="kpi"><div class="kpi-value" id="kpiUncited">--</div><div class="kpi-label">Uncited</div></div>
-                <div class="kpi"><div class="kpi-value" id="kpiMatchRate">--</div><div class="kpi-label">Match Rate</div></div>
+    <!-- Results Section -->
+    <section id="resultsCard" class="card" style="display:none;">
+        <div class="results-header">
+            <h3>📊 Analysis Results</h3>
+            <div class="dashboard" id="dash"></div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="summaryPane">📊 Summary</button>
+            <button class="tab" data-tab="missingPane">❌ Missing</button>
+            <button class="tab" data-tab="uncitedPane">📖 Uncited</button>
+            <button class="tab" data-tab="c2rPane">🔗 Citations → References</button>
+            <button class="tab" data-tab="r2cPane">📚 References → Citations</button>
+            <button class="tab" data-tab="verifyPane">✅ Verification</button>
+            <button class="tab" data-tab="fixesPane">🔧 Fixes</button>
+        </div>
+
+        <div class="tabPanes">
+            <!-- SUMMARY PANE -->
+            <div id="summaryPane" class="tabPane active">
+                <div class="tableWrap">
+                    <table class="tbl" style="min-width:520px;">
+                        <thead><tr><th style="width:220px;">Item</th><th>Value</th></tr></thead>
+                        <tbody id="summaryTable"></tbody>
+                    </table>
+                </div>
+
+                <!-- ACII Components Card -->
+                <div id="aciiCard" class="card" style="margin-top:20px; display:none;">
+                    <h3>📊 ACII Components</h3>
+                    <div class="tableWrap">
+                        <table class="tbl">
+                            <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
+                            <tbody>
+                                <tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
+                                <tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
+                                <tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
+                                <tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="export-section">
+                    <button class="btn btn-small btn-outline" id="btnExportCsvTop">📊 CSV Report</button>
+                    <button class="btn btn-small btn-outline" id="btnExportWordTop">📄 Word Report</button>
+                    <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>🔍 Verification Report</button>
+                </div>
             </div>
-            <div class="export-section">
-                <button class="btn btn-small btn-outline" id="btnExportCsvTop">📊 CSV Report</button>
-                <button class="btn btn-small btn-outline" id="btnExportWordTop">📄 Word Report</button>
-                <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>🔍 Verification Report</button>
+
+            <!-- MISSING PANE -->
+            <div id="missingPane" class="tabPane">
+                <h3>❌ Citations in text missing from references</h3>
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th style="width:60px;">No.</th><th>Citation in Text</th><th style="width:120px;">Count</th></tr></thead>
+                        <tbody id="missingBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- UNCITED PANE -->
+            <div id="uncitedPane" class="tabPane">
+                <h3>📖 References not cited in text</h3>
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th style="width:60px;">No.</th><th>Reference</th></tr></thead>
+                        <tbody id="uncitedBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- C2R PANE -->
+            <div id="c2rPane" class="tabPane">
+                <h3>🔗 In-text → Reference mapping</h3>
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>No.</th><th>Status</th><th>In-text</th><th>Count</th><th>Matched reference</th><th>Flags</th></tr></thead>
+                        <tbody id="c2rBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- R2C PANE -->
+            <div id="r2cPane" class="tabPane">
+                <h3>📚 Reference → In-text mapping</h3>
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>No.</th><th>Times cited</th><th>Reference</th><th>Cited by</th></tr></thead>
+                        <tbody id="r2cBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- VERIFY PANE -->
+            <div id="verifyPane" class="tabPane">
+                <div class="verify-top">
+                    <h3>✅ Online verification</h3>
+                    <div class="dashboard" id="verifyDash"></div>
+                </div>
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th></tr></thead>
+                        <tbody id="verifyBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- FIXES PANE -->
+            <div id="fixesPane" class="tabPane">
+                <div id="fixSuggestionsPanel" class="card" style="display: none;">
+                    <h3>🔧 Auto-Fix Suggestions</h3>
+                    <div id="fixSuggestionsContent"></div>
+                </div>
+                <div id="fixLogPanel" class="card" style="display: none;">
+                    <h3>📋 Fix Log</h3>
+                    <div id="fixLogContent"></div>
+                </div>
             </div>
         </div>
-        <div class="card" id="aciiDetailCard" style="display: none;">
-            <h3>📊 ACII Components</h3>
-            <div style="overflow-x: auto;">
-                <table class="tbl">
-                    <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
-                    <tbody>
-                        <tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
-                        <tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
-                        <tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
-                        <tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    </section>
 
-    <div id="citations" class="tabPane">
-        <div class="card"><h3>🔗 Citation to Reference Mapping</h3><div style="overflow-x: auto;"><table class="tbl"><thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Count</th><th>Matched Reference</th></tr></thead><tbody id="c2rBody"></tbody></table></div></div>
-        <div class="card"><h3>❌ Missing Citations</h3><div style="overflow-x: auto;"><table class="tbl"><thead><tr><th>#</th><th>Citation</th><th>Occurrences</th></tr></thead><tbody id="missingBody"></tbody></table></div></div>
-    </div>
-
-    <div id="references" class="tabPane">
-        <div class="card"><h3>📚 Reference to Citation Mapping</h3><div style="overflow-x: auto;"><table class="tbl"><thead><tr><th>#</th><th>Times Cited</th><th>Reference</th><th>Cited By</th></tr></thead><tbody id="r2cBody"></tbody></table></div></div>
-        <div class="card"><h3>📖 Uncited References</h3><div style="overflow-x: auto;"><table class="tbl"><thead><tr><th>#</th><th>Reference</th></tr></thead><tbody id="uncitedBody"></tbody></table></div></div>
-    </div>
-
-    <div id="verification" class="tabPane">
-        <div class="card"><h3>✅ Online Verification Results</h3><div class="kpi-dashboard" id="verifyDash"></div><div style="overflow-x: auto;"><table class="tbl"><thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th></tr></thead><tbody id="verifyBody"></tbody></table></div></div>
-    </div>
-
-    <div id="fixes" class="tabPane">
-        <div id="fixSuggestionsPanel" class="card" style="display: none;"><h3>🔧 Auto-Fix Suggestions</h3><div id="fixSuggestionsContent"></div></div>
-        <div id="fixLogPanel" class="card" style="display: none;"><h3>📋 Fix Log</h3><div id="fixLogContent"></div></div>
-    </div>
-
-    <!-- Trust Element -->
     <div class="trust-badge">
         Your document is processed securely and not stored permanently.
     </div>
@@ -785,7 +860,7 @@
 
 <script>
 // ============================================
-// COMPLETE APP.JS WITH ACTIVE UPLOAD & AUTO-FIX
+// COMPLETE APP.JS WITH FIXED RESULTS & ACII RECOMMENDATIONS
 // ============================================
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -802,37 +877,6 @@ const CONFIG = {
 
 // DOM Elements
 const $ = (id) => document.getElementById(id);
-
-const el = {
-    file: $("file"),
-    autofix: $("autofix"),
-    onlineVerify: $("onlineVerify"),
-    btnCheck: $("btnCheck"),
-    btnVerify: $("btnVerify"),
-    btnApplyAutofix: $("btnApplyAutofix"),
-    status: $("status"),
-    resultsCard: $("resultsCard"),
-    summaryTable: $("summaryTable"),
-    missingBody: $("missingBody"),
-    uncitedBody: $("uncitedBody"),
-    c2rBody: $("c2rBody"),
-    r2cBody: $("r2cBody"),
-    verifyDash: $("verifyDash"),
-    verifyBody: $("verifyBody"),
-    verifyProgress: $("verifyProgress"),
-    progressBar: $("progressBar"),
-    progressText: $("progressText"),
-    estimatedRemaining: $("estimatedRemaining"),
-    fixSuggestionsPanel: $("fixSuggestionsPanel"),
-    fixSuggestionsContent: $("fixSuggestionsContent"),
-    fixLogPanel: $("fixLogPanel"),
-    fixLogContent: $("fixLogContent"),
-    aciiCenterpiece: $("aciiCenterpiece"),
-    aciiScoreLarge: $("aciiScoreLarge"),
-    aciiRatingBadge: $("aciiRatingBadge"),
-    aciiRecommendationText: $("aciiRecommendationText"),
-    aciiDetailCard: $("aciiDetailCard")
-};
 
 let LAST_JOB_ID = null;
 let POLL_TIMER = null;
@@ -855,9 +899,10 @@ function toNum(x, d = 0) {
 }
 
 function setStatus(msg, tone = "muted") {
-    if (el.status) {
-        el.status.className = `status ${tone}`;
-        el.status.textContent = msg || "";
+    const statusEl = $("status");
+    if (statusEl) {
+        statusEl.className = `status ${tone}`;
+        statusEl.textContent = msg || "";
     }
     console.log(`[Status] ${msg}`);
 }
@@ -874,7 +919,7 @@ function showNotification(message, type = "info") {
     notification.style.cssText = `
         position: fixed; bottom: 20px; right: 20px; padding: 12px 20px;
         background: ${type === "success" ? "#19b36b" : type === "error" ? "#e74c3c" : "#3498db"};
-        color: white; border-radius: 8px; z-index: 10000;
+        color: white; border-radius: 8px; z-index: 10000; font-size: 13px;
         animation: slideIn 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     `;
     document.body.appendChild(notification);
@@ -900,10 +945,10 @@ function resetProcessFeedback() {
     });
 }
 
-// File Area Setup - MAKES UPLOAD ACTIVE
+// File Area Setup
 function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
-    const fileInput = el.file;
+    const fileInput = $("file");
     const fileNameSpan = document.getElementById("fileName");
     
     if (fileArea && fileInput) {
@@ -939,18 +984,57 @@ function setupFileArea() {
                 if (file.name.toLowerCase().endsWith('.docx')) {
                     fileNameSpan.textContent = `📄 ${file.name}`;
                     setStatus("DOCX file selected. Ready to run check.", "good");
-                    if (el.btnCheck) el.btnCheck.disabled = false;
+                    const btnCheck = $("btnCheck");
+                    if (btnCheck) btnCheck.disabled = false;
                 } else {
                     fileNameSpan.textContent = "";
                     setStatus("Only DOCX files are accepted. Please upload a Word document.", "warn");
                     fileInput.value = '';
-                    if (el.btnCheck) el.btnCheck.disabled = true;
+                    const btnCheck = $("btnCheck");
+                    if (btnCheck) btnCheck.disabled = true;
                 }
             } else {
                 fileNameSpan.textContent = "";
             }
         });
     }
+}
+
+// ACII Rating with Recommendations
+function getACIIRating(score) {
+    score = Number(score);
+    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity with excellent recency and balance." };
+    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity with good recency and diversity." };
+    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity with acceptable recency." };
+    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity. Improvements needed in recency or diversity." };
+    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity. Significant room for improvement." };
+    return { text: "Poor", class: "poor", description: "Low citation integrity. Many citations are unverified or lack author diversity." };
+}
+
+function generateACIIRecommendations(aciiData) {
+    if (!aciiData) return "<div>No recommendation data available.</div>";
+    
+    const comp = aciiData.components || {};
+    const recs = aciiData.recommendations || {};
+    let html = "";
+    
+    if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
+    if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
+    if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
+    if (recs.priority) html += `<div class="priority">🎯 ${esc(recs.priority)}</div>`;
+    
+    if (!html) {
+        const v = comp.verification_integrity?.score || 0;
+        const recency = comp.recency?.score || 0;
+        const diversity = comp.author_diversity?.score || 0;
+        
+        if (v < 60) html += `<div>🔍 Low verification rate (${v}%). Run online verification to improve credibility.</div>`;
+        if (recency < 50) html += `<div>📅 Only ${recency}% of references are recent (≤5 years). Add current sources.</div>`;
+        if (diversity < 50) html += `<div>👥 Limited author diversity (${diversity}%). Expand your citation base.</div>`;
+        if (!html) html += `<div>✨ Your citations look good! Consider adding more recent sources to maintain relevance.</div>`;
+    }
+    
+    return html;
 }
 
 // Auto-Fix Functions
@@ -963,7 +1047,8 @@ async function getAutoFixSuggestions() {
         if (data.available) {
             displayFixSuggestions(data);
             setStatus(`Auto-fix suggestions available (${data.auto_fixable_count} auto-fixable)`, "good");
-            if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
+            const btnApply = $("btnApplyAutofix");
+            if (btnApply) btnApply.disabled = false;
             return data;
         } else {
             setStatus(data.message || "No auto-fix suggestions available", "warn");
@@ -977,43 +1062,78 @@ async function getAutoFixSuggestions() {
 }
 
 function displayFixSuggestions(data) {
-    if (!el.fixSuggestionsPanel) return;
-    const citations = data.citations || [];
-    const references = data.references || [];
-    el.fixSuggestionsPanel.style.display = "block";
-    let html = `<div class="fix-summary"><h4>🔧 Auto-Fix Summary</h4><div class="fix-stats">
-        <span>✓ Auto-fixable: ${data.auto_fixable_count || 0}</span>
-        <span>⚠️ Needs review: ${data.review_needed_count || 0}</span>
-        <span>📋 Total: ${data.statistics?.total_suggestions || 0}</span>
-    </div></div>`;
-    if (citations.length > 0) {
-        html += `<div class="fix-section"><h5>📝 Citation Fixes (${citations.length})</h5>`;
-        html += citations.slice(0, 20).map(fix => `
-            <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
+    const panel = $("fixSuggestionsPanel");
+    if (!panel) return;
+    
+    const suggestions = data.suggestions || {};
+    const citations = suggestions.citations || [];
+    const references = suggestions.references || [];
+    
+    // Deduplicate citations by original text
+    const uniqueCitations = [];
+    const seen = new Set();
+    for (const fix of citations) {
+        if (!seen.has(fix.original)) {
+            seen.add(fix.original);
+            uniqueCitations.push(fix);
+        }
+    }
+    
+    // Deduplicate references by original text
+    const uniqueReferences = [];
+    const seenRef = new Set();
+    for (const fix of references) {
+        const key = fix.original.substring(0, 100);
+        if (!seenRef.has(key)) {
+            seenRef.add(key);
+            uniqueReferences.push(fix);
+        }
+    }
+    
+    panel.style.display = "block";
+    let html = `<div class="fix-summary"><h4>🔧 Auto-Fix Summary</h4>
+        <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+            <span>✓ Auto-fixable: ${data.auto_fixable_count || 0}</span>
+            <span>⚠️ Needs review: ${data.review_needed_count || 0}</span>
+            <span>📋 Total: ${data.statistics?.total_suggestions || 0}</span>
+        </div>
+    </div>`;
+    
+    if (uniqueCitations.length > 0) {
+        html += `<div class="fix-section"><h5>📝 Citation Fixes (${uniqueCitations.length})</h5>`;
+        html += uniqueCitations.slice(0, 30).map(fix => `
+            <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : fix.confidence >= 0.7 ? 'med-conf' : 'low-conf'}">
                 <div class="fix-original">❌ ${esc(fix.original)}</div>
-                <div class="fix-arrow">→</div>
                 <div class="fix-suggested">✅ ${esc(fix.suggested)}</div>
-                <div class="fix-meta">${Math.round(fix.confidence * 100)}% - ${esc(fix.reason)}</div>
+                <div class="fix-meta">${Math.round(fix.confidence * 100)}% confidence - ${esc(fix.reason)}</div>
             </div>
         `).join('');
         html += `</div>`;
     }
-    if (references.length > 0) {
-        html += `<div class="fix-section"><h5>📚 Reference Fixes (${references.length})</h5>`;
-        html += references.slice(0, 10).map(fix => `
+    
+    if (uniqueReferences.length > 0) {
+        html += `<div class="fix-section"><h5>📚 Reference Fixes (${uniqueReferences.length})</h5>`;
+        html += uniqueReferences.slice(0, 15).map(fix => `
             <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="fix-original">${esc(fix.original.substring(0, 100))}...</div>
-                <div class="fix-suggested">${esc(fix.suggested.substring(0, 100))}...</div>
+                <div class="fix-original">${esc(fix.original.substring(0, 150))}${fix.original.length > 150 ? '…' : ''}</div>
+                <div class="fix-suggested">${esc(fix.suggested.substring(0, 150))}${fix.suggested.length > 150 ? '…' : ''}</div>
+                <div class="fix-meta">${esc(fix.type)} - ${Math.round(fix.confidence * 100)}%</div>
             </div>
         `).join('');
         html += `</div>`;
     }
-    el.fixSuggestionsContent.innerHTML = html;
+    
+    if (uniqueCitations.length === 0 && uniqueReferences.length === 0) {
+        html += `<div class="fix-empty">✨ No fix suggestions available. Document looks good!</div>`;
+    }
+    
+    const content = $("fixSuggestionsContent");
+    if (content) content.innerHTML = html;
 }
 
 async function applyAutoFix() {
     if (!LAST_JOB_ID) { showNotification("Run document check first", "error"); return; }
-    if (AUTO_FIX_APPLIED) { showNotification("Auto-fix already applied", "info"); return; }
+    if (AUTO_FIX_APPLIED) { showNotification("Auto-fix already applied to this document", "info"); return; }
     try {
         setStatus("Applying auto-fixes...", "info");
         const formData = new FormData();
@@ -1039,43 +1159,51 @@ async function showFixLog() {
     try {
         const response = await fetch(`/fix-log/${encodeURIComponent(LAST_JOB_ID)}`);
         const data = await response.json();
-        if (el.fixLogPanel && data.fixes && data.fixes.length > 0) {
-            el.fixLogPanel.style.display = "block";
+        const panel = $("fixLogPanel");
+        const content = $("fixLogContent");
+        if (panel && content && data.fixes && data.fixes.length > 0) {
+            panel.style.display = "block";
             let html = `<div class="fix-log-list">`;
             data.fixes.forEach((fix, idx) => {
                 html += `<div class="fix-log-entry">
-                    <div class="fix-log-num">${idx + 1}</div>
+                    <div><strong>#${idx + 1}</strong></div>
                     <div class="fix-log-original">${esc(fix.original)}</div>
-                    <div class="fix-log-arrow">→</div>
-                    <div class="fix-log-suggested">${esc(fix.suggested)}</div>
+                    <div class="fix-log-suggested">→ ${esc(fix.suggested)}</div>
+                    <div class="fix-log-meta">${esc(fix.type)} - ${esc(fix.reason)}</div>
                 </div>`;
             });
             html += `</div>`;
-            el.fixLogContent.innerHTML = html;
+            content.innerHTML = html;
         }
     } catch (err) { console.error(err); }
 }
 
 // Progress Bar
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
-    if (!el.progressBar || !el.progressText) return;
+    const progressBar = $("progressBar");
+    const progressText = $("progressText");
+    const estimatedRemaining = $("estimatedRemaining");
+    const verifyProgress = $("verifyProgress");
+    
+    if (!progressBar || !progressText) return;
     const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
-    el.progressBar.style.width = `${percentage}%`;
-    el.progressBar.textContent = `${percentage}%`;
+    progressBar.style.width = `${percentage}%`;
+    progressBar.textContent = `${percentage}%`;
+    
     if (status === "completed") {
-        el.progressBar.style.backgroundColor = "#27ae60";
-        el.progressText.textContent = message || `✅ Complete! ${progress}/${total}`;
-        if (el.verifyProgress) setTimeout(() => { el.verifyProgress.style.display = "none"; }, 5000);
-        if (el.estimatedRemaining) el.estimatedRemaining.textContent = "";
+        progressBar.style.backgroundColor = "#27ae60";
+        progressText.textContent = message || `✅ Complete! ${progress}/${total}`;
+        if (verifyProgress) setTimeout(() => { verifyProgress.style.display = "none"; }, 5000);
+        if (estimatedRemaining) estimatedRemaining.textContent = "";
     } else if (status === "error") {
-        el.progressBar.style.backgroundColor = "#e74c3c";
-        el.progressText.textContent = message || "❌ Error during verification";
+        progressBar.style.backgroundColor = "#e74c3c";
+        progressText.textContent = message || "❌ Error during verification";
     } else {
-        el.progressBar.style.backgroundColor = "#3498db";
+        progressBar.style.backgroundColor = "#3498db";
         let msg = message || `🔍 Verifying: ${progress}/${total} (${percentage}%)`;
         if (remainingSeconds) msg += ` - Est. ${formatTime(remainingSeconds)} remaining`;
-        el.progressText.textContent = msg;
-        if (el.verifyProgress) el.verifyProgress.style.display = "block";
+        progressText.textContent = msg;
+        if (verifyProgress) verifyProgress.style.display = "block";
     }
 }
 
@@ -1084,20 +1212,34 @@ async function updateQueueStatus() {
     try {
         const response = await fetch('/queue/status');
         const data = await response.json();
-        const statUploads = document.getElementById("statUploads");
-        const statQueue = document.getElementById("statQueue");
+        const statUploads = $("statUploads");
+        const statQueue = $("statQueue");
+        const queueStatus = $("queueStatus");
+        
         if (statUploads) statUploads.textContent = data.total_jobs || 0;
         if (statQueue) statQueue.textContent = data.queue_size || 0;
+        if (queueStatus) {
+            const busyClass = data.is_busy ? 'busy' : 'ready';
+            queueStatus.innerHTML = `<div class="queue-info ${busyClass}">
+                <span>📊 Queue: ${data.queue_size || 0}</span>
+                <span>⏳ Pending: ${data.pending_jobs || 0}</span>
+                <span>⚙️ Processing: ${data.processing_jobs || 0}</span>
+                <span>📈 Total Jobs: ${data.total_jobs || 0}</span>
+            </div>`;
+        }
         return data;
     } catch (err) { return null; }
 }
 
 // Reset UI
 function resetVerificationUI() {
-    if (el.verifyDash) el.verifyDash.innerHTML = `<div class="kpi">✅ Verified: 0</div><div class="kpi">🔍 Likely: 0</div><div class="kpi">⚠️ Needs Review: 0</div><div class="kpi">❌ Not Found: 0</div>`;
-    if (el.verifyBody) el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</td></tr>`;
+    const verifyDash = $("verifyDash");
+    const verifyBody = $("verifyBody");
+    if (verifyDash) verifyDash.innerHTML = `<div class="kpi">✅ Verified: 0</div><div class="kpi">🔍 Likely: 0</div><div class="kpi">⚠️ Needs Review: 0</div><div class="kpi">❌ Not Found: 0</div>`;
+    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</td></tr>`;
     updateProgress(0, 0, "processing", "Ready to verify");
-    if (el.verifyProgress) el.verifyProgress.style.display = "none";
+    const verifyProgress = $("verifyProgress");
+    if (verifyProgress) verifyProgress.style.display = "none";
     VERIFICATION_IN_PROGRESS = false;
 }
 
@@ -1108,7 +1250,7 @@ document.querySelectorAll(".tab").forEach(tab => {
         document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
         document.querySelectorAll(".tabPane").forEach(p => p.classList.remove("active"));
         tab.classList.add("active");
-        const pane = document.getElementById(target);
+        const pane = $(target);
         if (pane) pane.classList.add("active");
     });
 });
@@ -1120,7 +1262,8 @@ async function fetchStatus() {
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
         stopPolling();
         VERIFICATION_IN_PROGRESS = false;
-        if (el.btnVerify) el.btnVerify.disabled = false;
+        const btnVerify = $("btnVerify");
+        if (btnVerify) btnVerify.disabled = false;
         return;
     }
     try {
@@ -1134,7 +1277,8 @@ async function fetchStatus() {
             if (js.online.state === "completed") {
                 setStatus("Online verification complete", "good");
                 VERIFICATION_IN_PROGRESS = false;
-                if (el.btnVerify) el.btnVerify.disabled = false;
+                const btnVerify = $("btnVerify");
+                if (btnVerify) btnVerify.disabled = false;
                 updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
                 stopPolling();
             }
@@ -1153,18 +1297,7 @@ function stopPolling() {
     if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
 }
 
-// ACII Rating
-function getACIIRating(score) {
-    score = Number(score);
-    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity." };
-    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity." };
-    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity." };
-    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity." };
-    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity." };
-    return { text: "Poor", class: "poor", description: "Low citation integrity." };
-}
-
-// Render Functions
+// Helper Functions
 function getUniqueCitationsWithCount(c2rRows) {
     const uniqueMap = new Map();
     c2rRows.forEach(row => {
@@ -1174,35 +1307,6 @@ function getUniqueCitationsWithCount(c2rRows) {
         else uniqueMap.set(key, { citation: citeText, status: row.status, matched_reference: row.matched_reference, flags: row.flags, count: 1 });
     });
     return Array.from(uniqueMap.values());
-}
-
-function renderACII(data) {
-    const acii = data?.acii;
-    if (!acii) return;
-    if (el.aciiCenterpiece) el.aciiCenterpiece.style.display = "block";
-    if (el.aciiDetailCard) el.aciiDetailCard.style.display = "block";
-    if (el.aciiScoreLarge) {
-        const score = acii.ACII ?? "--";
-        el.aciiScoreLarge.textContent = score;
-        if (el.aciiRatingBadge && score !== "--") {
-            const rating = getACIIRating(score);
-            el.aciiRatingBadge.textContent = rating.text;
-            el.aciiRatingBadge.className = `acii-rating ${rating.class}`;
-        }
-    }
-    const comp = acii.components || {};
-    if ($("aciiV")) $("aciiV").textContent = comp.verification_integrity?.score ?? "";
-    if ($("aciiVcat")) $("aciiVcat").textContent = comp.verification_integrity?.category ?? "";
-    if ($("aciiVremark")) $("aciiVremark").textContent = comp.verification_integrity?.remark ?? "";
-    if ($("aciiC")) $("aciiC").textContent = comp.citation_concentration?.score ?? "";
-    if ($("aciiCcat")) $("aciiCcat").textContent = comp.citation_concentration?.category ?? "";
-    if ($("aciiCremark")) $("aciiCremark").textContent = comp.citation_concentration?.remark ?? "";
-    if ($("aciiA")) $("aciiA").textContent = comp.author_diversity?.score ?? "";
-    if ($("aciiAcat")) $("aciiAcat").textContent = comp.author_diversity?.category ?? "";
-    if ($("aciiAremark")) $("aciiAremark").textContent = comp.author_diversity?.remark ?? "";
-    if ($("aciiT")) $("aciiT").textContent = comp.temporal_balance?.score ?? "";
-    if ($("aciiTcat")) $("aciiTcat").textContent = comp.temporal_balance?.category ?? "";
-    if ($("aciiTremark")) $("aciiTremark").textContent = comp.temporal_balance?.remark ?? "";
 }
 
 function normalizeData(payload) {
@@ -1218,50 +1322,107 @@ function normalizeData(payload) {
     return data;
 }
 
+// Render Functions
 function renderSummaryTable(data) {
     const s = data?.summary || {};
-    const kpis = ["kpiCitations", "kpiReferences", "kpiMissing", "kpiUncited", "kpiMatchRate"];
-    const values = [s.in_text_citations_found, s.reference_entries_found, s.missing_in_references, s.uncited_references, `${s.match_rate}%`];
-    kpis.forEach((id, i) => { const el = $(id); if (el) el.textContent = values[i] || "--"; });
+    const summaryTable = $("summaryTable");
+    if (summaryTable) {
+        summaryTable.innerHTML = `
+            <tr><td>In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
+            <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
+            <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
+            <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
+            <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
+        `;
+    }
+}
+
+function renderACII(data) {
+    const acii = data?.acii;
+    if (!acii) return;
+    
+    const centerpiece = $("aciiCenterpiece");
+    const aciiCard = $("aciiCard");
+    if (centerpiece) centerpiece.style.display = "block";
+    if (aciiCard) aciiCard.style.display = "block";
+    
+    const scoreLarge = $("aciiScoreLarge");
+    const ratingBadge = $("aciiRatingBadge");
+    const recText = $("aciiRecommendationText");
+    
+    if (scoreLarge) {
+        const score = acii.ACII ?? "--";
+        scoreLarge.textContent = score;
+        if (ratingBadge && score !== "--") {
+            const rating = getACIIRating(score);
+            ratingBadge.textContent = rating.text;
+            ratingBadge.className = `acii-rating ${rating.class}`;
+        }
+    }
+    
+    if (recText) {
+        recText.innerHTML = generateACIIRecommendations(acii);
+    }
+    
+    const comp = acii.components || {};
+    const v = $("aciiV"); if (v) v.textContent = comp.verification_integrity?.score ?? "--";
+    const vcat = $("aciiVcat"); if (vcat) vcat.textContent = comp.verification_integrity?.category ?? "--";
+    const vremark = $("aciiVremark"); if (vremark) vremark.textContent = comp.verification_integrity?.remark ?? "--";
+    
+    const c = $("aciiC"); if (c) c.textContent = comp.citation_concentration?.score ?? "--";
+    const ccat = $("aciiCcat"); if (ccat) ccat.textContent = comp.citation_concentration?.category ?? "--";
+    const cremark = $("aciiCremark"); if (cremark) cremark.textContent = comp.citation_concentration?.remark ?? "--";
+    
+    const a = $("aciiA"); if (a) a.textContent = comp.author_diversity?.score ?? "--";
+    const acat = $("aciiAcat"); if (acat) acat.textContent = comp.author_diversity?.category ?? "--";
+    const aremark = $("aciiAremark"); if (aremark) aremark.textContent = comp.author_diversity?.remark ?? "--";
+    
+    const t = $("aciiT"); if (t) t.textContent = comp.temporal_balance?.score ?? "--";
+    const tcat = $("aciiTcat"); if (tcat) tcat.textContent = comp.temporal_balance?.category ?? "--";
+    const tremark = $("aciiTremark"); if (tremark) tremark.textContent = comp.temporal_balance?.remark ?? "--";
 }
 
 function renderMissing(data) {
     const rows = data?.missing_in_references || [];
-    if (!el.missingBody) return;
-    if (!rows.length) { el.missingBody.innerHTML = `<tr><td colspan="3">None</td></tr>`; return; }
-    el.missingBody.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.citation_in_text || r)}</td><td>${esc(r.count_in_text || "")}</td></tr>`).join("");
+    const body = $("missingBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</td></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.citation_in_text || r)}</td><td>${esc(r.count_in_text || "")}</td></tr>`).join("");
 }
 
 function renderUncited(data) {
     const rows = data?.uncited_references || [];
-    if (!el.uncitedBody) return;
-    if (!rows.length) { el.uncitedBody.innerHTML = `<tr><td colspan="2">None</td></tr>`; return; }
-    el.uncitedBody.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.reference || r)}</td></tr>`).join("");
+    const body = $("uncitedBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</td></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.reference || r)}</td></tr>`).join("");
 }
 
 function renderC2R(data) {
     const c2rRaw = data?.reconciliation_intext_to_reference || [];
     const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
-    if (!el.c2rBody) return;
-    if (!uniqueCitations.length) { el.c2rBody.innerHTML = `<tr><td colspan="6">No mapping available</td></tr>`; return; }
-    el.c2rBody.innerHTML = uniqueCitations.map((item, i) => `<tr>
+    const body = $("c2rBody");
+    if (!body) return;
+    if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="6">No mapping available</td></tr>`; return; }
+    body.innerHTML = uniqueCitations.map((item, i) => `<tr>
         <td>${i + 1}</td>
         <td><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></td>
-        <td>${esc(item.citation)}</td>
-        <td><strong>${item.count}</strong></td>
-        <td>${esc(item.matched_reference || '')}</td>
+        <td style="max-width:300px;">${esc(item.citation)}</td>
+        <td style="text-align:center"><strong>${item.count}</strong></td>
+        <td style="max-width:400px;">${esc(item.matched_reference || '')}</td>
         <td>${esc(item.flags || '')}</td>
     </tr>`).join("");
 }
 
 function renderR2C(data) {
     const rows = data?.reconciliation_reference_to_intext || [];
-    if (!el.r2cBody) return;
-    if (!rows.length) { el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`; return; }
-    el.r2cBody.innerHTML = rows.map((r, i) => `<tr>
+    const body = $("r2cBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr>
         <td>${i + 1}</td>
         <td>${esc(r.times_cited ?? 0)}</td>
-        <td>${esc(r.reference || '')}</td>
+        <td style="max-width:500px;">${esc(r.reference || '')}</td>
         <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
     </tr>`).join("");
 }
@@ -1270,23 +1431,32 @@ function renderVerify(data) {
     const ov = data?.online_verification || {};
     const rows = ov.rows || [];
     const sum = ov.summary || {};
-    if (el.verifyDash) {
-        el.verifyDash.innerHTML = `<div class="kpi">✅ Verified: ${sum.verified ?? 0}</div>
+    const verifyDash = $("verifyDash");
+    const verifyBody = $("verifyBody");
+    
+    if (verifyDash) {
+        verifyDash.innerHTML = `<div class="kpi">✅ Verified: ${sum.verified ?? 0}</div>
             <div class="kpi">🔍 Likely: ${sum.likely ?? 0}</div>
             <div class="kpi">⚠️ Needs Review: ${sum.needs_review ?? 0}</div>
             <div class="kpi">❌ Not Found: ${sum.not_found ?? 0}</div>`;
     }
-    if (!el.verifyBody) return;
-    if (!rows.length) { el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</td></tr>`; return; }
-    el.verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
+    
+    if (!verifyBody) return;
+    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</td></tr>`; return; }
+    
+    verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
         <td>${i + 1}</td>
-        <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : 'not_found')}">${esc(r.status || '')}</span></td>
+        <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'))}">${esc(r.status || '')}</span></td>
         <td>${esc(r.source || '—')}</td>
         <td>${esc(r.score || '—')}</td>
         <td>${esc(r.doi || '—')}</td>
         <td>${esc(r.matched_year || '—')}</td>
         <td>${esc(r.matched_authors || '—')}</td>
+        <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</td>
     </tr>`).join("");
+    
+    const btnExportVerify = $("btnExportVerify");
+    if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
 }
 
 function renderAll(data) {
@@ -1294,8 +1464,10 @@ function renderAll(data) {
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
+    
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
+    
     renderSummaryTable(normalized);
     renderACII(normalized);
     renderMissing(normalized);
@@ -1303,13 +1475,16 @@ function renderAll(data) {
     renderC2R(normalized);
     renderR2C(normalized);
     renderVerify(normalized);
+    
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
     updateProcessFeedback("Match", "completed");
     updateProcessFeedback("ACII", "completed");
+    
     if (normalized.autofix && normalized.autofix.suggestions) {
         displayFixSuggestions(normalized.autofix.suggestions);
-        if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
+        const btnApply = $("btnApplyAutofix");
+        if (btnApply) btnApply.disabled = false;
     }
 }
 
@@ -1335,7 +1510,7 @@ function exportCSV(data) {
     const blob = new Blob([csv.join("\n")], { type: "text/csv" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `citation_report_${new Date().toISOString().slice(0, 19)}.csv`;
+    link.download = `citeintegrity_report_${new Date().toISOString().slice(0, 19)}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
 }
@@ -1359,6 +1534,7 @@ function exportWordFile(data) {
         <tr><td>Uncited</td><td>${s.uncited_references || 0}</td></tr>
         <tr><td>Match Rate</td><td>${s.match_rate || 0}%</td></tr></table>
         <h2>ACII Score: ${acii.ACII || '—'} (${aciiRating.text})</h2>
+        <p>${aciiRating.description}</p>
         <h2>Missing Citations</h2><ul>${missing.map(m => `<li>${esc(m.citation_in_text || m)}</li>`).join('')}</ul>
         <h2>Uncited References</h2><ul>${uncited.map(u => `<li>${esc(u.reference || u)}</li>`).join('')}</ul>
         </body></html>`;
@@ -1370,9 +1546,25 @@ function exportWordFile(data) {
     URL.revokeObjectURL(link.href);
 }
 
+function exportVerificationCSV() {
+    if (!window.latestResults) { alert("No verification data to export."); return; }
+    const ov = window.latestResults?.online_verification || {};
+    const rows = ov.rows || [];
+    if (!rows.length) { alert("No verification results available."); return; }
+    let csv = [`"Status","Source","Score","DOI","Year","Authors"`];
+    rows.forEach(r => csv.push(`"${r.status || ''}","${r.source || ''}","${r.score || ''}","${r.doi || ''}","${r.matched_year || ''}","${(r.matched_authors || '').substring(0, 100)}"`));
+    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `verification_report_${new Date().toISOString().slice(0, 19)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
 // Run Initial Check
 async function runInitialCheck() {
-    const file = el.file?.files?.[0];
+    const fileInput = $("file");
+    const file = fileInput?.files?.[0];
     if (!file) { setStatus("Please choose a file first", "warn"); return; }
     if (!file.name.toLowerCase().endsWith('.docx')) {
         setStatus("Only DOCX files are accepted.", "warn");
@@ -1389,8 +1581,10 @@ async function runInitialCheck() {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("style", "apa");
-    fd.append("enable_autofix", (el.autofix?.checked || false).toString());
-    fd.append("enable_online_verification", (el.onlineVerify?.checked || false).toString());
+    const autofixCheck = $("autofix");
+    const onlineVerifyCheck = $("onlineVerify");
+    fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
+    fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
     try {
         const res = await fetch("/verify", { method: "POST", body: fd });
         if (res.status === 503) {
@@ -1405,7 +1599,8 @@ async function runInitialCheck() {
         renderAll(js);
         setStatus("Analysis complete", "good");
         updateQueueStatus();
-        if (el.btnVerify) el.btnVerify.disabled = false;
+        const btnVerify = $("btnVerify");
+        if (btnVerify) btnVerify.disabled = false;
         if (js.online_verification_started) startPolling();
     } catch (err) { setStatus("Error: " + err.message, "bad"); }
 }
@@ -1417,36 +1612,43 @@ async function runOnlineVerification() {
     setStatus("Starting online verification...");
     VERIFICATION_IN_PROGRESS = true;
     updateProgress(0, 0, "processing", "Starting verification...");
-    if (el.btnVerify) el.btnVerify.disabled = true;
+    const btnVerify = $("btnVerify");
+    if (btnVerify) btnVerify.disabled = true;
     const fd = new FormData();
     fd.append("job_id", LAST_JOB_ID);
     try {
         const res = await fetch("/verify-online", { method: "POST", body: fd });
         const js = await res.json();
         if (js.started) { setStatus("Verification in progress...", "info"); startPolling(); }
-        else if (js.completed) { setStatus("Verification already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (el.btnVerify) el.btnVerify.disabled = false; fetchStatus(); }
-        else { setStatus(js.message || "Verification could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (el.btnVerify) el.btnVerify.disabled = false; }
-    } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (el.btnVerify) el.btnVerify.disabled = false; }
+        else if (js.completed) { setStatus("Verification already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
+        else { setStatus(js.message || "Verification could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+    } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
 }
 
 // Button Events
 setupFileArea();
-if (el.btnCheck) el.btnCheck.addEventListener("click", runInitialCheck);
-if (el.btnVerify) { el.btnVerify.disabled = true; el.btnVerify.addEventListener("click", runOnlineVerification); }
-if (el.btnApplyAutofix) { el.btnApplyAutofix.disabled = true; el.btnApplyAutofix.addEventListener("click", applyAutoFix); }
 
-const exportCsv = document.getElementById("btnExportCsvTop");
-const exportWord = document.getElementById("btnExportWordTop");
-const exportVerify = document.getElementById("btnExportVerify");
+const btnCheck = $("btnCheck");
+if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
+
+const btnVerify = $("btnVerify");
+if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
+
+const btnApplyAutofix = $("btnApplyAutofix");
+if (btnApplyAutofix) { btnApplyAutofix.disabled = true; btnApplyAutofix.addEventListener("click", applyAutoFix); }
+
+const exportCsv = $("btnExportCsvTop");
+const exportWord = $("btnExportWordTop");
+const exportVerify = $("btnExportVerify");
 
 if (exportCsv) exportCsv.addEventListener("click", () => { if (window.latestResults) exportCSV(window.latestResults); else alert("Run a check first."); });
 if (exportWord) exportWord.addEventListener("click", () => { if (window.latestResults) exportWordFile(window.latestResults); else alert("Run a check first."); });
-if (exportVerify) exportVerify.disabled = true;
+if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
 
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[CiteIntegrity] App initialized - Upload active, Auto-Fix ready");
+console.log("[CiteIntegrity] App initialized - Results section restored, ACII recommendations added, deduplication fixed");
 
 });
 </script>
