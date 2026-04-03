@@ -754,6 +754,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 if best2:
                     best = best2
                     best_meta = best_meta2
+                    candidates = deep_candidates
                     status = _classify(
                         bool(best_meta.get("doi_match")),
                         int(best_meta.get("title_score", 0)),
@@ -778,7 +779,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             # -------------------------------------------------
             # ADD SUGGESTED REFERENCES (REFINED)
             # -------------------------------------------------
-            if status in {"likely", "needs_review", "not_found"} and candidates:
+            if candidates:
 
                 suggestions = _get_top_suggestions(
                     ref_title,
