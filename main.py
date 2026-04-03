@@ -811,7 +811,50 @@ async def debug_retry_verification(job_id: str):
         
     except Exception as e:
         return {"error": str(e)}
-
+@app.get("/debug/verification-data/{job_id}")
+async def debug_verification_data(job_id: str):
+    """Debug endpoint to check verification data structure"""
+    job = get_job(job_id)
+    if not job:
+        return {"error": "Job not found"}
+    
+    result = job.get("result", {})
+    online_verification = result.get("online_verification", {})
+    rows = online_verification.get("rows", [])
+    
+    # Check first few rows for suggested_references
+    sample = []
+    for i, row in enumerate(rows[:3]):
+        sample.append({
+            "index": i,
+            "has_suggested_references": "suggested_references" in row,
+            "suggested_references_count": len(row.get("suggested_references", [])),
+            "status": row.get("status"),
+            "reference_preview": row.get("reference", "")[:100] if row.get("reference") else ""
+        })
+    
+    # Also check the raw verification job data if we have the verification_job_id
+    verification_job_id = job.get("verification", {}).get("verification_job_id")
+    raw_verification_results = None
+    if verification_job_id:
+        raw_verification_results = get_verification_results(verification_job_id)
+        if raw_verification_results and len(raw_verification_results) > 0:
+            raw_sample = []
+            for i, row in enumerate(raw_verification_results[:3]):
+                raw_sample.append({
+                    "index": i,
+                    "has_suggested_references": "suggested_references" in row,
+                    "suggested_references_count": len(row.get("suggested_references", [])),
+                })
+    
+    return {
+        "job_id": job_id,
+        "verification_job_id": verification_job_id,
+        "total_rows": len(rows),
+        "sample": sample,
+        "raw_verification_sample": raw_sample,
+        "full_first_row": rows[0] if rows else None
+    }
 # ============================================================
 # QUEUE STATUS ENDPOINT
 # ============================================================
