@@ -14,57 +14,55 @@
         }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-            background: #f8fafc;
-            color: #1e293b;
-            line-height: 1.5;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            font-size: 13px;
         }
 
-        .header {
-            background: white;
-            border-bottom: 1px solid #e2e8f0;
-            padding: 16px 40px;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            backdrop-filter: blur(10px);
-            background: rgba(255,255,255,0.95);
-        }
-
-        .header-content {
+        .container {
             max-width: 1400px;
             margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 15px 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 20px;
+            gap: 15px;
         }
 
         .logo-container {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
         }
 
         .logo-svg {
-            width: 45px;
+            width: 35px;
             height: auto;
         }
 
         .logo-text {
-            font-size: 22px;
+            font-size: 18px;
             font-weight: 700;
-            letter-spacing: -0.3px;
-            color: #0f172a;
+            color: #333;
         }
 
         .logo-badge {
-            background: #e8f0fe;
-            color: #1a73e8;
-            padding: 4px 10px;
-            border-radius: 20px;
-            font-size: 10px;
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 9px;
             font-weight: 500;
         }
 
@@ -78,191 +76,121 @@
         }
 
         .stat-value {
-            font-size: 18px;
+            font-size: 20px;
             font-weight: 700;
-            color: #0f172a;
+            color: #667eea;
         }
 
         .stat-label {
-            font-size: 10px;
-            color: #64748b;
+            font-size: 9px;
+            color: #666;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
 
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 40px;
-        }
-
-        .hero {
-            text-align: center;
-            margin-bottom: 48px;
-        }
-
-        .hero h1 {
-            font-size: 48px;
-            font-weight: 800;
-            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            margin-bottom: 16px;
-        }
-
-        .hero-subheadline {
-            font-size: 20px;
-            color: #475569;
-            margin-bottom: 32px;
-        }
-
-        .value-bullets {
-            display: flex;
-            justify-content: center;
-            gap: 32px;
-            flex-wrap: wrap;
-        }
-
-        .value-bullet {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 14px;
-            color: #334155;
-        }
-
-        .value-bullet::before {
-            content: "✔";
-            color: #19b36b;
-            font-weight: bold;
-        }
-
-        .upload-card {
+        /* Cards */
+        .card {
             background: white;
-            border-radius: 24px;
-            padding: 32px;
-            margin-bottom: 32px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
-            border: 1px solid #eef2f6;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
 
+        /* Upload Area */
         .file-area {
-            border: 2px dashed #cbd5e1;
-            border-radius: 16px;
-            padding: 48px;
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+            padding: 20px;
             text-align: center;
-            transition: all 0.3s ease;
             cursor: pointer;
-            background: #fafbfc;
+            transition: all 0.2s;
         }
 
         .file-area:hover {
-            border-color: #19b36b;
-            background: #f0fdf4;
-        }
-
-        .file-area.drag-over {
-            border-color: #19b36b;
-            background: #e8f5e9;
-            transform: scale(1.02);
+            border-color: #667eea;
+            background: #f8f9ff;
         }
 
         .file-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
+            font-size: 28px;
+            margin-bottom: 8px;
         }
 
         .file-message {
-            font-size: 14px;
-            color: #64748b;
+            font-size: 12px;
+            color: #666;
         }
 
         .file-name {
             font-weight: 600;
-            color: #19b36b;
-            margin-top: 12px;
+            color: #667eea;
+            margin-top: 6px;
+            font-size: 11px;
         }
 
         input[type="file"] {
             display: none;
         }
 
+        /* Options */
         .options-row {
             display: flex;
-            gap: 24px;
-            margin: 24px 0;
+            gap: 16px;
+            margin: 12px 0;
             flex-wrap: wrap;
         }
 
         .checkbox-label {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 6px;
+            font-size: 11px;
             cursor: pointer;
-            font-size: 14px;
-            color: #334155;
         }
 
+        /* Buttons */
         .button-group {
             display: flex;
-            gap: 16px;
+            gap: 10px;
             flex-wrap: wrap;
-            margin-top: 24px;
+            margin: 12px 0;
         }
 
         .btn {
-            padding: 14px 32px;
-            border-radius: 40px;
+            padding: 8px 18px;
+            border-radius: 20px;
             font-weight: 600;
-            font-size: 14px;
+            font-size: 11px;
             cursor: pointer;
-            transition: all 0.2s ease;
             border: none;
-            font-family: inherit;
+            transition: all 0.2s;
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+            background: linear-gradient(135deg, #667eea, #764ba2);
             color: white;
-            box-shadow: 0 2px 8px rgba(15,23,42,0.2);
         }
 
         .btn-primary:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 16px rgba(15,23,42,0.3);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(102,126,234,0.4);
         }
 
         .btn-success {
-            background: linear-gradient(135deg, #19b36b 0%, #13855a 100%);
+            background: linear-gradient(135deg, #19b36b, #13855a);
             color: white;
-            box-shadow: 0 2px 8px rgba(25,179,107,0.3);
-        }
-
-        .btn-success:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 16px rgba(25,179,107,0.4);
         }
 
         .btn-secondary {
-            background: #f1f5f9;
-            color: #1e293b;
-            border: 1px solid #e2e8f0;
-        }
-
-        .btn-secondary:hover:not(:disabled) {
-            background: #e2e8f0;
+            background: #f0f0f0;
+            color: #333;
+            border: 1px solid #ddd;
         }
 
         .btn-outline {
             background: transparent;
-            border: 1px solid #cbd5e1;
-            color: #475569;
-        }
-
-        .btn-outline:hover:not(:disabled) {
-            background: #f8fafc;
-            border-color: #19b36b;
+            border: 1px solid #ddd;
+            color: #666;
         }
 
         .btn:disabled {
@@ -270,304 +198,234 @@
             cursor: not-allowed;
         }
 
+        .btn-small {
+            padding: 4px 12px;
+            font-size: 10px;
+        }
+
+        /* Status */
         .status-bar {
-            background: #f1f5f9;
-            border-radius: 40px;
-            padding: 12px 20px;
-            margin-top: 20px;
-            font-size: 13px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin-top: 10px;
+            font-size: 11px;
         }
 
         .status {
-            color: #475569;
+            color: #666;
         }
 
         .status.good { color: #19b36b; }
         .status.warn { color: #e67e22; }
         .status.bad { color: #e74c3c; }
 
-        .why-matters {
-            background: linear-gradient(135deg, #f0f9ff 0%, #e6f7ec 100%);
-            border-radius: 24px;
-            padding: 32px;
-            margin-bottom: 32px;
-            text-align: center;
-        }
-
-        .why-matters h3 {
-            font-size: 20px;
-            margin-bottom: 20px;
-            color: #0f172a;
-        }
-
-        .benefits-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-top: 20px;
-        }
-
-        .benefit-item {
-            text-align: center;
-            padding: 16px;
-        }
-
-        .benefit-icon {
-            font-size: 28px;
-            margin-bottom: 8px;
-        }
-
-        .benefit-text {
-            font-size: 13px;
-            color: #475569;
-        }
-
+        /* Process Feedback */
         .process-feedback {
             display: flex;
-            gap: 16px;
+            gap: 12px;
             flex-wrap: wrap;
-            margin-top: 20px;
-            padding: 16px;
-            background: #f8fafc;
-            border-radius: 12px;
-            font-size: 12px;
+            margin: 10px 0;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 10px;
         }
 
         .feedback-step {
             display: flex;
             align-items: center;
-            gap: 6px;
-            color: #94a3b8;
+            gap: 4px;
+            color: #999;
         }
 
-        .feedback-step.completed {
-            color: #19b36b;
-        }
+        .feedback-step.completed { color: #19b36b; }
+        .feedback-step.active { color: #667eea; font-weight: 500; }
 
-        .feedback-step.active {
-            color: #1e3a5f;
-            font-weight: 500;
-        }
-
+        /* ACII Centerpiece */
         .acii-centerpiece {
-            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
-            border-radius: 24px;
-            padding: 32px;
-            margin-bottom: 32px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
             text-align: center;
             color: white;
         }
 
         .acii-score-large {
-            font-size: 80px;
+            font-size: 42px;
             font-weight: 800;
-            line-height: 1;
         }
 
         .acii-label {
-            font-size: 14px;
-            opacity: 0.8;
-            margin-top: 8px;
+            font-size: 10px;
+            opacity: 0.9;
         }
 
         .acii-rating {
             display: inline-block;
-            padding: 4px 16px;
-            border-radius: 40px;
-            font-size: 14px;
-            font-weight: 500;
-            margin-top: 16px;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 10px;
+            margin-top: 8px;
+            background: rgba(255,255,255,0.2);
         }
-
-        .acii-rating.excellent { background: #19b36b; }
-        .acii-rating.very-good { background: #27ae60; }
-        .acii-rating.good { background: #3498db; }
-        .acii-rating.moderate { background: #f39c12; }
-        .acii-rating.weak { background: #e67e22; }
-        .acii-rating.poor { background: #e74c3c; }
 
         .acii-recommendation {
-            margin-top: 20px;
-            padding: 16px;
+            margin-top: 10px;
+            padding: 8px;
             background: rgba(255,255,255,0.1);
+            border-radius: 8px;
+            font-size: 10px;
+            text-align: left;
+        }
+
+        /* Why Matters - Compact */
+        .why-matters {
+            background: #f8f9fa;
             border-radius: 12px;
-            font-size: 14px;
+            padding: 12px;
+            margin-bottom: 16px;
+            text-align: center;
         }
 
-        .acii-recommendation .priority {
-            color: #f39c12;
-            font-weight: 500;
-            margin-top: 8px;
-            padding-top: 8px;
-            border-top: 1px solid rgba(255,255,255,0.2);
+        .why-matters h3 {
+            font-size: 12px;
+            margin-bottom: 8px;
         }
 
+        .benefits-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+
+        .benefit-item {
+            padding: 6px;
+        }
+
+        .benefit-icon {
+            font-size: 16px;
+        }
+
+        .benefit-text {
+            font-size: 9px;
+            color: #666;
+        }
+
+        /* Queue Status */
+        .queue-info {
+            background: #f8f9fa;
+            padding: 8px 12px;
+            border-radius: 8px;
+            margin: 8px 0;
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 10px;
+            border-left: 3px solid #667eea;
+        }
+
+        /* Tabs */
         .tabs {
             display: flex;
             gap: 4px;
-            border-bottom: 2px solid #e2e8f0;
-            margin-bottom: 24px;
+            border-bottom: 1px solid #eee;
+            margin-bottom: 12px;
             flex-wrap: wrap;
         }
 
         .tab {
-            padding: 12px 24px;
+            padding: 6px 14px;
             cursor: pointer;
+            font-size: 10px;
             font-weight: 500;
-            color: #64748b;
-            border-radius: 8px 8px 0 0;
-            transition: all 0.2s;
+            color: #666;
+            border-radius: 6px 6px 0 0;
         }
 
-        .tab:hover { color: #19b36b; }
+        .tab:hover { color: #667eea; }
         .tab.active {
-            color: #19b36b;
-            border-bottom: 2px solid #19b36b;
-            margin-bottom: -2px;
+            color: #667eea;
+            border-bottom: 2px solid #667eea;
         }
 
         .tabPane {
             display: none;
-            animation: fadeIn 0.3s ease;
         }
 
         .tabPane.active {
             display: block;
         }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .card {
-            background: white;
-            border-radius: 20px;
-            padding: 24px;
-            margin-bottom: 24px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-            border: 1px solid #eef2f6;
-        }
-
-        .card h3 {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .kpi-dashboard {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }
-
-        .kpi {
-            background: #f8fafc;
-            border-radius: 16px;
-            padding: 20px;
-            text-align: center;
-        }
-
-        .kpi-value {
-            font-size: 32px;
-            font-weight: 700;
-            color: #0f172a;
-        }
-
-        .kpi-label {
-            font-size: 12px;
-            color: #64748b;
-            margin-top: 5px;
-        }
-
-        .export-section {
-            display: flex;
-            gap: 12px;
-            justify-content: flex-end;
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid #eef2f6;
-        }
-
-        .btn-small {
-            padding: 8px 16px;
-            font-size: 12px;
-        }
-
-        .trust-badge {
-            text-align: center;
-            padding: 20px;
-            background: #f8fafc;
-            border-radius: 12px;
-            margin-top: 32px;
-            font-size: 12px;
-            color: #64748b;
-        }
-
-        .trust-badge::before {
-            content: "🔒 ";
-        }
-
-        .footer {
-            text-align: center;
-            padding: 30px;
-            color: #64748b;
-            font-size: 12px;
-            border-top: 1px solid #e2e8f0;
-            margin-top: 40px;
-        }
-
-        .footer a {
-            color: #19b36b;
-            text-decoration: none;
-        }
-
+        /* Tables */
         .tableWrap {
             overflow-x: auto;
+            margin: 8px 0;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 13px;
+            font-size: 10px;
         }
 
         th, td {
-            padding: 12px 10px;
+            padding: 6px 8px;
             text-align: left;
-            border-bottom: 1px solid #eef2f6;
+            border-bottom: 1px solid #eee;
         }
 
         th {
-            background: #f8fafc;
+            background: #f8f9fa;
             font-weight: 600;
-            color: #475569;
-            position: sticky;
-            top: 0;
+            font-size: 9px;
         }
 
+        /* KPI Dashboard */
+        .kpi-dashboard {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .kpi {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 8px;
+            text-align: center;
+        }
+
+        .kpi-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .kpi-label {
+            font-size: 8px;
+            color: #666;
+        }
+
+        /* Badges */
         .badge {
             display: inline-block;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 500;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 8px;
+            font-weight: 600;
         }
-        .badge.verified { background: #19b36b; color: white; }
-        .badge.likely { background: #f39c12; color: white; }
-        .badge.not_found { background: #e74c3c; color: white; }
-        .badge.matched { background: #27ae60; color: white; }
-        .badge.needs_review { background: #e67e22; color: white; }
-        .badge.offline { background: #95a5a6; color: white; }
+        .badge.verified { background: #d1fae5; color: #065f46; }
+        .badge.likely { background: #fed7aa; color: #92400e; }
+        .badge.not_found { background: #fee2e2; color: #991b1b; }
+        .badge.matched { background: #d1fae5; color: #065f46; }
 
+        /* Progress */
         .progress-container {
-            background: #e2e8f0;
-            border-radius: 40px;
-            height: 8px;
+            background: #e5e7eb;
+            border-radius: 10px;
+            height: 4px;
             overflow: hidden;
         }
 
@@ -575,1083 +433,834 @@
             width: 0%;
             height: 100%;
             background: linear-gradient(90deg, #19b36b, #13855a);
-            border-radius: 40px;
-            transition: width 0.3s ease;
         }
 
-        .fix-item {
-            background: #f8fafc;
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 10px;
-        }
-        .fix-item.high-conf { border-left: 4px solid #19b36b; }
-        .fix-item.med-conf { border-left: 4px solid #f39c12; }
-        .fix-item.low-conf { border-left: 4px solid #e74c3c; }
-        .fix-original { color: #e74c3c; text-decoration: line-through; font-size: 13px; }
-        .fix-suggested { color: #19b36b; font-size: 13px; margin-top: 5px; }
-        .fix-meta { font-size: 11px; color: #64748b; margin-top: 8px; }
-
-        .fix-log-entry {
-            background: #f8fafc;
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 10px;
-        }
-        .fix-log-original { color: #e74c3c; text-decoration: line-through; font-size: 13px; }
-        .fix-log-suggested { color: #19b36b; font-size: 13px; margin-top: 5px; }
-        .fix-log-meta { font-size: 11px; color: #64748b; margin-top: 5px; }
-
-        .queue-info {
-            background: #f8f9fa;
-            padding: 10px 15px;
-            border-radius: 8px;
-            margin: 10px 0;
+        /* Export Section */
+        .export-section {
             display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            font-size: 13px;
-            border-left: 4px solid #3498db;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
         }
 
+        /* Trust Badge */
+        .trust-badge {
+            text-align: center;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-top: 12px;
+            font-size: 9px;
+            color: #666;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 12px;
+            color: rgba(255,255,255,0.7);
+            font-size: 9px;
+            margin-top: 16px;
+        }
+
+        .footer a {
+            color: white;
+            text-decoration: none;
+        }
+
+        /* Fix Items */
+        .fix-item, .fix-log-entry {
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 6px;
+            margin-bottom: 6px;
+            font-size: 9px;
+        }
+        .fix-original { color: #e74c3c; text-decoration: line-through; }
+        .fix-suggested { color: #19b36b; margin-top: 2px; }
+
+        /* Dashboard */
         .dashboard {
             display: flex;
-            gap: 15px;
+            gap: 10px;
             flex-wrap: wrap;
-            margin-bottom: 20px;
+            margin-bottom: 10px;
         }
 
+        /* Responsive */
         @media (max-width: 768px) {
-            .container { padding: 20px; }
-            .hero h1 { font-size: 32px; }
-            .hero-subheadline { font-size: 16px; }
-            .value-bullets { gap: 16px; }
+            body { padding: 10px; }
             .kpi-dashboard { grid-template-columns: repeat(2, 1fr); }
-            .acii-score-large { font-size: 48px; }
+            .benefits-grid { grid-template-columns: repeat(2, 1fr); }
+            .header { flex-direction: column; text-align: center; }
         }
     </style>
 </head>
 <body>
-
-<header class="header">
-    <div class="header-content">
-        <div class="logo-container">
-            <div class="logo-svg">
-                <svg viewBox="0 0 120 50" xmlns="http://www.w3.org/2000/svg">
-                    <text x="5" y="38" font-size="42" font-weight="700" fill="#0f172a" font-family="Georgia, serif">C</text>
-                    <text x="48" y="38" font-size="42" font-weight="700" fill="#0f172a" font-family="Georgia, serif">I</text>
-                    <path d="M78 32 L88 42 L105 22" stroke="#19b36b" stroke-width="5" fill="none" stroke-linecap="round"/>
-                </svg>
-            </div>
-            <div class="logo-text">CiteIntegrity</div>
-            <div class="logo-badge">Manuscript Readiness Platform</div>
-        </div>
-        <div class="header-stats" id="headerStats">
-            <div class="stat-item"><div class="stat-value" id="statUploads">0</div><div class="stat-label">Documents</div></div>
-            <div class="stat-item"><div class="stat-value" id="statQueue">0</div><div class="stat-label">Queue</div></div>
-        </div>
-    </div>
-</header>
-
-<main class="container">
-    <div class="hero">
-        <h1>Fix, verify, and elevate your citations<br>before submission.</h1>
-        <div class="hero-subheadline">Prepare your manuscript for publication with professional citation integrity analysis</div>
-        <div class="value-bullets">
-            <div class="value-bullet">Detect missing & uncited references</div>
-            <div class="value-bullet">Auto-fix citation errors</div>
-            <div class="value-bullet">Measure integrity with ACII score</div>
-            <div class="value-bullet">Prepare your manuscript for submission</div>
-        </div>
-    </div>
-
-    <div class="upload-card">
-        <div class="file-area" id="fileArea">
-            <div class="file-icon">📑</div>
-            <div class="file-message">Upload Manuscript (.docx recommended)</div>
-            <div class="file-message" style="font-size: 12px; margin-top: 8px;">DOCX is the recommended format for accurate citation analysis</div>
-            <div class="file-name" id="fileName"></div>
-            <input type="file" id="file" accept=".docx">
-        </div>
-
-        <div class="options-row">
-            <label class="checkbox-label"><input type="checkbox" id="autofix"> 🔧 Enable Auto-Fix Suggestions</label>
-            <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-start Online Verification</label>
-        </div>
-
-        <div class="button-group">
-            <button class="btn btn-primary" id="btnCheck">▶ Analyze Document</button>
-            <button class="btn btn-secondary" id="btnVerify" disabled>🌐 Verify References</button>
-            <button class="btn btn-success" id="btnApplyAutofix" disabled>✨ Auto-Fix & Download</button>
-        </div>
-
-        <div class="process-feedback" id="processFeedback">
-            <div class="feedback-step" id="stepUpload">⏳ Document ready</div>
-            <div class="feedback-step" id="stepExtract">⏳ Citations extracted</div>
-            <div class="feedback-step" id="stepMatch">⏳ References matched</div>
-            <div class="feedback-step" id="stepACII">⏳ ACII computed</div>
-        </div>
-
-        <div class="status-bar">
-            <div class="status" id="status">System ready. Upload your manuscript to begin.</div>
-        </div>
-
-        <div id="verifyProgress" style="display: none; margin-top: 16px;">
-            <div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
-            <div id="progressText" style="font-size: 12px; margin-top: 8px;"></div>
-            <div id="estimatedRemaining" style="font-size: 11px; color: #19b36b; margin-top: 5px;"></div>
-        </div>
-    </div>
-
-    <!-- ACII Centerpiece -->
-    <div id="aciiCenterpiece" class="acii-centerpiece" style="display: none;">
-        <div class="acii-score-large" id="aciiScoreLarge">--</div>
-        <div class="acii-label">Academic Citation Integrity Index</div>
-        <div class="acii-rating" id="aciiRatingBadge">--</div>
-        <div class="acii-recommendation" id="aciiRecommendationText"></div>
-    </div>
-
-    <div class="why-matters">
-        <h3>Why use CiteIntegrity?</h3>
-        <div class="benefits-grid">
-            <div class="benefit-item"><div class="benefit-icon">📝</div><div class="benefit-text">Reduce reviewer rejection</div></div>
-            <div class="benefit-item"><div class="benefit-icon">🎯</div><div class="benefit-text">Ensure citation accuracy</div></div>
-            <div class="benefit-item"><div class="benefit-icon">🏆</div><div class="benefit-text">Improve academic credibility</div></div>
-            <div class="benefit-item"><div class="benefit-icon">⏱️</div><div class="benefit-text">Save hours of manual checking</div></div>
-        </div>
-    </div>
-
-    <!-- Queue Status -->
-    <div id="queueStatus" class="queue-info">
-        <span>📊 Loading queue status...</span>
-    </div>
-
-    <!-- Results Section -->
-    <section id="resultsCard" class="card" style="display:none;">
-        <div class="results-header">
-            <h3>📊 Analysis Results</h3>
-            <div class="dashboard" id="dash"></div>
-        </div>
-
-        <div class="tabs">
-            <button class="tab active" data-tab="summaryPane">📊 Summary</button>
-            <button class="tab" data-tab="missingPane">❌ Missing</button>
-            <button class="tab" data-tab="uncitedPane">📖 Uncited</button>
-            <button class="tab" data-tab="c2rPane">🔗 Citations → References</button>
-            <button class="tab" data-tab="r2cPane">📚 References → Citations</button>
-            <button class="tab" data-tab="verifyPane">✅ Verification</button>
-            <button class="tab" data-tab="fixesPane">🔧 Fixes</button>
-        </div>
-
-        <div class="tabPanes">
-            <!-- SUMMARY PANE -->
-            <div id="summaryPane" class="tabPane active">
-                <div class="tableWrap">
-                    <table class="tbl" style="min-width:520px;">
-                        <thead><tr><th style="width:220px;">Item</th><th>Value</th></tr></thead>
-                        <tbody id="summaryTable"></tbody>
-                    </table>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo-container">
+                <div class="logo-svg">
+                    <svg viewBox="0 0 120 50" width="35" height="35">
+                        <text x="5" y="38" font-size="42" font-weight="700" fill="#667eea" font-family="Georgia, serif">C</text>
+                        <text x="48" y="38" font-size="42" font-weight="700" fill="#667eea" font-family="Georgia, serif">I</text>
+                        <path d="M78 32 L88 42 L105 22" stroke="#19b36b" stroke-width="5" fill="none" stroke-linecap="round"/>
+                    </svg>
                 </div>
+                <div class="logo-text">CiteIntegrity</div>
+                <div class="logo-badge">Manuscript Readiness</div>
+            </div>
+            <div class="header-stats">
+                <div class="stat-item"><div class="stat-value" id="statUploads">0</div><div class="stat-label">Documents</div></div>
+                <div class="stat-item"><div class="stat-value" id="statQueue">0</div><div class="stat-label">Queue</div></div>
+            </div>
+        </div>
 
-                <!-- ACII Components Card -->
-                <div id="aciiCard" class="card" style="margin-top:20px; display:none;">
-                    <h3>📊 ACII Components</h3>
+        <!-- Upload Card -->
+        <div class="card">
+            <div class="file-area" id="fileArea">
+                <div class="file-icon">📑</div>
+                <div class="file-message">Upload Manuscript (.docx)</div>
+                <div class="file-name" id="fileName"></div>
+                <input type="file" id="file" accept=".docx">
+            </div>
+
+            <div class="options-row">
+                <label class="checkbox-label"><input type="checkbox" id="autofix"> 🔧 Auto-Fix</label>
+                <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-Verify</label>
+            </div>
+
+            <div class="button-group">
+                <button class="btn btn-primary" id="btnCheck">▶ Analyze</button>
+                <button class="btn btn-secondary" id="btnVerify" disabled>🌐 Verify</button>
+                <button class="btn btn-success" id="btnApplyAutofix" disabled>✨ Fix & Download</button>
+            </div>
+
+            <div class="process-feedback">
+                <div class="feedback-step" id="stepUpload">⏳ Upload</div>
+                <div class="feedback-step" id="stepExtract">⏳ Extract</div>
+                <div class="feedback-step" id="stepMatch">⏳ Match</div>
+                <div class="feedback-step" id="stepACII">⏳ ACII</div>
+            </div>
+
+            <div class="status-bar">
+                <div class="status" id="status">Ready. Upload a document to begin.</div>
+            </div>
+
+            <div id="verifyProgress" style="display: none;">
+                <div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
+                <div id="progressText" style="font-size: 9px; margin-top: 4px;"></div>
+            </div>
+        </div>
+
+        <!-- ACII Score -->
+        <div id="aciiCenterpiece" class="acii-centerpiece" style="display: none;">
+            <div class="acii-score-large" id="aciiScoreLarge">--</div>
+            <div class="acii-label">Academic Citation Integrity Index</div>
+            <div class="acii-rating" id="aciiRatingBadge">--</div>
+            <div class="acii-recommendation" id="aciiRecommendationText"></div>
+        </div>
+
+        <!-- Why Matters -->
+        <div class="why-matters">
+            <h3>Why CiteIntegrity?</h3>
+            <div class="benefits-grid">
+                <div class="benefit-item"><div class="benefit-icon">📝</div><div class="benefit-text">Reduce rejection</div></div>
+                <div class="benefit-item"><div class="benefit-icon">🎯</div><div class="benefit-text">Ensure accuracy</div></div>
+                <div class="benefit-item"><div class="benefit-icon">🏆</div><div class="benefit-text">Boost credibility</div></div>
+                <div class="benefit-item"><div class="benefit-icon">⏱️</div><div class="benefit-text">Save time</div></div>
+            </div>
+        </div>
+
+        <!-- Queue Status -->
+        <div id="queueStatus" class="queue-info">📊 Loading...</div>
+
+        <!-- Results Section -->
+        <div id="resultsCard" class="card" style="display:none;">
+            <div class="tabs">
+                <button class="tab active" data-tab="summaryPane">📊 Summary</button>
+                <button class="tab" data-tab="missingPane">❌ Missing</button>
+                <button class="tab" data-tab="uncitedPane">📖 Uncited</button>
+                <button class="tab" data-tab="c2rPane">🔗 C→R</button>
+                <button class="tab" data-tab="r2cPane">📚 R→C</button>
+                <button class="tab" data-tab="verifyPane">✅ Verify</button>
+                <button class="tab" data-tab="fixesPane">🔧 Fixes</button>
+            </div>
+
+            <div class="tabPanes">
+                <!-- Summary -->
+                <div id="summaryPane" class="tabPane active">
                     <div class="tableWrap">
-                        <table class="tbl">
-                            <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
-                            <tbody>
-                                <tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
-                                <tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
-                                <tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
-                                <tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
-                            </tbody>
+                        <table>
+                            <thead><tr><th>Item</th><th>Value</th></tr></thead>
+                            <tbody id="summaryTable"></tbody>
                         </table>
+                    </div>
+
+                    <div id="aciiCard" style="display:none; margin-top:12px;">
+                        <div class="tableWrap">
+                            <table>
+                                <thead><tr><th>Component</th><th>Score</th><th>Category</th></tr></thead>
+                                <tbody>
+                                    <tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td></tr>
+                                    <tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td></tr>
+                                    <tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td></tr>
+                                    <tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="export-section">
+                        <button class="btn btn-small btn-outline" id="btnExportCsvTop">CSV</button>
+                        <button class="btn btn-small btn-outline" id="btnExportWordTop">Word</button>
+                        <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>Verify</button>
                     </div>
                 </div>
 
-                <div class="export-section">
-                    <button class="btn btn-small btn-outline" id="btnExportCsvTop">📊 CSV Report</button>
-                    <button class="btn btn-small btn-outline" id="btnExportWordTop">📄 Word Report</button>
-                    <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>🔍 Verification Report</button>
+                <!-- Missing -->
+                <div id="missingPane" class="tabPane">
+                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Citation</th><th>Count</th></tr></thead><tbody id="missingBody"></tbody></table></div>
                 </div>
-            </div>
 
-            <!-- MISSING PANE -->
-            <div id="missingPane" class="tabPane">
-                <h3>❌ Citations in text missing from references</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th style="width:60px;">No.</th><th>Citation in Text</th><th style="width:120px;">Count</th></tr></thead>
-                        <tbody id="missingBody"></tbody>
-                    </table>
+                <!-- Uncited -->
+                <div id="uncitedPane" class="tabPane">
+                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Reference</th></tr></thead><tbody id="uncitedBody"></tbody></table></div>
                 </div>
-            </div>
 
-            <!-- UNCITED PANE -->
-            <div id="uncitedPane" class="tabPane">
-                <h3>📖 References not cited in text</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th style="width:60px;">No.</th><th>Reference</th></tr></thead>
-                        <tbody id="uncitedBody"></tbody>
-                    </table>
+                <!-- C2R -->
+                <div id="c2rPane" class="tabPane">
+                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Matched</th></tr></thead><tbody id="c2rBody"></tbody></table></div>
                 </div>
-            </div>
 
-            <!-- C2R PANE -->
-            <div id="c2rPane" class="tabPane">
-                <h3>🔗 In-text → Reference mapping</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th>No.</th><th>Status</th><th>In-text</th><th>Count</th><th>Matched reference</th><th>Flags</th></tr></thead>
-                        <tbody id="c2rBody"></tbody>
-                    </table>
+                <!-- R2C -->
+                <div id="r2cPane" class="tabPane">
+                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Times</th><th>Reference</th></tr></thead><tbody id="r2cBody"></tbody></table></div>
                 </div>
-            </div>
 
-            <!-- R2C PANE -->
-            <div id="r2cPane" class="tabPane">
-                <h3>📚 Reference → In-text mapping</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th>No.</th><th>Times cited</th><th>Reference</th><th>Cited by</th></tr></thead>
-                        <tbody id="r2cBody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- VERIFY PANE -->
-            <div id="verifyPane" class="tabPane">
-                <div class="verify-top">
-                    <h3>✅ Online verification</h3>
+                <!-- Verify -->
+                <div id="verifyPane" class="tabPane">
                     <div class="dashboard" id="verifyDash"></div>
+                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th></tr></thead><tbody id="verifyBody"></tbody></table></div>
                 </div>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th></tr></thead>
-                        <tbody id="verifyBody"></tbody>
-                    </table>
-                </div>
-            </div>
 
-            <!-- FIXES PANE -->
-            <div id="fixesPane" class="tabPane">
-                <div id="fixSuggestionsPanel" class="card" style="display: none;">
-                    <h3>🔧 Auto-Fix Suggestions</h3>
-                    <div id="fixSuggestionsContent"></div>
-                </div>
-                <div id="fixLogPanel" class="card" style="display: none;">
-                    <h3>📋 Fix Log</h3>
-                    <div id="fixLogContent"></div>
+                <!-- Fixes -->
+                <div id="fixesPane" class="tabPane">
+                    <div id="fixSuggestionsPanel" style="display:none;"><h4 style="font-size:11px;">🔧 Fix Suggestions</h4><div id="fixSuggestionsContent"></div></div>
+                    <div id="fixLogPanel" style="display:none;"><h4 style="font-size:11px;">📋 Fix Log</h4><div id="fixLogContent"></div></div>
                 </div>
             </div>
         </div>
-    </section>
 
-    <div class="trust-badge">
-        Your document is processed securely and not stored permanently.
+        <div class="trust-badge">🔒 Your document is processed securely and not stored.</div>
     </div>
-</main>
 
-<footer class="footer">
-    <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity — Manuscript Readiness & Citation Integrity Platform</p>
-    <p><a href="/privacy">Privacy Policy</a> | <a href="https://citeintegrity.org">citeintegrity.org</a></p>
-</footer>
+    <footer class="footer">
+        <p>© Prof Anokye M. Adam, University of Cape Coast | <a href="/privacy">Privacy</a> | <a href="https://citeintegrity.org">citeintegrity.org</a></p>
+    </footer>
 
-<script>
-// ============================================
-// COMPLETE APP.JS WITH FIXED RESULTS & ACII RECOMMENDATIONS
-// ============================================
+    <script>
+    // ============================================
+    // COMPLETE COMPACT APP.JS
+    // ============================================
 
-document.addEventListener("DOMContentLoaded", function () {
+    document.addEventListener("DOMContentLoaded", function() {
+        "use strict";
 
-"use strict";
+        const CONFIG = {
+            POLL_INTERVAL: 3000,
+            MAX_VERIFY_DISPLAY: 500,
+            RETRY_DELAY: 30000,
+            MAX_POLL_ATTEMPTS: 1200,
+            STALL_TIMEOUT: 300000
+        };
 
-const CONFIG = {
-    POLL_INTERVAL: 3000,
-    MAX_VERIFY_DISPLAY: 500,
-    RETRY_DELAY: 30000,
-    MAX_POLL_ATTEMPTS: 1200,
-    STALL_TIMEOUT: 300000
-};
+        const $ = (id) => document.getElementById(id);
 
-// DOM Elements
-const $ = (id) => document.getElementById(id);
+        let LAST_JOB_ID = null;
+        let POLL_TIMER = null;
+        let VERIFICATION_IN_PROGRESS = false;
+        let RETRY_COUNT = 0;
+        let POLL_ATTEMPT_COUNT = 0;
+        let LAST_PROGRESS = 0;
+        let LAST_PROGRESS_TIME = null;
+        let AUTO_FIX_APPLIED = false;
+        window.latestResults = null;
 
-let LAST_JOB_ID = null;
-let POLL_TIMER = null;
-let VERIFICATION_IN_PROGRESS = false;
-let RETRY_COUNT = 0;
-let POLL_ATTEMPT_COUNT = 0;
-let LAST_PROGRESS = 0;
-let LAST_PROGRESS_TIME = null;
-let AUTO_FIX_APPLIED = false;
-window.latestResults = null;
-
-// Utility Functions
-function esc(s) {
-    return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
-function toNum(x, d = 0) {
-    const n = Number(x);
-    return Number.isFinite(n) ? n : d;
-}
-
-function setStatus(msg, tone = "muted") {
-    const statusEl = $("status");
-    if (statusEl) {
-        statusEl.className = `status ${tone}`;
-        statusEl.textContent = msg || "";
-    }
-    console.log(`[Status] ${msg}`);
-}
-
-function formatTime(seconds) {
-    if (seconds < 60) return `${Math.round(seconds)}s`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-}
-
-function showNotification(message, type = "info") {
-    const notification = document.createElement("div");
-    notification.textContent = message;
-    notification.style.cssText = `
-        position: fixed; bottom: 20px; right: 20px; padding: 12px 20px;
-        background: ${type === "success" ? "#19b36b" : type === "error" ? "#e74c3c" : "#3498db"};
-        color: white; border-radius: 8px; z-index: 10000; font-size: 13px;
-        animation: slideIn 0.3s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    `;
-    document.body.appendChild(notification);
-    setTimeout(() => notification.remove(), 4000);
-}
-
-function updateProcessFeedback(step, status) {
-    const stepEl = $(`step${step}`);
-    if (stepEl) {
-        stepEl.className = `feedback-step ${status}`;
-        if (status === "completed") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "✓");
-        else if (status === "active") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "🔄");
-    }
-}
-
-function resetProcessFeedback() {
-    ["Upload", "Extract", "Match", "ACII"].forEach(step => {
-        const stepEl = $(`step${step}`);
-        if (stepEl) {
-            stepEl.className = "feedback-step";
-            stepEl.innerHTML = stepEl.innerHTML.replace("✓", "⏳").replace("🔄", "⏳");
+        function esc(s) {
+            return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
         }
-    });
-}
 
-// File Area Setup
-function setupFileArea() {
-    const fileArea = document.getElementById("fileArea");
-    const fileInput = $("file");
-    const fileNameSpan = document.getElementById("fileName");
-    
-    if (fileArea && fileInput) {
-        fileArea.addEventListener("click", function(e) {
-            if (e.target.classList && e.target.classList.contains("file-name")) return;
-            fileInput.click();
-        });
-        
-        fileArea.addEventListener("dragover", function(e) {
-            e.preventDefault();
-            fileArea.classList.add("drag-over");
-        });
-        
-        fileArea.addEventListener("dragleave", function(e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-        });
-        
-        fileArea.addEventListener("drop", function(e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                fileInput.files = files;
-                const changeEvent = new Event('change', { bubbles: true });
-                fileInput.dispatchEvent(changeEvent);
+        function toNum(x, d = 0) {
+            const n = Number(x);
+            return Number.isFinite(n) ? n : d;
+        }
+
+        function setStatus(msg, tone = "muted") {
+            const statusEl = $("status");
+            if (statusEl) {
+                statusEl.className = `status ${tone}`;
+                statusEl.textContent = msg || "";
             }
-        });
-        
-        fileInput.addEventListener('change', function() {
-            const file = fileInput.files[0];
-            if (file) {
-                if (file.name.toLowerCase().endsWith('.docx')) {
-                    fileNameSpan.textContent = `📄 ${file.name}`;
-                    setStatus("DOCX file selected. Ready to run check.", "good");
-                    const btnCheck = $("btnCheck");
-                    if (btnCheck) btnCheck.disabled = false;
-                } else {
-                    fileNameSpan.textContent = "";
-                    setStatus("Only DOCX files are accepted. Please upload a Word document.", "warn");
-                    fileInput.value = '';
-                    const btnCheck = $("btnCheck");
-                    if (btnCheck) btnCheck.disabled = true;
+        }
+
+        function formatTime(seconds) {
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+            return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        }
+
+        function showNotification(message, type = "info") {
+            const notification = document.createElement("div");
+            notification.textContent = message;
+            notification.style.cssText = `
+                position: fixed; bottom: 20px; right: 20px; padding: 8px 14px;
+                background: ${type === "success" ? "#19b36b" : type === "error" ? "#e74c3c" : "#667eea"};
+                color: white; border-radius: 8px; z-index: 10000; font-size: 11px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            `;
+            document.body.appendChild(notification);
+            setTimeout(() => notification.remove(), 3000);
+        }
+
+        function updateProcessFeedback(step, status) {
+            const stepEl = $(`step${step}`);
+            if (stepEl) {
+                stepEl.className = `feedback-step ${status}`;
+                if (status === "completed") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "✓");
+                else if (status === "active") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "🔄");
+            }
+        }
+
+        function resetProcessFeedback() {
+            ["Upload", "Extract", "Match", "ACII"].forEach(step => {
+                const stepEl = $(`step${step}`);
+                if (stepEl) {
+                    stepEl.className = "feedback-step";
+                    stepEl.innerHTML = stepEl.innerHTML.replace("✓", "⏳").replace("🔄", "⏳");
                 }
-            } else {
-                fileNameSpan.textContent = "";
-            }
-        });
-    }
-}
-
-// ACII Rating with Recommendations
-function getACIIRating(score) {
-    score = Number(score);
-    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity with excellent recency and balance." };
-    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity with good recency and diversity." };
-    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity with acceptable recency." };
-    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity. Improvements needed in recency or diversity." };
-    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity. Significant room for improvement." };
-    return { text: "Poor", class: "poor", description: "Low citation integrity. Many citations are unverified or lack author diversity." };
-}
-
-function generateACIIRecommendations(aciiData) {
-    if (!aciiData) return "<div>No recommendation data available.</div>";
-    
-    const comp = aciiData.components || {};
-    const recs = aciiData.recommendations || {};
-    let html = "";
-    
-    if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
-    if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
-    if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
-    if (recs.priority) html += `<div class="priority">🎯 ${esc(recs.priority)}</div>`;
-    
-    if (!html) {
-        const v = comp.verification_integrity?.score || 0;
-        const recency = comp.recency?.score || 0;
-        const diversity = comp.author_diversity?.score || 0;
-        
-        if (v < 60) html += `<div>🔍 Low verification rate (${v}%). Run online verification to improve credibility.</div>`;
-        if (recency < 50) html += `<div>📅 Only ${recency}% of references are recent (≤5 years). Add current sources.</div>`;
-        if (diversity < 50) html += `<div>👥 Limited author diversity (${diversity}%). Expand your citation base.</div>`;
-        if (!html) html += `<div>✨ Your citations look good! Consider adding more recent sources to maintain relevance.</div>`;
-    }
-    
-    return html;
-}
-
-// Auto-Fix Functions
-async function getAutoFixSuggestions() {
-    if (!LAST_JOB_ID) { showNotification("Run document check first", "error"); return null; }
-    try {
-        setStatus("Fetching auto-fix suggestions...", "info");
-        const response = await fetch(`/autofix-suggestions/${encodeURIComponent(LAST_JOB_ID)}`);
-        const data = await response.json();
-        if (data.available) {
-            displayFixSuggestions(data);
-            setStatus(`Auto-fix suggestions available (${data.auto_fixable_count} auto-fixable)`, "good");
-            const btnApply = $("btnApplyAutofix");
-            if (btnApply) btnApply.disabled = false;
-            return data;
-        } else {
-            setStatus(data.message || "No auto-fix suggestions available", "warn");
-            return null;
-        }
-    } catch (err) {
-        console.error(err);
-        setStatus("Error fetching auto-fix suggestions", "bad");
-        return null;
-    }
-}
-
-function displayFixSuggestions(data) {
-    const panel = $("fixSuggestionsPanel");
-    if (!panel) return;
-    
-    const suggestions = data.suggestions || {};
-    const citations = suggestions.citations || [];
-    const references = suggestions.references || [];
-    
-    // Deduplicate citations by original text
-    const uniqueCitations = [];
-    const seen = new Set();
-    for (const fix of citations) {
-        if (!seen.has(fix.original)) {
-            seen.add(fix.original);
-            uniqueCitations.push(fix);
-        }
-    }
-    
-    // Deduplicate references by original text
-    const uniqueReferences = [];
-    const seenRef = new Set();
-    for (const fix of references) {
-        const key = fix.original.substring(0, 100);
-        if (!seenRef.has(key)) {
-            seenRef.add(key);
-            uniqueReferences.push(fix);
-        }
-    }
-    
-    panel.style.display = "block";
-    let html = `<div class="fix-summary"><h4>🔧 Auto-Fix Summary</h4>
-        <div style="display: flex; gap: 15px; margin-bottom: 15px;">
-            <span>✓ Auto-fixable: ${data.auto_fixable_count || 0}</span>
-            <span>⚠️ Needs review: ${data.review_needed_count || 0}</span>
-            <span>📋 Total: ${data.statistics?.total_suggestions || 0}</span>
-        </div>
-    </div>`;
-    
-    if (uniqueCitations.length > 0) {
-        html += `<div class="fix-section"><h5>📝 Citation Fixes (${uniqueCitations.length})</h5>`;
-        html += uniqueCitations.slice(0, 30).map(fix => `
-            <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : fix.confidence >= 0.7 ? 'med-conf' : 'low-conf'}">
-                <div class="fix-original">❌ ${esc(fix.original)}</div>
-                <div class="fix-suggested">✅ ${esc(fix.suggested)}</div>
-                <div class="fix-meta">${Math.round(fix.confidence * 100)}% confidence - ${esc(fix.reason)}</div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    
-    if (uniqueReferences.length > 0) {
-        html += `<div class="fix-section"><h5>📚 Reference Fixes (${uniqueReferences.length})</h5>`;
-        html += uniqueReferences.slice(0, 15).map(fix => `
-            <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="fix-original">${esc(fix.original.substring(0, 150))}${fix.original.length > 150 ? '…' : ''}</div>
-                <div class="fix-suggested">${esc(fix.suggested.substring(0, 150))}${fix.suggested.length > 150 ? '…' : ''}</div>
-                <div class="fix-meta">${esc(fix.type)} - ${Math.round(fix.confidence * 100)}%</div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    
-    if (uniqueCitations.length === 0 && uniqueReferences.length === 0) {
-        html += `<div class="fix-empty">✨ No fix suggestions available. Document looks good!</div>`;
-    }
-    
-    const content = $("fixSuggestionsContent");
-    if (content) content.innerHTML = html;
-}
-
-async function applyAutoFix() {
-    if (!LAST_JOB_ID) { showNotification("Run document check first", "error"); return; }
-    if (AUTO_FIX_APPLIED) { showNotification("Auto-fix already applied to this document", "info"); return; }
-    try {
-        setStatus("Applying auto-fixes...", "info");
-        const formData = new FormData();
-        formData.append("job_id", LAST_JOB_ID);
-        const response = await fetch("/apply-autofix", { method: "POST", body: formData });
-        const result = await response.json();
-        if (result.success) {
-            AUTO_FIX_APPLIED = true;
-            setStatus(`Applied ${result.fixes_applied_count} fixes`, "good");
-            showNotification(`✅ Applied ${result.fixes_applied_count} auto-fixes`, "success");
-            await showFixLog();
-        } else {
-            showNotification("Failed to apply auto-fixes", "error");
-        }
-    } catch (err) {
-        setStatus("Error applying auto-fixes", "bad");
-        showNotification("Error applying auto-fixes", "error");
-    }
-}
-
-async function showFixLog() {
-    if (!LAST_JOB_ID) return;
-    try {
-        const response = await fetch(`/fix-log/${encodeURIComponent(LAST_JOB_ID)}`);
-        const data = await response.json();
-        const panel = $("fixLogPanel");
-        const content = $("fixLogContent");
-        if (panel && content && data.fixes && data.fixes.length > 0) {
-            panel.style.display = "block";
-            let html = `<div class="fix-log-list">`;
-            data.fixes.forEach((fix, idx) => {
-                html += `<div class="fix-log-entry">
-                    <div><strong>#${idx + 1}</strong></div>
-                    <div class="fix-log-original">${esc(fix.original)}</div>
-                    <div class="fix-log-suggested">→ ${esc(fix.suggested)}</div>
-                    <div class="fix-log-meta">${esc(fix.type)} - ${esc(fix.reason)}</div>
-                </div>`;
             });
-            html += `</div>`;
-            content.innerHTML = html;
         }
-    } catch (err) { console.error(err); }
-}
 
-// Progress Bar
-function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
-    const progressBar = $("progressBar");
-    const progressText = $("progressText");
-    const estimatedRemaining = $("estimatedRemaining");
-    const verifyProgress = $("verifyProgress");
-    
-    if (!progressBar || !progressText) return;
-    const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
-    progressBar.style.width = `${percentage}%`;
-    progressBar.textContent = `${percentage}%`;
-    
-    if (status === "completed") {
-        progressBar.style.backgroundColor = "#27ae60";
-        progressText.textContent = message || `✅ Complete! ${progress}/${total}`;
-        if (verifyProgress) setTimeout(() => { verifyProgress.style.display = "none"; }, 5000);
-        if (estimatedRemaining) estimatedRemaining.textContent = "";
-    } else if (status === "error") {
-        progressBar.style.backgroundColor = "#e74c3c";
-        progressText.textContent = message || "❌ Error during verification";
-    } else {
-        progressBar.style.backgroundColor = "#3498db";
-        let msg = message || `🔍 Verifying: ${progress}/${total} (${percentage}%)`;
-        if (remainingSeconds) msg += ` - Est. ${formatTime(remainingSeconds)} remaining`;
-        progressText.textContent = msg;
-        if (verifyProgress) verifyProgress.style.display = "block";
-    }
-}
-
-// Queue Status
-async function updateQueueStatus() {
-    try {
-        const response = await fetch('/queue/status');
-        const data = await response.json();
-        const statUploads = $("statUploads");
-        const statQueue = $("statQueue");
-        const queueStatus = $("queueStatus");
-        
-        if (statUploads) statUploads.textContent = data.total_jobs || 0;
-        if (statQueue) statQueue.textContent = data.queue_size || 0;
-        if (queueStatus) {
-            const busyClass = data.is_busy ? 'busy' : 'ready';
-            queueStatus.innerHTML = `<div class="queue-info ${busyClass}">
-                <span>📊 Queue: ${data.queue_size || 0}</span>
-                <span>⏳ Pending: ${data.pending_jobs || 0}</span>
-                <span>⚙️ Processing: ${data.processing_jobs || 0}</span>
-                <span>📈 Total Jobs: ${data.total_jobs || 0}</span>
-            </div>`;
+        // File Area Setup
+        function setupFileArea() {
+            const fileArea = document.getElementById("fileArea");
+            const fileInput = $("file");
+            const fileNameSpan = document.getElementById("fileName");
+            
+            if (fileArea && fileInput) {
+                fileArea.addEventListener("click", () => fileInput.click());
+                fileInput.addEventListener('change', function() {
+                    const file = fileInput.files[0];
+                    if (file) {
+                        if (file.name.toLowerCase().endsWith('.docx')) {
+                            fileNameSpan.textContent = `📄 ${file.name}`;
+                            setStatus("DOCX file selected.", "good");
+                            const btnCheck = $("btnCheck");
+                            if (btnCheck) btnCheck.disabled = false;
+                        } else {
+                            fileNameSpan.textContent = "";
+                            setStatus("Only DOCX files accepted.", "warn");
+                            fileInput.value = '';
+                            const btnCheck = $("btnCheck");
+                            if (btnCheck) btnCheck.disabled = true;
+                        }
+                    }
+                });
+            }
         }
-        return data;
-    } catch (err) { return null; }
-}
 
-// Reset UI
-function resetVerificationUI() {
-    const verifyDash = $("verifyDash");
-    const verifyBody = $("verifyBody");
-    if (verifyDash) verifyDash.innerHTML = `<div class="kpi">✅ Verified: 0</div><div class="kpi">🔍 Likely: 0</div><div class="kpi">⚠️ Needs Review: 0</div><div class="kpi">❌ Not Found: 0</div>`;
-    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</td></tr>`;
-    updateProgress(0, 0, "processing", "Ready to verify");
-    const verifyProgress = $("verifyProgress");
-    if (verifyProgress) verifyProgress.style.display = "none";
-    VERIFICATION_IN_PROGRESS = false;
-}
+        function getACIIRating(score) {
+            score = Number(score);
+            if (score >= 90) return { text: "Excellent", class: "excellent" };
+            if (score >= 80) return { text: "Very Good", class: "very-good" };
+            if (score >= 70) return { text: "Good", class: "good" };
+            if (score >= 60) return { text: "Moderate", class: "moderate" };
+            if (score >= 50) return { text: "Weak", class: "weak" };
+            return { text: "Poor", class: "poor" };
+        }
 
-// Tab Navigation
-document.querySelectorAll(".tab").forEach(tab => {
-    tab.addEventListener("click", () => {
-        const target = tab.dataset.tab;
-        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-        document.querySelectorAll(".tabPane").forEach(p => p.classList.remove("active"));
-        tab.classList.add("active");
-        const pane = $(target);
-        if (pane) pane.classList.add("active");
-    });
-});
+        // Auto-Fix Functions
+        async function applyAutoFix() {
+            if (!LAST_JOB_ID) { showNotification("Run check first", "error"); return; }
+            if (AUTO_FIX_APPLIED) { showNotification("Auto-fix already applied", "info"); return; }
+            try {
+                setStatus("Applying fixes...", "info");
+                const formData = new FormData();
+                formData.append("job_id", LAST_JOB_ID);
+                const response = await fetch("/apply-autofix", { method: "POST", body: formData });
+                const result = await response.json();
+                if (result.success) {
+                    AUTO_FIX_APPLIED = true;
+                    setStatus(`Applied ${result.fixes_applied_count} fixes`, "good");
+                    showNotification(`Applied ${result.fixes_applied_count} fixes`, "success");
+                    const btnExportFixed = $("btnExportFixed");
+                    if (btnExportFixed) btnExportFixed.disabled = false;
+                    await showFixLog();
+                } else {
+                    showNotification("Failed to apply fixes", "error");
+                }
+            } catch (err) {
+                setStatus("Error applying fixes", "bad");
+                showNotification("Error applying fixes", "error");
+            }
+        }
 
-// Status Polling
-async function fetchStatus() {
-    if (!LAST_JOB_ID) return;
-    POLL_ATTEMPT_COUNT++;
-    if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
-        stopPolling();
-        VERIFICATION_IN_PROGRESS = false;
-        const btnVerify = $("btnVerify");
-        if (btnVerify) btnVerify.disabled = false;
-        return;
-    }
-    try {
-        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
-        const js = await res.json();
-        if (js.online) {
-            const progress = js.online.progress || 0;
-            const total = js.online.total || 0;
-            const state = js.online.state || "processing";
-            if (total > 0) updateProgress(progress, total, state);
-            if (js.online.state === "completed") {
-                setStatus("Online verification complete", "good");
+        async function showFixLog() {
+            if (!LAST_JOB_ID) return;
+            try {
+                const response = await fetch(`/fix-log/${encodeURIComponent(LAST_JOB_ID)}`);
+                const data = await response.json();
+                const panel = $("fixLogPanel");
+                const content = $("fixLogContent");
+                if (panel && content && data.fixes && data.fixes.length > 0) {
+                    panel.style.display = "block";
+                    let html = "";
+                    data.fixes.forEach((fix, idx) => {
+                        html += `<div class="fix-log-entry">
+                            <strong>#${idx + 1}</strong>
+                            <div class="fix-log-original">${esc(fix.original)}</div>
+                            <div class="fix-log-suggested">→ ${esc(fix.suggested)}</div>
+                            <div class="fix-log-meta">${esc(fix.type)}</div>
+                        </div>`;
+                    });
+                    content.innerHTML = html;
+                }
+            } catch (err) { console.error(err); }
+        }
+
+        function updateProgress(progress, total, status = "processing", message = null) {
+            const progressBar = $("progressBar");
+            const progressText = $("progressText");
+            const verifyProgress = $("verifyProgress");
+            
+            if (!progressBar || !progressText) return;
+            const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
+            progressBar.style.width = `${percentage}%`;
+            
+            if (status === "completed") {
+                progressBar.style.backgroundColor = "#19b36b";
+                progressText.textContent = message || `✅ Complete! ${progress}/${total}`;
+                if (verifyProgress) setTimeout(() => { verifyProgress.style.display = "none"; }, 3000);
+            } else if (status === "error") {
+                progressBar.style.backgroundColor = "#e74c3c";
+                progressText.textContent = message || "❌ Error";
+            } else {
+                progressBar.style.backgroundColor = "#667eea";
+                progressText.textContent = message || `Verifying: ${progress}/${total} (${percentage}%)`;
+                if (verifyProgress) verifyProgress.style.display = "block";
+            }
+        }
+
+        async function updateQueueStatus() {
+            try {
+                const response = await fetch('/queue/status');
+                const data = await response.json();
+                const statUploads = $("statUploads");
+                const statQueue = $("statQueue");
+                const queueStatus = $("queueStatus");
+                
+                if (statUploads) statUploads.textContent = data.total_jobs || 0;
+                if (statQueue) statQueue.textContent = data.queue_size || 0;
+                if (queueStatus) {
+                    queueStatus.innerHTML = `📊 Queue: ${data.queue_size || 0} | ⏳ Pending: ${data.pending_jobs || 0} | ⚙️ Processing: ${data.processing_jobs || 0} | 📈 Total: ${data.total_jobs || 0}`;
+                }
+                return data;
+            } catch (err) { return null; }
+        }
+
+        // Tab Navigation
+        document.querySelectorAll(".tab").forEach(tab => {
+            tab.addEventListener("click", () => {
+                const target = tab.dataset.tab;
+                document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+                document.querySelectorAll(".tabPane").forEach(p => p.classList.remove("active"));
+                tab.classList.add("active");
+                const pane = $(target);
+                if (pane) pane.classList.add("active");
+            });
+        });
+
+        function getUniqueCitationsWithCount(c2rRows) {
+            const uniqueMap = new Map();
+            c2rRows.forEach(row => {
+                const citeText = row.in_text || '';
+                const key = `${citeText.toLowerCase()}|${row.status}|${row.matched_reference || ''}`;
+                if (uniqueMap.has(key)) uniqueMap.get(key).count++;
+                else uniqueMap.set(key, { citation: citeText, status: row.status, matched_reference: row.matched_reference, count: 1 });
+            });
+            return Array.from(uniqueMap.values());
+        }
+
+        function normalizeData(payload) {
+            const data = payload?.data || payload?.result || payload || {};
+            const s = data.summary || {};
+            data.summary = {
+                in_text_citations_found: toNum(s.in_text_citations_found ?? data.intext_count),
+                reference_entries_found: toNum(s.reference_entries_found ?? data.reference_entries_found),
+                missing_in_references: toNum(s.missing_in_references ?? (data.missing_in_references || []).length),
+                uncited_references: toNum(s.uncited_references ?? (data.uncited_references || []).length),
+                match_rate: toNum(s.match_rate ?? data.match_rate)
+            };
+            return data;
+        }
+
+        // Render Functions
+        function renderSummaryTable(data) {
+            const s = data?.summary || {};
+            const summaryTable = $("summaryTable");
+            if (summaryTable) {
+                summaryTable.innerHTML = `
+                    <tr><td>In-text citations</td><td><strong>${esc(s.in_text_citations_found)}</strong></td></tr>
+                    <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
+                    <tr><td>Missing</td><td><strong>${esc(s.missing_in_references)}</strong></td></tr>
+                    <tr><td>Uncited</td><td><strong>${esc(s.uncited_references)}</strong></td></tr>
+                    <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
+                `;
+            }
+        }
+
+        function renderACII(data) {
+            const acii = data?.acii;
+            if (!acii) return;
+            
+            const centerpiece = $("aciiCenterpiece");
+            const aciiCard = $("aciiCard");
+            if (centerpiece) centerpiece.style.display = "block";
+            if (aciiCard) aciiCard.style.display = "block";
+            
+            const scoreLarge = $("aciiScoreLarge");
+            const ratingBadge = $("aciiRatingBadge");
+            
+            if (scoreLarge) {
+                const score = acii.ACII ?? "--";
+                scoreLarge.textContent = score;
+                if (ratingBadge && score !== "--") {
+                    const rating = getACIIRating(score);
+                    ratingBadge.textContent = rating.text;
+                }
+            }
+            
+            const comp = acii.components || {};
+            if ($("aciiV")) $("aciiV").textContent = comp.verification_integrity?.score ?? "--";
+            if ($("aciiVcat")) $("aciiVcat").textContent = comp.verification_integrity?.category ?? "--";
+            if ($("aciiC")) $("aciiC").textContent = comp.citation_concentration?.score ?? "--";
+            if ($("aciiCcat")) $("aciiCcat").textContent = comp.citation_concentration?.category ?? "--";
+            if ($("aciiA")) $("aciiA").textContent = comp.author_diversity?.score ?? "--";
+            if ($("aciiAcat")) $("aciiAcat").textContent = comp.author_diversity?.category ?? "--";
+            if ($("aciiT")) $("aciiT").textContent = comp.temporal_balance?.score ?? "--";
+            if ($("aciiTcat")) $("aciiTcat").textContent = comp.temporal_balance?.category ?? "--";
+        }
+
+        function renderMissing(data) {
+            const rows = data?.missing_in_references || [];
+            const body = $("missingBody");
+            if (!body) return;
+            if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
+            body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.citation_in_text || r)}</td><td>${esc(r.count_in_text || "")}</td></tr>`).join("");
+        }
+
+        function renderUncited(data) {
+            const rows = data?.uncited_references || [];
+            const body = $("uncitedBody");
+            if (!body) return;
+            if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
+            body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.reference || r)}</td></tr>`).join("");
+        }
+
+        function renderC2R(data) {
+            const c2rRaw = data?.reconciliation_intext_to_reference || [];
+            const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
+            const body = $("c2rBody");
+            if (!body) return;
+            if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="4">No mapping</div></tr>`; return; }
+            body.innerHTML = uniqueCitations.slice(0, 30).map((item, i) => `<tr>
+                <td>${i + 1}</td>
+                <td><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></td>
+                <td style="max-width:250px;">${esc(item.citation)}</td>
+                <td style="max-width:200px;">${esc(item.matched_reference || '')}</td>
+            </tr>`).join("");
+        }
+
+        function renderR2C(data) {
+            const rows = data?.reconciliation_reference_to_intext || [];
+            const body = $("r2cBody");
+            if (!body) return;
+            if (!rows.length) { body.innerHTML = `<tr><td colspan="3">No mapping</div></tr>`; return; }
+            body.innerHTML = rows.slice(0, 30).map((r, i) => `<tr>
+                <td>${i + 1}</td>
+                <td>${esc(r.times_cited ?? 0)}</td>
+                <td style="max-width:300px;">${esc(r.reference || '')}</td>
+            </tr>`).join("");
+        }
+
+        function renderVerify(data) {
+            const ov = data?.online_verification || {};
+            const rows = ov.rows || [];
+            const sum = ov.summary || {};
+            const verifyDash = $("verifyDash");
+            const verifyBody = $("verifyBody");
+            
+            if (verifyDash) {
+                verifyDash.innerHTML = `<div class="kpi">✅ ${sum.verified || 0}</div>
+                    <div class="kpi">🔍 ${sum.likely || 0}</div>
+                    <div class="kpi">⚠️ ${sum.needs_review || 0}</div>
+                    <div class="kpi">❌ ${sum.not_found || 0}</div>`;
+            }
+            
+            if (!verifyBody) return;
+            if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No results. Click Verify.</div></tr>`; return; }
+            
+            verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
+                <td>${i + 1}</td>
+                <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : 'not_found')}">${esc(r.status || '')}</span></td>
+                <td>${esc(r.source || '—')}</td>
+                <td>${esc(r.score || '—')}</td>
+                <td>${esc(r.doi || '—')}</td>
+            </tr>`).join("");
+            
+            const btnExportVerify = $("btnExportVerify");
+            if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
+        }
+
+        function renderAll(data) {
+            if (!data) return;
+            const normalized = normalizeData(data);
+            normalized.job_id = data.job_id || LAST_JOB_ID;
+            window.latestResults = normalized;
+            
+            const resultsCard = $("resultsCard");
+            if (resultsCard) resultsCard.style.display = "block";
+            
+            renderSummaryTable(normalized);
+            renderACII(normalized);
+            renderMissing(normalized);
+            renderUncited(normalized);
+            renderC2R(normalized);
+            renderR2C(normalized);
+            renderVerify(normalized);
+            
+            updateProcessFeedback("Upload", "completed");
+            updateProcessFeedback("Extract", "completed");
+            updateProcessFeedback("Match", "completed");
+            updateProcessFeedback("ACII", "completed");
+        }
+
+        // Export Functions
+        function exportCSV() {
+            if (!window.latestResults) { alert("No data to export."); return; }
+            const data = window.latestResults;
+            const s = data.summary || {};
+            const missing = data.missing_in_references || [];
+            const uncited = data.uncited_references || [];
+            
+            let csv = [`"CiteIntegrity Report"`];
+            csv.push(`"Generated","${new Date().toLocaleString()}"`);
+            csv.push(`"File","${data.filename || 'N/A'}"`);
+            csv.push(``);
+            csv.push(`"SUMMARY"`);
+            csv.push(`"In-text citations","${s.in_text_citations_found || 0}"`);
+            csv.push(`"References","${s.reference_entries_found || 0}"`);
+            csv.push(`"Missing","${s.missing_in_references || 0}"`);
+            csv.push(`"Uncited","${s.uncited_references || 0}"`);
+            csv.push(`"Match Rate","${s.match_rate || 0}%"`);
+            csv.push(``);
+            csv.push(`"MISSING CITATIONS"`);
+            missing.forEach(m => csv.push(`"${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}"`));
+            csv.push(``);
+            csv.push(`"UNCITED REFERENCES"`);
+            uncited.forEach(ref => csv.push(`"${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}"`));
+            
+            const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = `citeintegrity_${new Date().toISOString().slice(0, 19)}.csv`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+            showNotification("CSV downloaded", "success");
+        }
+
+        function exportWord() {
+            if (!window.latestResults) { alert("No data to export."); return; }
+            const data = window.latestResults;
+            const s = data.summary || {};
+            const missing = data.missing_in_references || [];
+            const uncited = data.uncited_references || [];
+            
+            let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head><body>
+                <h1>CiteIntegrity Report</h1>
+                <p>Generated: ${new Date().toLocaleString()}</p>
+                <p>File: ${esc(data.filename || 'N/A')}</p>
+                <h2>Summary</h2>
+                <table border="1"><tr><th>Metric</th><th>Value</th></tr>
+                <tr><td>In-text citations</td><td>${s.in_text_citations_found || 0}</td></tr>
+                <tr><td>References</td><td>${s.reference_entries_found || 0}</td></tr>
+                <tr><td>Missing</td><td>${s.missing_in_references || 0}</td></tr>
+                <tr><td>Uncited</td><td>${s.uncited_references || 0}</td></tr>
+                <tr><td>Match rate</td><td>${s.match_rate || 0}%</td></tr></table>
+                <h2>Missing Citations</h2><ul>${missing.map(m => `<li>${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}</li>`).join('')}</ul>
+                <h2>Uncited References</h2><ul>${uncited.map(ref => `<li>${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}</li>`).join('')}</ul>
+                </body></html>`;
+            
+            const blob = new Blob([html], { type: "application/msword" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = `citeintegrity_${new Date().toISOString().slice(0, 19)}.doc`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+            showNotification("Word report downloaded", "success");
+        }
+
+        // Run Initial Check
+        async function runInitialCheck() {
+            const fileInput = $("file");
+            const file = fileInput?.files?.[0];
+            if (!file) { setStatus("Choose a file first", "warn"); return; }
+            if (!file.name.toLowerCase().endsWith('.docx')) {
+                setStatus("Only DOCX files accepted.", "warn");
+                return;
+            }
+            
+            resetProcessFeedback();
+            updateProcessFeedback("Upload", "active");
+            if (POLL_TIMER) clearInterval(POLL_TIMER);
+            VERIFICATION_IN_PROGRESS = false;
+            AUTO_FIX_APPLIED = false;
+            LAST_JOB_ID = null;
+            setStatus("Analyzing document...");
+            
+            const fd = new FormData();
+            fd.append("file", file);
+            fd.append("style", "apa");
+            const autofixCheck = $("autofix");
+            const onlineVerifyCheck = $("onlineVerify");
+            fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
+            fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
+            
+            try {
+                const res = await fetch("/verify", { method: "POST", body: fd });
+                if (res.status === 503) {
+                    setStatus("Server busy, retrying...", "warn");
+                    if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runInitialCheck, CONFIG.RETRY_DELAY); }
+                    return;
+                }
+                const js = await res.json();
+                LAST_JOB_ID = js.job_id;
+                updateProcessFeedback("Extract", "completed");
+                updateProcessFeedback("Match", "active");
+                renderAll(js);
+                setStatus("Analysis complete", "good");
+                updateQueueStatus();
+                const btnVerify = $("btnVerify");
+                if (btnVerify) btnVerify.disabled = false;
+                if (js.online_verification_started) startPolling();
+            } catch (err) { setStatus("Error: " + err.message, "bad"); }
+        }
+
+        // Run Online Verification
+        async function runOnlineVerification() {
+            if (!LAST_JOB_ID) { setStatus("Run check first", "warn"); return; }
+            if (VERIFICATION_IN_PROGRESS) { setStatus("Verification in progress...", "warn"); return; }
+            
+            setStatus("Starting verification...");
+            VERIFICATION_IN_PROGRESS = true;
+            updateProgress(0, 0, "processing", "Starting...");
+            const btnVerify = $("btnVerify");
+            if (btnVerify) btnVerify.disabled = true;
+            
+            const fd = new FormData();
+            fd.append("job_id", LAST_JOB_ID);
+            
+            try {
+                const res = await fetch("/verify-online", { method: "POST", body: fd });
+                const js = await res.json();
+                if (js.started) { setStatus("Verifying...", "info"); startPolling(); }
+                else if (js.completed) { setStatus("Already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
+                else { setStatus(js.message || "Could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+            } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+        }
+
+        async function fetchStatus() {
+            if (!LAST_JOB_ID) return;
+            POLL_ATTEMPT_COUNT++;
+            if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
+                stopPolling();
                 VERIFICATION_IN_PROGRESS = false;
                 const btnVerify = $("btnVerify");
                 if (btnVerify) btnVerify.disabled = false;
-                updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
-                stopPolling();
+                return;
             }
+            try {
+                const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
+                const js = await res.json();
+                if (js.online) {
+                    const progress = js.online.progress || 0;
+                    const total = js.online.total || 0;
+                    if (total > 0) updateProgress(progress, total, js.online.state);
+                    if (js.online.state === "completed") {
+                        setStatus("Verification complete", "good");
+                        VERIFICATION_IN_PROGRESS = false;
+                        const btnVerify = $("btnVerify");
+                        if (btnVerify) btnVerify.disabled = false;
+                        updateProgress(total, total, "completed", `Complete! ${total} verified`);
+                        stopPolling();
+                    }
+                }
+                if (js.result) renderAll(js.result);
+            } catch (err) { console.error(err); }
         }
-        if (js.result) renderAll(js.result);
-    } catch (err) { console.error(err); }
-}
 
-function startPolling() {
-    if (POLL_TIMER) clearInterval(POLL_TIMER);
-    POLL_ATTEMPT_COUNT = 0;
-    POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
-}
-
-function stopPolling() {
-    if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
-}
-
-// Helper Functions
-function getUniqueCitationsWithCount(c2rRows) {
-    const uniqueMap = new Map();
-    c2rRows.forEach(row => {
-        const citeText = row.in_text || '';
-        const key = `${citeText.toLowerCase()}|${row.status}|${row.matched_reference || ''}`;
-        if (uniqueMap.has(key)) uniqueMap.get(key).count++;
-        else uniqueMap.set(key, { citation: citeText, status: row.status, matched_reference: row.matched_reference, flags: row.flags, count: 1 });
-    });
-    return Array.from(uniqueMap.values());
-}
-
-function normalizeData(payload) {
-    const data = payload?.data || payload?.result || payload || {};
-    const s = data.summary || {};
-    data.summary = {
-        in_text_citations_found: toNum(s.in_text_citations_found ?? data.intext_count),
-        reference_entries_found: toNum(s.reference_entries_found ?? data.reference_entries_found),
-        missing_in_references: toNum(s.missing_in_references ?? (data.missing_in_references || []).length),
-        uncited_references: toNum(s.uncited_references ?? (data.uncited_references || []).length),
-        match_rate: toNum(s.match_rate ?? data.match_rate)
-    };
-    return data;
-}
-
-// Render Functions
-function renderSummaryTable(data) {
-    const s = data?.summary || {};
-    const summaryTable = $("summaryTable");
-    if (summaryTable) {
-        summaryTable.innerHTML = `
-            <tr><td>In-text citations (occurrences)</td><td>${esc(s.in_text_citations_found)}</td></tr>
-            <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
-            <tr><td>Missing (unique)</td><td>${esc(s.missing_in_references)}</td></tr>
-            <tr><td>Uncited</td><td>${esc(s.uncited_references)}</td></tr>
-            <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
-        `;
-    }
-}
-
-function renderACII(data) {
-    const acii = data?.acii;
-    if (!acii) return;
-    
-    const centerpiece = $("aciiCenterpiece");
-    const aciiCard = $("aciiCard");
-    if (centerpiece) centerpiece.style.display = "block";
-    if (aciiCard) aciiCard.style.display = "block";
-    
-    const scoreLarge = $("aciiScoreLarge");
-    const ratingBadge = $("aciiRatingBadge");
-    const recText = $("aciiRecommendationText");
-    
-    if (scoreLarge) {
-        const score = acii.ACII ?? "--";
-        scoreLarge.textContent = score;
-        if (ratingBadge && score !== "--") {
-            const rating = getACIIRating(score);
-            ratingBadge.textContent = rating.text;
-            ratingBadge.className = `acii-rating ${rating.class}`;
+        function startPolling() {
+            if (POLL_TIMER) clearInterval(POLL_TIMER);
+            POLL_ATTEMPT_COUNT = 0;
+            POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
         }
-    }
-    
-    if (recText) {
-        recText.innerHTML = generateACIIRecommendations(acii);
-    }
-    
-    const comp = acii.components || {};
-    const v = $("aciiV"); if (v) v.textContent = comp.verification_integrity?.score ?? "--";
-    const vcat = $("aciiVcat"); if (vcat) vcat.textContent = comp.verification_integrity?.category ?? "--";
-    const vremark = $("aciiVremark"); if (vremark) vremark.textContent = comp.verification_integrity?.remark ?? "--";
-    
-    const c = $("aciiC"); if (c) c.textContent = comp.citation_concentration?.score ?? "--";
-    const ccat = $("aciiCcat"); if (ccat) ccat.textContent = comp.citation_concentration?.category ?? "--";
-    const cremark = $("aciiCremark"); if (cremark) cremark.textContent = comp.citation_concentration?.remark ?? "--";
-    
-    const a = $("aciiA"); if (a) a.textContent = comp.author_diversity?.score ?? "--";
-    const acat = $("aciiAcat"); if (acat) acat.textContent = comp.author_diversity?.category ?? "--";
-    const aremark = $("aciiAremark"); if (aremark) aremark.textContent = comp.author_diversity?.remark ?? "--";
-    
-    const t = $("aciiT"); if (t) t.textContent = comp.temporal_balance?.score ?? "--";
-    const tcat = $("aciiTcat"); if (tcat) tcat.textContent = comp.temporal_balance?.category ?? "--";
-    const tremark = $("aciiTremark"); if (tremark) tremark.textContent = comp.temporal_balance?.remark ?? "--";
-}
 
-function renderMissing(data) {
-    const rows = data?.missing_in_references || [];
-    const body = $("missingBody");
-    if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</td></tr>`; return; }
-    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.citation_in_text || r)}</td><td>${esc(r.count_in_text || "")}</td></tr>`).join("");
-}
-
-function renderUncited(data) {
-    const rows = data?.uncited_references || [];
-    const body = $("uncitedBody");
-    if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</td></tr>`; return; }
-    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.reference || r)}</td></tr>`).join("");
-}
-
-function renderC2R(data) {
-    const c2rRaw = data?.reconciliation_intext_to_reference || [];
-    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
-    const body = $("c2rBody");
-    if (!body) return;
-    if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="6">No mapping available</td></tr>`; return; }
-    body.innerHTML = uniqueCitations.map((item, i) => `<tr>
-        <td>${i + 1}</td>
-        <td><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></td>
-        <td style="max-width:300px;">${esc(item.citation)}</td>
-        <td style="text-align:center"><strong>${item.count}</strong></td>
-        <td style="max-width:400px;">${esc(item.matched_reference || '')}</td>
-        <td>${esc(item.flags || '')}</td>
-    </tr>`).join("");
-}
-
-function renderR2C(data) {
-    const rows = data?.reconciliation_reference_to_intext || [];
-    const body = $("r2cBody");
-    if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</td></tr>`; return; }
-    body.innerHTML = rows.map((r, i) => `<tr>
-        <td>${i + 1}</td>
-        <td>${esc(r.times_cited ?? 0)}</td>
-        <td style="max-width:500px;">${esc(r.reference || '')}</td>
-        <td>${esc((r.cited_by || []).slice(0, 3).join("; "))}</td>
-    </tr>`).join("");
-}
-
-function renderVerify(data) {
-    const ov = data?.online_verification || {};
-    const rows = ov.rows || [];
-    const sum = ov.summary || {};
-    const verifyDash = $("verifyDash");
-    const verifyBody = $("verifyBody");
-    
-    if (verifyDash) {
-        verifyDash.innerHTML = `<div class="kpi">✅ Verified: ${sum.verified ?? 0}</div>
-            <div class="kpi">🔍 Likely: ${sum.likely ?? 0}</div>
-            <div class="kpi">⚠️ Needs Review: ${sum.needs_review ?? 0}</div>
-            <div class="kpi">❌ Not Found: ${sum.not_found ?? 0}</div>`;
-    }
-    
-    if (!verifyBody) return;
-    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</td></tr>`; return; }
-    
-    verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
-        <td>${i + 1}</td>
-        <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'))}">${esc(r.status || '')}</span></td>
-        <td>${esc(r.source || '—')}</td>
-        <td>${esc(r.score || '—')}</td>
-        <td>${esc(r.doi || '—')}</td>
-        <td>${esc(r.matched_year || '—')}</td>
-        <td>${esc(r.matched_authors || '—')}</td>
-        <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</td>
-    </tr>`).join("");
-    
-    const btnExportVerify = $("btnExportVerify");
-    if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
-}
-
-function renderAll(data) {
-    if (!data) return;
-    const normalized = normalizeData(data);
-    normalized.job_id = data.job_id || LAST_JOB_ID;
-    window.latestResults = normalized;
-    
-    const resultsCard = $("resultsCard");
-    if (resultsCard) resultsCard.style.display = "block";
-    
-    renderSummaryTable(normalized);
-    renderACII(normalized);
-    renderMissing(normalized);
-    renderUncited(normalized);
-    renderC2R(normalized);
-    renderR2C(normalized);
-    renderVerify(normalized);
-    
-    updateProcessFeedback("Upload", "completed");
-    updateProcessFeedback("Extract", "completed");
-    updateProcessFeedback("Match", "completed");
-    updateProcessFeedback("ACII", "completed");
-    
-    if (normalized.autofix && normalized.autofix.suggestions) {
-        displayFixSuggestions(normalized.autofix.suggestions);
-        const btnApply = $("btnApplyAutofix");
-        if (btnApply) btnApply.disabled = false;
-    }
-}
-
-// Export Functions
-function exportCSV(data) {
-    if (!data) { alert("No data to export."); return; }
-    const normalized = normalizeData(data);
-    const s = normalized.summary || {};
-    const missing = normalized.missing_in_references || [];
-    const uncited = normalized.uncited_references || [];
-    const c2rRaw = normalized.reconciliation_intext_to_reference || [];
-    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
-    let csv = [`"Generated","${new Date().toLocaleString()}"`];
-    csv.push(`"Total in-text citations","${s.in_text_citations_found || 0}"`);
-    csv.push(`"References","${s.reference_entries_found || 0}"`);
-    csv.push(`"Missing","${s.missing_in_references || 0}"`);
-    csv.push(`"Uncited","${s.uncited_references || 0}"`);
-    csv.push(`"Match Rate","${s.match_rate || 0}%"`);
-    csv.push(``, `"Missing Citations"`);
-    missing.forEach(item => csv.push(`"${esc(item.citation_in_text || item)}"`));
-    csv.push(``, `"Uncited References"`);
-    uncited.forEach(ref => csv.push(`"${esc(ref.reference || ref)}"`));
-    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `citeintegrity_report_${new Date().toISOString().slice(0, 19)}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-}
-
-function exportWordFile(data) {
-    if (!data) { alert("No data to export."); return; }
-    const normalized = normalizeData(data);
-    const s = normalized.summary || {};
-    const missing = normalized.missing_in_references || [];
-    const uncited = normalized.uncited_references || [];
-    const acii = normalized.acii || {};
-    const aciiRating = getACIIRating(acii.ACII);
-    let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head><body>
-        <h1>CiteIntegrity Report</h1>
-        <p>Generated: ${new Date().toLocaleString()}</p>
-        <h2>Summary</h2>
-        <table border="1"><tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Total Citations</td><td>${s.in_text_citations_found || 0}</td></tr>
-        <tr><td>References</td><td>${s.reference_entries_found || 0}</td></tr>
-        <tr><td>Missing</td><td>${s.missing_in_references || 0}</td></tr>
-        <tr><td>Uncited</td><td>${s.uncited_references || 0}</td></tr>
-        <tr><td>Match Rate</td><td>${s.match_rate || 0}%</td></tr></table>
-        <h2>ACII Score: ${acii.ACII || '—'} (${aciiRating.text})</h2>
-        <p>${aciiRating.description}</p>
-        <h2>Missing Citations</h2><ul>${missing.map(m => `<li>${esc(m.citation_in_text || m)}</li>`).join('')}</ul>
-        <h2>Uncited References</h2><ul>${uncited.map(u => `<li>${esc(u.reference || u)}</li>`).join('')}</ul>
-        </body></html>`;
-    const blob = new Blob([html], { type: "application/msword" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `citeintegrity_report_${new Date().toISOString().slice(0, 19)}.doc`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-}
-
-function exportVerificationCSV() {
-    if (!window.latestResults) { alert("No verification data to export."); return; }
-    const ov = window.latestResults?.online_verification || {};
-    const rows = ov.rows || [];
-    if (!rows.length) { alert("No verification results available."); return; }
-    let csv = [`"Status","Source","Score","DOI","Year","Authors"`];
-    rows.forEach(r => csv.push(`"${r.status || ''}","${r.source || ''}","${r.score || ''}","${r.doi || ''}","${r.matched_year || ''}","${(r.matched_authors || '').substring(0, 100)}"`));
-    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `verification_report_${new Date().toISOString().slice(0, 19)}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-}
-
-// Run Initial Check
-async function runInitialCheck() {
-    const fileInput = $("file");
-    const file = fileInput?.files?.[0];
-    if (!file) { setStatus("Please choose a file first", "warn"); return; }
-    if (!file.name.toLowerCase().endsWith('.docx')) {
-        setStatus("Only DOCX files are accepted.", "warn");
-        return;
-    }
-    resetProcessFeedback();
-    updateProcessFeedback("Upload", "active");
-    if (POLL_TIMER) clearInterval(POLL_TIMER);
-    VERIFICATION_IN_PROGRESS = false;
-    AUTO_FIX_APPLIED = false;
-    LAST_JOB_ID = null;
-    resetVerificationUI();
-    setStatus("Analyzing document...");
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("style", "apa");
-    const autofixCheck = $("autofix");
-    const onlineVerifyCheck = $("onlineVerify");
-    fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
-    fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
-    try {
-        const res = await fetch("/verify", { method: "POST", body: fd });
-        if (res.status === 503) {
-            setStatus("Server is busy, please wait...", "warn");
-            if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runInitialCheck, CONFIG.RETRY_DELAY); }
-            return;
+        function stopPolling() {
+            if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
         }
-        const js = await res.json();
-        LAST_JOB_ID = js.job_id;
-        updateProcessFeedback("Extract", "completed");
-        updateProcessFeedback("Match", "active");
-        renderAll(js);
-        setStatus("Analysis complete", "good");
-        updateQueueStatus();
+
+        // Button Events
+        setupFileArea();
+
+        const btnCheck = $("btnCheck");
+        if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
+
         const btnVerify = $("btnVerify");
-        if (btnVerify) btnVerify.disabled = false;
-        if (js.online_verification_started) startPolling();
-    } catch (err) { setStatus("Error: " + err.message, "bad"); }
-}
+        if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
 
-// Run Online Verification
-async function runOnlineVerification() {
-    if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
-    if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
-    setStatus("Starting online verification...");
-    VERIFICATION_IN_PROGRESS = true;
-    updateProgress(0, 0, "processing", "Starting verification...");
-    const btnVerify = $("btnVerify");
-    if (btnVerify) btnVerify.disabled = true;
-    const fd = new FormData();
-    fd.append("job_id", LAST_JOB_ID);
-    try {
-        const res = await fetch("/verify-online", { method: "POST", body: fd });
-        const js = await res.json();
-        if (js.started) { setStatus("Verification in progress...", "info"); startPolling(); }
-        else if (js.completed) { setStatus("Verification already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
-        else { setStatus(js.message || "Verification could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
-    } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
-}
+        const btnApplyAutofix = $("btnApplyAutofix");
+        if (btnApplyAutofix) { btnApplyAutofix.disabled = true; btnApplyAutofix.addEventListener("click", applyAutoFix); }
 
-// Button Events
-setupFileArea();
+        const exportCsv = $("btnExportCsvTop");
+        const exportWord = $("btnExportWordTop");
+        const exportVerify = $("btnExportVerify");
 
-const btnCheck = $("btnCheck");
-if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
+        if (exportCsv) exportCsv.addEventListener("click", exportCSV);
+        if (exportWord) exportWord.addEventListener("click", exportWord);
+        if (exportVerify) exportVerify.addEventListener("click", () => {
+            if (window.latestResults?.online_verification?.rows?.length) {
+                let csv = [`"Status","Source","Score","DOI","Year"`];
+                window.latestResults.online_verification.rows.forEach(r => {
+                    csv.push(`"${r.status}","${r.source}","${r.score}","${r.doi}","${r.matched_year}"`);
+                });
+                const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = `verification_${new Date().toISOString().slice(0, 19)}.csv`;
+                link.click();
+                URL.revokeObjectURL(link.href);
+            } else { alert("No verification results."); }
+        });
 
-const btnVerify = $("btnVerify");
-if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
+        setInterval(updateQueueStatus, 5000);
+        updateQueueStatus();
 
-const btnApplyAutofix = $("btnApplyAutofix");
-if (btnApplyAutofix) { btnApplyAutofix.disabled = true; btnApplyAutofix.addEventListener("click", applyAutoFix); }
-
-const exportCsv = $("btnExportCsvTop");
-const exportWord = $("btnExportWordTop");
-const exportVerify = $("btnExportVerify");
-
-if (exportCsv) exportCsv.addEventListener("click", () => { if (window.latestResults) exportCSV(window.latestResults); else alert("Run a check first."); });
-if (exportWord) exportWord.addEventListener("click", () => { if (window.latestResults) exportWordFile(window.latestResults); else alert("Run a check first."); });
-if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
-
-setInterval(updateQueueStatus, 5000);
-updateQueueStatus();
-
-console.log("[CiteIntegrity] App initialized - Results section restored, ACII recommendations added, deduplication fixed");
-
-});
-</script>
-
+        console.log("[CiteIntegrity] Compact version initialized");
+    });
+    </script>
 </body>
 </html>
