@@ -1,2556 +1,1636 @@
-# engine.py (COMPLETE - with auto-fix, preserves all original behavior)
-__version__ = "1.5.0"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CiteIntegrity — Manuscript Readiness & Citation Integrity Platform</title>
+    <meta name="description" content="Fix, verify, and elevate your citations before submission. Detect missing references, auto-fix errors, and measure integrity with ACII score.">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-import re
-import io
-import unicodedata
-from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict, Any
-from collections import defaultdict, Counter
-from pdf_to_docx_pipeline import process_pdf
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: #f8fafc;
+            color: #1e293b;
+            line-height: 1.4;
+            font-size: 13px;
+        }
 
-ENGINE_BUILD = "commercial-2026-03-01-final"
+        /* Header - Compact */
+        .header {
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 10px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
 
-# Fuzzy matching (optional)
-try:
-    from rapidfuzz import fuzz
-    FUZZ_OK = True
-except Exception:
-    fuzz = None
-    FUZZ_OK = False
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
 
-try:
-    from docx import Document
-    DOCX_OK = True
-except Exception:
-    DOCX_OK = False
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
 
-try:
-    import pdfplumber
-    PDF_OK = True
-except Exception:
-    PDF_OK = False
+        .logo-svg {
+            width: 32px;
+            height: auto;
+        }
 
+        .logo-text {
+            font-size: 16px;
+            font-weight: 700;
+            color: #0f172a;
+        }
 
-# ============================================================================
-# Define dataclasses FIRST
-# ============================================================================
+        .logo-badge {
+            background: #e8f0fe;
+            color: #1a73e8;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 8px;
+            font-weight: 500;
+        }
 
-@dataclass
-class RefAY:
-    reference_full: str
-    key: str
+        .header-stats {
+            display: flex;
+            gap: 16px;
+        }
 
+        .stat-item {
+            text-align: center;
+        }
 
-@dataclass
-class RefNum:
-    reference_full: str
-    num: str
+        .stat-value {
+            font-size: 14px;
+            font-weight: 700;
+            color: #0f172a;
+        }
 
+        .stat-label {
+            font-size: 8px;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
 
-# ============================================================================
-# Constants and patterns
-# ============================================================================
+        /* Main Container - Compact */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 16px 24px;
+        }
 
-YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
-YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
+        /* Hero - Compact */
+        .hero {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 8px 0;
+        }
 
-REF_HEADINGS = [
-    r"^\s*references?\s*(?:list)?\s*$",
-    r"^\s*bibliograph(?:y|ies)\s*$",
-    r"^\s*works\s+cited\s*$",
-    r"^\s*literature\s+cited\s*$",
-    r"^\s*REFERENCES\s*$",
-    r"^\s*BIBLIOGRAPHY\s*$",
-    r"^\s*REFERENCES\s*\[.*\]\s*$",
-    r"^\s*REFERENCES AND NOTES\s*$",
-]
+        .hero h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 6px;
+        }
 
-REF_HEADING_RELAXED = re.compile(
-    r"^\s*(references?|bibliography|works\s+cited|literature\s+cited|REFERENCES|BIBLIOGRAPHY)\b",
-    re.I,
-)
+        .hero-subheadline {
+            font-size: 13px;
+            color: #475569;
+            margin-bottom: 12px;
+        }
 
-DISCOURSE_PREFIXES = {
-    "see", "e.g", "eg", "i.e", "ie",
-    "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
-    "according", "adapted", "based", "cited", "citing", "reported",
-    "like",
-    "however", "similarly", "regrettably", "traditionally", "notably",
-    "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
-    "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
-    "generally", "specifically", "particularly", "importantly", "indeed",
-    "for instance", "instance", "for example", "example", "likely", 
-    "for instance,", "for example,", "uncertainty", "likewise", "Moreover,",
+        .value-bullets {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .value-bullet {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+            color: #334155;
+        }
+
+        .value-bullet::before {
+            content: "✔";
+            color: #19b36b;
+            font-weight: bold;
+            font-size: 11px;
+        }
+
+        /* Upload Card - Compact */
+        .upload-card {
+            background: white;
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            border: 1px solid #eef2f6;
+        }
+
+        .file-area {
+            border: 2px dashed #cbd5e1;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            background: #fafbfc;
+            transition: all 0.2s;
+        }
+
+        .file-area:hover {
+            border-color: #19b36b;
+            background: #f0fdf4;
+        }
+
+        .file-icon {
+            font-size: 28px;
+            margin-bottom: 6px;
+        }
+
+        .file-message {
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: #19b36b;
+            margin-top: 6px;
+            font-size: 10px;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        /* Options - Compact */
+        .options-row {
+            display: flex;
+            gap: 16px;
+            margin: 12px 0;
+            flex-wrap: wrap;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            color: #334155;
+        }
+
+        /* Buttons - Compact */
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .btn {
+            padding: 8px 20px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            font-family: inherit;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #19b36b 0%, #13855a 100%);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #f1f5f9;
+            color: #1e293b;
+            border: 1px solid #e2e8f0;
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 1px solid #cbd5e1;
+            color: #475569;
+            padding: 6px 12px;
+            font-size: 10px;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Status Bar - Compact */
+        .status-bar {
+            background: #f1f5f9;
+            border-radius: 20px;
+            padding: 8px 14px;
+            margin-top: 12px;
+            font-size: 11px;
+        }
+
+        .status {
+            color: #475569;
+        }
+
+        .status.good { color: #19b36b; }
+        .status.warn { color: #e67e22; }
+        .status.bad { color: #e74c3c; }
+
+        /* Process Feedback - Compact */
+        .process-feedback {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+            padding: 8px 12px;
+            background: #f8fafc;
+            border-radius: 10px;
+            font-size: 10px;
+        }
+
+        .feedback-step {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            color: #94a3b8;
+        }
+
+        .feedback-step.completed {
+            color: #19b36b;
+        }
+
+        .feedback-step.active {
+            color: #1e3a5f;
+            font-weight: 500;
+        }
+
+        /* ACII Centerpiece - Compact */
+        .acii-centerpiece {
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            text-align: center;
+            color: white;
+        }
+
+        .acii-score-large {
+            font-size: 42px;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .acii-label {
+            font-size: 10px;
+            opacity: 0.8;
+            margin-top: 4px;
+        }
+
+        .acii-rating {
+            display: inline-block;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 500;
+            margin-top: 8px;
+        }
+
+        .acii-rating.excellent { background: #19b36b; }
+        .acii-rating.very-good { background: #27ae60; }
+        .acii-rating.good { background: #3498db; }
+        .acii-rating.moderate { background: #f39c12; }
+        .acii-rating.weak { background: #e67e22; }
+        .acii-rating.poor { background: #e74c3c; }
+
+        .acii-recommendation {
+            margin-top: 10px;
+            padding: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 8px;
+            font-size: 10px;
+            text-align: left;
+        }
+
+        .acii-recommendation .priority {
+            color: #f39c12;
+            font-weight: 500;
+            margin-top: 4px;
+            padding-top: 4px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+        }
+
+        /* Why Matters - Compact */
+        .why-matters {
+            background: linear-gradient(135deg, #f0f9ff 0%, #e6f7ec 100%);
+            border-radius: 16px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+
+        .why-matters h3 {
+            font-size: 12px;
+            margin-bottom: 8px;
+            color: #0f172a;
+        }
+
+        .benefits-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+
+        .benefit-item {
+            text-align: center;
+            padding: 6px;
+        }
+
+        .benefit-icon {
+            font-size: 16px;
+            margin-bottom: 2px;
+        }
+
+        .benefit-text {
+            font-size: 9px;
+            color: #475569;
+        }
+
+        /* Tabs - Compact */
+        .tabs {
+            display: flex;
+            gap: 2px;
+            border-bottom: 1px solid #e2e8f0;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            padding: 6px 14px;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 10px;
+            color: #64748b;
+            border-radius: 6px 6px 0 0;
+            transition: all 0.2s;
+        }
+
+        .tab:hover { color: #19b36b; }
+        .tab.active {
+            color: #19b36b;
+            border-bottom: 2px solid #19b36b;
+            margin-bottom: -1px;
+        }
+
+        .tabPane {
+            display: none;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .tabPane.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Cards - Compact */
+        .card {
+            background: white;
+            border-radius: 14px;
+            padding: 14px;
+            margin-bottom: 14px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            border: 1px solid #eef2f6;
+        }
+
+        .card h3 {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* KPI Dashboard - Compact */
+        .kpi-dashboard {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .kpi {
+            background: #f8fafc;
+            border-radius: 10px;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .kpi-value {
+            font-size: 20px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .kpi-label {
+            font-size: 9px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        /* Tables - Compact */
+        .tableWrap {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 10px;
+        }
+
+        th, td {
+            padding: 6px 8px;
+            text-align: left;
+            border-bottom: 1px solid #eef2f6;
+        }
+
+        th {
+            background: #f8fafc;
+            font-weight: 600;
+            color: #475569;
+            font-size: 9px;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 8px;
+            font-weight: 500;
+        }
+        .badge.verified { background: #19b36b; color: white; }
+        .badge.likely { background: #f39c12; color: white; }
+        .badge.not_found { background: #e74c3c; color: white; }
+        .badge.matched { background: #27ae60; color: white; }
+
+        /* Progress Bar */
+        .progress-container {
+            background: #e2e8f0;
+            border-radius: 20px;
+            height: 4px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #19b36b, #13855a);
+            border-radius: 20px;
+            transition: width 0.3s ease;
+        }
+
+        /* Export Section */
+        .export-section {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid #eef2f6;
+        }
+
+        .btn-small {
+            padding: 4px 10px;
+            font-size: 9px;
+        }
+
+        /* Trust Badge */
+        .trust-badge {
+            text-align: center;
+            padding: 10px;
+            background: #f8fafc;
+            border-radius: 10px;
+            margin-top: 16px;
+            font-size: 9px;
+            color: #64748b;
+        }
+
+        .trust-badge::before {
+            content: "🔒 ";
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 16px;
+            color: #64748b;
+            font-size: 9px;
+            border-top: 1px solid #e2e8f0;
+            margin-top: 20px;
+        }
+
+        .footer a {
+            color: #19b36b;
+            text-decoration: none;
+        }
+
+        /* Queue Info */
+        .queue-info {
+            background: #f8f9fa;
+            padding: 6px 12px;
+            border-radius: 8px;
+            margin: 8px 0;
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 10px;
+            border-left: 3px solid #3498db;
+        }
+
+        .dashboard {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        /* Fix Items */
+        .fix-item, .fix-log-entry {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 6px;
+            margin-bottom: 6px;
+            font-size: 9px;
+        }
+        .fix-original { color: #e74c3c; text-decoration: line-through; }
+        .fix-suggested { color: #19b36b; margin-top: 2px; }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container { padding: 12px; }
+            .hero h1 { font-size: 20px; }
+            .kpi-dashboard { grid-template-columns: repeat(2, 1fr); }
+            .benefits-grid { grid-template-columns: repeat(2, 1fr); }
+            .header-content { flex-direction: column; text-align: center; }
+            .value-bullets { gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+
+<header class="header">
+    <div class="header-content">
+        <div class="logo-container">
+            <div class="logo-svg">
+                <svg viewBox="0 0 120 50" xmlns="http://www.w3.org/2000/svg">
+                    <text x="5" y="38" font-size="42" font-weight="700" fill="#0f172a" font-family="Georgia, serif">C</text>
+                    <text x="48" y="38" font-size="42" font-weight="700" fill="#0f172a" font-family="Georgia, serif">I</text>
+                    <path d="M78 32 L88 42 L105 22" stroke="#19b36b" stroke-width="5" fill="none" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <div class="logo-text">CiteIntegrity</div>
+            <div class="logo-badge">Manuscript Readiness Platform</div>
+        </div>
+        <div class="header-stats" id="headerStats">
+            <div class="stat-item"><div class="stat-value" id="statUploads">0</div><div class="stat-label">Documents</div></div>
+            <div class="stat-item"><div class="stat-value" id="statQueue">0</div><div class="stat-label">Queue</div></div>
+        </div>
+    </div>
+</header>
+
+<main class="container">
+    <!-- Hero Section - Compact -->
+    <div class="hero">
+        <h1>Fix, verify, and elevate your citations before submission.</h1>
+        <div class="hero-subheadline">Prepare your manuscript for publication with professional citation integrity analysis</div>
+        <div class="value-bullets">
+            <div class="value-bullet">Detect missing & uncited references</div>
+            <div class="value-bullet">Auto-fix citation errors</div>
+            <div class="value-bullet">Measure integrity with ACII score</div>
+            <div class="value-bullet">Prepare your manuscript for submission</div>
+        </div>
+    </div>
+
+    <!-- Upload Card -->
+    <div class="upload-card">
+        <div class="file-area" id="fileArea">
+            <div class="file-icon">📑</div>
+            <div class="file-message">Upload Manuscript (.docx recommended)</div>
+            <div class="file-message" style="font-size: 10px; margin-top: 4px;">DOCX is the recommended format for accurate citation analysis</div>
+            <div class="file-name" id="fileName"></div>
+            <input type="file" id="file" accept=".docx">
+        </div>
+
+        <div class="options-row">
+            <label class="checkbox-label"><input type="checkbox" id="autofix"> 🔧 Enable Auto-Fix Suggestions</label>
+            <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-start Online Verification</label>
+        </div>
+
+        <div class="button-group">
+            <button class="btn btn-primary" id="btnCheck">▶ Analyze Document</button>
+            <button class="btn btn-secondary" id="btnVerify" disabled>🌐 Verify References</button>
+            <button class="btn btn-success" id="btnApplyAutofix" disabled>✨ Auto-Fix & Download</button>
+        </div>
+
+        <!-- Process Feedback -->
+        <div class="process-feedback" id="processFeedback">
+            <div class="feedback-step" id="stepUpload">⏳ Document ready</div>
+            <div class="feedback-step" id="stepExtract">⏳ Citations extracted</div>
+            <div class="feedback-step" id="stepMatch">⏳ References matched</div>
+            <div class="feedback-step" id="stepACII">⏳ ACII computed</div>
+        </div>
+
+        <div class="status-bar">
+            <div class="status" id="status">System ready. Upload your manuscript to begin.</div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div id="verifyProgress" style="display: none; margin-top: 10px;">
+            <div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
+            <div id="progressText" style="font-size: 9px; margin-top: 4px;"></div>
+            <div id="estimatedRemaining" style="font-size: 9px; color: #19b36b; margin-top: 3px;"></div>
+        </div>
+    </div>
+
+    <!-- ACII Centerpiece -->
+    <div id="aciiCenterpiece" class="acii-centerpiece" style="display: none;">
+        <div class="acii-score-large" id="aciiScoreLarge">--</div>
+        <div class="acii-label">Academic Citation Integrity Index</div>
+        <div class="acii-rating" id="aciiRatingBadge">--</div>
+        <div class="acii-recommendation" id="aciiRecommendationText"></div>
+    </div>
+
+    <!-- Why This Matters -->
+    <div class="why-matters">
+        <h3>Why use CiteIntegrity?</h3>
+        <div class="benefits-grid">
+            <div class="benefit-item"><div class="benefit-icon">📝</div><div class="benefit-text">Reduce reviewer rejection</div></div>
+            <div class="benefit-item"><div class="benefit-icon">🎯</div><div class="benefit-text">Ensure citation accuracy</div></div>
+            <div class="benefit-item"><div class="benefit-icon">🏆</div><div class="benefit-text">Improve academic credibility</div></div>
+            <div class="benefit-item"><div class="benefit-icon">⏱️</div><div class="benefit-text">Save hours of manual checking</div></div>
+        </div>
+    </div>
+
+    <!-- Queue Status -->
+    <div id="queueStatus" class="queue-info">
+        <span>📊 Loading queue status...</span>
+    </div>
+
+    <!-- Results Section -->
+    <section id="resultsCard" class="card" style="display:none;">
+        <div class="results-header">
+            <h3>📊 Analysis Results</h3>
+            <div class="dashboard" id="dash"></div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="summaryPane">📊 Summary</button>
+            <button class="tab" data-tab="missingPane">❌ Missing</button>
+            <button class="tab" data-tab="uncitedPane">📖 Uncited</button>
+            <button class="tab" data-tab="c2rPane">🔗 C→R</button>
+            <button class="tab" data-tab="r2cPane">📚 R→C</button>
+            <button class="tab" data-tab="verifyPane">✅ Verification</button>
+            <button class="tab" data-tab="fixesPane">🔧 Fixes</button>
+        </div>
+
+        <div class="tabPanes">
+            <!-- SUMMARY PANE -->
+            <div id="summaryPane" class="tabPane active">
+                <div class="tableWrap">
+                    <table class="tbl" style="min-width:400px;">
+                        <thead><tr><th style="width:160px;">Item</th><th>Value</th></tr></thead>
+                        <tbody id="summaryTable"></tbody>
+                    </table>
+                </div>
+
+                <!-- ACII Components Card -->
+                <div id="aciiCard" class="card" style="margin-top:10px; display:none;">
+                    <h3>📊 ACII Components</h3>
+                    <div class="tableWrap">
+                        <table class="tbl">
+                            <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
+                            <tbody>
+                                <tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
+                                <tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
+                                <tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
+                                <tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="export-section">
+                    <button class="btn btn-small btn-outline" id="btnExportCsvTop">📊 CSV Report</button>
+                    <button class="btn btn-small btn-outline" id="btnExportWordTop">📄 Word Report</button>
+                    <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>🔍 Verification Report</button>
+                </div>
+            </div>
+
+            <!-- MISSING PANE -->
+            <div id="missingPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Citation in Text</th><th>Count</th></tr></thead>
+                        <tbody id="missingBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- UNCITED PANE -->
+            <div id="uncitedPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Reference</th></tr></thead>
+                        <tbody id="uncitedBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- C2R PANE -->
+            <div id="c2rPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Status</th><th>In-text</th><th>Count</th><th>Matched reference</th></tr></thead>
+                        <tbody id="c2rBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- R2C PANE -->
+            <div id="r2cPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Times cited</th><th>Reference</th><th>Cited by</th></tr></thead>
+                        <tbody id="r2cBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- VERIFY PANE -->
+            <div id="verifyPane" class="tabPane">
+                <div class="dashboard" id="verifyDash"></div>
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th></tr></thead>
+                        <tbody id="verifyBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- FIXES PANE -->
+            <div id="fixesPane" class="tabPane">
+                <div id="fixSuggestionsPanel" class="card" style="display: none;">
+                    <h3>🔧 Auto-Fix Suggestions</h3>
+                    <div id="fixSuggestionsContent"></div>
+                </div>
+                <div id="fixLogPanel" class="card" style="display: none;">
+                    <h3>📋 Fix Log</h3>
+                    <div id="fixLogContent"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Trust Element -->
+    <div class="trust-badge">
+        Your document is processed securely and not stored permanently.
+    </div>
+</main>
+
+<footer class="footer">
+    <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity — Manuscript Readiness & Citation Integrity Platform</p>
+    <p><a href="/privacy">Privacy Policy</a> | <a href="https://citeintegrity.org">citeintegrity.org</a></p>
+</footer>
+
+<script>
+// ============================================
+// COMPLETE APP.JS WITH ACTIVE UPLOAD
+// ============================================
+
+document.addEventListener("DOMContentLoaded", function () {
+
+"use strict";
+
+const CONFIG = {
+    POLL_INTERVAL: 3000,
+    MAX_VERIFY_DISPLAY: 500,
+    RETRY_DELAY: 30000,
+    MAX_POLL_ATTEMPTS: 1200,
+    STALL_TIMEOUT: 300000
+};
+
+// DOM Elements
+const $ = (id) => document.getElementById(id);
+
+let LAST_JOB_ID = null;
+let POLL_TIMER = null;
+let VERIFICATION_IN_PROGRESS = false;
+let RETRY_COUNT = 0;
+let POLL_ATTEMPT_COUNT = 0;
+let LAST_PROGRESS = 0;
+let LAST_PROGRESS_TIME = null;
+let AUTO_FIX_APPLIED = false;
+window.latestResults = null;
+
+// Utility Functions
+function esc(s) {
+    return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-REF_END_HEADINGS = [
-    r"^\s*appendix(?:es)?\b",
-    r"^\s*annex(?:es)?\b",
-    r"^\s*supplement(?:ary)?\b",
-    r"^\s*supporting\s+information\b",
-    r"^\s*supporting\s+documents?\b",
-    r"^\s*additional\s+materials?\b",
-    r"^\s*online\s+appendix\b",
-]
-REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
-
-NON_NAME_AUTHOR_KEYS = {
-    "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", 
-    "figure", "fig", "figures", "chapter", "section", "appendix", "appendices", 
-    "annex", "equation", "eq", "model", "models", "analysis", "results", "method", 
-    "methods", "discussion", "introduction", "conclusion", "study", "paper", "thesis", 
-    "report", "source", "sources", "author", "authors",
-    "however", "similarly", "regrettably", "traditionally", "therefore", "thus", "hence",
-    "consequently", "moreover", "furthermore", "additionally", "meanwhile", "nonetheless",
-    "nevertheless", "overall", "generally", "specifically", "particularly", "importantly",
-    "indeed", "instance", "example",
+function toNum(x, d = 0) {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : d;
 }
 
-NARRATIVE_SINGLE_TOKENS = {
-    "crisis", "war", "scandal", "revolution", "katrina",
-    "pandemic", "covid", "covid19", "covid-19",
+function setStatus(msg, tone = "muted") {
+    const statusEl = $("status");
+    if (statusEl) {
+        statusEl.className = `status ${tone}`;
+        statusEl.textContent = msg || "";
+    }
+    console.log(`[Status] ${msg}`);
 }
 
-NARRATIVE_PHRASE_PATTERNS = [
-    r"\byear\s+on\s+year\b",
-    r"\bgrowth\s+rate\b",
-    r"\ball\s+share\s+index\b",
-    r"\bselected\s+african\s+countries\b",
-    r"\btop\s+four\s+african\s+countries\b",
-    r"\baccording\s+to\b",
-]
-
-_DECADE_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})s\b", re.I)
-
-
-# -----------------------------
-# Small helpers
-# -----------------------------
-def norm_space(s: str) -> str:
-    s = s or ""
-    s = unicodedata.normalize("NFKC", s)
-    s = s.replace("\u00a0", " ")
-    s = re.sub(r"[ \t]+", " ", s)
-    return s.strip()
-
-
-def soft_lower(s: str) -> str:
-    return norm_space(s).lower()
-
-
-def strip_punct(s: str) -> str:
-    s = soft_lower(s)
-    s = re.sub(r"[“”\"'’`]", "", s)
-    s = re.sub(r"[^a-z0-9\s\-&/\u2013\u2014-]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def _base_year(y: str) -> str:
-    y = (y or "").strip()
-    m = re.match(r"^((?:19|20)\d{2})", y)
-    return m.group(1) if m else y
-
-
-def _surnames_from_author_blob(left: str) -> List[str]:
-    s = (left or "").strip()
-    if not s:
-        return []
-    s = s.replace("&", " and ")
-    s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
-    s = re.sub(r"(’s|'s)\b", "", s)
-    s = re.sub(r"\b(and|for|instance|see|e\.g\.|i\.e\.)\b", " ", s, flags=re.I)
-    s = re.sub(r"\b[A-Z]\.\b", " ", s)
-    s = re.sub(r"\b[A-Z]\b", " ", s)
-    parts = re.split(r"\band\b|;|/|\|", s, flags=re.I)
-    out: List[str] = []
-    for p in parts:
-        p = p.strip(" ,.;:()[]{}")
-        if not p:
-            continue
-        if "," in p:
-            cand = p.split(",", 1)[0].strip()
-        else:
-            cand = p.split()[-1].strip()
-        cand = re.sub(r"[^A-Za-z\-’' ]+", "", cand).strip()
-        cand = cand.replace("’", "'")
-        if len(cand) < 2:
-            continue
-        if cand.lower() in {"available", "ssrn", "university", "press", "journal"}:
-            continue
-        out.append(cand.lower())
-    seen = set()
-    final = []
-    for x in out:
-        if x not in seen:
-            seen.add(x)
-            final.append(x)
-    return final[:4]
-
-
-def _looks_like_toc_references_line(s: str, tail: str) -> bool:
-    if not s:
-        return False
-    tail = (tail or "").strip()
-    if tail and re.fullmatch(r"\d{1,4}", tail):
-        return True
-    if re.search(r"\.{2,}\s*\d{1,4}\s*$", s):
-        return True
-    return False
-
-
-def _looks_like_heading_line(s: str) -> bool:
-    s0 = (s or "").strip()
-    if not s0:
-        return False
-    if len(s0) > 120:
-        return False
-    if s0.endswith(".") and len(s0) > 25:
-        return False
-    letters = re.sub(r"[^A-Za-z]", "", s0)
-    if letters and letters.isupper() and len(letters) >= 6:
-        return True
-    if re.match(r"^[A-Z][A-Za-z0-9\s\-,:]{3,}$", s0):
-        return True
-    return False
-
-
-def _is_likely_narrative_citation(left: str, year: str, full_cite: str) -> bool:
-    l = (left or "").strip()
-    if not l:
-        return True
-
-    s_full = (full_cite or "").lower()
-    for pat in NARRATIVE_PHRASE_PATTERNS:
-        if re.search(pat, s_full, flags=re.I):
-            return True
-
-    if year and isinstance(year, str) and year.lower().endswith("s"):
-        if _DECADE_YEAR_RE.search(full_cite or ""):
-            return True
-
-    l_norm = soft_lower(l)
-    if re.fullmatch(r"[a-z\-']+", l_norm) and l_norm in NARRATIVE_SINGLE_TOKENS:
-        return True
-
-    return False
-
-
-# -----------------------------
-# Reference acceptance
-# -----------------------------
-_LEAD_NUM_RE = re.compile(r"^\s*(?:\[\s*\d{1,4}\s*\]|\(?\s*\d{1,4}\s*\)?|\d{1,4})\s*[\.)\]]\s*")
-
-
-def _strip_leading_reference_number(s: str) -> str:
-    s0 = norm_space(s)
-    s0 = _LEAD_NUM_RE.sub("", s0)
-    return s0.strip()
-
-
-def _looks_like_person_author(s: str) -> bool:
-    s0 = norm_space(s)
-    if re.search(r"\b[A-Z][A-Za-z'\-]+,\s*(?:[A-Z]\.\s*){1,4}(?:[A-Z]\.\s*)?", s0):
-        return True
-    if re.search(r"\b[A-Z][A-Za-z'\-]+\s+(?:[A-Z]\.?)\s*(?:[A-Z]\.?)\b", s0):
-        return True
-    if re.search(r"\b[A-Z][A-Za-z'\-]+\s+et\s+al\.", s0):
-        return True
-    return False
-
-
-def _looks_like_org_author(s: str) -> bool:
-    s0 = norm_space(s)
-
-    if re.search(r"\(([A-Z]{2,10})\)", s0):
-        return True
-
-    head = re.sub(r"[^A-Za-z0-9\s/&\-]", " ", s0)
-    toks = [t for t in head.split() if t]
-    if toks:
-        t0 = toks[0]
-        t0_clean = re.sub(r"[^A-Za-z]", "", t0)
-        if t0_clean and t0_clean.isupper() and len(t0_clean) >= 2:
-            return True
-
-    def titleish(w: str) -> bool:
-        wc = re.sub(r"[^A-Za-z]", "", w)
-        if not wc:
-            return False
-        if wc.isupper() and 2 <= len(wc) <= 12:
-            return True
-        return bool(re.match(r"^[A-Z][a-z]{2,}$", wc))
-
-    run = 0
-    best = 0
-    for w in toks[:16]:
-        if titleish(w):
-            run += 1
-            best = max(best, run)
-        else:
-            run = 0
-    return best >= 2
-
-
-def _looks_like_title_piece(s: str) -> bool:
-    s0 = norm_space(s)
-    if len(s0) < 6:
-        return False
-    letters = re.findall(r"[A-Za-z]", s0)
-    if len(letters) < 5:
-        return False
-    if re.fullmatch(r"(?i)(?:vol(?:ume)?|issue|no\.?|pp\.?|pages?|doi)\b.*", s0):
-        return False
-    if re.fullmatch(r"\d{1,4}(?:\s*[-–]\s*\d{1,4})?", s0):
-        return False
-
-    word_count = len([w for w in re.split(r"\s+", s0) if w])
-    if word_count >= 3:
-        return True
-    if ":" in s0 or "–" in s0 or "-" in s0:
-        return True
-    return True
-
-
-def _is_plausible_reference_entry(s: str) -> bool:
-    s0 = _strip_leading_reference_number(s)
-    if not s0 or len(s0) < 18:
-        return False
-
-    ym = YEAR_RE.search(s0)
-    if not ym:
-        return False
-
-    left = s0[: ym.start()].strip()
-    author_ok = (
-        _looks_like_person_author(left)
-        or _looks_like_org_author(left)
-        or _looks_like_person_author(s0[:120])
-        or _looks_like_org_author(s0[:120])
-    )
-    if not author_ok:
-        cue_ok = bool(re.search(r"\b(ssrn|arxiv|working\s+paper|available\s+at|retrieved\s+from|doi|report|policy\s+brief)\b", s0, re.I))
-        after = s0[ym.end():].lstrip(" ).,;:-")
-        after_title = after.split(".", 1)[0].strip()
-        if len(after_title) < 6 and "," in after:
-            after_title = after.split(",", 1)[0].strip()
-
-        before = s0[: ym.start()].strip(" .;:-")
-        before_parts = [p.strip() for p in before.split(".") if p.strip()]
-        before_title = before_parts[-1] if before_parts else ""
-
-        if cue_ok or _looks_like_title_piece(after_title) or _looks_like_title_piece(before_title):
-            return True
-        return False
-
-    after = s0[ym.end():].lstrip(" ).,;:-")
-    after_title = after.split(".", 1)[0].strip()
-    if len(after_title) < 6 and "," in after:
-        after_title = after.split(",", 1)[0].strip()
-
-    before = s0[: ym.start()].strip(" .;:-")
-    before_parts = [p.strip() for p in before.split(".") if p.strip()]
-    before_title = before_parts[-1] if before_parts else ""
-
-    return _looks_like_title_piece(after_title) or _looks_like_title_piece(before_title)
-
-
-def _first_author_or_org_key(author_left: str) -> str:
-    s = norm_space(author_left)
-
-    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", s)
-    if m:
-        return strip_punct(m.group(1))
-
-    s = _strip_leading_reference_number(s)
-    s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
-    s = re.sub(r"(’s|'s)\b", "", s)
-
-    m_si = re.match(r"^\s*([A-Z][A-Za-z'\-]+)\s+[A-Z]{1,3}\b", s)
-    if m_si:
-        return strip_punct(m_si.group(1))
-
-    s0 = re.split(r"\s+(?:&|and|＆)\s+|,", s, maxsplit=1)[0].strip()
-    s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
-
-    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
-    if not toks:
-        return ""
-    return strip_punct(toks[-1])
-
-
-def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
-    out: List[str] = []
-    ref_like_seen = 0
-
-    def _is_ref_like(ln: str) -> bool:
-        if style_hint == "numeric":
-            return _looks_like_new_numeric_reference_start(ln)
-        return _looks_like_new_apa_reference_start(ln)
-
-    for i, ln in enumerate(lines):
-        s = (ln or "").strip()
-        if not s:
-            continue
-
-        if _is_ref_like(s):
-            ref_like_seen += 1
-
-        if ref_like_seen >= 3 and (
-            REF_END_HEADING_RE.search(s)
-            or (
-                _looks_like_heading_line(s)
-                and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I)
-            )
-        ):
-            look = [x for x in lines[i : i + 25] if (x or "").strip()]
-            look_ref = sum(1 for x in look if _is_ref_like((x or "").strip()))
-            if look_ref <= 1:
-                break
-
-        out.append(ln)
-
-    return out
-
-
-# -----------------------------
-# DOCX extraction
-# -----------------------------
-def _iter_docx_text(doc: "Document"):
-    for p in doc.paragraphs:
-        t = norm_space(p.text)
-        if t:
-            yield t
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    t = norm_space(p.text)
-                    if t:
-                        yield t
-
-
-def _docx_xml_text(file_bytes: bytes) -> List[str]:
-    import zipfile
-    import xml.etree.ElementTree as ET
-
-    NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-
-    def _extract_from_xml(xml_bytes: bytes) -> List[str]:
-        out: List[str] = []
-        try:
-            root = ET.fromstring(xml_bytes)
-        except Exception:
-            return out
-        for p in root.findall(".//w:p", NS):
-            parts: List[str] = []
-            for tnode in p.findall(".//w:t", NS):
-                if tnode.text:
-                    parts.append(tnode.text)
-            s = norm_space("".join(parts))
-            if s:
-                out.append(s)
-        return out
-
-    targets = ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml"]
-
-    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-        names = set(z.namelist())
-        for name in sorted(names):
-            if name.startswith("word/header") and name.endswith(".xml"):
-                targets.append(name)
-            if name.startswith("word/footer") and name.endswith(".xml"):
-                targets.append(name)
-
-        lines: List[str] = []
-        for t in targets:
-            if t in names:
-                try:
-                    lines.extend(_extract_from_xml(z.read(t)))
-                except Exception:
-                    continue
-    return lines
-
-
-def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
-    if not DOCX_OK:
-        raise RuntimeError("python-docx not installed")
-
-    try:
-        lines = _docx_xml_text(file_bytes)
-    except Exception:
-        lines = []
-
-    if not lines:
-        doc = Document(io.BytesIO(file_bytes))
-        lines = list(_iter_docx_text(doc))
-
-    def _ref_like(line: str) -> bool:
-        s = (line or "").strip()
-        if not s:
-            return False
-        if re.match(r"^\s*(\[\s*\d{1,4}\s*\]|\(\s*\d{1,4}\s*\)|\d{1,4}[\.)])\s+\S", s):
-            return True
-        if YEAR_RE.search(s) and re.match(r"^[A-Z][A-Za-z\-’'\.]+", s):
-            return True
-        if "doi:" in s.lower() or "https://doi.org/" in s.lower():
-            return True
-        return False
-
-    def _lookahead_is_real_refs(idx: int) -> bool:
-        seen = 0
-        checked = 0
-        j = idx + 1
-        while j < len(lines) and checked < 20:
-            s = (lines[j] or "").strip()
-            j += 1
-            if not s:
-                continue
-            checked += 1
-            if _ref_like(s):
-                seen += 1
-        return seen >= 6
-
-    main_lines: List[str] = []
-    ref_lines: List[str] = []
-    in_refs = False
-    heading_line = ""
-
-    i = 0
-    while i < len(lines):
-        t = lines[i]
-
-        if not in_refs:
-            hit = False
-            for pat in REF_HEADINGS:
-                if re.search(pat, t, flags=re.I):
-                    if _looks_like_toc_references_line(t, ""):
-                        break
-                    if _lookahead_is_real_refs(i):
-                        in_refs = True
-                        heading_line = t
-                        hit = True
-                    break
-            if hit:
-                i += 1
-                continue
-
-            m = REF_HEADING_RELAXED.search(t)
-            if m and m.start() <= 4 and len(t) <= 160:
-                tail = t[m.end():].strip(" :-\t")
-                if _looks_like_toc_references_line(t, tail):
-                    main_lines.append(t)
-                    i += 1
-                    continue
-                if _lookahead_is_real_refs(i):
-                    in_refs = True
-                    heading_line = t
-                    if tail:
-                        ref_lines.append(tail)
-                    i += 1
-                    continue
-
-        if in_refs:
-            ref_lines.append(t)
-        else:
-            main_lines.append(t)
-
-        i += 1
-
-    if in_refs:
-        ref_lines = _truncate_reference_block(ref_lines, style_hint="apa")
-        ref_lines = _truncate_reference_block(ref_lines, style_hint="numeric")
-
-    msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
-    return "\n".join(main_lines).strip(), ref_lines, msg
-
-
-# -----------------------------
-# PDF extraction (fallback, but process_pdf is preferred)
-# -----------------------------
-def read_pdf_text(file_bytes: bytes) -> str:
-    if not PDF_OK:
-        raise RuntimeError("pdfplumber not installed")
-
-    out: List[str] = []
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            try:
-                text = page.extract_text() or ""
-                text = text.replace("\x00", " ")
-                text = re.sub(r"-\n", "", text)
-                text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
-            except Exception:
-                text = ""
-            out.append(text)
-    return "\n".join(out)
-
-
-def _looks_like_new_numeric_reference_start(s: str) -> bool:
-    s0 = (s or "").strip()
-    if not s0:
-        return False
-    
-    if re.match(r"^\[\s*\d{1,4}\s*\]\s+\S", s0):
-        return True
-    if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
-        return True
-    
-    m = re.match(r"^(\d{1,4})[\.)]\s+(.+)$", s0)
-    if m:
-        num = m.group(1)
-        num_int = int(num)
-        if 1900 <= num_int <= 2099:
-            rest = m.group(2)
-            if YEAR_RE.search(rest) or len(rest) > 30:
-                return True
-            return False
-        return True
-    
-    m = re.match(r"^(\d{1,4})\s+([A-Z].+)$", s0)
-    if m:
-        num = m.group(1)
-        num_int = int(num)
-        if 1900 <= num_int <= 2099:
-            return False
-        return True
-    
-    return False
-
-
-def _looks_like_new_apa_reference_start(s: str) -> bool:
-    s0 = (s or "").strip()
-    if not s0:
-        return False
-
-    if re.search(r"\.\s*\(\s*" + YEAR + r"\s*\)\.", s0):
-        return True
-
-    m = re.match(r"^(.+?)\s*\(\s*" + YEAR + r"\s*\)", s0)
-    if m:
-        a = m.group(1)
-        a = re.sub(r"[^A-Za-z,\.\-\s&/\u2013\u2014-]", "", a).strip()
-        return len(a) >= 3
-    return False
-
-
-def _count_reference_like(lines: List[str], style_hint: str) -> int:
-    c = 0
-    for ln in lines:
-        s = (ln or "").strip()
-        if not s:
-            continue
-        if style_hint == "numeric":
-            if _looks_like_new_numeric_reference_start(s):
-                c += 1
-        else:
-            if _looks_like_new_apa_reference_start(s):
-                c += 1
-    return c
-
-
-def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str]:
-    candidates: List[Tuple[int, str]] = []
-
-    for i, line in enumerate(lines):
-        s = (line or "").strip()
-        if not s:
-            continue
-
-        for pat in REF_HEADINGS:
-            if re.search(pat, s, flags=re.I):
-                candidates.append((i, ""))
-
-        m = REF_HEADING_RELAXED.search(s)
-        if m and m.start() <= 4 and len(s) <= 160:
-            tail = s[m.end():].strip(" :-\t")
-            if _looks_like_toc_references_line(s, tail):
-                continue
-            candidates.append((i, tail))
-
-    for i, tail in candidates:
-        lookahead = [ln for ln in lines[i + 1: i + 31] if (ln or "").strip()]
-        if _count_reference_like(lookahead, style_hint=style_hint) >= 3:
-            return i, tail
-
-    return -1, ""
-
-
-# ============================================================================
-# Reference Extraction Functions
-# ============================================================================
-
-def detect_reference_format(lines: List[str], start_idx: int) -> str:
-    sample_lines = []
-    for i in range(start_idx + 1, min(start_idx + 20, len(lines))):
-        line = lines[i].strip()
-        if line:
-            sample_lines.append(line)
-    
-    ieee_count = sum(1 for l in sample_lines if re.match(r'^\[\d+\]', l))
-    numbered_count = sum(1 for l in sample_lines if re.match(r'^\d+\.', l) and not re.match(r'^\d{4}\.', l))
-    apa_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', l))
-    harvard_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', l))
-    
-    formats = {
-        'ieee': ieee_count,
-        'numbered': numbered_count,
-        'apa': apa_count,
-        'harvard': harvard_count
-    }
-    
-    best_format = max(formats, key=formats.get)
-    return best_format if formats[best_format] > 0 else "unknown"
-
-
-def join_reference_lines(current: str, next_line: str) -> str:
-    if current.endswith('-'):
-        return current[:-1] + next_line
-    elif re.search(r'[a-z]$', current) and re.search(r'^[a-z]', next_line):
-        return current + next_line
-    else:
-        return current + " " + next_line
-
-
-def clean_reference(ref: str) -> str:
-    ref = re.sub(r'\s+', ' ', ref).strip()
-    ref = re.sub(r'-\s+', '', ref)
-    ref = re.sub(r'\s+-\s+', '-', ref)
-    ref = ref.strip('.,;:')
-    return ref
-
-
-def extract_references_generalized(text: str) -> List[str]:
-    lines = text.splitlines()
-    
-    ref_start = -1
-    heading_patterns = [
-        r'^\s*REFERENCES\s*$',
-        r'^\s*BIBLIOGRAPHY\s*$',
-        r'^\s*WORKS\s+CITED\s*$',
-        r'^\s*LITERATURE\s+CITED\s*$',
-        r'^\s*REFERENCES\s*\[.*\]\s*$',
-        r'^\s*REFERENCES AND NOTES\s*$',
-    ]
-    
-    for i, line in enumerate(lines):
-        for pattern in heading_patterns:
-            if re.search(pattern, line, re.I):
-                if i > len(lines) * 0.6:
-                    ref_start = i
-                    break
-        if ref_start != -1:
-            break
-    
-    if ref_start == -1:
-        ref_candidates = []
-        for i, line in enumerate(lines):
-            if i > len(lines) * 0.6:
-                line = line.strip()
-                if re.match(r'^\[\d+\]\s+[A-Z]\.?\s+[A-Z][a-z]', line):
-                    ref_candidates.append((i, line))
-                elif re.match(r'^\d+\.\s+[A-Z][a-z]', line) and not re.match(r'^\d{4}\.', line):
-                    ref_candidates.append((i, line))
-                elif re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line):
-                    ref_candidates.append((i, line))
-        
-        if ref_candidates:
-            ref_start = ref_candidates[0][0] - 1
-    
-    if ref_start == -1:
-        return []
-    
-    references = []
-    current_ref = ""
-    ref_format = detect_reference_format(lines, ref_start)
-    
-    for i in range(ref_start + 1, min(ref_start + 500, len(lines))):
-        line = lines[i].strip()
-        
-        if not line and not current_ref:
-            continue
-        
-        if not line:
-            if current_ref:
-                references.append(clean_reference(current_ref))
-                current_ref = ""
-            continue
-        
-        is_new_ref = False
-        
-        if ref_format == "ieee":
-            is_new_ref = bool(re.match(r'^\[\d+\]', line))
-        elif ref_format == "numbered":
-            is_new_ref = bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)
-        elif ref_format == "apa":
-            is_new_ref = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
-        elif ref_format == "harvard":
-            is_new_ref = bool(re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', line[:100]))
-        else:
-            is_new_ref = (
-                bool(re.match(r'^\[\d+\]', line)) or
-                (bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)) or
-                bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
-            )
-        
-        if is_new_ref:
-            if current_ref:
-                references.append(clean_reference(current_ref))
-            current_ref = line
-        elif current_ref:
-            current_ref = join_reference_lines(current_ref, line)
-    
-    if current_ref:
-        references.append(clean_reference(current_ref))
-    
-    cleaned_refs = []
-    for ref in references:
-        if len(ref) > 30 and (
-            re.search(r'\d{4}', ref) or
-            re.search(r'\[\d+\]', ref) or
-            re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', ref)
-        ):
-            cleaned_refs.append(ref)
-    
-    return cleaned_refs
-
-
-def extract_references_pattern_based(text: str) -> List[str]:
-    patterns = [
-        (r'\[\d+\]\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
-        (r'^\d+\.\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
-        (r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)\.\s+[A-Z][a-zA-Z\s]+\.', re.MULTILINE | re.DOTALL),
-    ]
-    
-    references = []
-    for pattern, flags in patterns:
-        matches = re.findall(pattern, text, flags)
-        references.extend([clean_reference(m) for m in matches if len(m) > 30])
-    
-    return references
-
-
-def extract_references_heuristic(text: str) -> List[str]:
-    lines = text.splitlines()
-    references = []
-    current_ref = ""
-    
-    start_idx = int(len(lines) * 0.7)
-    
-    for i in range(start_idx, len(lines)):
-        line = lines[i].strip()
-        if not line:
-            if current_ref and len(current_ref) > 30:
-                references.append(clean_reference(current_ref))
-                current_ref = ""
-            continue
-        
-        has_year = bool(re.search(r'\b(19|20)\d{2}\b', line))
-        has_bracket_num = bool(re.search(r'\[\d+\]', line))
-        has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', line))
-        has_caps_words = len(re.findall(r'\b[A-Z][a-z]{2,}\b', line)) >= 2
-        
-        if has_year or has_bracket_num or (has_author and has_caps_words):
-            if not current_ref:
-                current_ref = line
-            else:
-                if (has_bracket_num or 
-                    (re.match(r'^\d+\.', line) and not re.match(r'^\d{4}\.', line)) or
-                    (has_author and len(current_ref) > 50)):
-                    if current_ref:
-                        references.append(clean_reference(current_ref))
-                    current_ref = line
-                else:
-                    current_ref += " " + line
-        elif current_ref:
-            current_ref += " " + line
-    
-    if current_ref and len(current_ref) > 30:
-        references.append(clean_reference(current_ref))
-    
-    return references
-
-
-def extract_references_enhanced(text: str) -> List[str]:
-    refs = extract_references_generalized(text)
-    if len(refs) < 5:
-        refs = extract_references_pattern_based(text)
-    if len(refs) < 5:
-        refs = extract_references_heuristic(text)
-    return refs
-
-
-def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
-    raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
-    if not raw_lines:
-        return []
-
-    merged: List[str] = []
-    cur = ""
-    for ln in raw_lines:
-        s = ln.strip()
-        if not s:
-            continue
-
-        is_new = _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s)
-        if is_new:
-            if cur:
-                merged.append(norm_space(cur))
-            cur = s
-        else:
-            if not cur:
-                cur = s
-            else:
-                joiner = " "
-                if cur.endswith("-"):
-                    cur = cur[:-1]
-                    joiner = ""
-                cur = cur + joiner + s
-
-    if cur:
-        merged.append(norm_space(cur))
-
-    return [m for m in merged if m and len(m) >= 8]
-
-
-def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
-    out: List[str] = []
-    br_pat = re.compile(r"(?=(\[\s*\d{1,4}\s*\]\s+))")
-    dot_pat = re.compile(r"(?=(\b\d{1,4}[\.\)]\s+))")
-
-    for s in merged:
-        s = (s or "").strip()
-        if not s:
-            continue
-
-        cuts: List[int] = []
-
-        for m in br_pat.finditer(s):
-            pos = m.start(1)
-            if pos > 0:
-                cuts.append(pos)
-
-        for m in dot_pat.finditer(s):
-            pos = m.start(1)
-            if pos > 0:
-                token = m.group(1).strip()
-                num = re.match(r"^(\d{1,4})", token)
-                if num and YEAR_RE.fullmatch(num.group(1)):
-                    continue
-                cuts.append(pos)
-
-        if not cuts:
-            out.append(s)
-            continue
-
-        cuts = sorted(set(cuts))
-        prev = 0
-        for pos in cuts:
-            part = s[prev:pos].strip()
-            if part:
-                out.append(part)
-            prev = pos
-        tail = s[prev:].strip()
-        if tail:
-            out.append(tail)
-
-    return [x for x in out if x and len(x) >= 10]
-
-
-# ============================================================================
-# APA/HARVARD STYLE
-# ============================================================================
-
-def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
-    """Parse author and year from APA/Harvard citation.
-    
-    Now handles malformed years (2-3 digits like '204' -> '2024')
-    and citations with multiple entries separated by semicolons.
-    """
-    s = norm_space(cite)
-    if not s:
-        return None
-
-    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
-    
-    # First try to match standard 4-digit years
-    ym = YEAR_RE.search(s)
-    year = None
-    year_start = None
-    
-    if ym:
-        year = ym.group(1)
-        year_start = ym.start()
-    else:
-        # Try to find malformed years (2-3 digit numbers that could be years)
-        # Look for numbers like 204, 04, 24 anywhere in the citation
-        # Pattern matches standalone numbers or numbers after commas/ampersands
-        malformed_pat = re.compile(r"(?:^|[,&;]|\s)\s*(\d{2,3})(?:[;,)&]|\s|$)")
-        malformed_match = malformed_pat.search(s)
-        
-        if malformed_match:
-            year_candidate = malformed_match.group(1)
-            # Check if it's a plausible year (0-999)
-            if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
-                year = year_candidate
-                year_start = malformed_match.start(1)
-        
-        # Also try standalone 2-3 digit numbers with parentheses
-        if not year:
-            paren_pat = re.compile(r"\([^)]*?(\d{2,3})[^)]*?\)")
-            paren_match = paren_pat.search(s)
-            if paren_match:
-                year_candidate = paren_match.group(1)
-                if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
-                    year = year_candidate
-                    year_start = paren_match.start(1)
-        
-        # Also try standalone 2-3 digit numbers
-        if not year:
-            standalone_pat = re.compile(r"\b(\d{2,3})\b")
-            standalone_match = standalone_pat.search(s)
-            if standalone_match:
-                year_candidate = standalone_match.group(1)
-                if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
-                    year = year_candidate
-                    year_start = standalone_match.start(1)
-    
-    if not year:
-        return None
-    
-    # Extract left part (author section) - take text before the year
-    if year_start:
-        # Get the part before the year
-        left = s[:year_start].strip(" ,;()")
-        # If left is empty, try to get author from the citation differently
-        if not left:
-            # Try to extract author before the year in the whole citation
-            author_match = re.match(r"^([A-Za-z\s&]+?)(?:,|\s+)(?:\d)", s)
-            if author_match:
-                left = author_match.group(1).strip()
-    else:
-        left = ""
-
-    if left:
-        prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
-        pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
-        while True:
-            new_left = pref_re.sub("", left).strip(" ,;()")
-            if new_left == left:
-                break
-            left = new_left
-
-    for _ in range(3):
-        if "," not in left:
-            break
-        first, rest = left.split(",", 1)
-        if re.search(r"\b[A-Z][A-Za-z'\-]+\b", first):
-            break
-        left = rest.strip(" ,;()")
-
-    left = re.sub(r"(’s|'s)\b", "", left).strip()
-
-    if _is_likely_narrative_citation(left, year, s):
-        return None
-
-    author_key = _first_author_or_org_key(left)
-    if not author_key:
-        # Try to extract just the first author if the author extraction failed
-        simple_author_match = re.match(r"^([A-Z][a-z]+)\s+&\s+([A-Z][a-z]+)", left)
-        if simple_author_match:
-            author_key = simple_author_match.group(1).lower()
-        else:
-            simple_author_match = re.match(r"^([A-Z][a-z]+)", left)
-            if simple_author_match:
-                author_key = simple_author_match.group(1).lower()
-    
-    if not author_key:
-        return None
-    if author_key.lower() in NON_NAME_AUTHOR_KEYS:
-        return None
-    return author_key, year
-
-def extract_author_year_citations(text: str) -> List[str]:
-    t = (text or "").replace("\u2019", "'")
-
-    paren_pat = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
-
-    NAME = r"[A-Z][A-Za-z'\-]+(?:'s)?"
-    AMP = r"(?:&|and|＆)"
-    AUTHOR_LIST = rf"{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?"
-
-    narr_pat = re.compile(
-        rf"\b("
-        rf"(?:{AUTHOR_LIST})"
-        rf"|(?:{NAME}\s+{AMP}\s+{NAME})"
-        rf"|(?:{NAME}\s+et\s+al\.)"
-        rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)?"
-    )
-
-    out: List[str] = []
-
-    for m in paren_pat.finditer(t):
-        inside = (m.group(1) or "").strip()
-        if YEAR_RE.fullmatch(inside) and not re.search(r"[A-Za-z]", inside):
-            continue
-
-        chunks = [c.strip() for c in inside.split(";") if c.strip()]
-        for ch in chunks:
-            ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
-            if YEAR_RE.search(ch2):
-                out.append(norm_space(ch2))
-
-    for m in narr_pat.finditer(t):
-        author = m.group(1).strip()
-        years_block = m.group(2).strip()
-    
-        if not years_block:
-            continue
-    
-        author = re.sub(r"(’s|'s)\b", "", author).strip()
-    
-        # split multiple years
-        years = re.split(r"[;,]\s*", years_block)
-    
-        for y in years:
-            y = y.strip()
-            if YEAR_RE.fullmatch(y):
-                out.append(norm_space(f"{author}, {y}"))
-
-    return [c for c in out if c]
-
-
-def parse_reference_author_year(ref: str) -> Optional[RefAY]:
-    s = norm_space(ref)
-    if not s:
-        return None
-
-    s_clean = _strip_leading_reference_number(s)
-
-    if not _is_plausible_reference_entry(s_clean):
-        return None
-
-    m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s_clean)
-    if not m:
-        m2 = re.search(r"\b(" + YEAR + r")\b", s_clean)
-        if not m2:
-            return None
-        year = m2.group(1)
-        left = s_clean[: m2.start()].strip()
-    else:
-        year = m.group(1)
-        left = s_clean[: m.start()].strip()
-
-    author_key = _first_author_or_org_key(left)
-    if not author_key:
-        return None
-
-    key = f"{author_key}|{year}".lower()
-    return RefAY(reference_full=s_clean, key=key)
-
-
-def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
-    ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
-    alias_map: Dict[str, str] = dict(ref_map)
-
-    refs_by_year: Dict[str, List[RefAY]] = defaultdict(list)
-    for r in references:
-        ym_r = YEAR_RE.search(r.reference_full)
-        if ym_r:
-            refs_by_year[_base_year(ym_r.group(1))].append(r)
-
-    for r in references:
-        try:
-            auth, y = r.key.split("|", 1)
-        except Exception:
-            continue
-        by = _base_year(y)
-        if by and by != y:
-            alias_map[f"{auth}|{by}".lower()] = r.reference_full
-
-        s_full = r.reference_full
-        ym = YEAR_RE.search(s_full)
-        if not ym:
-            continue
-        year_full = ym.group(1)
-        year_base = _base_year(year_full)
-
-        left = s_full[: ym.start()].strip(" ,;()")
-        names = _surnames_from_author_blob(left)
-        if not names:
-            continue
-
-        for nm in names[:2]:
-            alias_map[f"{nm}|{year_full}".lower()] = r.reference_full
-            if year_base and year_base != year_full:
-                alias_map[f"{nm}|{year_base}".lower()] = r.reference_full
-
-        if len(names) >= 2:
-            a, b = names[0], names[1]
-            alias_map[f"{a}+{b}|{year_full}".lower()] = r.reference_full
-            alias_map[f"{b}+{a}|{year_full}".lower()] = r.reference_full
-            if year_base and year_base != year_full:
-                alias_map[f"{a}+{b}|{year_base}".lower()] = r.reference_full
-                alias_map[f"{b}+{a}|{year_base}".lower()] = r.reference_full
-
-    cite_counts_by_ref = Counter()
-    parsed_cites: List[Tuple[str, str, str]] = []
-
-    for c in citations:
-        parsed = _parse_author_year_from_cite(c)
-        if not parsed:
-            continue
-        
-        auth, year = parsed
-        year_base = _base_year(year)
-        
-        cand_keys = [f"{auth}|{year}".lower()]
-        
-        # FORCE et al first-author fallback (robust)
-        if re.search(r"\bet\s+al\.?", c, re.I):
-            m = re.search(r'([A-Z][A-Za-z\'\-]+)\s+et\s+al', c, re.I)
-            if m:
-                first_author = m.group(1).lower()
-                cand_keys.append(f"{first_author}|{year}".lower())
-                if year_base and year_base != year:
-                    cand_keys.append(f"{first_author}|{year_base}".lower())
-
-        if year_base and year_base != year:
-            cand_keys.append(f"{auth}|{year_base}".lower())
-
-        ym = YEAR_RE.search(c)
-        if ym:
-            left = (c[: ym.start()] or "").strip(" ,;()")
-            names = _surnames_from_author_blob(left)
-            if names:
-                cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
-                if year_base and year_base != ym.group(1):
-                    cand_keys.append(f"{names[0]}|{year_base}".lower())
-                if len(names) >= 2:
-                    cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
-                    cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
-                    if year_base and year_base != ym.group(1):
-                        cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
-                        cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
-
-        matched_ref = None
-        used_key = None
-        for k in cand_keys:
-            if k in alias_map:
-                matched_ref = alias_map[k]
-                used_key = k
-                break
-
-        if matched_ref:
-            cite_counts_by_ref[matched_ref] += 1
-            parsed_cites.append((matched_ref, c, f"alias:{used_key}" if used_key else ""))
-        else:
-            best_ref = ""
-            best_score = 0
-            ym_c = YEAR_RE.search(c)
-            if ym_c:
-                yb = _base_year(ym_c.group(1))
-                left_c = (c[: ym_c.start()] or "").strip(" ,;()")
-                cite_names = _surnames_from_author_blob(left_c)
-
-                for rr in refs_by_year.get(yb, []):
-                    s_full = rr.reference_full
-                    ym_r = YEAR_RE.search(s_full)
-                    if not ym_r:
-                        continue
-                    left_r = s_full[: ym_r.start()].strip(" ,;()")
-                    ref_names = _surnames_from_author_blob(left_r)
-
-                    overlap = len(set(cite_names) & set(ref_names))
-                    score_overlap = int(round(100 * (overlap / max(1, len(set(cite_names))))))
-
-                    score = score_overlap
-                    if FUZZ_OK and fuzz and cite_names and ref_names:
-                        score1 = fuzz.token_set_ratio(" ".join(cite_names), " ".join(ref_names))
-                        score2 = fuzz.partial_ratio(" ".join(cite_names), " ".join(ref_names))
-                        score_fuzz = int(round(0.6 * score1 + 0.4 * score2))
-                        score = max(score, score_fuzz)
-
-                    if score > best_score:
-                        best_score = score
-                        best_ref = rr.reference_full
-
-            if best_ref and best_score >= 74:
-                cite_counts_by_ref[best_ref] += 1
-                parsed_cites.append((best_ref, c, f"fuzzy:{best_score}"))
-            else:
-                parsed_cites.append(("", c, ""))
-
-    c2r: List[Dict[str, Any]] = []
-    missing_counter = Counter()
-
-    for matched_ref, c, flags in parsed_cites:
-        if matched_ref:
-            c2r.append({"status": "matched", "in_text": c, "matched_reference": matched_ref, "flags": flags})
-        else:
-            c2r.append({"status": "not_found", "in_text": c, "matched_reference": "", "flags": ""})
-            missing_counter[c] += 1
-
-    r2c: List[Dict[str, Any]] = []
-    uncited_refs: List[str] = []
-
-    cite_samples_by_ref: Dict[str, List[str]] = defaultdict(list)
-    for matched_ref, c, _flags in parsed_cites:
-        if matched_ref and len(cite_samples_by_ref[matched_ref]) < 6:
-            cite_samples_by_ref[matched_ref].append(c)
-
-    ref_cluster_map = _cluster_references(references)
-
-    for r in references:
-        ref_full = r.reference_full
-        times = int(cite_counts_by_ref.get(ref_full, 0))
-
-        meta = ref_cluster_map.get(ref_full) or {}
-        canonical = meta.get("canonical_ref", ref_full)
-        is_dup = bool(meta.get("is_duplicate", False))
-        cid = meta.get("cluster_id", 0)
-
-        canonical_times = int(cite_counts_by_ref.get(canonical, 0))
-        if times == 0 and not (is_dup and canonical_times > 0):
-            uncited_refs.append(ref_full)
-
-        r2c.append({
-            "times_cited": times,
-            "reference": ref_full,
-            "cited_by": cite_samples_by_ref.get(ref_full, []),
-            "cluster_id": cid,
-            "canonical_reference": canonical,
-            "duplicate_of_cited": bool(is_dup and canonical_times > 0),
-        })
-
-    missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
-    unique_intext_count = int(len(set([c for c in citations if c])))
-    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
-
-
-# ============================================================================
-# IEEE STYLE
-# ============================================================================
-
-def extract_ieee_citations(text: str) -> List[str]:
-    t = text or ""
-    out: List[str] = []
-    
-    t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+(\d{1,4})", "", t, flags=re.I)
-    t = re.sub(r'\]\s*\n\s*\[', '][', t)
-    
-    ieee_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
-    
-    for m in ieee_pat.finditer(t):
-        nums = _expand_citation_range(m)
-        out.extend(nums)
-    
-    seen = set()
-    return [x for x in out if not (x in seen or seen.add(x))]
-
-
-def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
-    s = norm_space(ref)
-    if not s:
-        return None
-    
-    style = style.lower()
-    is_ieee = style == "ieee"
-    
-    if is_ieee:
-        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
-        if m:
-            num = m.group(1)
-            body = norm_space(m.group(2))
-            body = _strip_leading_reference_number(body)
-            if len(body) > 20 and re.search(r'[A-Z][a-z]+', body):
-                return RefNum(reference_full=s, num=num)
-        return None
-    
-    return None
-
-
-def reconcile_numeric(citations: List[str], references: List[RefNum], style: str = "ieee") -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
-    style = style.lower()
-    is_ieee = style == "ieee"
-    
-    if not is_ieee:
-        return [], [], [], [], 0
-    
-    ref_map: Dict[str, str] = {}
-    ref_by_num: Dict[str, str] = {}
-    
-    for r in references:
-        ref_map[r.num] = r.reference_full
-        ref_by_num[r.num] = r.reference_full
-        ref_map[f"[{r.num}]"] = r.reference_full
-    
-    cite_counts = Counter()
-    
-    for cite in citations:
-        cite_str = str(cite).strip()
-        
-        if cite_str in ref_map:
-            cite_counts[ref_map[cite_str]] += 1
-        elif cite_str.isdigit() and cite_str in ref_by_num:
-            cite_counts[ref_by_num[cite_str]] += 1
-    
-    c2r = []
-    missing = Counter()
-    
-    for cite in citations:
-        cite_str = str(cite).strip()
-        matched = False
-        
-        if cite_str in ref_map:
-            c2r.append({
-                "status": "matched",
-                "in_text": cite_str,
-                "matched_reference": ref_map[cite_str],
-                "flags": ""
-            })
-            matched = True
-        elif cite_str.isdigit() and cite_str in ref_by_num:
-            c2r.append({
-                "status": "matched",
-                "in_text": cite_str,
-                "matched_reference": ref_by_num[cite_str],
-                "flags": "number_only"
-            })
-            matched = True
-        
-        if not matched:
-            c2r.append({
-                "status": "not_found",
-                "in_text": cite_str,
-                "matched_reference": "",
-                "flags": ""
-            })
-            missing[cite_str] += 1
-    
-    r2c = []
-    uncited = []
-    
-    cite_samples = defaultdict(list)
-    for cite in citations:
-        cite_str = str(cite).strip()
-        if cite_str in ref_map:
-            if len(cite_samples[ref_map[cite_str]]) < 6:
-                cite_samples[ref_map[cite_str]].append(cite_str)
-        elif cite_str.isdigit() and cite_str in ref_by_num:
-            if len(cite_samples[ref_by_num[cite_str]]) < 6:
-                cite_samples[ref_by_num[cite_str]].append(cite_str)
-    
-    for r in references:
-        times = cite_counts.get(r.reference_full, 0)
-        if times == 0:
-            uncited.append(r.reference_full)
-        r2c.append({
-            "times_cited": times,
-            "reference": r.reference_full,
-            "cited_by": cite_samples.get(r.reference_full, [])
-        })
-    
-    missing_rows = [{"citation_in_text": k, "count_in_text": v} for k, v in missing.items()]
-    unique_intext_count = len(set(citations))
-    
-    return c2r, r2c, missing_rows, uncited, unique_intext_count
-
-
-def _expand_citation_range(match) -> List[str]:
-    nums = []
-    groups = match.groups()
-    
-    if not groups or not groups[0]:
-        return nums
-    
-    start = int(groups[0])
-    if groups[1]:
-        end = int(groups[1])
-        if start <= end and (end - start) <= 50:
-            nums.extend([str(i) for i in range(start, end + 1)])
-        else:
-            nums.append(str(start))
-            nums.append(str(end))
-    else:
-        nums.append(str(start))
-    
-    if groups[2]:
-        start2 = int(groups[2])
-        if groups[3]:
-            end2 = int(groups[3])
-            if start2 <= end2 and (end2 - start2) <= 50:
-                nums.extend([str(i) for i in range(start2, end2 + 1)])
-            else:
-                nums.append(str(start2))
-                nums.append(str(end2))
-        else:
-            nums.append(str(start2))
-    
-    return nums
-
-
-# ============================================================================
-# VANCOUVER STYLE - SIMPLE SEQUENTIAL
-# ============================================================================
-
-def extract_vancouver_citations(text: str) -> List[str]:
-    t = text or ""
-    citations = []
-    
-    single_pat = re.compile(r'\[\s*(\d+)\s*\]')
-    for m in single_pat.finditer(t):
-        citations.append(m.group(1))
-    
-    multi_pat = re.compile(r'\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]')
-    for m in multi_pat.finditer(t):
-        numbers = m.group(1).split(',')
-        for num in numbers:
-            num = num.strip()
-            if num.isdigit():
-                citations.append(num)
-    
-    range_pat = re.compile(r'\[\s*(\d+)\s*[-–]\s*(\d+)\s*\]')
-    for m in range_pat.finditer(t):
-        start, end = int(m.group(1)), int(m.group(2))
-        if start <= end and (end - start) <= 50:
-            for i in range(start, end + 1):
-                citations.append(str(i))
-    
-    try:
-        citations = sorted(set(citations), key=lambda x: int(x))
-    except:
-        citations = list(dict.fromkeys(citations))
-    
-    return citations
-
-
-def parse_vancouver_references(references_raw: List[str]) -> List[RefNum]:
-    parsed_refs = []
-    
-    for i, ref in enumerate(references_raw, start=1):
-        ref = ref.strip()
-        if not ref or len(ref) < 20:
-            continue
-            
-        num = str(i)
-        
-        m = re.match(r'^(\d+)\.?\s+', ref)
-        if m:
-            extracted_num = m.group(1)
-            if extracted_num != num:
-                print(f"Warning: Reference {i} has number {extracted_num}")
-        
-        parsed_refs.append(RefNum(
-            reference_full=ref,
-            num=num
-        ))
-    
-    return parsed_refs
-
-
-def reconcile_vancouver(citations: List[str], references: List[RefNum]) -> Tuple[
-    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
-]:
-    ref_by_num = {r.num: r.reference_full for r in references}
-    cite_counts = Counter(citations)
-    
-    c2r = []
-    missing = Counter()
-    
-    for cite in citations:
-        if cite in ref_by_num:
-            c2r.append({
-                "status": "matched",
-                "in_text": f"[{cite}]",
-                "matched_reference": ref_by_num[cite],
-                "flags": ""
-            })
-        else:
-            c2r.append({
-                "status": "not_found",
-                "in_text": f"[{cite}]",
-                "matched_reference": "",
-                "flags": ""
-            })
-            missing[f"[{cite}]"] += 1
-    
-    r2c = []
-    uncited = []
-    
-    cite_samples = defaultdict(list)
-    for cite in citations:
-        if cite in ref_by_num and len(cite_samples[ref_by_num[cite]]) < 6:
-            cite_samples[ref_by_num[cite]].append(f"[{cite}]")
-    
-    for r in references:
-        times = cite_counts.get(r.num, 0)
-        if times == 0:
-            uncited.append(r.reference_full)
-        r2c.append({
-            "times_cited": times,
-            "reference": r.reference_full,
-            "cited_by": cite_samples.get(r.reference_full, [])
-        })
-    
-    missing_rows = [{"citation_in_text": k, "count_in_text": v} for k, v in missing.items()]
-    unique_intext_count = len(set(citations))
-    
-    return c2r, r2c, missing_rows, uncited, unique_intext_count
-
-
-# ============================================================================
-# Reference clustering (shared)
-# ============================================================================
-
-def _cluster_references(references: List[Any]) -> Dict[str, Dict[str, Any]]:
-    by_doi: Dict[str, List[str]] = defaultdict(list)
-    by_bucket: Dict[Tuple[str, str], List[str]] = defaultdict(list)
-    sigs: Dict[str, Tuple[str, str, str, str]] = {}
-
-    for r in references:
-        rf = r.reference_full
-        y, a1, t, doi = _extract_ref_signature(rf)
-        sigs[rf] = (y, a1, t, doi)
-        if doi:
-            by_doi[doi.lower()].append(rf)
-        else:
-            by_bucket[(y, a1)].append(rf)
-
-    clusters: List[List[str]] = []
-
-    for _doi, items in by_doi.items():
-        clusters.append(items)
-
-    for (y, a1), items in by_bucket.items():
-        if len(items) <= 1:
-            clusters.append(items)
-            continue
-
-        used = set()
-        for i, rf_i in enumerate(items):
-            if rf_i in used:
-                continue
-            used.add(rf_i)
-            _, _, ti, _ = sigs[rf_i]
-            cluster = [rf_i]
-
-            for rf_j in items[i+1:]:
-                if rf_j in used:
-                    continue
-                _, _, tj, _ = sigs[rf_j]
-
-                if not ti or not tj:
-                    continue
-
-                if FUZZ_OK and fuzz:
-                    score = max(fuzz.token_set_ratio(ti, tj), fuzz.partial_ratio(ti, tj))
-                else:
-                    si = set(ti.split())
-                    sj = set(tj.split())
-                    score = int(round(100 * (len(si & sj) / max(1, len(si), len(sj)))))
-
-                if score >= 88:
-                    used.add(rf_j)
-                    cluster.append(rf_j)
-
-            clusters.append(cluster)
-
-    mapping: Dict[str, Dict[str, Any]] = {}
-    for cid, members in enumerate(clusters, start=1):
-        canonical = max(members, key=lambda x: len(x or ""))
-        for rf in members:
-            mapping[rf] = {
-                "cluster_id": cid,
-                "canonical_ref": canonical,
-                "is_duplicate": (rf != canonical),
-            }
-    return mapping
-
-
-def _extract_ref_signature(ref_full: str) -> Tuple[str, str, str, str]:
-    s = ref_full or ""
-    doi = ""
-    mdoi = _DOI_RE.search(s)
-    if mdoi:
-        doi = mdoi.group(0).rstrip(".,;")
-
-    m = YEAR_RE.search(s)
-    if not m:
-        t = _norm_ref_text(s)[:80]
-        return ("", t[:24], t[24:60], doi)
-
-    year = _base_year(m.group(1))
-    left = (s[:m.start()] or "").strip(" ,;()")
-    right = (s[m.end():] or "").strip()
-
-    surnames = _surnames_from_author_blob(left)
-    first_author = surnames[0] if surnames else _norm_ref_text(left)[:24]
-    first_author = re.sub(r"[^a-z0-9\- ]+", "", _norm_ref_text(first_author))
-
-    right = right.lstrip(" .,:;)-–—\"'[]")
-    right2 = re.split(r"\.\s+|\.?$|\s+https?://|\s+doi:\s*", right, maxsplit=1, flags=re.I)[0]
-    tokens = [re.sub(r"[^a-z0-9\-]+", "", t) for t in _norm_ref_text(right2).split()]
-    tokens = [t for t in tokens if t and t not in _REF_STOPWORDS]
-    title_stub = " ".join(tokens[:12])
-    return (year, first_author, title_stub, doi)
-
-
-_REF_STOPWORDS = {
-    "the","a","an","and","or","of","in","on","for","to","with","from","at","by","as",
-    "ed","eds","edition","vol","volume","no","number","pp","pages","page",
+function formatTime(seconds) {
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+function showNotification(message, type = "info") {
+    const notification = document.createElement("div");
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed; bottom: 20px; right: 20px; padding: 8px 14px;
+        background: ${type === "success" ? "#19b36b" : type === "error" ? "#e74c3c" : "#3498db"};
+        color: white; border-radius: 8px; z-index: 10000; font-size: 11px;
+        animation: slideIn 0.3s ease; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    `;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
+}
 
-def _strip_accents(s: str) -> str:
-    s = s or ""
-    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
-
-
-def _norm_ref_text(s: str) -> str:
-    s = _strip_accents(s.lower())
-    s = s.replace("&", " and ")
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)]+", re.I)
-
-
-# -----------------------------
-# Chunked text processing
-# -----------------------------
-def _iter_text_chunks(text: str, chunk_size: int = 300_000, overlap: int = 2_000):
-    s = text or ""
-    n = len(s)
-    if n <= chunk_size:
-        yield s
-        return
-    step = max(1, chunk_size - overlap)
-    for i in range(0, n, step):
-        yield s[i: min(n, i + chunk_size)]
-        if i + chunk_size >= n:
-            break
-
-
-def _extract_author_year_citations_chunked(text: str) -> List[str]:
-    seen = set()
-    total = []
-    for chunk in _iter_text_chunks(text):
-        for c in extract_author_year_citations(chunk):
-            if c not in seen:
-                seen.add(c)
-                total.append(c)
-    return total
-
-
-def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[str]:
-    seen = set()
-    total = []
-    for chunk in _iter_text_chunks(text):
-        if style == "vancouver":
-            for c in extract_vancouver_citations(chunk):
-                if c not in seen:
-                    seen.add(c)
-                    total.append(c)
-        else:
-            for c in extract_ieee_citations(chunk):
-                if c not in seen:
-                    seen.add(c)
-                    total.append(c)
-    return total
-
-
-# ============================================================================
-# AUTO-FIX MODULE (NON-INVASIVE)
-# ============================================================================
-
-@dataclass
-class FixSuggestion:
-    original: str
-    suggested: str
-    fix_type: str
-    confidence: float
-    reason: str
-
-
-def _generate_citation_fixes(
-    citation: str, 
-    references: List[RefAY],
-    ref_map: Dict[str, str]
-) -> Optional[FixSuggestion]:
-    """Generate fix suggestions for problematic citations."""
-    
-    parsed = _parse_author_year_from_cite(citation)
-    if not parsed:
-        return None
-    
-    auth, year = parsed
-    
-    # ============================================================
-    # Case 0: Fix malformed year (204 → 2024)
-    # ============================================================
-        # ============================================================
-    # Case 0: Fix malformed year (204 → 2024)
-    # ============================================================
-    if len(year) < 4 and year.isdigit():
-        year_int = int(year)
-        possible_years = []
-        
-        if len(year) == 3:
-            # 204 → 2004, 2014, 2024, 1904
-            possible_years = [
-                2000 + year_int,           # 204 → 2004
-                2000 + year_int + 10,      # 204 → 2014
-                2000 + year_int + 20,      # 204 → 2024
-                1900 + year_int,           # 204 → 1904
-            ]
-        elif len(year) == 2:
-            # 04 → 2004, 1904
-            possible_years = [2000 + year_int, 1900 + year_int]
-        elif len(year) == 1:
-            possible_years = [2000 + year_int, 2000 + year_int + 10, 2000 + year_int + 20]
-        
-        # Try different author variations
-        author_variations = [auth]
-        
-        # Handle "Kim & Karr" -> try "Kim" and "Karr" separately
-        if ' & ' in auth:
-            parts = auth.split(' & ')
-            author_variations.extend(parts)
-        if ' and ' in auth:
-            parts = auth.split(' and ')
-            author_variations.extend(parts)
-        
-        # Also try to extract just the first word of the author
-        first_word = auth.split()[0] if auth else ""
-        if first_word and first_word not in author_variations:
-            author_variations.append(first_word)
-        
-        for alt_year in possible_years:
-            alt_year_str = str(alt_year)
-            for test_auth in author_variations:
-                test_auth = test_auth.strip()
-                if not test_auth or len(test_auth) < 2:
-                    continue
-                alt_key = f"{test_auth}|{alt_year_str}".lower()
-                if alt_key in ref_map:
-                    # Replace the malformed year - handle multiple citations in same parentheses
-                    # Use word boundary to ensure we only replace the specific malformed year
-                    alt_citation = re.sub(r'\b' + re.escape(year) + r'\b', alt_year_str, citation)
-                    # Also handle case where year is directly after comma without space
-                    alt_citation = re.sub(r',' + re.escape(year) + r'\b', ',' + alt_year_str, alt_citation)
-                    return FixSuggestion(
-                        original=citation,
-                        suggested=alt_citation,
-                        fix_type="year_malformed",
-                        confidence=0.90,
-                        reason=f"Malformed year '{year}' corrected to '{alt_year_str}' based on reference for '{test_auth}'"
-                    )
-    # Case 1: Year typo (off by 1 or more) - only for 4-digit years
-    if len(year) == 4 and year.isdigit():
-        try:
-            year_int = int(year[:4])
-            for offset in [-5, -4, -3, -2, -1, 1, 2, 3, 4, 5]:
-                alt_year = str(year_int + offset)
-                if len(alt_year) != 4:
-                    continue
-                alt_key = f"{auth}|{alt_year}".lower()
-                if alt_key in ref_map:
-                    alt_citation = citation.replace(year, alt_year)
-                    confidence = 0.95 if abs(offset) <= 2 else 0.80
-                    return FixSuggestion(
-                        original=citation,
-                        suggested=alt_citation,
-                        fix_type="year_typo",
-                        confidence=confidence,
-                        reason=f"Year {year} corrected to {alt_year} (off by {abs(offset)})"
-                    )
-        except (ValueError, TypeError):
-            pass
-    
-    # Case 2: Author name variation using fuzzy matching
-    if FUZZ_OK and fuzz:
-        auth_norm = strip_punct(auth.lower())
-        best_match = None
-        best_score = 0
-        
-        # Try to match with 4-digit year versions of the malformed year
-        target_years = []
-        if len(year) == 4:
-            target_years.append(year)
-        elif year.isdigit() and len(year) < 4:
-            y_int = int(year)
-            target_years = [str(2000 + y_int), str(2000 + y_int + 10), str(2000 + y_int + 20), str(1900 + y_int)]
-        
-        for ref in references:
-            ym = YEAR_RE.search(ref.reference_full)
-            if ym:
-                ref_year = _base_year(ym.group(1))
-                for target_year in target_years:
-                    if ref_year == target_year or (len(target_year) == 4 and abs(int(ref_year) - int(target_year)) <= 2):
-                        left = ref.reference_full[:ym.start()].strip(" ,;()")
-                        ref_auth = _first_author_or_org_key(left)
-                        if ref_auth:
-                            score = fuzz.ratio(auth_norm, ref_auth.lower())
-                            if score > best_score and score >= 75:
-                                best_score = score
-                                best_match = ref_auth
-        
-        if best_match and best_match.lower() != auth.lower():
-            alt_citation = re.sub(r'\b' + re.escape(auth) + r'\b', best_match, citation, count=1)
-            return FixSuggestion(
-                original=citation,
-                suggested=alt_citation,
-                fix_type="author_normalization",
-                confidence=best_score / 100,
-                reason=f"Author '{auth}' normalized to '{best_match}'"
-            )
-    
-    # Case 3: Missing "et al." pattern
-    if "et al" not in citation.lower() and len(citation.split(",")[0].split()) > 2:
-        first_author = auth.split()[0] if auth else ""
-        for ref in references:
-            if first_author and first_author.lower() in ref.reference_full.lower():
-                if "et al" in ref.reference_full.lower():
-                    alt_citation = f"{first_author} et al., {year}"
-                    return FixSuggestion(
-                        original=citation,
-                        suggested=alt_citation,
-                        fix_type="add_et_al",
-                        confidence=0.70,
-                        reason=f"Added 'et al.' for {first_author}"
-                    )
-    
-    return None
-
-# ============================
-# NEW: STRONG REFERENCE LOOKUP
-# ============================
-# ============================
-# AUTHOR SIGNATURE GENERATION
-# ============================
-
-# ============================
-# AUTHOR SIGNATURE GENERATION - STRICT VERSION
-# ============================
-
-def get_author_signature(author_part: str) -> str:
-    """
-    Generate a UNIQUE signature for an author string.
-    Strictly distinguishes between:
-    - "Xue" (single author) -> signature: "1|xue"
-    - "Xue et al." -> signature: "1|xue|etal"
-    - "Xue, Newman, Shell, & Fang" (4 authors) -> signature: "4|fang|newman|shell|xue"
-    """
-    if not author_part:
-        return ""
-    
-    # Check for "et al" pattern FIRST (before removing it)
-    has_et_al = bool(re.search(r"\bet\s+al\.?\b", author_part, re.I))
-    
-    # Remove common suffixes and clean for surname extraction
-    author_part_clean = re.sub(r"\bet\s+al\.?\b", "", author_part, flags=re.I).strip()
-    author_part_clean = re.sub(r"(’s|'s)\b", "", author_part_clean)
-    
-    # Get all surnames
-    surnames = _surnames_from_author_blob(author_part_clean)
-    
-    if not surnames:
-        return ""
-    
-    # Count authors
-    author_count = len(surnames)
-    
-    # Sort surnames alphabetically for consistent key
-    sorted_surnames = sorted([s.lower() for s in surnames])
-    
-    if has_et_al:
-        # This is an "et al." citation - mark it specially
-        # Even if we only have one surname, it's still "et al."
-        return f"{author_count}|{'|'.join(sorted_surnames)}|etal"
-    else:
-        return f"{author_count}|{'|'.join(sorted_surnames)}"
-
-
-def extract_author_part_from_citation(citation: str) -> Tuple[str, bool]:
-    """
-    Extract author part from citation and detect if it has "et al."
-    Returns (author_part, has_et_al)
-    """
-    s = norm_space(citation)
-    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
-    
-    has_et_al = bool(re.search(r"\bet\s+al\.?\b", s, re.I))
-    
-    # Find the year
-    ym = YEAR_RE.search(s)
-    if ym:
-        return s[:ym.start()].strip(" ,;()"), has_et_al
-    
-    # Try malformed year
-    malformed_pat = re.compile(r"\b(\d{2,3})\b")
-    mm = malformed_pat.search(s)
-    if mm:
-        return s[:mm.start()].strip(" ,;()"), has_et_al
-    
-    return s, has_et_al
-
-
-def build_reference_lookup(refs):
-    """
-    Build a lookup dictionary using STRICT author signatures.
-    """
-    lookup = {}
-
-    for ref in refs:
-        s = ref.reference_full
-
-        ym = YEAR_RE.search(s)
-        if not ym:
-            continue
-
-        year = ym.group(1)
-        author_part = s[:ym.start()].strip()
-
-        # Get the unique author signature
-        signature = get_author_signature(author_part)
-        
-        if not signature:
-            # Fallback to first author with count 1
-            first_author = _first_author_or_org_key(author_part)
-            if first_author:
-                signature = f"1|{first_author.lower()}"
-            else:
-                continue
-
-        lookup.setdefault(signature, []).append({
-            "year": year,
-            "reference": s,
-            "author_string": author_part
-        })
-
-    return lookup
-
-
-def find_best_match(citation_author_part: str, cite_year: str, has_et_al: bool, lookup: Dict) -> Optional[str]:
-    """
-    Find the best matching year for a citation using STRICT author signature.
-    Only matches if author count and et al status match exactly.
-    """
-    # Get the citation signature
-    if has_et_al:
-        # For et al citations, we need to be careful
-        surnames = _surnames_from_author_blob(citation_author_part)
-        if surnames:
-            sorted_surnames = sorted([s.lower() for s in surnames])
-            citation_signature = f"{len(surnames)}|{'|'.join(sorted_surnames)}|etal"
-        else:
-            # Fallback: just use first author with etal flag
-            first_author = _first_author_or_org_key(citation_author_part)
-            if first_author:
-                citation_signature = f"1|{first_author.lower()}|etal"
-            else:
-                return None
-    else:
-        # Regular citation - get full signature
-        citation_signature = get_author_signature(citation_author_part)
-    
-    if not citation_signature:
-        return None
-    
-    # STRICT: Only match exact signature
-    if citation_signature in lookup:
-        candidates = lookup[citation_signature]
-        
-        # Check for exact year match
-        for c in candidates:
-            if c["year"] == cite_year:
-                return cite_year
-        
-        # Check for malformed year (204 -> 2024)
-        if len(cite_year) < 4 and cite_year.isdigit():
-            year_int = int(cite_year)
-            possible_years = [
-                str(2000 + year_int),
-                str(2000 + year_int + 10),
-                str(2000 + year_int + 20),
-                str(1900 + year_int),
-            ]
-            for py in possible_years:
-                for c in candidates:
-                    if c["year"] == py:
-                        return py
-        
-        # Return closest year within the same signature group
-        try:
-            cy = int(_base_year(cite_year))
-            best = min(candidates, key=lambda x: abs(int(_base_year(x["year"])) - cy))
-            # Only allow if within 5 years
-            if abs(int(_base_year(best["year"])) - cy) <= 5:
-                return best["year"]
-        except:
-            pass
-    
-    # NO FALLBACK - if signature doesn't match exactly, return None
-    # This prevents wrong matches like single author matching multi-author
-    return None
-
-
-def fix_citation_string(citation, lookup):
-    """Fix a single citation string (may contain semicolons)"""
-    # Split by semicolon for multiple citations in one parentheses
-    parts = re.split(r';\s*', citation)
-    fixed_parts = []
-
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-            
-        # Parse author and year
-        parsed = _parse_author_year_from_cite(p)
-        if not parsed:
-            fixed_parts.append(p)
-            continue
-
-        author, year = parsed
-        
-        # Extract author part and detect et al
-        author_part, has_et_al = extract_author_part_from_citation(p)
-        if not author_part:
-            author_part = author
-        
-        # Find correct year using STRICT signature matching
-        correct_year = find_best_match(author_part, year, has_et_al, lookup)
-
-        if correct_year and correct_year != year:
-            # Replace the year
-            fixed_parts.append(p.replace(year, correct_year))
-        else:
-            fixed_parts.append(p)
-
-    return "; ".join(fixed_parts)
-
-
-def run_autofix(main_text, citations, refs, c2r):
-    """
-    Improved Auto-Fix with STRICT author matching:
-    - Single author NEVER matches multi-author
-    - "et al." citations are tracked separately
-    - Only exact author count matches are allowed
-    """
-    lookup = build_reference_lookup(refs)
-
-    fixed_text = main_text
-    fix_log = []
-
-    # Process unique citations
-    seen = set()
-    for cite in citations:
-        if cite in seen:
-            continue
-        seen.add(cite)
-        
-        fixed = fix_citation_string(cite, lookup)
-
-        if fixed != cite:
-            # Replace in text
-            fixed_text = fixed_text.replace(cite, fixed)
-            if not cite.startswith('('):
-                fixed_text = fixed_text.replace(f'({cite})', f'({fixed})')
-            
-            # Determine fix type
-            fix_type = "year_malformed"
-            if len(cite.split(',')) > 1:
-                year_part = cite.split(',')[1].strip().rstrip(')')
-                if len(year_part) == 4 and year_part.isdigit():
-                    fix_type = "year_typo"
-            
-            fix_log.append({
-                "original": cite,
-                "fixed": fixed,
-                "type": fix_type
-            })
-
-    return {
-        "fixed_main_text": fixed_text,
-        "fix_log": fix_log
+function updateProcessFeedback(step, status) {
+    const stepEl = $(`step${step}`);
+    if (stepEl) {
+        stepEl.className = `feedback-step ${status}`;
+        if (status === "completed") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "✓");
+        else if (status === "active") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "🔄");
     }
+}
 
-def _generate_reference_fixes(ref: RefAY) -> List[FixSuggestion]:
-    """Generate fix suggestions for reference entries."""
-    suggestions = []
-    ref_text = ref.reference_full
-    
-    # Fix 1: Add DOI prefix if DOI exists but missing prefix
-    if "doi:" not in ref_text.lower() and "https://doi.org" not in ref_text.lower():
-        doi_match = _DOI_RE.search(ref_text)
-        if doi_match:
-            doi = doi_match.group(0)
-            fixed = re.sub(rf"({re.escape(doi)})", r"DOI: \1", ref_text, flags=re.I)
-            if fixed != ref_text:
-                suggestions.append(FixSuggestion(
-                    original=ref_text,
-                    suggested=fixed,
-                    fix_type="add_doi_prefix",
-                    confidence=0.95,
-                    reason="Added 'DOI:' prefix"
-                ))
-    
-    # Fix 2: Add missing period at end
-    if ref_text and not ref_text.rstrip().endswith('.'):
-        suggestions.append(FixSuggestion(
-            original=ref_text,
-            suggested=ref_text.rstrip() + '.',
-            fix_type="add_period",
-            confidence=0.60,
-            reason="Added trailing period"
-        ))
-    
-    # Fix 3: Fix common URL scheme
-    if "http://" in ref_text and "https://" not in ref_text:
-        fixed = ref_text.replace("http://", "https://")
-        suggestions.append(FixSuggestion(
-            original=ref_text,
-            suggested=fixed,
-            fix_type="fix_url_scheme",
-            confidence=0.90,
-            reason="Updated HTTP to HTTPS"
-        ))
-    
-    return suggestions
+function resetProcessFeedback() {
+    ["Upload", "Extract", "Match", "ACII"].forEach(step => {
+        const stepEl = $(`step${step}`);
+        if (stepEl) {
+            stepEl.className = "feedback-step";
+            stepEl.innerHTML = stepEl.innerHTML.replace("✓", "⏳").replace("🔄", "⏳");
+        }
+    });
+}
 
-
-def generate_autofix_suggestions(
-    c2r: List[Dict[str, Any]], 
-    missing_rows: List[Dict[str, Any]],
-    references: List[RefAY],
-    ref_map: Dict[str, str]
-) -> Dict[str, Any]:
-    """Generate auto-fix suggestions without modifying original data."""
+// File Area Setup - FIXED
+function setupFileArea() {
+    const fileArea = document.getElementById("fileArea");
+    const fileInput = $("file");
+    const fileNameSpan = document.getElementById("fileName");
     
-    fix_suggestions: List[FixSuggestion] = []
-    seen_citations = set()
-    
-    # Generate fixes for missing citations
-    for missing in missing_rows:
-        citation = missing.get("citation_in_text", "")
-        if citation and citation not in seen_citations:
-            seen_citations.add(citation)
-            suggestion = _generate_citation_fixes(citation, references, ref_map)
-            if suggestion:
-                fix_suggestions.append(suggestion)
-    
-    # Generate fixes for unmatched citations in c2r
-    for item in c2r:
-        if item.get("status") == "not_found":
-            citation = item.get("in_text", "")
-            if citation and citation not in seen_citations:
-                seen_citations.add(citation)
-                suggestion = _generate_citation_fixes(citation, references, ref_map)
-                if suggestion:
-                    fix_suggestions.append(suggestion)
-    
-    # Generate fixes for references
-    ref_fixes = []
-    for ref in references:
-        suggestions = _generate_reference_fixes(ref)
-        ref_fixes.extend(suggestions)
-    
-    # Calculate statistics
-    high_conf = [f for f in fix_suggestions + ref_fixes if f.confidence >= 0.85]
-    med_conf = [f for f in fix_suggestions + ref_fixes if 0.70 <= f.confidence < 0.85]
-    low_conf = [f for f in fix_suggestions + ref_fixes if f.confidence < 0.70]
-    
-    # Group by type
-    by_type = {}
-    for f in fix_suggestions + ref_fixes:
-        by_type[f.fix_type] = by_type.get(f.fix_type, 0) + 1
-    
-    return {
-        "citations": [
-            {
-                "original": f.original,
-                "suggested": f.suggested,
-                "type": f.fix_type,
-                "confidence": f.confidence,
-                "reason": f.reason
+    if (fileArea && fileInput) {
+        fileArea.addEventListener("click", function(e) {
+            if (e.target.classList && e.target.classList.contains("file-name")) return;
+            fileInput.click();
+        });
+        
+        fileArea.addEventListener("dragover", function(e) {
+            e.preventDefault();
+            fileArea.classList.add("drag-over");
+        });
+        
+        fileArea.addEventListener("dragleave", function(e) {
+            e.preventDefault();
+            fileArea.classList.remove("drag-over");
+        });
+        
+        fileArea.addEventListener("drop", function(e) {
+            e.preventDefault();
+            fileArea.classList.remove("drag-over");
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                const changeEvent = new Event('change', { bubbles: true });
+                fileInput.dispatchEvent(changeEvent);
             }
-            for f in fix_suggestions
-        ],
-        "references": [
-            {
-                "original": f.original,
-                "suggested": f.suggested,
-                "type": f.fix_type,
-                "confidence": f.confidence,
-                "reason": f.reason
-            }
-            for f in ref_fixes
-        ],
-        "statistics": {
-            "total_suggestions": len(fix_suggestions) + len(ref_fixes),
-            "high_confidence": len(high_conf),
-            "medium_confidence": len(med_conf),
-            "low_confidence": len(low_conf),
-            "by_type": by_type
-        },
-        "auto_fixable_count": len(high_conf),
-        "review_needed_count": len(med_conf) + len(low_conf)
-    }
-
-
-# -----------------------------
-# Public API: run_crosscheck (UPDATED - includes main_text)
-# -----------------------------
-def run_crosscheck(
-    file_bytes: bytes,
-    filename: str,
-    style: str = "apa",
-    verify_online: bool = False,
-    verify_mode: str = "all",
-    max_verify: int = 0,
-    throttle_s: float = 0.12,
-    use_crossref: bool = True,
-    use_openalex: bool = True,
-) -> Dict[str, Any]:
-
-    name = (filename or "").lower().strip()
-    style_s = (style or "apa").strip().lower()
-
-    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
-    style_hint = "numeric" if is_numeric else "apa"
-
-    if name.endswith(".docx"):
-        # DOCX: Use native DOCX extraction (NO process_pdf)
-        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines(ref_block_lines)
-        if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
-
-    
-    elif name.endswith(".pdf"):
-        # PDF: Use process_pdf pipeline (ONLY for PDF)
-        try:
-            pdf_data = process_pdf(file_bytes)
-    
-            main_text = pdf_data["main_text"]
-            references_raw = pdf_data["references"]
-    
-            ref_msg = f"PDF converted to DOCX and cleaned. Found {len(references_raw)} references."
-    
-        except Exception as e:
-            return {
-                "error": "PDF conversion failed",
-                "note": str(e),
-                "filename": filename
-            }
+        });
         
-        if style_hint == "numeric":
-            references_raw = _split_embedded_numeric_refs(references_raw)
-
-    else:
-        return {"error": "Upload a DOCX or PDF"}
-
-    main_text_len = len(main_text or "")
-    too_large = main_text_len > 2_000_000
-
-    if style_hint == "apa":
-        cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
-        refs = [parse_reference_author_year(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
-
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
-        ref_count = len(refs)
-
-    elif style_s == "ieee":
-        cites_nums = []
-        if too_large:
-            cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
-        else:
-            cites_nums = extract_ieee_citations(main_text)
-        
-        refs = []
-        for r in references_raw:
-            parsed = parse_reference_numeric(r, style="ieee")
-            if parsed:
-                refs.append(parsed)
-        
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
-            cites_nums, refs, style="ieee"
-        )
-        ref_count = len(refs)
-
-    elif style_s == "vancouver":
-        print("Using Vancouver style - sequential numbering")
-        
-        cites_nums = []
-        if too_large:
-            cites_nums = _extract_numeric_citations_chunked(main_text, style="vancouver")
-        else:
-            cites_nums = extract_vancouver_citations(main_text)
-        
-        refs = parse_vancouver_references(references_raw)
-        
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_vancouver(
-            cites_nums, refs
-        )
-        ref_count = len(refs)
-
-    else:
-        cites_nums = []
-        if too_large:
-            cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
-        else:
-            cites_nums = extract_ieee_citations(main_text)
-        
-        refs = []
-        for r in references_raw:
-            parsed = parse_reference_numeric(r, style="ieee")
-            if parsed:
-                refs.append(parsed)
-        
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
-            cites_nums, refs, style="ieee"
-        )
-        ref_count = len(refs)
-
-    missing_unique = int(len(missing_rows or []))
-    match_rate = 0.0
-    if intext_count > 0:
-        match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
-
-    result = {
-        "filename": filename,
-        "style": style_s,
-        "main_text": main_text,  # <-- CRITICAL: Add original document text for auto-fix
-        "engine_build": ENGINE_BUILD,
-        "verify_mode_used": (verify_mode or "all"),
-        "reference_detection_message": ref_msg,
-        "summary": {
-            "in_text_citations_found": int(intext_count),
-            "reference_entries_found": int(ref_count),
-            "missing_in_references": int(missing_unique),
-            "uncited_references": int(len(uncited_refs)),
-            "match_rate": float(round(match_rate, 1)),
-        },
-        "missing_in_references": missing_rows,
-        "uncited_references": uncited_refs,
-        "reconciliation_intext_to_reference": c2r,
-        "reconciliation_reference_to_intext": r2c,
-        "references_raw": references_raw,
-    }
-    
-    return result
-
-
-# ============================================================================
-# ENHANCED API WITH AUTO-FIX (OPTIONAL - DOES NOT REPLACE ORIGINAL)
-# ============================================================================
-
-def run_crosscheck_with_autofix(
-    file_bytes: bytes,
-    filename: str,
-    style: str = "apa",
-    verify_online: bool = False,
-    verify_mode: str = "all",
-    max_verify: int = 0,
-    throttle_s: float = 0.12,
-    use_crossref: bool = True,
-    use_openalex: bool = True,
-    enable_autofix: bool = False,
-) -> Dict[str, Any]:
-    """
-    Enhanced version with auto-fix suggestions.
-    Calls original run_crosscheck and adds fix suggestions.
-    """
-    
-    # Call the original function
-    result = run_crosscheck(
-        file_bytes=file_bytes,
-        filename=filename,
-        style=style,
-        verify_online=verify_online,
-        verify_mode=verify_mode,
-        max_verify=max_verify,
-        throttle_s=throttle_s,
-        use_crossref=use_crossref,
-        use_openalex=use_openalex
-    )
-    
-    # Add auto-fix data if requested and no error
-    if enable_autofix and "error" not in result:
-        style_s = (style or "apa").strip().lower()
-        is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
-        
-        # Only generate fixes for APA/Harvard style
-        if not is_numeric and style_s not in ["ieee", "vancouver"]:
-            references_raw = result.get("references_raw", [])
-            main_text = result.get("main_text", "")
-            
-            # Parse references
-            refs = [parse_reference_author_year(r) for r in references_raw]
-            refs = [r for r in refs if r is not None]
-            
-            # Extract citations from main text
-            citations = extract_author_year_citations(main_text)
-            
-            # Get c2r data
-            c2r = result.get("reconciliation_intext_to_reference", [])
-            
-            # ============================================================
-            # NEW: Run improved auto-fix
-            # ============================================================
-            autofix_result = run_autofix(main_text, citations, refs, c2r)
-            
-            # Build the suggestions format expected by frontend
-            fix_suggestions = []
-            for log in autofix_result["fix_log"]:
-                fix_suggestions.append({
-                    "original": log["original"],
-                    "suggested": log["fixed"],
-                    "type": log.get("type", "year_correction"),
-                    "confidence": 0.90,
-                    "reason": f"Corrected year based on reference list"
-                })
-            
-            result["autofix"] = {
-                "enabled": True,
-                "suggestions": {
-                    "citations": fix_suggestions,
-                    "references": [],
-                    "statistics": {
-                        "total_suggestions": len(fix_suggestions),
-                        "high_confidence": len(fix_suggestions),
-                        "medium_confidence": 0,
-                        "low_confidence": 0,
-                        "by_type": {"year_correction": len(fix_suggestions)}
-                    },
-                    "auto_fixable_count": len(fix_suggestions),
-                    "review_needed_count": 0
-                },
-                "summary": {
-                    "total_suggestions": len(fix_suggestions),
-                    "auto_fixable": len(fix_suggestions),
-                    "needs_review": 0
+        fileInput.addEventListener('change', function() {
+            const file = fileInput.files[0];
+            if (file) {
+                if (file.name.toLowerCase().endsWith('.docx')) {
+                    fileNameSpan.textContent = `📄 ${file.name}`;
+                    setStatus("DOCX file selected. Ready to run check.", "good");
+                    const btnCheck = $("btnCheck");
+                    if (btnCheck) btnCheck.disabled = false;
+                } else {
+                    fileNameSpan.textContent = "";
+                    setStatus("Only DOCX files are accepted. Please upload a Word document.", "warn");
+                    fileInput.value = '';
+                    const btnCheck = $("btnCheck");
+                    if (btnCheck) btnCheck.disabled = true;
                 }
+            } else {
+                fileNameSpan.textContent = "";
             }
-            
-            # Also store the fixed text for download
-            if autofix_result["fixed_main_text"] != main_text:
-                result["fixed_main_text"] = autofix_result["fixed_main_text"]
-                result["autofix_applied"] = True
-        else:
-            result["autofix"] = {
-                "enabled": True,
-                "message": f"Auto-fix primarily supports APA/Harvard style. Current style: {style_s}",
-                "suggestions": {"citations": [], "references": [], "statistics": {"total_suggestions": 0}}
-            }
+        });
+    }
+}
+
+// ACII Rating
+function getACIIRating(score) {
+    score = Number(score);
+    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity." };
+    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity." };
+    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity." };
+    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity." };
+    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity." };
+    return { text: "Poor", class: "poor", description: "Low citation integrity." };
+}
+
+function generateACIIRecommendations(aciiData) {
+    if (!aciiData) return "<div>No recommendation data available.</div>";
+    const comp = aciiData.components || {};
+    const recs = aciiData.recommendations || {};
+    let html = "";
+    if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
+    if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
+    if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
+    if (recs.priority) html += `<div class="priority">🎯 ${esc(recs.priority)}</div>`;
+    if (!html) html += `<div>✨ Your citations look good!</div>`;
+    return html;
+}
+
+// Auto-Fix Functions
+async function getAutoFixSuggestions() {
+    if (!LAST_JOB_ID) { showNotification("Run document check first", "error"); return null; }
+    try {
+        setStatus("Fetching auto-fix suggestions...", "info");
+        const response = await fetch(`/autofix-suggestions/${encodeURIComponent(LAST_JOB_ID)}`);
+        const data = await response.json();
+        if (data.available) {
+            displayFixSuggestions(data);
+            setStatus(`Auto-fix suggestions available (${data.auto_fixable_count} auto-fixable)`, "good");
+            const btnApply = $("btnApplyAutofix");
+            if (btnApply) btnApply.disabled = false;
+            return data;
+        } else {
+            setStatus(data.message || "No auto-fix suggestions available", "warn");
+            return null;
+        }
+    } catch (err) {
+        console.error(err);
+        setStatus("Error fetching auto-fix suggestions", "bad");
+        return null;
+    }
+}
+
+function displayFixSuggestions(data) {
+    const panel = $("fixSuggestionsPanel");
+    if (!panel) return;
     
-    return result
+    const suggestions = data.suggestions || {};
+    const citations = suggestions.citations || [];
+    const references = suggestions.references || [];
+    
+    const uniqueCitations = [];
+    const seen = new Set();
+    for (const fix of citations) {
+        if (!seen.has(fix.original)) {
+            seen.add(fix.original);
+            uniqueCitations.push(fix);
+        }
+    }
+    
+    panel.style.display = "block";
+    let html = `<div class="fix-summary"><h4>🔧 Auto-Fix Summary</h4>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap:wrap;">
+            <span>✓ Auto-fixable: ${data.auto_fixable_count || 0}</span>
+            <span>⚠️ Needs review: ${data.review_needed_count || 0}</span>
+            <span>📋 Total: ${data.statistics?.total_suggestions || 0}</span>
+        </div>
+    </div>`;
+    
+    if (uniqueCitations.length > 0) {
+        html += `<div class="fix-section"><h5>📝 Citation Fixes (${uniqueCitations.length})</h5>`;
+        html += uniqueCitations.slice(0, 20).map(fix => `
+            <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
+                <div class="fix-original">❌ ${esc(fix.original)}</div>
+                <div class="fix-suggested">✅ ${esc(fix.suggested)}</div>
+                <div class="fix-meta">${Math.round(fix.confidence * 100)}% - ${esc(fix.reason)}</div>
+            </div>
+        `).join('');
+        html += `</div>`;
+    }
+    
+    if (uniqueCitations.length === 0 && references.length === 0) {
+        html += `<div class="fix-empty">✨ No fix suggestions available. Document looks good!</div>`;
+    }
+    
+    const content = $("fixSuggestionsContent");
+    if (content) content.innerHTML = html;
+}
+
+async function applyAutoFix() {
+    if (!LAST_JOB_ID) { showNotification("Run document check first", "error"); return; }
+    if (AUTO_FIX_APPLIED) { showNotification("Auto-fix already applied", "info"); return; }
+    try {
+        setStatus("Applying auto-fixes...", "info");
+        const formData = new FormData();
+        formData.append("job_id", LAST_JOB_ID);
+        const response = await fetch("/apply-autofix", { method: "POST", body: formData });
+        const result = await response.json();
+        if (result.success) {
+            AUTO_FIX_APPLIED = true;
+            setStatus(`Applied ${result.fixes_applied_count} fixes`, "good");
+            showNotification(`✅ Applied ${result.fixes_applied_count} auto-fixes`, "success");
+            await showFixLog();
+        } else {
+            showNotification("Failed to apply auto-fixes", "error");
+        }
+    } catch (err) {
+        setStatus("Error applying auto-fixes", "bad");
+        showNotification("Error applying auto-fixes", "error");
+    }
+}
+
+async function showFixLog() {
+    if (!LAST_JOB_ID) return;
+    try {
+        const response = await fetch(`/fix-log/${encodeURIComponent(LAST_JOB_ID)}`);
+        const data = await response.json();
+        const panel = $("fixLogPanel");
+        const content = $("fixLogContent");
+        if (panel && content && data.fixes && data.fixes.length > 0) {
+            panel.style.display = "block";
+            let html = `<div class="fix-log-list">`;
+            data.fixes.forEach((fix, idx) => {
+                html += `<div class="fix-log-entry">
+                    <div><strong>#${idx + 1}</strong></div>
+                    <div class="fix-log-original">${esc(fix.original)}</div>
+                    <div class="fix-log-suggested">→ ${esc(fix.suggested)}</div>
+                    <div class="fix-log-meta">${esc(fix.type)} - ${esc(fix.reason)}</div>
+                </div>`;
+            });
+            html += `</div>`;
+            content.innerHTML = html;
+        }
+    } catch (err) { console.error(err); }
+}
+
+// Progress Bar
+function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
+    const progressBar = $("progressBar");
+    const progressText = $("progressText");
+    const estimatedRemaining = $("estimatedRemaining");
+    const verifyProgress = $("verifyProgress");
+    
+    if (!progressBar || !progressText) return;
+    const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
+    progressBar.style.width = `${percentage}%`;
+    progressBar.textContent = `${percentage}%`;
+    
+    if (estimatedRemaining && remainingSeconds !== null && remainingSeconds > 0 && status === "processing") {
+        estimatedRemaining.textContent = `⏱️ Est. remaining: ${formatTime(remainingSeconds)}`;
+    } else if (estimatedRemaining && status !== "processing") {
+        estimatedRemaining.textContent = "";
+    }
+    
+    if (status === "completed") {
+        progressBar.style.backgroundColor = "#27ae60";
+        progressText.textContent = message || `✅ Complete! ${progress}/${total}`;
+        if (verifyProgress) setTimeout(() => { verifyProgress.style.display = "none"; }, 5000);
+    } else if (status === "error") {
+        progressBar.style.backgroundColor = "#e74c3c";
+        progressText.textContent = message || "❌ Error during verification";
+    } else {
+        progressBar.style.backgroundColor = "#3498db";
+        let msg = message || `🔍 Verifying: ${progress}/${total} (${percentage}%)`;
+        if (remainingSeconds) msg += ` - Est. ${formatTime(remainingSeconds)} remaining`;
+        progressText.textContent = msg;
+        if (verifyProgress) verifyProgress.style.display = "block";
+    }
+}
+
+// Queue Status
+async function updateQueueStatus() {
+    try {
+        const response = await fetch('/queue/status');
+        const data = await response.json();
+        const statUploads = $("statUploads");
+        const statQueue = $("statQueue");
+        const queueStatus = $("queueStatus");
+        
+        if (statUploads) statUploads.textContent = data.total_jobs || 0;
+        if (statQueue) statQueue.textContent = data.queue_size || 0;
+        if (queueStatus) {
+            queueStatus.innerHTML = `📊 Queue: ${data.queue_size || 0} | ⏳ Pending: ${data.pending_jobs || 0} | ⚙️ Processing: ${data.processing_jobs || 0} | 📈 Total Jobs: ${data.total_jobs || 0}`;
+        }
+        return data;
+    } catch (err) { return null; }
+}
+
+// Reset UI
+function resetVerificationUI() {
+    const verifyDash = $("verifyDash");
+    const verifyBody = $("verifyBody");
+    if (verifyDash) verifyDash.innerHTML = `<div class="kpi">✅ Verified: 0</div><div class="kpi">🔍 Likely: 0</div><div class="kpi">⚠️ Needs Review: 0</div><div class="kpi">❌ Not Found: 0</div>`;
+    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start. </div> </div>`;
+    updateProgress(0, 0, "processing", "Ready to verify");
+    const verifyProgress = $("verifyProgress");
+    if (verifyProgress) verifyProgress.style.display = "none";
+    VERIFICATION_IN_PROGRESS = false;
+}
+
+// Tab Navigation
+document.querySelectorAll(".tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+        const target = tab.dataset.tab;
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".tabPane").forEach(p => p.classList.remove("active"));
+        tab.classList.add("active");
+        const pane = $(target);
+        if (pane) pane.classList.add("active");
+    });
+});
+
+// Status Polling
+async function fetchStatus() {
+    if (!LAST_JOB_ID) return;
+    POLL_ATTEMPT_COUNT++;
+    if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
+        stopPolling();
+        VERIFICATION_IN_PROGRESS = false;
+        const btnVerify = $("btnVerify");
+        if (btnVerify) btnVerify.disabled = false;
+        return;
+    }
+    try {
+        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
+        const js = await res.json();
+        if (js.online) {
+            const progress = js.online.progress || 0;
+            const total = js.online.total || 0;
+            const state = js.online.state || "processing";
+            if (total > 0) updateProgress(progress, total, state);
+            if (js.online.state === "completed") {
+                setStatus("Online verification complete", "good");
+                VERIFICATION_IN_PROGRESS = false;
+                const btnVerify = $("btnVerify");
+                if (btnVerify) btnVerify.disabled = false;
+                updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
+                stopPolling();
+            }
+        }
+        if (js.result) renderAll(js.result);
+    } catch (err) { console.error(err); }
+}
+
+function startPolling() {
+    if (POLL_TIMER) clearInterval(POLL_TIMER);
+    POLL_ATTEMPT_COUNT = 0;
+    POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
+}
+
+function stopPolling() {
+    if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
+}
+
+// Helper Functions
+function getUniqueCitationsWithCount(c2rRows) {
+    const uniqueMap = new Map();
+    c2rRows.forEach(row => {
+        const citeText = row.in_text || '';
+        const key = `${citeText.toLowerCase()}|${row.status}|${row.matched_reference || ''}`;
+        if (uniqueMap.has(key)) uniqueMap.get(key).count++;
+        else uniqueMap.set(key, { citation: citeText, status: row.status, matched_reference: row.matched_reference, flags: row.flags, count: 1 });
+    });
+    return Array.from(uniqueMap.values());
+}
+
+function normalizeData(payload) {
+    const data = payload?.data || payload?.result || payload || {};
+    const s = data.summary || {};
+    data.summary = {
+        in_text_citations_found: toNum(s.in_text_citations_found ?? data.intext_count),
+        reference_entries_found: toNum(s.reference_entries_found ?? data.reference_entries_found),
+        missing_in_references: toNum(s.missing_in_references ?? (data.missing_in_references || []).length),
+        uncited_references: toNum(s.uncited_references ?? (data.uncited_references || []).length),
+        match_rate: toNum(s.match_rate ?? data.match_rate)
+    };
+    return data;
+}
+
+// Render Functions
+function renderSummaryTable(data) {
+    const s = data?.summary || {};
+    const summaryTable = $("summaryTable");
+    if (summaryTable) {
+        summaryTable.innerHTML = `
+            <tr><td>In-text citations (occurrences)</div><td><strong>${esc(s.in_text_citations_found)}</strong></div></tr>
+            <tr><td>References</div><td>${esc(s.reference_entries_found)}</div></tr>
+            <tr><td>Missing (unique)</div><td><strong>${esc(s.missing_in_references)}</strong></div></tr>
+            <tr><td>Uncited</div><td><strong>${esc(s.uncited_references)}</strong></div></tr>
+            <tr><td>Match rate</div><td>${esc(s.match_rate)}%</div></tr>
+        `;
+    }
+}
+
+function renderACII(data) {
+    const acii = data?.acii;
+    if (!acii) return;
+    
+    const centerpiece = $("aciiCenterpiece");
+    const aciiCard = $("aciiCard");
+    if (centerpiece) centerpiece.style.display = "block";
+    if (aciiCard) aciiCard.style.display = "block";
+    
+    const scoreLarge = $("aciiScoreLarge");
+    const ratingBadge = $("aciiRatingBadge");
+    const recText = $("aciiRecommendationText");
+    
+    if (scoreLarge) {
+        const score = acii.ACII ?? "--";
+        scoreLarge.textContent = score;
+        if (ratingBadge && score !== "--") {
+            const rating = getACIIRating(score);
+            ratingBadge.textContent = rating.text;
+            ratingBadge.className = `acii-rating ${rating.class}`;
+        }
+    }
+    
+    if (recText) {
+        recText.innerHTML = generateACIIRecommendations(acii);
+    }
+    
+    const comp = acii.components || {};
+    const v = $("aciiV"); if (v) v.textContent = comp.verification_integrity?.score ?? "--";
+    const vcat = $("aciiVcat"); if (vcat) vcat.textContent = comp.verification_integrity?.category ?? "--";
+    const vremark = $("aciiVremark"); if (vremark) vremark.textContent = comp.verification_integrity?.remark ?? "--";
+    const c = $("aciiC"); if (c) c.textContent = comp.citation_concentration?.score ?? "--";
+    const ccat = $("aciiCcat"); if (ccat) ccat.textContent = comp.citation_concentration?.category ?? "--";
+    const cremark = $("aciiCremark"); if (cremark) cremark.textContent = comp.citation_concentration?.remark ?? "--";
+    const a = $("aciiA"); if (a) a.textContent = comp.author_diversity?.score ?? "--";
+    const acat = $("aciiAcat"); if (acat) acat.textContent = comp.author_diversity?.category ?? "--";
+    const aremark = $("aciiAremark"); if (aremark) aremark.textContent = comp.author_diversity?.remark ?? "--";
+    const t = $("aciiT"); if (t) t.textContent = comp.temporal_balance?.score ?? "--";
+    const tcat = $("aciiTcat"); if (tcat) tcat.textContent = comp.temporal_balance?.category ?? "--";
+    const tremark = $("aciiTremark"); if (tremark) tremark.textContent = comp.temporal_balance?.remark ?? "--";
+}
+
+function renderMissing(data) {
+    const rows = data?.missing_in_references || [];
+    const body = $("missingBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td>${esc(r.count_in_text || "")}</div></tr>`).join("");
+}
+
+function renderUncited(data) {
+    const rows = data?.uncited_references || [];
+    const body = $("uncitedBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
+}
+
+function renderC2R(data) {
+    const c2rRaw = data?.reconciliation_intext_to_reference || [];
+    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
+    const body = $("c2rBody");
+    if (!body) return;
+    if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="6">No mapping available</div></tr>`; return; }
+    body.innerHTML = uniqueCitations.slice(0, 50).map((item, i) => `<tr>
+        <td>${i + 1}</div>
+        <td><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></div>
+        <td style="max-width:250px;">${esc(item.citation)}</div>
+        <td style="text-align:center"><strong>${item.count}</strong></div>
+        <td style="max-width:300px;">${esc(item.matched_reference || '')}</div>
+        <td>${esc(item.flags || '')}</div>
+    </tr>`).join("");
+}
+
+function renderR2C(data) {
+    const rows = data?.reconciliation_reference_to_intext || [];
+    const body = $("r2cBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</div></tr>`; return; }
+    body.innerHTML = rows.slice(0, 50).map((r, i) => `<tr>
+        <td>${i + 1}</div>
+        <td>${esc(r.times_cited ?? 0)}</div>
+        <td style="max-width:400px;">${esc(r.reference || '')}</div>
+        <td>${esc((r.cited_by || []).slice(0, 2).join("; "))}</div>
+    </tr>`).join("");
+}
+
+function renderVerify(data) {
+    const ov = data?.online_verification || {};
+    const rows = ov.rows || [];
+    const sum = ov.summary || {};
+    const verifyDash = $("verifyDash");
+    const verifyBody = $("verifyBody");
+    
+    if (verifyDash) {
+        verifyDash.innerHTML = `<div class="kpi">✅ Verified: ${sum.verified ?? 0}</div>
+            <div class="kpi">🔍 Likely: ${sum.likely ?? 0}</div>
+            <div class="kpi">⚠️ Needs Review: ${sum.needs_review ?? 0}</div>
+            <div class="kpi">❌ Not Found: ${sum.not_found ?? 0}</div>`;
+    }
+    
+    if (!verifyBody) return;
+    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></td>`; return; }
+    
+    verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
+        <td>${i + 1}</div>
+        <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : 'not_found')}">${esc(r.status || '')}</span></div>
+        <td>${esc(r.source || '—')}</div>
+        <td>${esc(r.score || '—')}</div>
+        <td>${esc(r.doi || '—')}</div>
+        <td>${esc(r.matched_year || '—')}</div>
+        <td style="max-width:150px;">${esc(r.matched_authors || '—')}</div>
+    </tr>`).join("");
+    
+    const btnExportVerify = $("btnExportVerify");
+    if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
+}
+
+function renderAll(data) {
+    if (!data) return;
+    const normalized = normalizeData(data);
+    normalized.job_id = data.job_id || LAST_JOB_ID;
+    window.latestResults = normalized;
+    
+    const resultsCard = $("resultsCard");
+    if (resultsCard) resultsCard.style.display = "block";
+    
+    renderSummaryTable(normalized);
+    renderACII(normalized);
+    renderMissing(normalized);
+    renderUncited(normalized);
+    renderC2R(normalized);
+    renderR2C(normalized);
+    renderVerify(normalized);
+    
+    updateProcessFeedback("Upload", "completed");
+    updateProcessFeedback("Extract", "completed");
+    updateProcessFeedback("Match", "completed");
+    updateProcessFeedback("ACII", "completed");
+    
+    if (normalized.autofix && normalized.autofix.suggestions) {
+        displayFixSuggestions(normalized.autofix.suggestions);
+        const btnApply = $("btnApplyAutofix");
+        if (btnApply) btnApply.disabled = false;
+    }
+}
+
+// Export Functions
+function exportCSV() {
+    if (!window.latestResults) { showNotification("No results to export.", "error"); return; }
+    const data = window.latestResults;
+    const s = data.summary || {};
+    const missing = data.missing_in_references || [];
+    const uncited = data.uncited_references || [];
+    
+    let csv = [`"CiteIntegrity Report"`];
+    csv.push(`"Generated","${new Date().toLocaleString()}"`);
+    csv.push(`"File","${data.filename || 'N/A'}"`);
+    csv.push(``);
+    csv.push(`"SUMMARY"`);
+    csv.push(`"In-text citations","${s.in_text_citations_found || 0}"`);
+    csv.push(`"References","${s.reference_entries_found || 0}"`);
+    csv.push(`"Missing","${s.missing_in_references || 0}"`);
+    csv.push(`"Uncited","${s.uncited_references || 0}"`);
+    csv.push(`"Match Rate","${s.match_rate || 0}%"`);
+    csv.push(``);
+    csv.push(`"MISSING CITATIONS"`);
+    missing.forEach(m => csv.push(`"${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}"`));
+    csv.push(``);
+    csv.push(`"UNCITED REFERENCES"`);
+    uncited.forEach(ref => csv.push(`"${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}"`));
+    
+    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `citeintegrity_report_${new Date().toISOString().slice(0, 19)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showNotification("CSV report downloaded", "success");
+}
+
+function exportWord() {
+    if (!window.latestResults) { showNotification("No results to export.", "error"); return; }
+    const data = window.latestResults;
+    const s = data.summary || {};
+    const missing = data.missing_in_references || [];
+    const uncited = data.uncited_references || [];
+    const acii = data.acii || {};
+    const rating = getACIIRating(acii.ACII);
+    
+    let html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>CiteIntegrity Report</title>
+<style>
+    body { font-family: 'Times New Roman', Times, serif; margin: 2.54cm 3.17cm; font-size: 12pt; }
+    h1 { color: #1a2a4f; border-bottom: 2px solid #19b36b; }
+    h2 { color: #1a2a4f; margin-top: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background: #f2f2f2; }
+</style>
+</head>
+<body>
+    <h1>CiteIntegrity Report</h1>
+    <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+    <p><strong>File:</strong> ${esc(data.filename || 'N/A')}</p>
+    
+    <h2>Summary</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>In-text citations</div><td><strong>${s.in_text_citations_found || 0}</strong></div></tr>
+        <tr><td>References</div><td>${s.reference_entries_found || 0}</div></tr>
+        <tr><td>Missing</div><td><strong>${s.missing_in_references || 0}</strong></div></tr>
+        <tr><td>Uncited</div><td><strong>${s.uncited_references || 0}</strong></div></tr>
+        <tr><td>Match rate</div><td>${s.match_rate || 0}%</div></tr>
+    </table>
+    
+    <h2>ACII Score: ${acii.ACII || 'N/A'} (${rating.text})</h2>
+    <p>${rating.description}</p>
+    
+    <h2>Missing Citations</h2>
+    ${missing.length ? `<ul>${missing.map(m => `<li>${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}</li>`).join('')}</ul>` : '<p>None found.</p>'}
+    
+    <h2>Uncited References</h2>
+    ${uncited.length ? `<ul>${uncited.map(ref => `<li>${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}</li>`).join('')}</ul>` : '<p>None found.</p>'}
+    
+    <div class="footer"><p>Generated by CiteIntegrity</p></div>
+</body>
+</html>`;
+    
+    const blob = new Blob([html], { type: "application/msword" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `citeintegrity_report_${new Date().toISOString().slice(0, 19)}.doc`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showNotification("Word report downloaded", "success");
+}
+
+function exportVerificationCSV() {
+    if (!window.latestResults) { showNotification("No verification data to export.", "error"); return; }
+    const ov = window.latestResults?.online_verification || {};
+    const rows = ov.rows || [];
+    if (!rows.length) { showNotification("No verification results available.", "error"); return; }
+    let csv = [`"Status","Source","Score","DOI","Year","Authors"`];
+    rows.forEach(r => csv.push(`"${r.status || ''}","${r.source || ''}","${r.score || ''}","${r.doi || ''}","${r.matched_year || ''}","${(r.matched_authors || '').substring(0, 100)}"`));
+    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `verification_report_${new Date().toISOString().slice(0, 19)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showNotification("Verification report downloaded", "success");
+}
+
+// Run Initial Check
+async function runInitialCheck() {
+    const fileInput = $("file");
+    const file = fileInput?.files?.[0];
+    if (!file) { setStatus("Please choose a file first", "warn"); return; }
+    if (!file.name.toLowerCase().endsWith('.docx')) {
+        setStatus("Only DOCX files are accepted.", "warn");
+        return;
+    }
+    resetProcessFeedback();
+    updateProcessFeedback("Upload", "active");
+    if (POLL_TIMER) clearInterval(POLL_TIMER);
+    VERIFICATION_IN_PROGRESS = false;
+    AUTO_FIX_APPLIED = false;
+    LAST_JOB_ID = null;
+    resetVerificationUI();
+    setStatus("Analyzing document...");
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("style", "apa");
+    const autofixCheck = $("autofix");
+    const onlineVerifyCheck = $("onlineVerify");
+    fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
+    fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
+    try {
+        const res = await fetch("/verify", { method: "POST", body: fd });
+        if (res.status === 503) {
+            setStatus("Server is busy, please wait...", "warn");
+            if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runInitialCheck, CONFIG.RETRY_DELAY); }
+            return;
+        }
+        const js = await res.json();
+        LAST_JOB_ID = js.job_id;
+        updateProcessFeedback("Extract", "completed");
+        updateProcessFeedback("Match", "active");
+        renderAll(js);
+        setStatus("Analysis complete", "good");
+        updateQueueStatus();
+        const btnVerify = $("btnVerify");
+        if (btnVerify) btnVerify.disabled = false;
+        if (js.online_verification_started) startPolling();
+    } catch (err) { setStatus("Error: " + err.message, "bad"); }
+}
+
+// Run Online Verification
+async function runOnlineVerification() {
+    if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
+    if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
+    setStatus("Starting online verification...");
+    VERIFICATION_IN_PROGRESS = true;
+    updateProgress(0, 0, "processing", "Starting verification...");
+    const btnVerify = $("btnVerify");
+    if (btnVerify) btnVerify.disabled = true;
+    const fd = new FormData();
+    fd.append("job_id", LAST_JOB_ID);
+    try {
+        const res = await fetch("/verify-online", { method: "POST", body: fd });
+        const js = await res.json();
+        if (js.started) { setStatus("Verification in progress...", "info"); startPolling(); }
+        else if (js.completed) { setStatus("Verification already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
+        else { setStatus(js.message || "Verification could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+    } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+}
+
+// Button Events
+setupFileArea();
+
+const btnCheck = $("btnCheck");
+if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
+
+const btnVerify = $("btnVerify");
+if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
+
+const btnApplyAutofix = $("btnApplyAutofix");
+if (btnApplyAutofix) { btnApplyAutofix.disabled = true; btnApplyAutofix.addEventListener("click", applyAutoFix); }
+
+const exportCsv = $("btnExportCsvTop");
+const exportWord = $("btnExportWordTop");
+const exportVerify = $("btnExportVerify");
+
+if (exportCsv) exportCsv.addEventListener("click", exportCSV);
+if (exportWord) exportWord.addEventListener("click", exportWord);
+if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
+
+setInterval(updateQueueStatus, 5000);
+updateQueueStatus();
+
+console.log("[CiteIntegrity] App initialized - Compact version with active upload");
+
+});
+</script>
+
+</body>
+</html>
