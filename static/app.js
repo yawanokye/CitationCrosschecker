@@ -1,4 +1,4 @@
-/* static/app.js — CiteIntegrity Dashboard (FULLY FUNCTIONAL) */
+/* static/app.js — CiteIntegrity Dashboard (FULLY FUNCTIONAL with Suggested References) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -217,6 +217,104 @@ function generateACIIRecommendations(aciiData) {
 }
 
 /* -------------------------------------------------------
+SUGGESTED REFERENCES FUNCTION (NEW)
+------------------------------------------------------- */
+
+function appendSuggestedReferences(data) {
+    if (!data) return;
+
+    const container = el.fixSuggestionsContent;
+    if (!container) return;
+
+    let html = "";
+    let count = 0;
+
+    // Check for verification results that might have suggested_references
+    const verifyResults = data?.online_verification?.rows || data?.verification || data?.verify || [];
+
+    verifyResults.forEach((row, index) => {
+        if (row.suggested_references && row.suggested_references.length > 0) {
+            count++;
+
+            html += `
+                <div class="suggestions-section" style="margin-top: 20px;">
+                    <h4>📚 Suggested References (${count})</h4>
+                    <div class="suggestion-original">
+                        ❌ Original: ${esc(row.reference || row.matched_title || 'Unknown reference')}
+                    </div>
+            `;
+
+            row.suggested_references.forEach(s => {
+                const confidence = s.score || 75;
+                const confClass = confidence >= 80 ? 'high-conf' : (confidence >= 70 ? 'med-conf' : 'low-conf');
+                html += `
+                    <div class="suggestion-item ${confClass}" style="margin-top: 10px;">
+                        <div class="suggestion-suggested">
+                            ✅ ${esc(s.title || 'No title available')}
+                        </div>
+                        <div class="suggestion-meta">
+                            <span>📅 ${esc(s.year || "N/A")}</span>
+                            <span>✍️ ${esc(s.authors || "Unknown author")}</span>
+                            ${s.doi ? `<span>🔗 DOI: ${esc(s.doi)}</span>` : ''}
+                            <span>📊 ${Math.round(confidence)}% match</span>
+                        </div>
+                        ${s.relevance ? `<div class="suggestion-meta" style="margin-top: 5px;">💡 ${esc(s.relevance)}</div>` : ''}
+                    </div>
+                `;
+            });
+
+            html += `</div>`;
+        }
+    });
+
+    // Also check for missing citations that might have suggested references
+    const missingRows = data?.missing_in_references || [];
+    missingRows.forEach((row, index) => {
+        if (row.suggested_references && row.suggested_references.length > 0) {
+            count++;
+
+            html += `
+                <div class="suggestions-section" style="margin-top: 20px;">
+                    <h4>📚 Suggested References for Missing Citation (${count})</h4>
+                    <div class="suggestion-original">
+                        ❌ Missing: ${esc(row.citation_in_text || row)}
+                    </div>
+            `;
+
+            row.suggested_references.forEach(s => {
+                const confidence = s.score || 75;
+                const confClass = confidence >= 80 ? 'high-conf' : (confidence >= 70 ? 'med-conf' : 'low-conf');
+                html += `
+                    <div class="suggestion-item ${confClass}" style="margin-top: 10px;">
+                        <div class="suggestion-suggested">
+                            ✅ ${esc(s.title || 'No title available')}
+                        </div>
+                        <div class="suggestion-meta">
+                            <span>📅 ${esc(s.year || "N/A")}</span>
+                            <span>✍️ ${esc(s.authors || "Unknown author")}</span>
+                            ${s.doi ? `<span>🔗 DOI: ${esc(s.doi)}</span>` : ''}
+                            <span>📊 ${Math.round(confidence)}% match</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += `</div>`;
+        }
+    });
+
+    if (html) {
+        // Append to existing content, don't replace
+        container.innerHTML += `
+            <div style="margin-top: 24px; border-top: 2px solid #e2e8f0; padding-top: 20px;">
+                <h3 style="font-size: 18px; margin-bottom: 16px; color: #1e293b;">📚 Suggested References</h3>
+                ${html}
+            </div>
+        `;
+    }
+}
+
+/* -------------------------------------------------------
 AUTO-FIX FUNCTIONS
 ------------------------------------------------------- */
 
@@ -306,6 +404,9 @@ function displayFixSuggestions(data) {
     }
     
     if (el.fixSuggestionsContent) el.fixSuggestionsContent.innerHTML = html;
+    
+    // APPEND SUGGESTED REFERENCES AFTER displaying fixes
+    appendSuggestedReferences(window.latestResults || CURRENT_DATA);
 }
 
 async function applyAutoFix() {
@@ -543,10 +644,10 @@ function renderSummaryTable(data) {
     if (summaryTable) {
         summaryTable.innerHTML = `
             <tr><td style="width:220px;">In-text citations (occurrences)</div><td>${esc(s.in_text_citations_found)}</div></tr>
-            <tr><td>References</div><td>${esc(s.reference_entries_found)}</div></tr>
-            <tr><td>Missing (unique)</div><td>${esc(s.missing_in_references)}</div></tr>
-            <tr><td>Uncited</div><td>${esc(s.uncited_references)}</div></tr>
-            <tr><td>Match rate</div><td>${esc(s.match_rate)}%</div></tr>
+            <tr><td style="width:220px;">References</div><td>${esc(s.reference_entries_found)}</div></tr>
+            <tr><td style="width:220px;">Missing (unique)</div><td>${esc(s.missing_in_references)}</div></tr>
+            <tr><td style="width:220px;">Uncited</div><td>${esc(s.uncited_references)}</div></tr>
+            <tr><td style="width:220px;">Match rate</div><td>${esc(s.match_rate)}%</div></tr>
         `;
     }
 }
@@ -589,14 +690,14 @@ function renderMissing(data) {
     const rows = data?.missing_in_references || [];
     if (!el.missingBody) return;
     if (!rows.length) { el.missingBody.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
-    el.missingBody.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td>${esc(r.count_in_text || "")}</div></tr>`).join("");
+    el.missingBody.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></tr>`).join("");
 }
 
 function renderUncited(data) {
     const rows = data?.uncited_references || [];
     if (!el.uncitedBody) return;
     if (!rows.length) { el.uncitedBody.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
-    el.uncitedBody.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
+    el.uncitedBody.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
 }
 
 function renderC2R(data) {
@@ -681,6 +782,9 @@ function renderAll(data) {
         FIX_SUGGESTIONS = CURRENT_DATA.autofix;
         displayFixSuggestions(FIX_SUGGESTIONS);
         if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
+    } else {
+        // If no autofix data, still try to show suggested references
+        appendSuggestedReferences(CURRENT_DATA);
     }
 }
 
@@ -765,11 +869,11 @@ function exportWord() {
     <h2>Summary</h2>
     <table>
         <tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>In-text citations</div><td><strong>${s.in_text_citations_found || 0}</strong></div></tr>
-        <tr><td>References</div><td>${s.reference_entries_found || 0}</div></tr>
-        <tr><td>Missing</div><td><strong>${s.missing_in_references || 0}</strong></div></tr>
-        <tr><td>Uncited</div><td><strong>${s.uncited_references || 0}</strong></div></tr>
-        <tr><td>Match rate</div><td>${s.match_rate || 0}%</div></tr>
+        <tr><td style="width:220px;">In-text citations</div><td><strong>${s.in_text_citations_found || 0}</strong></div></tr>
+        <tr><td style="width:220px;">References</div><td>${s.reference_entries_found || 0}</div></tr>
+        <tr><td style="width:220px;">Missing</div><td><strong>${s.missing_in_references || 0}</strong></div></tr>
+        <tr><td style="width:220px;">Uncited</div><td><strong>${s.uncited_references || 0}</strong></div></tr>
+        <tr><td style="width:220px;">Match rate</div><td>${s.match_rate || 0}%</div></tr>
     </table>
     
     <h2>ACII Score</h2>
@@ -909,6 +1013,6 @@ if (exportVerifyBtn) exportVerifyBtn.addEventListener("click", exportVerificatio
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[CiteIntegrity] App initialized - All features working");
+console.log("[CiteIntegrity] App initialized - All features working with Suggested References");
 
 });
