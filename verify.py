@@ -655,15 +655,19 @@ def _get_top_suggestions(
     candidates: List[Dict[str, Any]],
     top_k: int = 3,
 ) -> List[Dict[str, Any]]:
-
+    """Get top suggested references - LOWERED THRESHOLDS to catch more suggestions"""
     scored = []
+    
+    print(f"[DEBUG] _get_top_suggestions: Processing {len(candidates)} candidates for ref: {ref_title[:60]}...")
 
     for cand in candidates:
         doi, title, year, authors = _candidate_fields(cand)
         meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
+        
+        print(f"[DEBUG] Candidate score: {meta['score']}, title_score: {meta['title_score']}, title: {title[:40]}...")
 
-        # Only keep meaningful matches
-        if meta["score"] >= 60 or meta["title_score"] >= 70:
+        # LOWERED THRESHOLDS to catch more suggestions
+        if meta["score"] >= 35 or meta["title_score"] >= 45:
             scored.append({
                 "title": title,
                 "doi": doi,
@@ -672,11 +676,15 @@ def _get_top_suggestions(
                 "score": meta["score"],
                 "title_score": meta["title_score"],
             })
+            print(f"[DEBUG] Added candidate with score {meta['score']}")
 
     scored_sorted = sorted(scored, key=lambda x: x["score"], reverse=True)
-
-    return scored_sorted[:top_k]
+    result = scored_sorted[:top_k]
+    print(f"[DEBUG] _get_top_suggestions: Returning {len(result)} suggestions")
     
+    return result
+
+
 def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
     """Original fast verification function with improved error handling"""
     cache_key = f"{style}::{ref}"
@@ -780,7 +788,6 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             # ADD SUGGESTED REFERENCES (REFINED)
             # -------------------------------------------------
             if candidates:
-
                 suggestions = _get_top_suggestions(
                     ref_title,
                     ref_authors,
@@ -788,17 +795,24 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                     candidates,
                     top_k=3,
                 )
+                
+                print(f"[DEBUG] Got {len(suggestions)} suggestions for ref: {ref_title[:60]}...")
 
                 # Avoid returning the same match as suggestion
                 filtered_suggestions = []
                 for s in suggestions:
-                    if _safe_strip(s.get("title")) != _safe_strip(row.get("matched_title")):
+                    matched_title = _safe_strip(row.get("matched_title"))
+                    if _safe_strip(s.get("title")) != matched_title:
                         filtered_suggestions.append(s)
+
+                print(f"[DEBUG] After filtering: {len(filtered_suggestions)} suggestions remain")
 
                 # Only attach meaningful suggestions
                 if filtered_suggestions:
                     row["suggested_references"] = filtered_suggestions
-
+                    print(f"[DEBUG] ✅ Added {len(filtered_suggestions)} suggestions to row")
+                else:
+                    print(f"[DEBUG] ❌ No suggestions added - filtered_suggestions is empty")
         else:
             row["status"] = "not_found"
 
@@ -944,6 +958,14 @@ def verify_references_batch(
         update_job_progress(job_id, total_refs)  # Final progress update
         store_verification_results(job_id, rows)  # Store the actual results
         print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
+        
+        # Debug: Check if first row has suggestions
+        if rows and len(rows) > 0:
+            print(f"[DEBUG] First row has 'suggested_references': {'suggested_references' in rows[0]}")
+            if 'suggested_references' in rows[0]:
+                print(f"[DEBUG] First row has {len(rows[0]['suggested_references'])} suggestions")
+                for s in rows[0]['suggested_references']:
+                    print(f"[DEBUG] Suggestion: {s.get('title', 'N/A')[:60]}...")
 
     return rows
 
