@@ -778,14 +778,14 @@ function renderAll(data) {
     updateProcessFeedback("Match", "completed");
     updateProcessFeedback("ACII", "completed");
     
-    if (CURRENT_DATA.autofix && CURRENT_DATA.autofix.suggestions) {
+   if (CURRENT_DATA.autofix && CURRENT_DATA.autofix.suggestions) {
         FIX_SUGGESTIONS = CURRENT_DATA.autofix;
         displayFixSuggestions(FIX_SUGGESTIONS);
         if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
-    } else {
-        // If no autofix data, still try to show suggested references
-        appendSuggestedReferences(CURRENT_DATA);
     }
+    
+    // 🔥 ALWAYS APPEND SUGGESTED REFERENCES
+    appendSuggestedReferences(CURRENT_DATA);
 }
 
 /* -------------------------------------------------------
