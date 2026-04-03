@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CiteIntegrity — Manuscript Readiness & Citation Integrity Platform</title>
+    <title>CiteIntegrity - Manuscript Readiness and Citation Integrity Platform</title>
     <meta name="description" content="Fix, verify, and elevate your citations before submission. Detect missing references, auto-fix errors, and measure integrity with ACII score.">
     
     <style>
@@ -14,61 +14,62 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: #f8fafc;
+            color: #1e293b;
+            line-height: 1.4;
             font-size: 13px;
         }
 
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        /* Header */
+        /* Header - Compact */
         .header {
             background: white;
-            border-radius: 12px;
-            padding: 15px 25px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            border-bottom: 1px solid #e2e8f0;
+            padding: 10px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 15px;
+            gap: 12px;
         }
 
         .logo-container {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
         }
 
         .logo-svg {
-            width: 35px;
+            width: 32px;
             height: auto;
         }
 
         .logo-text {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 700;
-            color: #333;
+            color: #0f172a;
         }
 
         .logo-badge {
-            background: #667eea;
-            color: white;
+            background: #e8f0fe;
+            color: #1a73e8;
             padding: 2px 8px;
             border-radius: 12px;
-            font-size: 9px;
+            font-size: 8px;
             font-weight: 500;
         }
 
         .header-stats {
             display: flex;
-            gap: 20px;
+            gap: 16px;
         }
 
         .stat-item {
@@ -76,63 +77,117 @@
         }
 
         .stat-value {
-            font-size: 20px;
+            font-size: 14px;
             font-weight: 700;
-            color: #667eea;
+            color: #0f172a;
         }
 
         .stat-label {
-            font-size: 9px;
-            color: #666;
+            font-size: 8px;
+            color: #64748b;
             text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
-        /* Cards */
-        .card {
+        /* Main Container - Compact */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 16px 24px;
+        }
+
+        /* Hero - Compact */
+        .hero {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 8px 0;
+        }
+
+        .hero h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 6px;
+        }
+
+        .hero-subheadline {
+            font-size: 13px;
+            color: #475569;
+            margin-bottom: 12px;
+        }
+
+        .value-bullets {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .value-bullet {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+            color: #334155;
+        }
+
+        .value-bullet::before {
+            content: "✔";
+            color: #19b36b;
+            font-weight: bold;
+            font-size: 11px;
+        }
+
+        /* Upload Card - Compact */
+        .upload-card {
             background: white;
-            border-radius: 12px;
+            border-radius: 16px;
             padding: 16px;
             margin-bottom: 16px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            border: 1px solid #eef2f6;
         }
 
-        /* Upload Area */
         .file-area {
-            border: 2px dashed #ddd;
-            border-radius: 10px;
+            border: 2px dashed #cbd5e1;
+            border-radius: 12px;
             padding: 20px;
             text-align: center;
             cursor: pointer;
+            background: #fafbfc;
             transition: all 0.2s;
         }
 
         .file-area:hover {
-            border-color: #667eea;
-            background: #f8f9ff;
+            border-color: #19b36b;
+            background: #f0fdf4;
         }
 
         .file-icon {
             font-size: 28px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
 
         .file-message {
-            font-size: 12px;
-            color: #666;
+            font-size: 11px;
+            color: #64748b;
         }
 
         .file-name {
             font-weight: 600;
-            color: #667eea;
+            color: #19b36b;
             margin-top: 6px;
-            font-size: 11px;
+            font-size: 10px;
         }
 
         input[type="file"] {
             display: none;
         }
 
-        /* Options */
+        /* Options - Compact */
         .options-row {
             display: flex;
             gap: 16px;
@@ -144,53 +199,56 @@
             display: flex;
             align-items: center;
             gap: 6px;
-            font-size: 11px;
             cursor: pointer;
+            font-size: 11px;
+            color: #334155;
         }
 
-        /* Buttons */
+        /* Buttons - Compact */
         .button-group {
             display: flex;
             gap: 10px;
             flex-wrap: wrap;
-            margin: 12px 0;
+            margin-top: 12px;
         }
 
         .btn {
-            padding: 8px 18px;
-            border-radius: 20px;
+            padding: 8px 20px;
+            border-radius: 30px;
             font-weight: 600;
             font-size: 11px;
             cursor: pointer;
+            transition: all 0.2s ease;
             border: none;
-            transition: all 0.2s;
+            font-family: inherit;
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
             color: white;
         }
 
         .btn-primary:hover:not(:disabled) {
             transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(102,126,234,0.4);
         }
 
         .btn-success {
-            background: linear-gradient(135deg, #19b36b, #13855a);
+            background: linear-gradient(135deg, #19b36b 0%, #13855a 100%);
             color: white;
         }
 
         .btn-secondary {
-            background: #f0f0f0;
-            color: #333;
-            border: 1px solid #ddd;
+            background: #f1f5f9;
+            color: #1e293b;
+            border: 1px solid #e2e8f0;
         }
 
         .btn-outline {
             background: transparent;
-            border: 1px solid #ddd;
-            color: #666;
+            border: 1px solid #cbd5e1;
+            color: #475569;
+            padding: 6px 12px;
+            font-size: 10px;
         }
 
         .btn:disabled {
@@ -198,37 +256,32 @@
             cursor: not-allowed;
         }
 
-        .btn-small {
-            padding: 4px 12px;
-            font-size: 10px;
-        }
-
-        /* Status */
+        /* Status Bar - Compact */
         .status-bar {
-            background: #f5f5f5;
-            border-radius: 8px;
-            padding: 8px 12px;
-            margin-top: 10px;
+            background: #f1f5f9;
+            border-radius: 20px;
+            padding: 8px 14px;
+            margin-top: 12px;
             font-size: 11px;
         }
 
         .status {
-            color: #666;
+            color: #475569;
         }
 
         .status.good { color: #19b36b; }
         .status.warn { color: #e67e22; }
         .status.bad { color: #e74c3c; }
 
-        /* Process Feedback */
+        /* Process Feedback - Compact */
         .process-feedback {
             display: flex;
             gap: 12px;
             flex-wrap: wrap;
-            margin: 10px 0;
+            margin-top: 12px;
             padding: 8px 12px;
-            background: #f8f9fa;
-            border-radius: 8px;
+            background: #f8fafc;
+            border-radius: 10px;
             font-size: 10px;
         }
 
@@ -236,16 +289,22 @@
             display: flex;
             align-items: center;
             gap: 4px;
-            color: #999;
+            color: #94a3b8;
         }
 
-        .feedback-step.completed { color: #19b36b; }
-        .feedback-step.active { color: #667eea; font-weight: 500; }
+        .feedback-step.completed {
+            color: #19b36b;
+        }
 
-        /* ACII Centerpiece */
+        .feedback-step.active {
+            color: #1e3a5f;
+            font-weight: 500;
+        }
+
+        /* ACII Centerpiece - Compact */
         .acii-centerpiece {
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            border-radius: 12px;
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+            border-radius: 16px;
             padding: 16px;
             margin-bottom: 16px;
             text-align: center;
@@ -255,11 +314,13 @@
         .acii-score-large {
             font-size: 42px;
             font-weight: 800;
+            line-height: 1;
         }
 
         .acii-label {
             font-size: 10px;
-            opacity: 0.9;
+            opacity: 0.8;
+            margin-top: 4px;
         }
 
         .acii-rating {
@@ -267,9 +328,16 @@
             padding: 2px 12px;
             border-radius: 20px;
             font-size: 10px;
+            font-weight: 500;
             margin-top: 8px;
-            background: rgba(255,255,255,0.2);
         }
+
+        .acii-rating.excellent { background: #19b36b; }
+        .acii-rating.very-good { background: #27ae60; }
+        .acii-rating.good { background: #3498db; }
+        .acii-rating.moderate { background: #f39c12; }
+        .acii-rating.weak { background: #e67e22; }
+        .acii-rating.poor { background: #e74c3c; }
 
         .acii-recommendation {
             margin-top: 10px;
@@ -280,11 +348,19 @@
             text-align: left;
         }
 
+        .acii-recommendation .priority {
+            color: #f39c12;
+            font-weight: 500;
+            margin-top: 4px;
+            padding-top: 4px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+        }
+
         /* Why Matters - Compact */
         .why-matters {
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 12px;
+            background: linear-gradient(135deg, #f0f9ff 0%, #e6f7ec 100%);
+            border-radius: 16px;
+            padding: 12px 16px;
             margin-bottom: 16px;
             text-align: center;
         }
@@ -292,45 +368,35 @@
         .why-matters h3 {
             font-size: 12px;
             margin-bottom: 8px;
+            color: #0f172a;
         }
 
         .benefits-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
-            gap: 8px;
+            gap: 12px;
         }
 
         .benefit-item {
+            text-align: center;
             padding: 6px;
         }
 
         .benefit-icon {
             font-size: 16px;
+            margin-bottom: 2px;
         }
 
         .benefit-text {
             font-size: 9px;
-            color: #666;
+            color: #475569;
         }
 
-        /* Queue Status */
-        .queue-info {
-            background: #f8f9fa;
-            padding: 8px 12px;
-            border-radius: 8px;
-            margin: 8px 0;
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-            font-size: 10px;
-            border-left: 3px solid #667eea;
-        }
-
-        /* Tabs */
+        /* Tabs - Compact */
         .tabs {
             display: flex;
-            gap: 4px;
-            border-bottom: 1px solid #eee;
+            gap: 2px;
+            border-bottom: 1px solid #e2e8f0;
             margin-bottom: 12px;
             flex-wrap: wrap;
         }
@@ -338,30 +404,83 @@
         .tab {
             padding: 6px 14px;
             cursor: pointer;
-            font-size: 10px;
             font-weight: 500;
-            color: #666;
+            font-size: 10px;
+            color: #64748b;
             border-radius: 6px 6px 0 0;
+            transition: all 0.2s;
         }
 
-        .tab:hover { color: #667eea; }
+        .tab:hover { color: #19b36b; }
         .tab.active {
-            color: #667eea;
-            border-bottom: 2px solid #667eea;
+            color: #19b36b;
+            border-bottom: 2px solid #19b36b;
+            margin-bottom: -1px;
         }
 
         .tabPane {
             display: none;
+            animation: fadeIn 0.2s ease;
         }
 
         .tabPane.active {
             display: block;
         }
 
-        /* Tables */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Cards - Compact */
+        .card {
+            background: white;
+            border-radius: 14px;
+            padding: 14px;
+            margin-bottom: 14px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            border: 1px solid #eef2f6;
+        }
+
+        .card h3 {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* KPI Dashboard - Compact */
+        .kpi-dashboard {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .kpi {
+            background: #f8fafc;
+            border-radius: 10px;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .kpi-value {
+            font-size: 20px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .kpi-label {
+            font-size: 9px;
+            color: #64748b;
+            margin-top: 2px;
+        }
+
+        /* Tables - Compact */
         .tableWrap {
             overflow-x: auto;
-            margin: 8px 0;
         }
 
         table {
@@ -373,39 +492,14 @@
         th, td {
             padding: 6px 8px;
             text-align: left;
-            border-bottom: 1px solid #eee;
+            border-bottom: 1px solid #eef2f6;
         }
 
         th {
-            background: #f8f9fa;
+            background: #f8fafc;
             font-weight: 600;
+            color: #475569;
             font-size: 9px;
-        }
-
-        /* KPI Dashboard */
-        .kpi-dashboard {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 8px;
-            margin-bottom: 12px;
-        }
-
-        .kpi {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 8px;
-            text-align: center;
-        }
-
-        .kpi-value {
-            font-size: 18px;
-            font-weight: 700;
-            color: #667eea;
-        }
-
-        .kpi-label {
-            font-size: 8px;
-            color: #666;
         }
 
         /* Badges */
@@ -414,17 +508,17 @@
             padding: 2px 6px;
             border-radius: 10px;
             font-size: 8px;
-            font-weight: 600;
+            font-weight: 500;
         }
-        .badge.verified { background: #d1fae5; color: #065f46; }
-        .badge.likely { background: #fed7aa; color: #92400e; }
-        .badge.not_found { background: #fee2e2; color: #991b1b; }
-        .badge.matched { background: #d1fae5; color: #065f46; }
+        .badge.verified { background: #19b36b; color: white; }
+        .badge.likely { background: #f39c12; color: white; }
+        .badge.not_found { background: #e74c3c; color: white; }
+        .badge.matched { background: #27ae60; color: white; }
 
-        /* Progress */
+        /* Progress Bar */
         .progress-container {
-            background: #e5e7eb;
-            border-radius: 10px;
+            background: #e2e8f0;
+            border-radius: 20px;
             height: 4px;
             overflow: hidden;
         }
@@ -433,6 +527,8 @@
             width: 0%;
             height: 100%;
             background: linear-gradient(90deg, #19b36b, #13855a);
+            border-radius: 20px;
+            transition: width 0.3s ease;
         }
 
         /* Export Section */
@@ -442,46 +538,57 @@
             justify-content: flex-end;
             margin-top: 10px;
             padding-top: 8px;
-            border-top: 1px solid #eee;
+            border-top: 1px solid #eef2f6;
+        }
+
+        .btn-small {
+            padding: 4px 10px;
+            font-size: 9px;
         }
 
         /* Trust Badge */
         .trust-badge {
             text-align: center;
             padding: 10px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            margin-top: 12px;
+            background: #f8fafc;
+            border-radius: 10px;
+            margin-top: 16px;
             font-size: 9px;
-            color: #666;
+            color: #64748b;
+        }
+
+        .trust-badge::before {
+            content: "🔒 ";
         }
 
         /* Footer */
         .footer {
             text-align: center;
-            padding: 12px;
-            color: rgba(255,255,255,0.7);
+            padding: 16px;
+            color: #64748b;
             font-size: 9px;
-            margin-top: 16px;
+            border-top: 1px solid #e2e8f0;
+            margin-top: 20px;
         }
 
         .footer a {
-            color: white;
+            color: #19b36b;
             text-decoration: none;
         }
 
-        /* Fix Items */
-        .fix-item, .fix-log-entry {
+        /* Queue Info */
+        .queue-info {
             background: #f8f9fa;
-            border-radius: 6px;
-            padding: 6px;
-            margin-bottom: 6px;
-            font-size: 9px;
+            padding: 6px 12px;
+            border-radius: 8px;
+            margin: 8px 0;
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 10px;
+            border-left: 3px solid #3498db;
         }
-        .fix-original { color: #e74c3c; text-decoration: line-through; }
-        .fix-suggested { color: #19b36b; margin-top: 2px; }
 
-        /* Dashboard */
         .dashboard {
             display: flex;
             gap: 10px;
@@ -489,778 +596,1041 @@
             margin-bottom: 10px;
         }
 
+        /* Fix Items */
+        .fix-item, .fix-log-entry {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 6px;
+            margin-bottom: 6px;
+            font-size: 9px;
+        }
+        .fix-original { color: #e74c3c; text-decoration: line-through; }
+        .fix-suggested { color: #19b36b; margin-top: 2px; }
+
         /* Responsive */
         @media (max-width: 768px) {
-            body { padding: 10px; }
+            .container { padding: 12px; }
+            .hero h1 { font-size: 20px; }
             .kpi-dashboard { grid-template-columns: repeat(2, 1fr); }
             .benefits-grid { grid-template-columns: repeat(2, 1fr); }
-            .header { flex-direction: column; text-align: center; }
+            .header-content { flex-direction: column; text-align: center; }
+            .value-bullets { gap: 10px; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <div class="logo-container">
-                <div class="logo-svg">
-                    <svg viewBox="0 0 120 50" width="35" height="35">
-                        <text x="5" y="38" font-size="42" font-weight="700" fill="#667eea" font-family="Georgia, serif">C</text>
-                        <text x="48" y="38" font-size="42" font-weight="700" fill="#667eea" font-family="Georgia, serif">I</text>
-                        <path d="M78 32 L88 42 L105 22" stroke="#19b36b" stroke-width="5" fill="none" stroke-linecap="round"/>
-                    </svg>
-                </div>
-                <div class="logo-text">CiteIntegrity</div>
-                <div class="logo-badge">Manuscript Readiness</div>
+
+<header class="header">
+    <div class="header-content">
+        <div class="logo-container">
+            <div class="logo-svg">
+                <svg viewBox="0 0 120 50" xmlns="http://www.w3.org/2000/svg">
+                    <text x="5" y="38" font-size="42" font-weight="700" fill="#0f172a" font-family="Georgia, serif">C</text>
+                    <text x="48" y="38" font-size="42" font-weight="700" fill="#0f172a" font-family="Georgia, serif">I</text>
+                    <path d="M78 32 L88 42 L105 22" stroke="#19b36b" stroke-width="5" fill="none" stroke-linecap="round"/>
+                </svg>
             </div>
-            <div class="header-stats">
-                <div class="stat-item"><div class="stat-value" id="statUploads">0</div><div class="stat-label">Documents</div></div>
-                <div class="stat-item"><div class="stat-value" id="statQueue">0</div><div class="stat-label">Queue</div></div>
-            </div>
+            <div class="logo-text">CiteIntegrity</div>
+            <div class="logo-badge">Manuscript Readiness Platform</div>
         </div>
-
-        <!-- Upload Card -->
-        <div class="card">
-            <div class="file-area" id="fileArea">
-                <div class="file-icon">📑</div>
-                <div class="file-message">Upload Manuscript (.docx)</div>
-                <div class="file-name" id="fileName"></div>
-                <input type="file" id="file" accept=".docx">
-            </div>
-
-            <div class="options-row">
-                <label class="checkbox-label"><input type="checkbox" id="autofix"> 🔧 Auto-Fix</label>
-                <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-Verify</label>
-            </div>
-
-            <div class="button-group">
-                <button class="btn btn-primary" id="btnCheck">▶ Analyze</button>
-                <button class="btn btn-secondary" id="btnVerify" disabled>🌐 Verify</button>
-                <button class="btn btn-success" id="btnApplyAutofix" disabled>✨ Fix & Download</button>
-            </div>
-
-            <div class="process-feedback">
-                <div class="feedback-step" id="stepUpload">⏳ Upload</div>
-                <div class="feedback-step" id="stepExtract">⏳ Extract</div>
-                <div class="feedback-step" id="stepMatch">⏳ Match</div>
-                <div class="feedback-step" id="stepACII">⏳ ACII</div>
-            </div>
-
-            <div class="status-bar">
-                <div class="status" id="status">Ready. Upload a document to begin.</div>
-            </div>
-
-            <div id="verifyProgress" style="display: none;">
-                <div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
-                <div id="progressText" style="font-size: 9px; margin-top: 4px;"></div>
-            </div>
+        <div class="header-stats" id="headerStats">
+            <div class="stat-item"><div class="stat-value" id="statUploads">0</div><div class="stat-label">Documents</div></div>
+            <div class="stat-item"><div class="stat-value" id="statQueue">0</div><div class="stat-label">Queue</div></div>
         </div>
+    </div>
+</header>
 
-        <!-- ACII Score -->
-        <div id="aciiCenterpiece" class="acii-centerpiece" style="display: none;">
-            <div class="acii-score-large" id="aciiScoreLarge">--</div>
-            <div class="acii-label">Academic Citation Integrity Index</div>
-            <div class="acii-rating" id="aciiRatingBadge">--</div>
-            <div class="acii-recommendation" id="aciiRecommendationText"></div>
+<main class="container">
+    <!-- Hero Section - Compact -->
+    <div class="hero">
+        <h1>Fix, verify, and elevate your citations before submission.</h1>
+        <div class="hero-subheadline">Prepare your manuscript for publication with professional citation integrity analysis</div>
+        <div class="value-bullets">
+            <div class="value-bullet">Detect missing and uncited references</div>
+            <div class="value-bullet">Auto-fix citation errors</div>
+            <div class="value-bullet">Measure integrity with ACII score</div>
+            <div class="value-bullet">Prepare your manuscript for submission</div>
         </div>
-
-        <!-- Why Matters -->
-        <div class="why-matters">
-            <h3>Why CiteIntegrity?</h3>
-            <div class="benefits-grid">
-                <div class="benefit-item"><div class="benefit-icon">📝</div><div class="benefit-text">Reduce rejection</div></div>
-                <div class="benefit-item"><div class="benefit-icon">🎯</div><div class="benefit-text">Ensure accuracy</div></div>
-                <div class="benefit-item"><div class="benefit-icon">🏆</div><div class="benefit-text">Boost credibility</div></div>
-                <div class="benefit-item"><div class="benefit-icon">⏱️</div><div class="benefit-text">Save time</div></div>
-            </div>
-        </div>
-
-        <!-- Queue Status -->
-        <div id="queueStatus" class="queue-info">📊 Loading...</div>
-
-        <!-- Results Section -->
-        <div id="resultsCard" class="card" style="display:none;">
-            <div class="tabs">
-                <button class="tab active" data-tab="summaryPane">📊 Summary</button>
-                <button class="tab" data-tab="missingPane">❌ Missing</button>
-                <button class="tab" data-tab="uncitedPane">📖 Uncited</button>
-                <button class="tab" data-tab="c2rPane">🔗 C→R</button>
-                <button class="tab" data-tab="r2cPane">📚 R→C</button>
-                <button class="tab" data-tab="verifyPane">✅ Verify</button>
-                <button class="tab" data-tab="fixesPane">🔧 Fixes</button>
-            </div>
-
-            <div class="tabPanes">
-                <!-- Summary -->
-                <div id="summaryPane" class="tabPane active">
-                    <div class="tableWrap">
-                        <table>
-                            <thead><tr><th>Item</th><th>Value</th></tr></thead>
-                            <tbody id="summaryTable"></tbody>
-                        </table>
-                    </div>
-
-                    <div id="aciiCard" style="display:none; margin-top:12px;">
-                        <div class="tableWrap">
-                            <table>
-                                <thead><tr><th>Component</th><th>Score</th><th>Category</th></tr></thead>
-                                <tbody>
-                                    <tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td></tr>
-                                    <tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td></tr>
-                                    <tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td></tr>
-                                    <tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div class="export-section">
-                        <button class="btn btn-small btn-outline" id="btnExportCsvTop">CSV</button>
-                        <button class="btn btn-small btn-outline" id="btnExportWordTop">Word</button>
-                        <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>Verify</button>
-                    </div>
-                </div>
-
-                <!-- Missing -->
-                <div id="missingPane" class="tabPane">
-                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Citation</th><th>Count</th></tr></thead><tbody id="missingBody"></tbody></table></div>
-                </div>
-
-                <!-- Uncited -->
-                <div id="uncitedPane" class="tabPane">
-                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Reference</th></tr></thead><tbody id="uncitedBody"></tbody></table></div>
-                </div>
-
-                <!-- C2R -->
-                <div id="c2rPane" class="tabPane">
-                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Status</th><th>Citation</th><th>Matched</th></tr></thead><tbody id="c2rBody"></tbody></table></div>
-                </div>
-
-                <!-- R2C -->
-                <div id="r2cPane" class="tabPane">
-                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Times</th><th>Reference</th></tr></thead><tbody id="r2cBody"></tbody></table></div>
-                </div>
-
-                <!-- Verify -->
-                <div id="verifyPane" class="tabPane">
-                    <div class="dashboard" id="verifyDash"></div>
-                    <div class="tableWrap"><table><thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th></tr></thead><tbody id="verifyBody"></tbody></table></div>
-                </div>
-
-                <!-- Fixes -->
-                <div id="fixesPane" class="tabPane">
-                    <div id="fixSuggestionsPanel" style="display:none;"><h4 style="font-size:11px;">🔧 Fix Suggestions</h4><div id="fixSuggestionsContent"></div></div>
-                    <div id="fixLogPanel" style="display:none;"><h4 style="font-size:11px;">📋 Fix Log</h4><div id="fixLogContent"></div></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="trust-badge">🔒 Your document is processed securely and not stored.</div>
     </div>
 
-    <footer class="footer">
-        <p>© Prof Anokye M. Adam, University of Cape Coast | <a href="/privacy">Privacy</a> | <a href="https://citeintegrity.org">citeintegrity.org</a></p>
-    </footer>
+    <!-- Upload Card -->
+    <div class="upload-card">
+        <div class="file-area" id="fileArea">
+            <div class="file-icon">📑</div>
+            <div class="file-message">Upload Manuscript (.docx recommended)</div>
+            <div class="file-message" style="font-size: 10px; margin-top: 4px;">DOCX is the recommended format for accurate citation analysis</div>
+            <div class="file-name" id="fileName"></div>
+            <input type="file" id="file" accept=".docx">
+        </div>
 
-    <script>
-    // ============================================
-    // COMPLETE COMPACT APP.JS
-    // ============================================
+        <div class="options-row">
+            <label class="checkbox-label"><input type="checkbox" id="autofix"> 🔧 Enable Auto-Fix Suggestions</label>
+            <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-start Online Verification</label>
+        </div>
 
-    document.addEventListener("DOMContentLoaded", function() {
-        "use strict";
+        <div class="button-group">
+            <button class="btn btn-primary" id="btnCheck">▶ Analyze Document</button>
+            <button class="btn btn-secondary" id="btnVerify" disabled>🌐 Verify References</button>
+            <button class="btn btn-success" id="btnApplyAutofix" disabled>✨ Auto-Fix and Download</button>
+        </div>
 
-        const CONFIG = {
-            POLL_INTERVAL: 3000,
-            MAX_VERIFY_DISPLAY: 500,
-            RETRY_DELAY: 30000,
-            MAX_POLL_ATTEMPTS: 1200,
-            STALL_TIMEOUT: 300000
-        };
+        <!-- Process Feedback -->
+        <div class="process-feedback" id="processFeedback">
+            <div class="feedback-step" id="stepUpload">⏳ Document ready</div>
+            <div class="feedback-step" id="stepExtract">⏳ Citations extracted</div>
+            <div class="feedback-step" id="stepMatch">⏳ References matched</div>
+            <div class="feedback-step" id="stepACII">⏳ ACII computed</div>
+        </div>
 
-        const $ = (id) => document.getElementById(id);
+        <div class="status-bar">
+            <div class="status" id="status">System ready. Upload your manuscript to begin.</div>
+        </div>
 
-        let LAST_JOB_ID = null;
-        let POLL_TIMER = null;
-        let VERIFICATION_IN_PROGRESS = false;
-        let RETRY_COUNT = 0;
-        let POLL_ATTEMPT_COUNT = 0;
-        let LAST_PROGRESS = 0;
-        let LAST_PROGRESS_TIME = null;
-        let AUTO_FIX_APPLIED = false;
-        window.latestResults = null;
+        <!-- Progress Bar -->
+        <div id="verifyProgress" style="display: none; margin-top: 10px;">
+            <div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
+            <div id="progressText" style="font-size: 9px; margin-top: 4px;"></div>
+            <div id="estimatedRemaining" style="font-size: 9px; color: #19b36b; margin-top: 3px;"></div>
+        </div>
+    </div>
 
-        function esc(s) {
-            return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    <!-- ACII Centerpiece -->
+    <div id="aciiCenterpiece" class="acii-centerpiece" style="display: none;">
+        <div class="acii-score-large" id="aciiScoreLarge">--</div>
+        <div class="acii-label">Academic Citation Integrity Index</div>
+        <div class="acii-rating" id="aciiRatingBadge">--</div>
+        <div class="acii-recommendation" id="aciiRecommendationText"></div>
+    </div>
+
+    <!-- Why This Matters -->
+    <div class="why-matters">
+        <h3>Why use CiteIntegrity?</h3>
+        <div class="benefits-grid">
+            <div class="benefit-item"><div class="benefit-icon">📝</div><div class="benefit-text">Reduce reviewer rejection</div></div>
+            <div class="benefit-item"><div class="benefit-icon">🎯</div><div class="benefit-text">Ensure citation accuracy</div></div>
+            <div class="benefit-item"><div class="benefit-icon">🏆</div><div class="benefit-text">Improve academic credibility</div></div>
+            <div class="benefit-item"><div class="benefit-icon">⏱️</div><div class="benefit-text">Save hours of manual checking</div></div>
+        </div>
+    </div>
+
+    <!-- Queue Status -->
+    <div id="queueStatus" class="queue-info">
+        <span>📊 Loading queue status...</span>
+    </div>
+
+    <!-- Results Section -->
+    <section id="resultsCard" class="card" style="display:none;">
+        <div class="results-header">
+            <h3>📊 Analysis Results</h3>
+            <div class="dashboard" id="dash"></div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="summaryPane">📊 Summary</button>
+            <button class="tab" data-tab="missingPane">❌ Missing</button>
+            <button class="tab" data-tab="uncitedPane">📖 Uncited</button>
+            <button class="tab" data-tab="c2rPane">🔗 C to R</button>
+            <button class="tab" data-tab="r2cPane">📚 R to C</button>
+            <button class="tab" data-tab="verifyPane">✅ Verification</button>
+            <button class="tab" data-tab="fixesPane">🔧 Fixes</button>
+        </div>
+
+        <div class="tabPanes">
+            <!-- SUMMARY PANE -->
+            <div id="summaryPane" class="tabPane active">
+                <div class="tableWrap">
+                    <table class="tbl" style="min-width:400px;">
+                        <thead><tr><th style="width:160px;">Item</th><th>Value</th></tr></thead>
+                        <tbody id="summaryTable"></tbody>
+                    </table>
+                </div>
+
+                <!-- ACII Components Card -->
+                <div id="aciiCard" class="card" style="margin-top:10px; display:none;">
+                    <h3>📊 ACII Components</h3>
+                    <div class="tableWrap">
+                        <table class="tbl">
+                            <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
+                            <tbody>
+                                <tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
+                                <tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
+                                <tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
+                                <tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="export-section">
+                    <button class="btn btn-small btn-outline" id="btnExportCsvTop">📊 CSV Report</button>
+                    <button class="btn btn-small btn-outline" id="btnExportWordTop">📄 Word Report</button>
+                    <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>🔍 Verification Report</button>
+                </div>
+            </div>
+
+            <!-- MISSING PANE -->
+            <div id="missingPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Citation in Text</th><th>Count</th></tr></thead>
+                        <tbody id="missingBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- UNCITED PANE -->
+            <div id="uncitedPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Reference</th></tr></thead>
+                        <tbody id="uncitedBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- C2R PANE -->
+            <div id="c2rPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Status</th><th>In-text</th><th>Count</th><th>Matched reference</th></tr></thead>
+                        <tbody id="c2rBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- R2C PANE -->
+            <div id="r2cPane" class="tabPane">
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Times cited</th><th>Reference</th><th>Cited by</th></tr></thead>
+                        <tbody id="r2cBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- VERIFY PANE -->
+            <div id="verifyPane" class="tabPane">
+                <div class="dashboard" id="verifyDash"></div>
+                <div class="tableWrap">
+                    <table class="tbl">
+                        <thead><tr><th>#</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th></tr></thead>
+                        <tbody id="verifyBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- FIXES PANE -->
+            <div id="fixesPane" class="tabPane">
+                <div id="fixSuggestionsPanel" class="card" style="display: none;">
+                    <h3>🔧 Auto-Fix Suggestions</h3>
+                    <div id="fixSuggestionsContent"></div>
+                </div>
+                <div id="fixLogPanel" class="card" style="display: none;">
+                    <h3>📋 Fix Log</h3>
+                    <div id="fixLogContent"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Trust Element -->
+    <div class="trust-badge">
+        Your document is processed securely and not stored permanently.
+    </div>
+</main>
+
+<footer class="footer">
+    <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity - Manuscript Readiness and Citation Integrity Platform</p>
+    <p><a href="/privacy">Privacy Policy</a> | <a href="https://citeintegrity.org">citeintegrity.org</a></p>
+</footer>
+
+<script>
+// ============================================
+// COMPLETE APP.JS WITH ACTIVE UPLOAD
+// ============================================
+
+document.addEventListener("DOMContentLoaded", function () {
+
+"use strict";
+
+const CONFIG = {
+    POLL_INTERVAL: 3000,
+    MAX_VERIFY_DISPLAY: 500,
+    RETRY_DELAY: 30000,
+    MAX_POLL_ATTEMPTS: 1200,
+    STALL_TIMEOUT: 300000
+};
+
+// DOM Elements
+const $ = (id) => document.getElementById(id);
+
+let LAST_JOB_ID = null;
+let POLL_TIMER = null;
+let VERIFICATION_IN_PROGRESS = false;
+let RETRY_COUNT = 0;
+let POLL_ATTEMPT_COUNT = 0;
+let LAST_PROGRESS = 0;
+let LAST_PROGRESS_TIME = null;
+let AUTO_FIX_APPLIED = false;
+window.latestResults = null;
+
+// Utility Functions
+function esc(s) {
+    return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function toNum(x, d = 0) {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : d;
+}
+
+function setStatus(msg, tone = "muted") {
+    const statusEl = $("status");
+    if (statusEl) {
+        statusEl.className = `status ${tone}`;
+        statusEl.textContent = msg || "";
+    }
+    console.log(`[Status] ${msg}`);
+}
+
+function formatTime(seconds) {
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function showNotification(message, type = "info") {
+    const notification = document.createElement("div");
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed; bottom: 20px; right: 20px; padding: 8px 14px;
+        background: ${type === "success" ? "#19b36b" : type === "error" ? "#e74c3c" : "#3498db"};
+        color: white; border-radius: 8px; z-index: 10000; font-size: 11px;
+        animation: slideIn 0.3s ease; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    `;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
+}
+
+function updateProcessFeedback(step, status) {
+    const stepEl = $(`step${step}`);
+    if (stepEl) {
+        stepEl.className = `feedback-step ${status}`;
+        if (status === "completed") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "✓");
+        else if (status === "active") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "🔄");
+    }
+}
+
+function resetProcessFeedback() {
+    ["Upload", "Extract", "Match", "ACII"].forEach(step => {
+        const stepEl = $(`step${step}`);
+        if (stepEl) {
+            stepEl.className = "feedback-step";
+            stepEl.innerHTML = stepEl.innerHTML.replace("✓", "⏳").replace("🔄", "⏳");
         }
+    });
+}
 
-        function toNum(x, d = 0) {
-            const n = Number(x);
-            return Number.isFinite(n) ? n : d;
-        }
-
-        function setStatus(msg, tone = "muted") {
-            const statusEl = $("status");
-            if (statusEl) {
-                statusEl.className = `status ${tone}`;
-                statusEl.textContent = msg || "";
-            }
-        }
-
-        function formatTime(seconds) {
-            if (seconds < 60) return `${Math.round(seconds)}s`;
-            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-            return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-        }
-
-        function showNotification(message, type = "info") {
-            const notification = document.createElement("div");
-            notification.textContent = message;
-            notification.style.cssText = `
-                position: fixed; bottom: 20px; right: 20px; padding: 8px 14px;
-                background: ${type === "success" ? "#19b36b" : type === "error" ? "#e74c3c" : "#667eea"};
-                color: white; border-radius: 8px; z-index: 10000; font-size: 11px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-            `;
-            document.body.appendChild(notification);
-            setTimeout(() => notification.remove(), 3000);
-        }
-
-        function updateProcessFeedback(step, status) {
-            const stepEl = $(`step${step}`);
-            if (stepEl) {
-                stepEl.className = `feedback-step ${status}`;
-                if (status === "completed") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "✓");
-                else if (status === "active") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "🔄");
-            }
-        }
-
-        function resetProcessFeedback() {
-            ["Upload", "Extract", "Match", "ACII"].forEach(step => {
-                const stepEl = $(`step${step}`);
-                if (stepEl) {
-                    stepEl.className = "feedback-step";
-                    stepEl.innerHTML = stepEl.innerHTML.replace("✓", "⏳").replace("🔄", "⏳");
-                }
-            });
-        }
-
-        // File Area Setup
-        function setupFileArea() {
-            const fileArea = document.getElementById("fileArea");
-            const fileInput = $("file");
-            const fileNameSpan = document.getElementById("fileName");
-            
-            if (fileArea && fileInput) {
-                fileArea.addEventListener("click", () => fileInput.click());
-                fileInput.addEventListener('change', function() {
-                    const file = fileInput.files[0];
-                    if (file) {
-                        if (file.name.toLowerCase().endsWith('.docx')) {
-                            fileNameSpan.textContent = `📄 ${file.name}`;
-                            setStatus("DOCX file selected.", "good");
-                            const btnCheck = $("btnCheck");
-                            if (btnCheck) btnCheck.disabled = false;
-                        } else {
-                            fileNameSpan.textContent = "";
-                            setStatus("Only DOCX files accepted.", "warn");
-                            fileInput.value = '';
-                            const btnCheck = $("btnCheck");
-                            if (btnCheck) btnCheck.disabled = true;
-                        }
-                    }
-                });
-            }
-        }
-
-        function getACIIRating(score) {
-            score = Number(score);
-            if (score >= 90) return { text: "Excellent", class: "excellent" };
-            if (score >= 80) return { text: "Very Good", class: "very-good" };
-            if (score >= 70) return { text: "Good", class: "good" };
-            if (score >= 60) return { text: "Moderate", class: "moderate" };
-            if (score >= 50) return { text: "Weak", class: "weak" };
-            return { text: "Poor", class: "poor" };
-        }
-
-        // Auto-Fix Functions
-        async function applyAutoFix() {
-            if (!LAST_JOB_ID) { showNotification("Run check first", "error"); return; }
-            if (AUTO_FIX_APPLIED) { showNotification("Auto-fix already applied", "info"); return; }
-            try {
-                setStatus("Applying fixes...", "info");
-                const formData = new FormData();
-                formData.append("job_id", LAST_JOB_ID);
-                const response = await fetch("/apply-autofix", { method: "POST", body: formData });
-                const result = await response.json();
-                if (result.success) {
-                    AUTO_FIX_APPLIED = true;
-                    setStatus(`Applied ${result.fixes_applied_count} fixes`, "good");
-                    showNotification(`Applied ${result.fixes_applied_count} fixes`, "success");
-                    const btnExportFixed = $("btnExportFixed");
-                    if (btnExportFixed) btnExportFixed.disabled = false;
-                    await showFixLog();
-                } else {
-                    showNotification("Failed to apply fixes", "error");
-                }
-            } catch (err) {
-                setStatus("Error applying fixes", "bad");
-                showNotification("Error applying fixes", "error");
-            }
-        }
-
-        async function showFixLog() {
-            if (!LAST_JOB_ID) return;
-            try {
-                const response = await fetch(`/fix-log/${encodeURIComponent(LAST_JOB_ID)}`);
-                const data = await response.json();
-                const panel = $("fixLogPanel");
-                const content = $("fixLogContent");
-                if (panel && content && data.fixes && data.fixes.length > 0) {
-                    panel.style.display = "block";
-                    let html = "";
-                    data.fixes.forEach((fix, idx) => {
-                        html += `<div class="fix-log-entry">
-                            <strong>#${idx + 1}</strong>
-                            <div class="fix-log-original">${esc(fix.original)}</div>
-                            <div class="fix-log-suggested">→ ${esc(fix.suggested)}</div>
-                            <div class="fix-log-meta">${esc(fix.type)}</div>
-                        </div>`;
-                    });
-                    content.innerHTML = html;
-                }
-            } catch (err) { console.error(err); }
-        }
-
-        function updateProgress(progress, total, status = "processing", message = null) {
-            const progressBar = $("progressBar");
-            const progressText = $("progressText");
-            const verifyProgress = $("verifyProgress");
-            
-            if (!progressBar || !progressText) return;
-            const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
-            progressBar.style.width = `${percentage}%`;
-            
-            if (status === "completed") {
-                progressBar.style.backgroundColor = "#19b36b";
-                progressText.textContent = message || `✅ Complete! ${progress}/${total}`;
-                if (verifyProgress) setTimeout(() => { verifyProgress.style.display = "none"; }, 3000);
-            } else if (status === "error") {
-                progressBar.style.backgroundColor = "#e74c3c";
-                progressText.textContent = message || "❌ Error";
-            } else {
-                progressBar.style.backgroundColor = "#667eea";
-                progressText.textContent = message || `Verifying: ${progress}/${total} (${percentage}%)`;
-                if (verifyProgress) verifyProgress.style.display = "block";
-            }
-        }
-
-        async function updateQueueStatus() {
-            try {
-                const response = await fetch('/queue/status');
-                const data = await response.json();
-                const statUploads = $("statUploads");
-                const statQueue = $("statQueue");
-                const queueStatus = $("queueStatus");
-                
-                if (statUploads) statUploads.textContent = data.total_jobs || 0;
-                if (statQueue) statQueue.textContent = data.queue_size || 0;
-                if (queueStatus) {
-                    queueStatus.innerHTML = `📊 Queue: ${data.queue_size || 0} | ⏳ Pending: ${data.pending_jobs || 0} | ⚙️ Processing: ${data.processing_jobs || 0} | 📈 Total: ${data.total_jobs || 0}`;
-                }
-                return data;
-            } catch (err) { return null; }
-        }
-
-        // Tab Navigation
-        document.querySelectorAll(".tab").forEach(tab => {
-            tab.addEventListener("click", () => {
-                const target = tab.dataset.tab;
-                document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-                document.querySelectorAll(".tabPane").forEach(p => p.classList.remove("active"));
-                tab.classList.add("active");
-                const pane = $(target);
-                if (pane) pane.classList.add("active");
-            });
+// File Area Setup - FIXED
+function setupFileArea() {
+    const fileArea = document.getElementById("fileArea");
+    const fileInput = $("file");
+    const fileNameSpan = document.getElementById("fileName");
+    
+    if (fileArea && fileInput) {
+        fileArea.addEventListener("click", function(e) {
+            if (e.target.classList && e.target.classList.contains("file-name")) return;
+            fileInput.click();
         });
+        
+        fileArea.addEventListener("dragover", function(e) {
+            e.preventDefault();
+            fileArea.classList.add("drag-over");
+        });
+        
+        fileArea.addEventListener("dragleave", function(e) {
+            e.preventDefault();
+            fileArea.classList.remove("drag-over");
+        });
+        
+        fileArea.addEventListener("drop", function(e) {
+            e.preventDefault();
+            fileArea.classList.remove("drag-over");
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                const changeEvent = new Event('change', { bubbles: true });
+                fileInput.dispatchEvent(changeEvent);
+            }
+        });
+        
+        fileInput.addEventListener('change', function() {
+            const file = fileInput.files[0];
+            if (file) {
+                if (file.name.toLowerCase().endsWith('.docx')) {
+                    fileNameSpan.textContent = `📄 ${file.name}`;
+                    setStatus("DOCX file selected. Ready to run check.", "good");
+                    const btnCheck = $("btnCheck");
+                    if (btnCheck) btnCheck.disabled = false;
+                } else {
+                    fileNameSpan.textContent = "";
+                    setStatus("Only DOCX files are accepted. Please upload a Word document.", "warn");
+                    fileInput.value = '';
+                    const btnCheck = $("btnCheck");
+                    if (btnCheck) btnCheck.disabled = true;
+                }
+            } else {
+                fileNameSpan.textContent = "";
+            }
+        });
+    }
+}
 
-        function getUniqueCitationsWithCount(c2rRows) {
-            const uniqueMap = new Map();
-            c2rRows.forEach(row => {
-                const citeText = row.in_text || '';
-                const key = `${citeText.toLowerCase()}|${row.status}|${row.matched_reference || ''}`;
-                if (uniqueMap.has(key)) uniqueMap.get(key).count++;
-                else uniqueMap.set(key, { citation: citeText, status: row.status, matched_reference: row.matched_reference, count: 1 });
-            });
-            return Array.from(uniqueMap.values());
-        }
+// ACII Rating
+function getACIIRating(score) {
+    score = Number(score);
+    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity." };
+    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity." };
+    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity." };
+    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity." };
+    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity." };
+    return { text: "Poor", class: "poor", description: "Low citation integrity." };
+}
 
-        function normalizeData(payload) {
-            const data = payload?.data || payload?.result || payload || {};
-            const s = data.summary || {};
-            data.summary = {
-                in_text_citations_found: toNum(s.in_text_citations_found ?? data.intext_count),
-                reference_entries_found: toNum(s.reference_entries_found ?? data.reference_entries_found),
-                missing_in_references: toNum(s.missing_in_references ?? (data.missing_in_references || []).length),
-                uncited_references: toNum(s.uncited_references ?? (data.uncited_references || []).length),
-                match_rate: toNum(s.match_rate ?? data.match_rate)
-            };
+function generateACIIRecommendations(aciiData) {
+    if (!aciiData) return "<div>No recommendation data available.</div>";
+    const comp = aciiData.components || {};
+    const recs = aciiData.recommendations || {};
+    let html = "";
+    if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
+    if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
+    if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
+    if (recs.priority) html += `<div class="priority">🎯 ${esc(recs.priority)}</div>`;
+    if (!html) html += `<div>✨ Your citations look good!</div>`;
+    return html;
+}
+
+// Auto-Fix Functions
+async function getAutoFixSuggestions() {
+    if (!LAST_JOB_ID) { showNotification("Run document check first", "error"); return null; }
+    try {
+        setStatus("Fetching auto-fix suggestions...", "info");
+        const response = await fetch(`/autofix-suggestions/${encodeURIComponent(LAST_JOB_ID)}`);
+        const data = await response.json();
+        if (data.available) {
+            displayFixSuggestions(data);
+            setStatus(`Auto-fix suggestions available (${data.auto_fixable_count} auto-fixable)`, "good");
+            const btnApply = $("btnApplyAutofix");
+            if (btnApply) btnApply.disabled = false;
             return data;
+        } else {
+            setStatus(data.message || "No auto-fix suggestions available", "warn");
+            return null;
         }
+    } catch (err) {
+        console.error(err);
+        setStatus("Error fetching auto-fix suggestions", "bad");
+        return null;
+    }
+}
 
-        // Render Functions
-        function renderSummaryTable(data) {
-            const s = data?.summary || {};
-            const summaryTable = $("summaryTable");
-            if (summaryTable) {
-                summaryTable.innerHTML = `
-                    <tr><td>In-text citations</td><td><strong>${esc(s.in_text_citations_found)}</strong></td></tr>
-                    <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
-                    <tr><td>Missing</td><td><strong>${esc(s.missing_in_references)}</strong></td></tr>
-                    <tr><td>Uncited</td><td><strong>${esc(s.uncited_references)}</strong></td></tr>
-                    <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
-                `;
-            }
+function displayFixSuggestions(data) {
+    const panel = $("fixSuggestionsPanel");
+    if (!panel) return;
+    
+    const suggestions = data.suggestions || {};
+    const citations = suggestions.citations || [];
+    const references = suggestions.references || [];
+    
+    const uniqueCitations = [];
+    const seen = new Set();
+    for (const fix of citations) {
+        if (!seen.has(fix.original)) {
+            seen.add(fix.original);
+            uniqueCitations.push(fix);
         }
+    }
+    
+    panel.style.display = "block";
+    let html = `<div class="fix-summary"><h4>🔧 Auto-Fix Summary</h4>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap:wrap;">
+            <span>✓ Auto-fixable: ${data.auto_fixable_count || 0}</span>
+            <span>⚠️ Needs review: ${data.review_needed_count || 0}</span>
+            <span>📋 Total: ${data.statistics?.total_suggestions || 0}</span>
+        </div>
+    </div>`;
+    
+    if (uniqueCitations.length > 0) {
+        html += `<div class="fix-section"><h5>📝 Citation Fixes (${uniqueCitations.length})</h5>`;
+        html += uniqueCitations.slice(0, 20).map(fix => `
+            <div class="fix-item ${fix.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
+                <div class="fix-original">❌ ${esc(fix.original)}</div>
+                <div class="fix-suggested">✅ ${esc(fix.suggested)}</div>
+                <div class="fix-meta">${Math.round(fix.confidence * 100)}% - ${esc(fix.reason)}</div>
+            </div>
+        `).join('');
+        html += `</div>`;
+    }
+    
+    if (uniqueCitations.length === 0 && references.length === 0) {
+        html += `<div class="fix-empty">✨ No fix suggestions available. Document looks good!</div>`;
+    }
+    
+    const content = $("fixSuggestionsContent");
+    if (content) content.innerHTML = html;
+}
 
-        function renderACII(data) {
-            const acii = data?.acii;
-            if (!acii) return;
-            
-            const centerpiece = $("aciiCenterpiece");
-            const aciiCard = $("aciiCard");
-            if (centerpiece) centerpiece.style.display = "block";
-            if (aciiCard) aciiCard.style.display = "block";
-            
-            const scoreLarge = $("aciiScoreLarge");
-            const ratingBadge = $("aciiRatingBadge");
-            
-            if (scoreLarge) {
-                const score = acii.ACII ?? "--";
-                scoreLarge.textContent = score;
-                if (ratingBadge && score !== "--") {
-                    const rating = getACIIRating(score);
-                    ratingBadge.textContent = rating.text;
-                }
-            }
-            
-            const comp = acii.components || {};
-            if ($("aciiV")) $("aciiV").textContent = comp.verification_integrity?.score ?? "--";
-            if ($("aciiVcat")) $("aciiVcat").textContent = comp.verification_integrity?.category ?? "--";
-            if ($("aciiC")) $("aciiC").textContent = comp.citation_concentration?.score ?? "--";
-            if ($("aciiCcat")) $("aciiCcat").textContent = comp.citation_concentration?.category ?? "--";
-            if ($("aciiA")) $("aciiA").textContent = comp.author_diversity?.score ?? "--";
-            if ($("aciiAcat")) $("aciiAcat").textContent = comp.author_diversity?.category ?? "--";
-            if ($("aciiT")) $("aciiT").textContent = comp.temporal_balance?.score ?? "--";
-            if ($("aciiTcat")) $("aciiTcat").textContent = comp.temporal_balance?.category ?? "--";
+async function applyAutoFix() {
+    if (!LAST_JOB_ID) { showNotification("Run document check first", "error"); return; }
+    if (AUTO_FIX_APPLIED) { showNotification("Auto-fix already applied", "info"); return; }
+    try {
+        setStatus("Applying auto-fixes...", "info");
+        const formData = new FormData();
+        formData.append("job_id", LAST_JOB_ID);
+        const response = await fetch("/apply-autofix", { method: "POST", body: formData });
+        const result = await response.json();
+        if (result.success) {
+            AUTO_FIX_APPLIED = true;
+            setStatus(`Applied ${result.fixes_applied_count} fixes`, "good");
+            showNotification(`✅ Applied ${result.fixes_applied_count} auto-fixes`, "success");
+            await showFixLog();
+        } else {
+            showNotification("Failed to apply auto-fixes", "error");
         }
+    } catch (err) {
+        setStatus("Error applying auto-fixes", "bad");
+        showNotification("Error applying auto-fixes", "error");
+    }
+}
 
-        function renderMissing(data) {
-            const rows = data?.missing_in_references || [];
-            const body = $("missingBody");
-            if (!body) return;
-            if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
-            body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.citation_in_text || r)}</td><td>${esc(r.count_in_text || "")}</td></tr>`).join("");
+async function showFixLog() {
+    if (!LAST_JOB_ID) return;
+    try {
+        const response = await fetch(`/fix-log/${encodeURIComponent(LAST_JOB_ID)}`);
+        const data = await response.json();
+        const panel = $("fixLogPanel");
+        const content = $("fixLogContent");
+        if (panel && content && data.fixes && data.fixes.length > 0) {
+            panel.style.display = "block";
+            let html = `<div class="fix-log-list">`;
+            data.fixes.forEach((fix, idx) => {
+                html += `<div class="fix-log-entry">
+                    <div><strong>#${idx + 1}</strong></div>
+                    <div class="fix-log-original">${esc(fix.original)}</div>
+                    <div class="fix-log-suggested">→ ${esc(fix.suggested)}</div>
+                    <div class="fix-log-meta">${esc(fix.type)} - ${esc(fix.reason)}</div>
+                </div>`;
+            });
+            html += `</div>`;
+            content.innerHTML = html;
         }
+    } catch (err) { console.error(err); }
+}
 
-        function renderUncited(data) {
-            const rows = data?.uncited_references || [];
-            const body = $("uncitedBody");
-            if (!body) return;
-            if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
-            body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.reference || r)}</td></tr>`).join("");
+// Progress Bar
+function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
+    const progressBar = $("progressBar");
+    const progressText = $("progressText");
+    const estimatedRemaining = $("estimatedRemaining");
+    const verifyProgress = $("verifyProgress");
+    
+    if (!progressBar || !progressText) return;
+    const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
+    progressBar.style.width = `${percentage}%`;
+    progressBar.textContent = `${percentage}%`;
+    
+    if (estimatedRemaining && remainingSeconds !== null && remainingSeconds > 0 && status === "processing") {
+        estimatedRemaining.textContent = `⏱️ Est. remaining: ${formatTime(remainingSeconds)}`;
+    } else if (estimatedRemaining && status !== "processing") {
+        estimatedRemaining.textContent = "";
+    }
+    
+    if (status === "completed") {
+        progressBar.style.backgroundColor = "#27ae60";
+        progressText.textContent = message || `✅ Complete! ${progress}/${total}`;
+        if (verifyProgress) setTimeout(() => { verifyProgress.style.display = "none"; }, 5000);
+    } else if (status === "error") {
+        progressBar.style.backgroundColor = "#e74c3c";
+        progressText.textContent = message || "❌ Error during verification";
+    } else {
+        progressBar.style.backgroundColor = "#3498db";
+        let msg = message || `🔍 Verifying: ${progress}/${total} (${percentage}%)`;
+        if (remainingSeconds) msg += ` - Est. ${formatTime(remainingSeconds)} remaining`;
+        progressText.textContent = msg;
+        if (verifyProgress) verifyProgress.style.display = "block";
+    }
+}
+
+// Queue Status
+async function updateQueueStatus() {
+    try {
+        const response = await fetch('/queue/status');
+        const data = await response.json();
+        const statUploads = $("statUploads");
+        const statQueue = $("statQueue");
+        const queueStatus = $("queueStatus");
+        
+        if (statUploads) statUploads.textContent = data.total_jobs || 0;
+        if (statQueue) statQueue.textContent = data.queue_size || 0;
+        if (queueStatus) {
+            queueStatus.innerHTML = `📊 Queue: ${data.queue_size || 0} | ⏳ Pending: ${data.pending_jobs || 0} | ⚙️ Processing: ${data.processing_jobs || 0} | 📈 Total Jobs: ${data.total_jobs || 0}`;
         }
+        return data;
+    } catch (err) { return null; }
+}
 
-        function renderC2R(data) {
-            const c2rRaw = data?.reconciliation_intext_to_reference || [];
-            const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
-            const body = $("c2rBody");
-            if (!body) return;
-            if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="4">No mapping</div></tr>`; return; }
-            body.innerHTML = uniqueCitations.slice(0, 30).map((item, i) => `<tr>
-                <td>${i + 1}</td>
-                <td><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></td>
-                <td style="max-width:250px;">${esc(item.citation)}</td>
-                <td style="max-width:200px;">${esc(item.matched_reference || '')}</td>
-            </tr>`).join("");
-        }
+// Reset UI
+function resetVerificationUI() {
+    const verifyDash = $("verifyDash");
+    const verifyBody = $("verifyBody");
+    if (verifyDash) verifyDash.innerHTML = `<div class="kpi">✅ Verified: 0</div><div class="kpi">🔍 Likely: 0</div><div class="kpi">⚠️ Needs Review: 0</div><div class="kpi">❌ Not Found: 0</div>`;
+    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start. </div> </div>`;
+    updateProgress(0, 0, "processing", "Ready to verify");
+    const verifyProgress = $("verifyProgress");
+    if (verifyProgress) verifyProgress.style.display = "none";
+    VERIFICATION_IN_PROGRESS = false;
+}
 
-        function renderR2C(data) {
-            const rows = data?.reconciliation_reference_to_intext || [];
-            const body = $("r2cBody");
-            if (!body) return;
-            if (!rows.length) { body.innerHTML = `<tr><td colspan="3">No mapping</div></tr>`; return; }
-            body.innerHTML = rows.slice(0, 30).map((r, i) => `<tr>
-                <td>${i + 1}</td>
-                <td>${esc(r.times_cited ?? 0)}</td>
-                <td style="max-width:300px;">${esc(r.reference || '')}</td>
-            </tr>`).join("");
-        }
+// Tab Navigation
+document.querySelectorAll(".tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+        const target = tab.dataset.tab;
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".tabPane").forEach(p => p.classList.remove("active"));
+        tab.classList.add("active");
+        const pane = $(target);
+        if (pane) pane.classList.add("active");
+    });
+});
 
-        function renderVerify(data) {
-            const ov = data?.online_verification || {};
-            const rows = ov.rows || [];
-            const sum = ov.summary || {};
-            const verifyDash = $("verifyDash");
-            const verifyBody = $("verifyBody");
-            
-            if (verifyDash) {
-                verifyDash.innerHTML = `<div class="kpi">✅ ${sum.verified || 0}</div>
-                    <div class="kpi">🔍 ${sum.likely || 0}</div>
-                    <div class="kpi">⚠️ ${sum.needs_review || 0}</div>
-                    <div class="kpi">❌ ${sum.not_found || 0}</div>`;
-            }
-            
-            if (!verifyBody) return;
-            if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No results. Click Verify.</div></tr>`; return; }
-            
-            verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
-                <td>${i + 1}</td>
-                <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : 'not_found')}">${esc(r.status || '')}</span></td>
-                <td>${esc(r.source || '—')}</td>
-                <td>${esc(r.score || '—')}</td>
-                <td>${esc(r.doi || '—')}</td>
-            </tr>`).join("");
-            
-            const btnExportVerify = $("btnExportVerify");
-            if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
-        }
-
-        function renderAll(data) {
-            if (!data) return;
-            const normalized = normalizeData(data);
-            normalized.job_id = data.job_id || LAST_JOB_ID;
-            window.latestResults = normalized;
-            
-            const resultsCard = $("resultsCard");
-            if (resultsCard) resultsCard.style.display = "block";
-            
-            renderSummaryTable(normalized);
-            renderACII(normalized);
-            renderMissing(normalized);
-            renderUncited(normalized);
-            renderC2R(normalized);
-            renderR2C(normalized);
-            renderVerify(normalized);
-            
-            updateProcessFeedback("Upload", "completed");
-            updateProcessFeedback("Extract", "completed");
-            updateProcessFeedback("Match", "completed");
-            updateProcessFeedback("ACII", "completed");
-        }
-
-        // Export Functions
-        function exportCSV() {
-            if (!window.latestResults) { alert("No data to export."); return; }
-            const data = window.latestResults;
-            const s = data.summary || {};
-            const missing = data.missing_in_references || [];
-            const uncited = data.uncited_references || [];
-            
-            let csv = [`"CiteIntegrity Report"`];
-            csv.push(`"Generated","${new Date().toLocaleString()}"`);
-            csv.push(`"File","${data.filename || 'N/A'}"`);
-            csv.push(``);
-            csv.push(`"SUMMARY"`);
-            csv.push(`"In-text citations","${s.in_text_citations_found || 0}"`);
-            csv.push(`"References","${s.reference_entries_found || 0}"`);
-            csv.push(`"Missing","${s.missing_in_references || 0}"`);
-            csv.push(`"Uncited","${s.uncited_references || 0}"`);
-            csv.push(`"Match Rate","${s.match_rate || 0}%"`);
-            csv.push(``);
-            csv.push(`"MISSING CITATIONS"`);
-            missing.forEach(m => csv.push(`"${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}"`));
-            csv.push(``);
-            csv.push(`"UNCITED REFERENCES"`);
-            uncited.forEach(ref => csv.push(`"${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}"`));
-            
-            const blob = new Blob([csv.join("\n")], { type: "text/csv" });
-            const link = document.createElement("a");
-            link.href = URL.createObjectURL(blob);
-            link.download = `citeintegrity_${new Date().toISOString().slice(0, 19)}.csv`;
-            link.click();
-            URL.revokeObjectURL(link.href);
-            showNotification("CSV downloaded", "success");
-        }
-
-        function exportWord() {
-            if (!window.latestResults) { alert("No data to export."); return; }
-            const data = window.latestResults;
-            const s = data.summary || {};
-            const missing = data.missing_in_references || [];
-            const uncited = data.uncited_references || [];
-            
-            let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head><body>
-                <h1>CiteIntegrity Report</h1>
-                <p>Generated: ${new Date().toLocaleString()}</p>
-                <p>File: ${esc(data.filename || 'N/A')}</p>
-                <h2>Summary</h2>
-                <table border="1"><tr><th>Metric</th><th>Value</th></tr>
-                <tr><td>In-text citations</td><td>${s.in_text_citations_found || 0}</td></tr>
-                <tr><td>References</td><td>${s.reference_entries_found || 0}</td></tr>
-                <tr><td>Missing</td><td>${s.missing_in_references || 0}</td></tr>
-                <tr><td>Uncited</td><td>${s.uncited_references || 0}</td></tr>
-                <tr><td>Match rate</td><td>${s.match_rate || 0}%</td></tr></table>
-                <h2>Missing Citations</h2><ul>${missing.map(m => `<li>${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}</li>`).join('')}</ul>
-                <h2>Uncited References</h2><ul>${uncited.map(ref => `<li>${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}</li>`).join('')}</ul>
-                </body></html>`;
-            
-            const blob = new Blob([html], { type: "application/msword" });
-            const link = document.createElement("a");
-            link.href = URL.createObjectURL(blob);
-            link.download = `citeintegrity_${new Date().toISOString().slice(0, 19)}.doc`;
-            link.click();
-            URL.revokeObjectURL(link.href);
-            showNotification("Word report downloaded", "success");
-        }
-
-        // Run Initial Check
-        async function runInitialCheck() {
-            const fileInput = $("file");
-            const file = fileInput?.files?.[0];
-            if (!file) { setStatus("Choose a file first", "warn"); return; }
-            if (!file.name.toLowerCase().endsWith('.docx')) {
-                setStatus("Only DOCX files accepted.", "warn");
-                return;
-            }
-            
-            resetProcessFeedback();
-            updateProcessFeedback("Upload", "active");
-            if (POLL_TIMER) clearInterval(POLL_TIMER);
-            VERIFICATION_IN_PROGRESS = false;
-            AUTO_FIX_APPLIED = false;
-            LAST_JOB_ID = null;
-            setStatus("Analyzing document...");
-            
-            const fd = new FormData();
-            fd.append("file", file);
-            fd.append("style", "apa");
-            const autofixCheck = $("autofix");
-            const onlineVerifyCheck = $("onlineVerify");
-            fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
-            fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
-            
-            try {
-                const res = await fetch("/verify", { method: "POST", body: fd });
-                if (res.status === 503) {
-                    setStatus("Server busy, retrying...", "warn");
-                    if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runInitialCheck, CONFIG.RETRY_DELAY); }
-                    return;
-                }
-                const js = await res.json();
-                LAST_JOB_ID = js.job_id;
-                updateProcessFeedback("Extract", "completed");
-                updateProcessFeedback("Match", "active");
-                renderAll(js);
-                setStatus("Analysis complete", "good");
-                updateQueueStatus();
-                const btnVerify = $("btnVerify");
-                if (btnVerify) btnVerify.disabled = false;
-                if (js.online_verification_started) startPolling();
-            } catch (err) { setStatus("Error: " + err.message, "bad"); }
-        }
-
-        // Run Online Verification
-        async function runOnlineVerification() {
-            if (!LAST_JOB_ID) { setStatus("Run check first", "warn"); return; }
-            if (VERIFICATION_IN_PROGRESS) { setStatus("Verification in progress...", "warn"); return; }
-            
-            setStatus("Starting verification...");
-            VERIFICATION_IN_PROGRESS = true;
-            updateProgress(0, 0, "processing", "Starting...");
-            const btnVerify = $("btnVerify");
-            if (btnVerify) btnVerify.disabled = true;
-            
-            const fd = new FormData();
-            fd.append("job_id", LAST_JOB_ID);
-            
-            try {
-                const res = await fetch("/verify-online", { method: "POST", body: fd });
-                const js = await res.json();
-                if (js.started) { setStatus("Verifying...", "info"); startPolling(); }
-                else if (js.completed) { setStatus("Already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
-                else { setStatus(js.message || "Could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
-            } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
-        }
-
-        async function fetchStatus() {
-            if (!LAST_JOB_ID) return;
-            POLL_ATTEMPT_COUNT++;
-            if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
-                stopPolling();
+// Status Polling
+async function fetchStatus() {
+    if (!LAST_JOB_ID) return;
+    POLL_ATTEMPT_COUNT++;
+    if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
+        stopPolling();
+        VERIFICATION_IN_PROGRESS = false;
+        const btnVerify = $("btnVerify");
+        if (btnVerify) btnVerify.disabled = false;
+        return;
+    }
+    try {
+        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
+        const js = await res.json();
+        if (js.online) {
+            const progress = js.online.progress || 0;
+            const total = js.online.total || 0;
+            const state = js.online.state || "processing";
+            if (total > 0) updateProgress(progress, total, state);
+            if (js.online.state === "completed") {
+                setStatus("Online verification complete", "good");
                 VERIFICATION_IN_PROGRESS = false;
                 const btnVerify = $("btnVerify");
                 if (btnVerify) btnVerify.disabled = false;
-                return;
+                updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
+                stopPolling();
             }
-            try {
-                const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
-                const js = await res.json();
-                if (js.online) {
-                    const progress = js.online.progress || 0;
-                    const total = js.online.total || 0;
-                    if (total > 0) updateProgress(progress, total, js.online.state);
-                    if (js.online.state === "completed") {
-                        setStatus("Verification complete", "good");
-                        VERIFICATION_IN_PROGRESS = false;
-                        const btnVerify = $("btnVerify");
-                        if (btnVerify) btnVerify.disabled = false;
-                        updateProgress(total, total, "completed", `Complete! ${total} verified`);
-                        stopPolling();
-                    }
-                }
-                if (js.result) renderAll(js.result);
-            } catch (err) { console.error(err); }
         }
+        if (js.result) renderAll(js.result);
+    } catch (err) { console.error(err); }
+}
 
-        function startPolling() {
-            if (POLL_TIMER) clearInterval(POLL_TIMER);
-            POLL_ATTEMPT_COUNT = 0;
-            POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
-        }
+function startPolling() {
+    if (POLL_TIMER) clearInterval(POLL_TIMER);
+    POLL_ATTEMPT_COUNT = 0;
+    POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
+}
 
-        function stopPolling() {
-            if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
-        }
+function stopPolling() {
+    if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
+}
 
-        // Button Events
-        setupFileArea();
-
-        const btnCheck = $("btnCheck");
-        if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
-
-        const btnVerify = $("btnVerify");
-        if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
-
-        const btnApplyAutofix = $("btnApplyAutofix");
-        if (btnApplyAutofix) { btnApplyAutofix.disabled = true; btnApplyAutofix.addEventListener("click", applyAutoFix); }
-
-        const exportCsv = $("btnExportCsvTop");
-        const exportWord = $("btnExportWordTop");
-        const exportVerify = $("btnExportVerify");
-
-        if (exportCsv) exportCsv.addEventListener("click", exportCSV);
-        if (exportWord) exportWord.addEventListener("click", exportWord);
-        if (exportVerify) exportVerify.addEventListener("click", () => {
-            if (window.latestResults?.online_verification?.rows?.length) {
-                let csv = [`"Status","Source","Score","DOI","Year"`];
-                window.latestResults.online_verification.rows.forEach(r => {
-                    csv.push(`"${r.status}","${r.source}","${r.score}","${r.doi}","${r.matched_year}"`);
-                });
-                const blob = new Blob([csv.join("\n")], { type: "text/csv" });
-                const link = document.createElement("a");
-                link.href = URL.createObjectURL(blob);
-                link.download = `verification_${new Date().toISOString().slice(0, 19)}.csv`;
-                link.click();
-                URL.revokeObjectURL(link.href);
-            } else { alert("No verification results."); }
-        });
-
-        setInterval(updateQueueStatus, 5000);
-        updateQueueStatus();
-
-        console.log("[CiteIntegrity] Compact version initialized");
+// Helper Functions
+function getUniqueCitationsWithCount(c2rRows) {
+    const uniqueMap = new Map();
+    c2rRows.forEach(row => {
+        const citeText = row.in_text || '';
+        const key = `${citeText.toLowerCase()}|${row.status}|${row.matched_reference || ''}`;
+        if (uniqueMap.has(key)) uniqueMap.get(key).count++;
+        else uniqueMap.set(key, { citation: citeText, status: row.status, matched_reference: row.matched_reference, flags: row.flags, count: 1 });
     });
-    </script>
+    return Array.from(uniqueMap.values());
+}
+
+function normalizeData(payload) {
+    const data = payload?.data || payload?.result || payload || {};
+    const s = data.summary || {};
+    data.summary = {
+        in_text_citations_found: toNum(s.in_text_citations_found ?? data.intext_count),
+        reference_entries_found: toNum(s.reference_entries_found ?? data.reference_entries_found),
+        missing_in_references: toNum(s.missing_in_references ?? (data.missing_in_references || []).length),
+        uncited_references: toNum(s.uncited_references ?? (data.uncited_references || []).length),
+        match_rate: toNum(s.match_rate ?? data.match_rate)
+    };
+    return data;
+}
+
+// Render Functions
+function renderSummaryTable(data) {
+    const s = data?.summary || {};
+    const summaryTable = $("summaryTable");
+    if (summaryTable) {
+        summaryTable.innerHTML = `
+            <tr><td style="width:160px;">In-text citations (occurrences)</div><td><strong>${esc(s.in_text_citations_found)}</strong></div></tr>
+            <tr><td>References</div><td>${esc(s.reference_entries_found)}</div></tr>
+            <tr><td>Missing (unique)</div><td><strong>${esc(s.missing_in_references)}</strong></div></tr>
+            <tr><td>Uncited</div><td><strong>${esc(s.uncited_references)}</strong></div></tr>
+            <tr><td>Match rate</div><td>${esc(s.match_rate)}%</div></tr>
+        `;
+    }
+}
+
+function renderACII(data) {
+    const acii = data?.acii;
+    if (!acii) return;
+    
+    const centerpiece = $("aciiCenterpiece");
+    const aciiCard = $("aciiCard");
+    if (centerpiece) centerpiece.style.display = "block";
+    if (aciiCard) aciiCard.style.display = "block";
+    
+    const scoreLarge = $("aciiScoreLarge");
+    const ratingBadge = $("aciiRatingBadge");
+    const recText = $("aciiRecommendationText");
+    
+    if (scoreLarge) {
+        const score = acii.ACII ?? "--";
+        scoreLarge.textContent = score;
+        if (ratingBadge && score !== "--") {
+            const rating = getACIIRating(score);
+            ratingBadge.textContent = rating.text;
+            ratingBadge.className = `acii-rating ${rating.class}`;
+        }
+    }
+    
+    if (recText) {
+        recText.innerHTML = generateACIIRecommendations(acii);
+    }
+    
+    const comp = acii.components || {};
+    const v = $("aciiV"); if (v) v.textContent = comp.verification_integrity?.score ?? "--";
+    const vcat = $("aciiVcat"); if (vcat) vcat.textContent = comp.verification_integrity?.category ?? "--";
+    const vremark = $("aciiVremark"); if (vremark) vremark.textContent = comp.verification_integrity?.remark ?? "--";
+    const c = $("aciiC"); if (c) c.textContent = comp.citation_concentration?.score ?? "--";
+    const ccat = $("aciiCcat"); if (ccat) ccat.textContent = comp.citation_concentration?.category ?? "--";
+    const cremark = $("aciiCremark"); if (cremark) cremark.textContent = comp.citation_concentration?.remark ?? "--";
+    const a = $("aciiA"); if (a) a.textContent = comp.author_diversity?.score ?? "--";
+    const acat = $("aciiAcat"); if (acat) acat.textContent = comp.author_diversity?.category ?? "--";
+    const aremark = $("aciiAremark"); if (aremark) aremark.textContent = comp.author_diversity?.remark ?? "--";
+    const t = $("aciiT"); if (t) t.textContent = comp.temporal_balance?.score ?? "--";
+    const tcat = $("aciiTcat"); if (tcat) tcat.textContent = comp.temporal_balance?.category ?? "--";
+    const tremark = $("aciiTremark"); if (tremark) tremark.textContent = comp.temporal_balance?.remark ?? "--";
+}
+
+function renderMissing(data) {
+    const rows = data?.missing_in_references || [];
+    const body = $("missingBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td>${esc(r.count_in_text || "")}</div></tr>`).join("");
+}
+
+function renderUncited(data) {
+    const rows = data?.uncited_references || [];
+    const body = $("uncitedBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td>${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
+}
+
+function renderC2R(data) {
+    const c2rRaw = data?.reconciliation_intext_to_reference || [];
+    const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
+    const body = $("c2rBody");
+    if (!body) return;
+    if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="6">No mapping available</div></tr>`; return; }
+    body.innerHTML = uniqueCitations.slice(0, 50).map((item, i) => `<tr>
+        <td>${i + 1}</div>
+        <td><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></div>
+        <td style="max-width:250px;">${esc(item.citation)}</div>
+        <td style="text-align:center"><strong>${item.count}</strong></div>
+        <td style="max-width:300px;">${esc(item.matched_reference || '')}</div>
+        <td>${esc(item.flags || '')}</div>
+    </table>`).join("");
+}
+
+function renderR2C(data) {
+    const rows = data?.reconciliation_reference_to_intext || [];
+    const body = $("r2cBody");
+    if (!body) return;
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</div></tr>`; return; }
+    body.innerHTML = rows.slice(0, 50).map((r, i) => `<tr>
+        <td>${i + 1}</div>
+        <td>${esc(r.times_cited ?? 0)}</div>
+        <td style="max-width:400px;">${esc(r.reference || '')}</div>
+        <td>${esc((r.cited_by || []).slice(0, 2).join("; "))}</div>
+    </tr>`).join("");
+}
+
+function renderVerify(data) {
+    const ov = data?.online_verification || {};
+    const rows = ov.rows || [];
+    const sum = ov.summary || {};
+    const verifyDash = $("verifyDash");
+    const verifyBody = $("verifyBody");
+    
+    if (verifyDash) {
+        verifyDash.innerHTML = `<div class="kpi">✅ Verified: ${sum.verified ?? 0}</div>
+            <div class="kpi">🔍 Likely: ${sum.likely ?? 0}</div>
+            <div class="kpi">⚠️ Needs Review: ${sum.needs_review ?? 0}</div>
+            <div class="kpi">❌ Not Found: ${sum.not_found ?? 0}</div>`;
+    }
+    
+    if (!verifyBody) return;
+    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`; return; }
+    
+    verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
+        <td>${i + 1}</div>
+        <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : 'not_found')}">${esc(r.status || '')}</span></div>
+        <td>${esc(r.source || '—')}</div>
+        <td>${esc(r.score || '—')}</div>
+        <td>${esc(r.doi || '—')}</div>
+        <td>${esc(r.matched_year || '—')}</div>
+        <td style="max-width:150px;">${esc(r.matched_authors || '—')}</div>
+    </tr>`).join("");
+    
+    const btnExportVerify = $("btnExportVerify");
+    if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
+}
+
+function renderAll(data) {
+    if (!data) return;
+    const normalized = normalizeData(data);
+    normalized.job_id = data.job_id || LAST_JOB_ID;
+    window.latestResults = normalized;
+    
+    const resultsCard = $("resultsCard");
+    if (resultsCard) resultsCard.style.display = "block";
+    
+    renderSummaryTable(normalized);
+    renderACII(normalized);
+    renderMissing(normalized);
+    renderUncited(normalized);
+    renderC2R(normalized);
+    renderR2C(normalized);
+    renderVerify(normalized);
+    
+    updateProcessFeedback("Upload", "completed");
+    updateProcessFeedback("Extract", "completed");
+    updateProcessFeedback("Match", "completed");
+    updateProcessFeedback("ACII", "completed");
+    
+    if (normalized.autofix && normalized.autofix.suggestions) {
+        displayFixSuggestions(normalized.autofix.suggestions);
+        const btnApply = $("btnApplyAutofix");
+        if (btnApply) btnApply.disabled = false;
+    }
+}
+
+// Export Functions
+function exportCSV() {
+    if (!window.latestResults) { showNotification("No results to export.", "error"); return; }
+    const data = window.latestResults;
+    const s = data.summary || {};
+    const missing = data.missing_in_references || [];
+    const uncited = data.uncited_references || [];
+    
+    let csv = [`"CiteIntegrity Report"`];
+    csv.push(`"Generated","${new Date().toLocaleString()}"`);
+    csv.push(`"File","${data.filename || 'N/A'}"`);
+    csv.push(``);
+    csv.push(`"SUMMARY"`);
+    csv.push(`"In-text citations","${s.in_text_citations_found || 0}"`);
+    csv.push(`"References","${s.reference_entries_found || 0}"`);
+    csv.push(`"Missing","${s.missing_in_references || 0}"`);
+    csv.push(`"Uncited","${s.uncited_references || 0}"`);
+    csv.push(`"Match Rate","${s.match_rate || 0}%"`);
+    csv.push(``);
+    csv.push(`"MISSING CITATIONS"`);
+    missing.forEach(m => csv.push(`"${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}"`));
+    csv.push(``);
+    csv.push(`"UNCITED REFERENCES"`);
+    uncited.forEach(ref => csv.push(`"${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}"`));
+    
+    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `citeintegrity_report_${new Date().toISOString().slice(0, 19)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showNotification("CSV report downloaded", "success");
+}
+
+function exportWord() {
+    if (!window.latestResults) { showNotification("No results to export.", "error"); return; }
+    const data = window.latestResults;
+    const s = data.summary || {};
+    const missing = data.missing_in_references || [];
+    const uncited = data.uncited_references || [];
+    const acii = data.acii || {};
+    const rating = getACIIRating(acii.ACII);
+    
+    let html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>CiteIntegrity Report</title>
+<style>
+    body { font-family: 'Times New Roman', Times, serif; margin: 2.54cm 3.17cm; font-size: 12pt; }
+    h1 { color: #1a2a4f; border-bottom: 2px solid #19b36b; }
+    h2 { color: #1a2a4f; margin-top: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background: #f2f2f2; }
+</style>
+</head>
+<body>
+    <h1>CiteIntegrity Report</h1>
+    <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+    <p><strong>File:</strong> ${esc(data.filename || 'N/A')}</p>
+    
+    <h2>Summary</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>In-text citations</div><td><strong>${s.in_text_citations_found || 0}</strong></div></tr>
+        <tr><td>References</div><td>${s.reference_entries_found || 0}</div></tr>
+        <tr><td>Missing</div><td><strong>${s.missing_in_references || 0}</strong></div></tr>
+        <tr><td>Uncited</div><td><strong>${s.uncited_references || 0}</strong></div></tr>
+        <tr><td>Match rate</div><td>${s.match_rate || 0}%</div></tr>
+    </table>
+    
+    <h2>ACII Score: ${acii.ACII || 'N/A'} (${rating.text})</h2>
+    <p>${rating.description}</p>
+    
+    <h2>Missing Citations</h2>
+    ${missing.length ? `<ul>${missing.map(m => `<li>${esc(typeof m === 'string' ? m : (m.citation_in_text || m))}</li>`).join('')}</ul>` : '<p>None found.</p>'}
+    
+    <h2>Uncited References</h2>
+    ${uncited.length ? `<ul>${uncited.map(ref => `<li>${esc(typeof ref === 'string' ? ref : (ref.reference || ref))}</li>`).join('')}</ul>` : '<p>None found.</p>'}
+    
+    <div class="footer"><p>Generated by CiteIntegrity</p></div>
+</body>
+</html>`;
+    
+    const blob = new Blob([html], { type: "application/msword" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `citeintegrity_report_${new Date().toISOString().slice(0, 19)}.doc`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showNotification("Word report downloaded", "success");
+}
+
+function exportVerificationCSV() {
+    if (!window.latestResults) { showNotification("No verification data to export.", "error"); return; }
+    const ov = window.latestResults?.online_verification || {};
+    const rows = ov.rows || [];
+    if (!rows.length) { showNotification("No verification results available.", "error"); return; }
+    let csv = [`"Status","Source","Score","DOI","Year","Authors"`];
+    rows.forEach(r => csv.push(`"${r.status || ''}","${r.source || ''}","${r.score || ''}","${r.doi || ''}","${r.matched_year || ''}","${(r.matched_authors || '').substring(0, 100)}"`));
+    const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `verification_report_${new Date().toISOString().slice(0, 19)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showNotification("Verification report downloaded", "success");
+}
+
+// Run Initial Check
+async function runInitialCheck() {
+    const fileInput = $("file");
+    const file = fileInput?.files?.[0];
+    if (!file) { setStatus("Please choose a file first", "warn"); return; }
+    if (!file.name.toLowerCase().endsWith('.docx')) {
+        setStatus("Only DOCX files are accepted.", "warn");
+        return;
+    }
+    resetProcessFeedback();
+    updateProcessFeedback("Upload", "active");
+    if (POLL_TIMER) clearInterval(POLL_TIMER);
+    VERIFICATION_IN_PROGRESS = false;
+    AUTO_FIX_APPLIED = false;
+    LAST_JOB_ID = null;
+    resetVerificationUI();
+    setStatus("Analyzing document...");
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("style", "apa");
+    const autofixCheck = $("autofix");
+    const onlineVerifyCheck = $("onlineVerify");
+    fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
+    fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
+    try {
+        const res = await fetch("/verify", { method: "POST", body: fd });
+        if (res.status === 503) {
+            setStatus("Server is busy, please wait...", "warn");
+            if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runInitialCheck, CONFIG.RETRY_DELAY); }
+            return;
+        }
+        const js = await res.json();
+        LAST_JOB_ID = js.job_id;
+        updateProcessFeedback("Extract", "completed");
+        updateProcessFeedback("Match", "active");
+        renderAll(js);
+        setStatus("Analysis complete", "good");
+        updateQueueStatus();
+        const btnVerify = $("btnVerify");
+        if (btnVerify) btnVerify.disabled = false;
+        if (js.online_verification_started) startPolling();
+    } catch (err) { setStatus("Error: " + err.message, "bad"); }
+}
+
+// Run Online Verification
+async function runOnlineVerification() {
+    if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
+    if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
+    setStatus("Starting online verification...");
+    VERIFICATION_IN_PROGRESS = true;
+    updateProgress(0, 0, "processing", "Starting verification...");
+    const btnVerify = $("btnVerify");
+    if (btnVerify) btnVerify.disabled = true;
+    const fd = new FormData();
+    fd.append("job_id", LAST_JOB_ID);
+    try {
+        const res = await fetch("/verify-online", { method: "POST", body: fd });
+        const js = await res.json();
+        if (js.started) { setStatus("Verification in progress...", "info"); startPolling(); }
+        else if (js.completed) { setStatus("Verification already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
+        else { setStatus(js.message || "Verification could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+    } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+}
+
+// Button Events
+setupFileArea();
+
+const btnCheck = $("btnCheck");
+if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
+
+const btnVerify = $("btnVerify");
+if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
+
+const btnApplyAutofix = $("btnApplyAutofix");
+if (btnApplyAutofix) { btnApplyAutofix.disabled = true; btnApplyAutofix.addEventListener("click", applyAutoFix); }
+
+const exportCsv = $("btnExportCsvTop");
+const exportWord = $("btnExportWordTop");
+const exportVerify = $("btnExportVerify");
+
+if (exportCsv) exportCsv.addEventListener("click", exportCSV);
+if (exportWord) exportWord.addEventListener("click", exportWord);
+if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
+
+setInterval(updateQueueStatus, 5000);
+updateQueueStatus();
+
+console.log("[CiteIntegrity] App initialized - Compact version with active upload");
+
+});
+</script>
+
 </body>
 </html>
