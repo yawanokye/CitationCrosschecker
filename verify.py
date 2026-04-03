@@ -586,11 +586,11 @@ def _classify(doi_match: bool, title_score: int, score: int, year_match: int) ->
     if doi_match:
         return "verified"
     
-    if score >= 90:
-        return "verified"
+    if score >= 90 and author_overlap >= 1:
+            return "verified"
     
-    if title_score >= 65 and year_match:
-        return "verified"
+    if title_score >= 70 and author_overlap >= 1 and year_match:
+            return "verified"
     
     if score >= 70:
         return "likely"
