@@ -220,76 +220,120 @@ function generateACIIRecommendations(aciiData) {
 SUGGESTED REFERENCES FUNCTION (NEW)
 ------------------------------------------------------- */
 
+/* -------------------------------------------------------
+SUGGESTED REFERENCES FUNCTION (FIXED)
+------------------------------------------------------- */
+
 function appendSuggestedReferences(data) {
-    if (!data) return;
+    if (!data) {
+        console.log("[Debug] No data for suggested references");
+        return;
+    }
 
     const container = el.fixSuggestionsContent;
-    if (!container) return;
+    if (!container) {
+        console.log("[Debug] No fixSuggestionsContent container found");
+        return;
+    }
 
     let html = "";
-    let count = 0;
+    let suggestionCount = 0;
 
     // Check for verification results that might have suggested_references
-    const verifyResults = data?.online_verification?.rows || data?.verification || data?.verify || [];
+    // The data could be in different places depending on the response structure
+    let verifyResults = [];
+    
+    if (data.online_verification && data.online_verification.rows) {
+        verifyResults = data.online_verification.rows;
+        console.log(`[Debug] Found ${verifyResults.length} verification rows`);
+    } else if (data.verification && data.verification.rows) {
+        verifyResults = data.verification.rows;
+    } else if (Array.isArray(data.verify)) {
+        verifyResults = data.verify;
+    } else if (Array.isArray(data)) {
+        verifyResults = data;
+    }
+
+    // Also check if the data is directly in the verification results
+    if (data.rows && Array.isArray(data.rows)) {
+        verifyResults = data.rows;
+    }
+
+    console.log(`[Debug] Processing ${verifyResults.length} verification results for suggestions`);
 
     verifyResults.forEach((row, index) => {
         if (row.suggested_references && row.suggested_references.length > 0) {
-            count++;
-
+            suggestionCount++;
+            
+            // Get the original reference text
+            const originalRef = row.reference || row.matched_title || 'Unknown reference';
+            
             html += `
-                <div class="suggestions-section" style="margin-top: 20px;">
-                    <h4>📚 Suggested References (${count})</h4>
-                    <div class="suggestion-original">
-                        ❌ Original: ${esc(row.reference || row.matched_title || 'Unknown reference')}
+                <div class="suggestions-section" style="margin-top: 20px; padding: 12px; background: #f8fafc; border-radius: 10px;">
+                    <div class="suggestion-header" style="margin-bottom: 12px;">
+                        <span style="font-weight: 600; color: #1e293b;">📚 Suggested Reference #${suggestionCount}</span>
+                        <span class="badge ${row.status === 'verified' ? 'verified' : (row.status === 'likely' ? 'likely' : 'needs_review')}" style="margin-left: 10px;">
+                            ${row.status || 'Unknown'}
+                        </span>
                     </div>
+                    <div class="suggestion-original" style="font-size: 12px; color: #64748b; margin-bottom: 10px;">
+                        ❌ Original: ${esc(originalRef.substring(0, 200))}${originalRef.length > 200 ? '…' : ''}
+                    </div>
+                    <div style="margin-top: 8px;">
             `;
 
-            row.suggested_references.forEach(s => {
+            row.suggested_references.forEach((s, idx) => {
                 const confidence = s.score || 75;
                 const confClass = confidence >= 80 ? 'high-conf' : (confidence >= 70 ? 'med-conf' : 'low-conf');
                 html += `
-                    <div class="suggestion-item ${confClass}" style="margin-top: 10px;">
-                        <div class="suggestion-suggested">
+                    <div class="suggestion-item ${confClass}" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px; border-left: 3px solid ${confidence >= 80 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c')};">
+                        <div class="suggestion-suggested" style="font-weight: 500; margin-bottom: 6px;">
                             ✅ ${esc(s.title || 'No title available')}
                         </div>
-                        <div class="suggestion-meta">
+                        <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
                             <span>📅 ${esc(s.year || "N/A")}</span>
                             <span>✍️ ${esc(s.authors || "Unknown author")}</span>
                             ${s.doi ? `<span>🔗 DOI: ${esc(s.doi)}</span>` : ''}
                             <span>📊 ${Math.round(confidence)}% match</span>
                         </div>
-                        ${s.relevance ? `<div class="suggestion-meta" style="margin-top: 5px;">💡 ${esc(s.relevance)}</div>` : ''}
                     </div>
                 `;
             });
 
-            html += `</div>`;
+            html += `
+                    </div>
+                </div>
+            `;
         }
     });
 
-    // Also check for missing citations that might have suggested references
-    const missingRows = data?.missing_in_references || [];
+    // Also check missing citations for suggestions
+    const missingRows = data.missing_in_references || [];
     missingRows.forEach((row, index) => {
         if (row.suggested_references && row.suggested_references.length > 0) {
-            count++;
-
+            suggestionCount++;
+            
+            const citationText = row.citation_in_text || row;
+            
             html += `
-                <div class="suggestions-section" style="margin-top: 20px;">
-                    <h4>📚 Suggested References for Missing Citation (${count})</h4>
-                    <div class="suggestion-original">
-                        ❌ Missing: ${esc(row.citation_in_text || row)}
+                <div class="suggestions-section" style="margin-top: 20px; padding: 12px; background: #fef2f2; border-radius: 10px; border-left: 3px solid #e74c3c;">
+                    <div class="suggestion-header" style="margin-bottom: 12px;">
+                        <span style="font-weight: 600; color: #1e293b;">📚 Missing Citation Suggestion #${suggestionCount}</span>
                     </div>
+                    <div class="suggestion-original" style="font-size: 12px; color: #991b1b; margin-bottom: 10px;">
+                        ❌ Missing: ${esc(citationText)}
+                    </div>
+                    <div style="margin-top: 8px;">
             `;
 
-            row.suggested_references.forEach(s => {
+            row.suggested_references.forEach((s, idx) => {
                 const confidence = s.score || 75;
-                const confClass = confidence >= 80 ? 'high-conf' : (confidence >= 70 ? 'med-conf' : 'low-conf');
                 html += `
-                    <div class="suggestion-item ${confClass}" style="margin-top: 10px;">
-                        <div class="suggestion-suggested">
+                    <div class="suggestion-item" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px;">
+                        <div class="suggestion-suggested" style="font-weight: 500; margin-bottom: 6px;">
                             ✅ ${esc(s.title || 'No title available')}
                         </div>
-                        <div class="suggestion-meta">
+                        <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
                             <span>📅 ${esc(s.year || "N/A")}</span>
                             <span>✍️ ${esc(s.authors || "Unknown author")}</span>
                             ${s.doi ? `<span>🔗 DOI: ${esc(s.doi)}</span>` : ''}
@@ -299,18 +343,39 @@ function appendSuggestedReferences(data) {
                 `;
             });
 
-            html += `</div>`;
+            html += `
+                    </div>
+                </div>
+            `;
         }
     });
 
-    if (html) {
-        // Append to existing content, don't replace
-        container.innerHTML += `
-            <div style="margin-top: 24px; border-top: 2px solid #e2e8f0; padding-top: 20px;">
-                <h3 style="font-size: 18px; margin-bottom: 16px; color: #1e293b;">📚 Suggested References</h3>
-                ${html}
-            </div>
+    if (suggestionCount > 0) {
+        console.log(`[Debug] Added ${suggestionCount} suggested references`);
+        
+        // Check if we already have a suggestions section
+        let existingSection = container.querySelector('.suggestions-master-section');
+        if (existingSection) {
+            existingSection.remove();
+        }
+        
+        // Create the master section
+        const masterSection = document.createElement('div');
+        masterSection.className = 'suggestions-master-section';
+        masterSection.style.marginTop = '24px';
+        masterSection.style.borderTop = '2px solid #e2e8f0';
+        masterSection.style.paddingTop = '20px';
+        masterSection.innerHTML = `
+            <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b; display: flex; align-items: center; gap: 8px;">
+                📚 Suggested References from Online Verification
+                <span style="background: #667eea; color: white; padding: 2px 8px; border-radius: 20px; font-size: 11px;">${suggestionCount}</span>
+            </h3>
+            ${html}
         `;
+        
+        container.appendChild(masterSection);
+    } else {
+        console.log("[Debug] No suggested references found in verification results");
     }
 }
 
@@ -753,9 +818,9 @@ function renderVerify(data) {
 
 function renderAll(data) {
     if (!data) return;
-    CURRENT_DATA = normalizeData(data);
-    CURRENT_DATA.job_id = data.job_id || LAST_JOB_ID;
-    window.latestResults = CURRENT_DATA;
+    const normalized = normalizeData(data);
+    normalized.job_id = data.job_id || LAST_JOB_ID;
+    window.latestResults = normalized;
     
     // Enable export buttons
     const exportCsv = document.getElementById("btnExportCsvTop");
@@ -765,27 +830,29 @@ function renderAll(data) {
     
     if (el.resultsCard) el.resultsCard.style.display = "block";
     
-    renderSummaryTable(CURRENT_DATA);
-    renderACII(CURRENT_DATA);
-    renderMissing(CURRENT_DATA);
-    renderUncited(CURRENT_DATA);
-    renderC2R(CURRENT_DATA);
-    renderR2C(CURRENT_DATA);
-    renderVerify(CURRENT_DATA);
+    renderSummaryTable(normalized);
+    renderACII(normalized);
+    renderMissing(normalized);
+    renderUncited(normalized);
+    renderC2R(normalized);
+    renderR2C(normalized);
+    renderVerify(normalized);
     
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
     updateProcessFeedback("Match", "completed");
     updateProcessFeedback("ACII", "completed");
     
-   if (CURRENT_DATA.autofix && CURRENT_DATA.autofix.suggestions) {
-        FIX_SUGGESTIONS = CURRENT_DATA.autofix;
+    if (normalized.autofix && normalized.autofix.suggestions) {
+        FIX_SUGGESTIONS = normalized.autofix;
         displayFixSuggestions(FIX_SUGGESTIONS);
         if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
     }
     
-    // 🔥 ALWAYS APPEND SUGGESTED REFERENCES
-    appendSuggestedReferences(CURRENT_DATA);
+    // 🔥 ALWAYS APPEND SUGGESTED REFERENCES - PASS THE FULL DATA
+    // Make sure we're passing the data with verification results
+    const fullData = data.data || data;
+    appendSuggestedReferences(fullData);
 }
 
 /* -------------------------------------------------------
