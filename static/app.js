@@ -240,7 +240,6 @@ function appendSuggestedReferences(data) {
     let suggestionCount = 0;
 
     // Check for verification results that might have suggested_references
-    // The data could be in different places depending on the response structure
     let verifyResults = [];
     
     if (data.online_verification && data.online_verification.rows) {
@@ -248,15 +247,19 @@ function appendSuggestedReferences(data) {
         console.log(`[Debug] Found ${verifyResults.length} verification rows`);
     } else if (data.verification && data.verification.rows) {
         verifyResults = data.verification.rows;
+        console.log(`[Debug] Found verification.rows: ${verifyResults.length} rows`);
     } else if (Array.isArray(data.verify)) {
         verifyResults = data.verify;
     } else if (Array.isArray(data)) {
         verifyResults = data;
-    }
-
-    // Also check if the data is directly in the verification results
-    if (data.rows && Array.isArray(data.rows)) {
+    } else if (data.rows && Array.isArray(data.rows)) {
         verifyResults = data.rows;
+    }
+    
+    // Also check window.latestResults as fallback
+    if (verifyResults.length === 0 && window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
+        verifyResults = window.latestResults.online_verification.rows;
+        console.log(`[Debug] Found in window.latestResults: ${verifyResults.length} rows`);
     }
 
     console.log(`[Debug] Processing ${verifyResults.length} verification results for suggestions`);
@@ -265,7 +268,6 @@ function appendSuggestedReferences(data) {
         if (row.suggested_references && row.suggested_references.length > 0) {
             suggestionCount++;
             
-            // Get the original reference text
             const originalRef = row.reference || row.matched_title || 'Unknown reference';
             
             html += `
@@ -284,9 +286,9 @@ function appendSuggestedReferences(data) {
 
             row.suggested_references.forEach((s, idx) => {
                 const confidence = s.score || 75;
-                const confClass = confidence >= 80 ? 'high-conf' : (confidence >= 70 ? 'med-conf' : 'low-conf');
+                const borderColor = confidence >= 80 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
                 html += `
-                    <div class="suggestion-item ${confClass}" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px; border-left: 3px solid ${confidence >= 80 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c')};">
+                    <div class="suggestion-item" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px; border-left: 3px solid ${borderColor};">
                         <div class="suggestion-suggested" style="font-weight: 500; margin-bottom: 6px;">
                             ✅ ${esc(s.title || 'No title available')}
                         </div>
@@ -353,11 +355,15 @@ function appendSuggestedReferences(data) {
     if (suggestionCount > 0) {
         console.log(`[Debug] Added ${suggestionCount} suggested references`);
         
-        // Check if we already have a suggestions section
+        // Remove existing suggestions section if present
         let existingSection = container.querySelector('.suggestions-master-section');
         if (existingSection) {
             existingSection.remove();
         }
+        
+        // Remove any existing "no suggestions" message
+        let noMsg = container.querySelector('.no-suggestions-msg');
+        if (noMsg) noMsg.remove();
         
         // Create the master section
         const masterSection = document.createElement('div');
@@ -376,6 +382,18 @@ function appendSuggestedReferences(data) {
         container.appendChild(masterSection);
     } else {
         console.log("[Debug] No suggested references found in verification results");
+        // Optional: Show a message if no suggestions
+        let noMsg = container.querySelector('.no-suggestions-msg');
+        if (!noMsg) {
+            noMsg = document.createElement('div');
+            noMsg.className = 'no-suggestions-msg';
+            noMsg.style.padding = '15px';
+            noMsg.style.textAlign = 'center';
+            noMsg.style.color = '#64748b';
+            noMsg.style.fontSize = '12px';
+            noMsg.innerHTML = '💡 No suggested references available. Run verification to get suggestions.';
+            container.appendChild(noMsg);
+        }
     }
 }
 
@@ -818,6 +836,9 @@ function renderVerify(data) {
 
 function renderAll(data) {
     if (!data) return;
+    
+    console.log("[Debug] renderAll called with data keys:", Object.keys(data));
+    
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
@@ -849,10 +870,32 @@ function renderAll(data) {
         if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
     }
     
-    // 🔥 ALWAYS APPEND SUGGESTED REFERENCES - PASS THE FULL DATA
-    // Make sure we're passing the data with verification results
-    const fullData = data.data || data;
-    appendSuggestedReferences(fullData);
+    // 🔥 PASS THE ORIGINAL DATA DIRECTLY - DON'T MODIFY IT
+    // The verification results are in data.online_verification
+    console.log("[Debug] Checking for verification data:");
+    console.log("[Debug] - data.online_verification:", !!data.online_verification);
+    console.log("[Debug] - data.result?.online_verification:", !!(data.result && data.result.online_verification));
+    console.log("[Debug] - window.latestResults?.online_verification:", !!(window.latestResults && window.latestResults.online_verification));
+    
+    // Try multiple locations to find verification results
+    let verificationData = null;
+    
+    if (data.online_verification && data.online_verification.rows) {
+        verificationData = data;
+        console.log("[Debug] Using data.online_verification");
+    } else if (data.result && data.result.online_verification && data.result.online_verification.rows) {
+        verificationData = data.result;
+        console.log("[Debug] Using data.result.online_verification");
+    } else if (window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
+        verificationData = window.latestResults;
+        console.log("[Debug] Using window.latestResults.online_verification");
+    } else {
+        verificationData = data;
+        console.log("[Debug] Using original data (may not have online_verification)");
+    }
+    
+    // Call appendSuggestedReferences with the data that has verification results
+    appendSuggestedReferences(verificationData);
 }
 
 /* -------------------------------------------------------
