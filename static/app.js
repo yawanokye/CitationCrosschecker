@@ -220,11 +220,12 @@ function generateACIIRecommendations(aciiData) {
 SUGGESTED REFERENCES FUNCTION (NEW)
 ------------------------------------------------------- */
 
-/* -------------------------------------------------------
-SUGGESTED REFERENCES FUNCTION (FIXED)
-------------------------------------------------------- */
-
 function appendSuggestedReferences(data) {
+    console.log("[Debug] ========== appendSuggestedReferences START ==========");
+    console.log("[Debug] Data type:", typeof data);
+    console.log("[Debug] Data keys:", data ? Object.keys(data) : "null");
+    console.log("[Debug] data.online_verification exists:", !!(data && data.online_verification));
+    
     if (!data) {
         console.log("[Debug] No data for suggested references");
         return;
@@ -244,29 +245,51 @@ function appendSuggestedReferences(data) {
     
     if (data.online_verification && data.online_verification.rows) {
         verifyResults = data.online_verification.rows;
-        console.log(`[Debug] Found ${verifyResults.length} verification rows`);
+        console.log(`[Debug] Found ${verifyResults.length} verification rows in data.online_verification`);
     } else if (data.verification && data.verification.rows) {
         verifyResults = data.verification.rows;
         console.log(`[Debug] Found verification.rows: ${verifyResults.length} rows`);
     } else if (Array.isArray(data.verify)) {
         verifyResults = data.verify;
+        console.log(`[Debug] Found data.verify: ${verifyResults.length} rows`);
     } else if (Array.isArray(data)) {
         verifyResults = data;
+        console.log(`[Debug] Data is array: ${verifyResults.length} rows`);
     } else if (data.rows && Array.isArray(data.rows)) {
         verifyResults = data.rows;
+        console.log(`[Debug] Found data.rows: ${verifyResults.length} rows`);
+    } else if (data.result && data.result.online_verification && data.result.online_verification.rows) {
+        verifyResults = data.result.online_verification.rows;
+        console.log(`[Debug] Found data.result.online_verification.rows: ${verifyResults.length} rows`);
     }
     
     // Also check window.latestResults as fallback
-    if (verifyResults.length === 0 && window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
-        verifyResults = window.latestResults.online_verification.rows;
-        console.log(`[Debug] Found in window.latestResults: ${verifyResults.length} rows`);
+    if (verifyResults.length === 0 && window.latestResults) {
+        console.log("[Debug] Checking window.latestResults...");
+        if (window.latestResults.online_verification && window.latestResults.online_verification.rows) {
+            verifyResults = window.latestResults.online_verification.rows;
+            console.log(`[Debug] Found in window.latestResults: ${verifyResults.length} rows`);
+        } else if (window.latestResults.rows) {
+            verifyResults = window.latestResults.rows;
+            console.log(`[Debug] Found window.latestResults.rows: ${verifyResults.length} rows`);
+        }
     }
 
-    console.log(`[Debug] Processing ${verifyResults.length} verification results for suggestions`);
+    console.log(`[Debug] Final verifyResults length: ${verifyResults.length}`);
+    
+    // Log the first row to see if it has suggested_references
+    if (verifyResults.length > 0) {
+        console.log("[Debug] First row keys:", Object.keys(verifyResults[0]));
+        console.log("[Debug] First row has 'suggested_references':", 'suggested_references' in verifyResults[0]);
+        if (verifyResults[0].suggested_references) {
+            console.log("[Debug] First row suggested_references length:", verifyResults[0].suggested_references.length);
+        }
+    }
 
     verifyResults.forEach((row, index) => {
         if (row.suggested_references && row.suggested_references.length > 0) {
             suggestionCount++;
+            console.log(`[Debug] Row ${index} has ${row.suggested_references.length} suggestions`);
             
             const originalRef = row.reference || row.matched_title || 'Unknown reference';
             
@@ -311,9 +334,12 @@ function appendSuggestedReferences(data) {
 
     // Also check missing citations for suggestions
     const missingRows = data.missing_in_references || [];
+    console.log(`[Debug] Checking ${missingRows.length} missing rows for suggestions`);
+    
     missingRows.forEach((row, index) => {
         if (row.suggested_references && row.suggested_references.length > 0) {
             suggestionCount++;
+            console.log(`[Debug] Missing row ${index} has ${row.suggested_references.length} suggestions`);
             
             const citationText = row.citation_in_text || row;
             
@@ -353,7 +379,7 @@ function appendSuggestedReferences(data) {
     });
 
     if (suggestionCount > 0) {
-        console.log(`[Debug] Added ${suggestionCount} suggested references`);
+        console.log(`[Debug] ✅ Added ${suggestionCount} suggested references to the UI`);
         
         // Remove existing suggestions section if present
         let existingSection = container.querySelector('.suggestions-master-section');
@@ -380,9 +406,10 @@ function appendSuggestedReferences(data) {
         `;
         
         container.appendChild(masterSection);
+        console.log("[Debug] Master section appended to container");
     } else {
-        console.log("[Debug] No suggested references found in verification results");
-        // Optional: Show a message if no suggestions
+        console.log("[Debug] ❌ No suggested references found in verification results");
+        // Show a message if no suggestions
         let noMsg = container.querySelector('.no-suggestions-msg');
         if (!noMsg) {
             noMsg = document.createElement('div');
@@ -395,8 +422,9 @@ function appendSuggestedReferences(data) {
             container.appendChild(noMsg);
         }
     }
+    
+    console.log("[Debug] ========== appendSuggestedReferences END ==========");
 }
-
 /* -------------------------------------------------------
 AUTO-FIX FUNCTIONS
 ------------------------------------------------------- */
