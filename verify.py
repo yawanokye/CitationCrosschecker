@@ -648,7 +648,35 @@ def _best_candidate(
 # ---------------------------------------------------------
 # Main verification function with improved error handling
 # ---------------------------------------------------------
+def _get_top_suggestions(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    candidates: List[Dict[str, Any]],
+    top_k: int = 3,
+) -> List[Dict[str, Any]]:
 
+    scored = []
+
+    for cand in candidates:
+        doi, title, year, authors = _candidate_fields(cand)
+        meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
+
+        # Only keep meaningful matches
+        if meta["score"] >= 60 or meta["title_score"] >= 70:
+            scored.append({
+                "title": title,
+                "doi": doi,
+                "year": year,
+                "authors": authors,
+                "score": meta["score"],
+                "title_score": meta["title_score"],
+            })
+
+    scored_sorted = sorted(scored, key=lambda x: x["score"], reverse=True)
+
+    return scored_sorted[:top_k]
+    
 def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
     """Original fast verification function with improved error handling"""
     cache_key = f"{style}::{ref}"
@@ -746,8 +774,31 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 "author_similarity": int(best_meta.get("author_similarity", 0)),
                 "year_match": int(best_meta.get("year_match", 0)),
             })
+
+            # -------------------------------------------------
+            # ADD SUGGESTED REFERENCES (REFINED)
+            # -------------------------------------------------
+            if status in {"likely", "needs_review", "not_found"} and candidates:
+
+                suggestions = _get_top_suggestions(
+                    ref_title,
+                    ref_authors,
+                    ref_year,
+                    candidates,
+                    top_k=3,
+                )
+
+                # Avoid returning the same match as suggestion
+                filtered_suggestions = []
+                for s in suggestions:
+                    if _safe_strip(s.get("title")) != _safe_strip(row.get("matched_title")):
+                        filtered_suggestions.append(s)
+
+                # Only attach meaningful suggestions
+                if filtered_suggestions:
+                    row["suggested_references"] = filtered_suggestions
+
         else:
-            # Even with no matches, mark as not_found (not offline)
             row["status"] = "not_found"
 
     except Exception as e:
@@ -758,7 +809,6 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
     row["status"] = _normalize_verify_status(row.get("status"))
     _cache_set(cache_key, row)
     return row
-
 
 # ---------------------------------------------------------
 # Public API - Returns ALL results (NO TIME LIMITS)
