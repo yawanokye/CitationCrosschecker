@@ -598,41 +598,45 @@ def _classify(
     author_overlap: int = 0,
 ) -> str:
 
-    # -------------------------------
-    # DOI handling (FIXED)
-    # -------------------------------
+    # -------------------------------------------------
+    # 1. STRICT VERIFIED (IDENTITY ONLY)
+    # -------------------------------------------------
+
+    # DOI must agree with strong title
+    if doi_match and title_score >= 80:
+        return "verified"
+
+    # Near-exact title match (independent of DOI)
+    if title_score >= 90:
+        return "verified"
+
+    # -------------------------------------------------
+    # 2. LIKELY (STRONG BUT NOT EXACT)
+    # -------------------------------------------------
+
+    if title_score >= 85:
+        return "likely"
+
+    if score >= 85:
+        return "likely"
+
+    # -------------------------------------------------
+    # 3. NEEDS REVIEW (SUSPICIOUS / PARTIAL MATCH)
+    # -------------------------------------------------
+
+    if title_score >= 75:
+        return "needs_review"
+
+    if score >= 60:
+        return "needs_review"
+
+    # DOI exists but title mismatch → suspicious
     if doi_match:
-        if title_score >= 85:
-            return "verified"
-
-        if title_score >= 75:
-            return "verified"
-
-        if title_score >= 65:
-            return "likely"
-
         return "needs_review"
 
-    # -------------------------------
-    # Non-DOI logic
-    # -------------------------------
-    if score >= 92 and title_score >= 85:
-        return "verified"
-
-    if title_score >= 80:
-        return "verified"
-
-    if score >= 80:
-        return "likely"
-
-    if title_score >= 70:
-        return "likely"
-
-    if score >= 55:
-        return "needs_review"
-
-    if title_score >= 60:
-        return "needs_review"
+    # -------------------------------------------------
+    # 4. NOT FOUND
+    # -------------------------------------------------
 
     return "not_found"
 
