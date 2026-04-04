@@ -156,7 +156,7 @@ _STOP_WORDS = {
     "springer", "elsevier", "taylor", "francis", "sage", "wiley",
     "ieee", "nature", "acm", "oxford", "cambridge", "routledge",
     "macmillan", "pearson", "harpercollins", "penguin", "random", "house",
-    "john", "sons", "inc", "editorial",
+    "john", "sons", "inc", "editorial", "publisher", "page",
 }
 
 _STYLE_ALIASES = {
