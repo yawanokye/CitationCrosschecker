@@ -217,101 +217,123 @@ function generateACIIRecommendations(aciiData) {
 }
 
 /* -------------------------------------------------------
-DISPLAY ALL SUGGESTIONS (NEW FUNCTION)
+DISPLAY SUGGESTED REFERENCES (FOR DEDICATED TAB)
 ------------------------------------------------------- */
 
-function displayAllSuggestions(suggestionsList) {
-    const panel = document.getElementById("suggestionsPanel");
-    const content = document.getElementById("suggestionsContent");
+function displaySuggestedReferences(data) {
+    console.log("[Debug] displaySuggestedReferences called");
     
-    if (!panel || !content) return;
+    const panel = document.getElementById("suggestedRefsPanel");
+    const content = document.getElementById("suggestedRefsContent");
     
-    if (!suggestionsList || suggestionsList.length === 0) {
-        panel.style.display = "none";
+    if (!panel || !content) {
+        console.log("[Debug] Suggested references panel or content not found");
         return;
     }
     
-    // Deduplicate by original text
-    const seen = new Set();
-    const uniqueSuggestions = [];
-    for (const s of suggestionsList) {
-        const key = (s.original || "").substring(0, 100);
-        if (!seen.has(key)) {
-            seen.add(key);
-            uniqueSuggestions.push(s);
-        }
+    // Extract suggestions from online_verification.rows
+    let allSuggestions = [];
+    
+    if (data && data.online_verification && data.online_verification.rows) {
+        console.log(`[Debug] Found ${data.online_verification.rows.length} verification rows`);
+        
+        data.online_verification.rows.forEach((row, rowIdx) => {
+            if (row.suggested_references && row.suggested_references.length > 0) {
+                console.log(`[Debug] Row ${rowIdx} has ${row.suggested_references.length} suggestions`);
+                
+                row.suggested_references.forEach((suggestion, sIdx) => {
+                    allSuggestions.push({
+                        original: row.reference || row.matched_title || 'Unknown reference',
+                        original_status: row.status,
+                        suggested_title: suggestion.title || 'No title available',
+                        suggested_doi: suggestion.doi,
+                        suggested_year: suggestion.year,
+                        suggested_authors: suggestion.authors,
+                        score: suggestion.score || 75,
+                        title_score: suggestion.title_score || 0
+                    });
+                });
+            }
+        });
+    }
+    
+    console.log(`[Debug] Total suggestions found: ${allSuggestions.length}`);
+    
+    if (allSuggestions.length === 0) {
+        panel.style.display = "block";
+        content.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #64748b;">
+                <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
+                <h4>No suggested references available</h4>
+                <p style="font-size: 13px; margin-top: 8px;">Run online verification to get suggested references for your citations.</p>
+            </div>
+        `;
+        return;
     }
     
     panel.style.display = "block";
     
-    const highConf = uniqueSuggestions.filter(s => s.confidence >= 0.85);
-    const medConf = uniqueSuggestions.filter(s => s.confidence >= 0.70 && s.confidence < 0.85);
-    const lowConf = uniqueSuggestions.filter(s => s.confidence < 0.70);
-    
-    let html = `<div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
-        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
-            <span>✅ High confidence: ${highConf.length}</span>
-            <span>⚠️ Needs review: ${medConf.length + lowConf.length}</span>
-            <span>📋 Total suggestions: ${uniqueSuggestions.length}</span>
+    let html = `<div style="margin-bottom: 20px; padding: 12px 16px; background: #f0fdf4; border-radius: 12px;">
+        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-size: 13px;">
+            <span>📊 Total suggestions: <strong>${allSuggestions.length}</strong></span>
+            <span>🔍 Based on CrossRef & OpenAlex databases</span>
         </div>
     </div>`;
     
-    // Group by type
-    const citedSuggestions = uniqueSuggestions.filter(s => s.type === "suggested_reference" || s.category === "citation");
-    const missingSuggestions = uniqueSuggestions.filter(s => s.category === "missing");
-    
-    if (citedSuggestions.length > 0) {
-        html += `<div class="suggestions-section"><h4>📚 Suggested Alternative References (${citedSuggestions.length})</h4>`;
-        html += citedSuggestions.slice(0, 30).map(s => {
-            const confidence = Math.round((s.confidence || 0.75) * 100);
-            const borderColor = confidence >= 85 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
-            const doiHtml = s.doi ? `<div style="margin-top: 6px;"><a href="https://doi.org/${esc(s.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <span style="font-size: 10px; color: #64748b;">(${esc(s.doi)})</span></div>` : '';
-            const yearHtml = s.year ? `<span>📅 ${esc(s.year)}</span>` : '';
-            const authorsHtml = s.authors && s.authors.length ? `<span>✍️ ${esc(Array.isArray(s.authors) ? s.authors.join(', ') : s.authors)}</span>` : '';
-            
-            return `
-                <div class="suggestion-item" style="border-left: 4px solid ${borderColor}; margin-bottom: 12px; padding: 12px; background: #f8fafc; border-radius: 10px;">
-                    <div class="suggestion-original" style="color: #e74c3c; text-decoration: line-through; font-size: 12px; margin-bottom: 8px;">
-                        ❌ ${esc(s.original.substring(0, 200))}${s.original.length > 200 ? '…' : ''}
-                    </div>
-                    <div class="suggestion-suggested" style="color: #19b36b; font-weight: 600; margin-bottom: 8px;">
-                        ✅ ${esc(s.suggested.substring(0, 200))}${s.suggested.length > 200 ? '…' : ''}
-                    </div>
-                    <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
-                        ${yearHtml}
-                        ${authorsHtml}
-                        <span>📊 ${confidence}% match</span>
-                    </div>
-                    ${doiHtml}
-                    <div class="suggestion-reason" style="font-size: 10px; color: #64748b; margin-top: 6px;">
-                        💡 ${esc(s.reason || 'Suggested based on title and author similarity')}
-                    </div>
+    allSuggestions.forEach((s, idx) => {
+        const confidence = s.score;
+        const borderColor = confidence >= 85 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
+        const confidenceText = confidence >= 85 ? 'High' : (confidence >= 70 ? 'Medium' : 'Low');
+        
+        const doiHtml = s.suggested_doi ? `
+            <div style="margin-top: 8px;">
+                <a href="https://doi.org/${esc(s.suggested_doi)}" target="_blank" style="color: #19b36b; text-decoration: none; font-size: 12px;">
+                    🔗 View Article on DOI.org
+                </a>
+                <span style="font-size: 11px; color: #64748b; margin-left: 8px;">(${esc(s.suggested_doi)})</span>
+            </div>
+        ` : '';
+        
+        const yearHtml = s.suggested_year ? `<span>📅 ${esc(s.suggested_year)}</span>` : '';
+        const authorsHtml = s.suggested_authors && s.suggested_authors.length ? 
+            `<span>✍️ ${esc(Array.isArray(s.suggested_authors) ? s.suggested_authors.join(', ') : s.suggested_authors)}</span>` : '';
+        
+        html += `
+            <div style="border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 16px; overflow: hidden;">
+                <div style="background: ${borderColor}10; padding: 10px 16px; border-bottom: 1px solid #e2e8f0;">
+                    <span style="font-weight: 600;">Suggested Reference #${idx + 1}</span>
+                    <span style="float: right; font-size: 11px; color: ${borderColor};">
+                        ${confidenceText} confidence (${confidence}%)
+                    </span>
                 </div>
-            `;
-        }).join('');
-        html += `</div>`;
-    }
-    
-    if (missingSuggestions.length > 0) {
-        html += `<div class="suggestions-section"><h4>🔍 Missing Reference Suggestions (${missingSuggestions.length})</h4>`;
-        html += missingSuggestions.slice(0, 20).map(s => `
-            <div class="suggestion-item" style="margin-bottom: 12px; padding: 12px; background: #fef2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
-                <div class="suggestion-original" style="color: #e74c3c; font-size: 12px; margin-bottom: 8px;">
-                    ❌ Missing: ${esc(s.original || '')}
-                </div>
-                <div class="suggestion-suggested" style="color: #19b36b; font-weight: 600;">
-                    ✅ ${esc(s.suggested || '')}
-                </div>
-                <div class="suggestion-meta" style="margin-top: 6px;">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>💡 ${esc(s.reason || '')}</span>
+                <div style="padding: 16px;">
+                    <div style="margin-bottom: 12px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Original reference:</div>
+                        <div style="font-size: 12px; color: #e74c3c; text-decoration: line-through; word-break: break-word;">
+                            ${esc(s.original.substring(0, 200))}${s.original.length > 200 ? '…' : ''}
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Suggested replacement:</div>
+                        <div style="font-size: 13px; font-weight: 500; color: #19b36b;">
+                            ✅ ${esc(s.suggested_title)}
+                        </div>
+                        <div style="display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: #64748b; margin-top: 8px;">
+                            ${yearHtml}
+                            ${authorsHtml}
+                        </div>
+                        ${doiHtml}
+                    </div>
+                    <div style="background: #f8fafc; padding: 8px 12px; border-radius: 8px; font-size: 11px; color: #64748b;">
+                        💡 This suggested reference matches ${confidence}% based on title similarity and author information.
+                    </div>
                 </div>
             </div>
-        `).join('');
-        html += `</div>`;
-    }
+        `;
+    });
     
     content.innerHTML = html;
+    console.log("[Debug] Suggested references displayed in dedicated tab");
 }
 
 /* -------------------------------------------------------
@@ -735,7 +757,7 @@ function renderVerify(data) {
             <div class="kpi">❌ Not Found: ${sum.not_found ?? 0}</div>`;
     }
     if (!el.verifyBody) return;
-    if (!rows.length) { el.verifyBody.innerHTML = `</table><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`; return; }
+    if (!rows.length) { el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></td>`; return; }
     
     el.verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
         const doiLink = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <small style="color: #64748b;">(${esc(r.doi)})</small>` : '';
@@ -771,67 +793,8 @@ function renderAll(data) {
     renderR2C(normalized);
     renderVerify(normalized);
     
-    // Extract suggestions from online_verification.rows
-    let allSuggestions = [];
-    
-    // Check for suggestions in online_verification.rows
-    if (data.online_verification && data.online_verification.rows) {
-        console.log("[Debug] Found online_verification.rows, extracting suggestions");
-        data.online_verification.rows.forEach(row => {
-            if (row.suggested_references && row.suggested_references.length > 0) {
-                console.log(`[Debug] Row has ${row.suggested_references.length} suggestions`);
-                row.suggested_references.forEach(suggestion => {
-                    allSuggestions.push({
-                        original: row.reference || row.matched_title || 'Unknown reference',
-                        suggested: suggestion.title || '',
-                        confidence: (suggestion.score || 75) / 100,
-                        reason: `Suggested alternative reference with ${suggestion.score || 75}% match`,
-                        type: "suggested_reference",
-                        category: "citation",
-                        action: "review_required",
-                        doi: suggestion.doi,
-                        year: suggestion.year,
-                        authors: suggestion.authors
-                    });
-                });
-            }
-        });
-    }
-    
-    // Also check for autofix suggestions
-    if (normalized.autofix && normalized.autofix.suggestions) {
-        console.log("[Debug] Found autofix suggestions");
-        const autofixSuggestions = normalized.autofix.suggestions;
-        if (autofixSuggestions.citations) {
-            autofixSuggestions.citations.forEach(s => {
-                allSuggestions.push({
-                    original: s.citation || s.original,
-                    suggested: s.suggested,
-                    confidence: s.confidence,
-                    reason: s.reason,
-                    type: s.type,
-                    category: "citation",
-                    action: s.action || "review_required"
-                });
-            });
-        }
-        if (autofixSuggestions.missing) {
-            autofixSuggestions.missing.forEach(s => {
-                allSuggestions.push({
-                    original: s.citation,
-                    suggested: s.suggested,
-                    confidence: s.confidence,
-                    reason: s.reason,
-                    type: s.type,
-                    category: "missing",
-                    action: "add_reference"
-                });
-            });
-        }
-    }
-    
-    // Display all suggestions using the new function
-    displayAllSuggestions(allSuggestions);
+    // Display suggested references in the dedicated tab
+    displaySuggestedReferences(data);
     
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
