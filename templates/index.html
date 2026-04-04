@@ -673,6 +673,20 @@
             letter-spacing: 0.5px;
         }
 
+        /* DOI Link Styles */
+        .doi-link {
+            color: #19b36b;
+            text-decoration: none;
+            font-size: 11px;
+        }
+        .doi-link:hover {
+            text-decoration: underline;
+        }
+        .doi-text {
+            font-size: 10px;
+            color: #64748b;
+        }
+
         @media (max-width: 768px) {
             .container { padding: 16px; }
             .hero h1 { font-size: 26px; }
@@ -754,6 +768,7 @@
             <div class="button-group" style="justify-content: center;">
                 <button class="btn btn-primary" id="btnCheck">📊 Analyze Document</button>
                 <button class="btn btn-secondary" id="btnVerify" disabled>🌐 Verify References</button>
+                <button class="btn btn-success" id="btnApplyAutofix" disabled style="display: none;">✨ Auto-Fix & Download</button>
             </div>
 
             <div class="status-bar">
@@ -799,6 +814,11 @@
         </div>
     </div>
 
+    <!-- Queue Status -->
+    <div id="queueStatus" class="queue-info" style="background: #f8f9fa; padding: 8px 15px; border-radius: 8px; margin: 10px 0; display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; border-left: 3px solid #3498db;">
+        <span>📊 Loading queue status...</span>
+    </div>
+
     <!-- Results Section -->
     <section id="resultsCard" class="card" style="display:none;">
         <div class="results-header">
@@ -833,10 +853,10 @@
                         <table class="tbl">
                             <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
                             <tbody>
-                                <tr><td>Verification Integrity</div><td id="aciiV">--</div><td id="aciiVcat">--</div><td id="aciiVremark">--</div></tr>
-                                <tr><td>Citation Concentration</div><td id="aciiC">--</div><td id="aciiCcat">--</div><td id="aciiCremark">--</div></tr>
-                                <tr><td>Author Diversity</div><td id="aciiA">--</div><td id="aciiAcat">--</div><td id="aciiAremark">--</div></tr>
-                                <tr><td>Temporal Balance</div><td id="aciiT">--</div><td id="aciiTcat">--</div><td id="aciiTremark">--</div></tr>
+                                <tr><td style="width:200px;">Verification Integrity</div><td id="aciiV">--</div><td id="aciiVcat">--</div><td id="aciiVremark">--</div></tr>
+                                <tr><td style="width:200px;">Citation Concentration</div><td id="aciiC">--</div><td id="aciiCcat">--</div><td id="aciiCremark">--</div></tr>
+                                <tr><td style="width:200px;">Author Diversity</div><td id="aciiA">--</div><td id="aciiAcat">--</div><td id="aciiAremark">--</div></tr>
+                                <tr><td style="width:200px;">Temporal Balance</div><td id="aciiT">--</div><td id="aciiTcat">--</div><td id="aciiTremark">--</div></tr>
                             </tbody>
                         </table>
                     </div>
@@ -952,6 +972,8 @@ let POLL_TIMER = null;
 let VERIFICATION_IN_PROGRESS = false;
 let RETRY_COUNT = 0;
 let POLL_ATTEMPT_COUNT = 0;
+let LAST_PROGRESS = 0;
+let LAST_PROGRESS_TIME = null;
 window.latestResults = null;
 
 // Utility Functions
@@ -1254,11 +1276,30 @@ function updateProgress(progress, total, status = "processing", message = null, 
     }
 }
 
+// Queue Status
+async function updateQueueStatus() {
+    try {
+        const response = await fetch('/queue/status');
+        const data = await response.json();
+        const queueStatus = $("queueStatus");
+        if (queueStatus) {
+            queueStatus.innerHTML = `<span>📊 Queue: ${data.queue_size || 0}</span>
+                <span>⏳ Pending: ${data.pending_jobs || 0}</span>
+                <span>⚙️ Processing: ${data.processing_jobs || 0}</span>
+                <span>📈 Total Jobs: ${data.total_jobs || 0}</span>`;
+        }
+        return data;
+    } catch (err) { return null; }
+}
+
 // Reset UI
 function resetVerificationUI() {
     const verifyDash = $("verifyDash");
     const verifyBody = $("verifyBody");
-    if (verifyDash) verifyDash.innerHTML = `<div class="kpi">✅ Verified: 0</div><div class="kpi">🔍 Likely: 0</div><div class="kpi">⚠️ Needs Review: 0</div><div class="kpi">❌ Not Found: 0</div>`;
+    if (verifyDash) verifyDash.innerHTML = `<div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">✅ Verified</div></div>
+        <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">🔍 Likely</div></div>
+        <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">⚠️ Needs Review</div></div>
+        <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">❌ Not Found</div></div>`;
     if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`;
     updateProgress(0, 0, "processing", "Ready to verify");
     const verifyProgress = $("verifyProgress");
@@ -1313,6 +1354,8 @@ async function fetchStatus() {
 function startPolling() {
     if (POLL_TIMER) clearInterval(POLL_TIMER);
     POLL_ATTEMPT_COUNT = 0;
+    LAST_PROGRESS = 0;
+    LAST_PROGRESS_TIME = null;
     POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
 }
 
@@ -1409,7 +1452,7 @@ function renderMissing(data) {
     const rows = data?.missing_in_references || [];
     const body = $("missingBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></td>`; return; }
     body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></tr>`).join("");
 }
 
@@ -1418,7 +1461,7 @@ function renderUncited(data) {
     const body = $("uncitedBody");
     if (!body) return;
     if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
-    body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
+    body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></td>`).join("");
 }
 
 function renderC2R(data) {
@@ -1426,14 +1469,14 @@ function renderC2R(data) {
     const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
     const body = $("c2rBody");
     if (!body) return;
-    if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="6">No mapping available</div></tr>`; return; }
+    if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="6">No mapping available</div></td>`; return; }
     body.innerHTML = uniqueCitations.slice(0, 30).map((item, i) => `
         <tr>
             <td style="width:50px;">${i + 1}</div>
             <td style="width:100px;"><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></div>
-            <td>${esc(item.citation)}</div>
+            <td style="max-width:300px;">${esc(item.citation)}</div>
             <td style="width:70px; text-align:center"><strong>${item.count}</strong></div>
-            <td>${esc(item.matched_reference || '')}</div>
+            <td style="max-width:400px;">${esc(item.matched_reference || '')}</div>
             <td style="width:100px;">${esc(item.flags || '')}</div>
         </tr>
     `).join("");
@@ -1448,8 +1491,8 @@ function renderR2C(data) {
         <tr>
             <td style="width:50px;">${i + 1}</div>
             <td style="width:80px;">${esc(r.times_cited ?? 0)}</div>
-            <td>${esc(r.reference || '')}</div>
-            <td>${esc((r.cited_by || []).slice(0, 2).join("; "))}</div>
+            <td style="max-width:500px;">${esc(r.reference || '')}</div>
+            <td style="max-width:200px;">${esc((r.cited_by || []).slice(0, 2).join("; "))}</div>
         </tr>
     `).join("");
 }
@@ -1471,18 +1514,21 @@ function renderVerify(data) {
     if (!verifyBody) return;
     if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`; return; }
     
-    verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `
-        <tr>
-            <td style="width:50px;">${i + 1}</div>
-            <td style="width:100px;"><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'))}">${esc(r.status || '')}</span></div>
-            <td style="width:100px;">${esc(r.source || '—')}</div>
-            <td style="width:70px;">${esc(r.score || '—')}</div>
-            <td style="width:120px;">${esc(r.doi || '—')}</div>
-            <td style="width:80px;">${esc(r.matched_year || '—')}</div>
-            <td>${esc(r.matched_authors || '—')}</div>
-            <td>${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</div>
-        </tr>
-    `).join("");
+    verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
+        const doiHtml = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View Article</a> <span class="doi-text">(${esc(r.doi)})</span>` : '—';
+        return `
+            <tr>
+                <td style="width:50px;">${i + 1}</div>
+                <td style="width:100px;"><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'))}">${esc(r.status || '')}</span></div>
+                <td style="width:100px;">${esc(r.source || '—')}</div>
+                <td style="width:70px;">${esc(r.score || '—')}</div>
+                <td style="width:150px;">${doiHtml}</div>
+                <td style="width:80px;">${esc(r.matched_year || '—')}</div>
+                <td style="max-width:200px;">${esc(r.matched_authors || '—')}</div>
+                <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</div>
+            </tr>
+        `;
+    }).join("");
     
     const btnExportVerify = $("btnExportVerify");
     if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
@@ -1524,12 +1570,12 @@ function renderAll(data) {
 }
 
 // Export Functions
-function exportCSV(data) {
-    if (!data) { alert("No data to export."); return; }
-    const normalized = normalizeData(data);
-    const s = normalized.summary || {};
-    const missing = normalized.missing_in_references || [];
-    const uncited = normalized.uncited_references || [];
+function exportCSV() {
+    if (!window.latestResults) { alert("No data to export."); return; }
+    const data = window.latestResults;
+    const s = data.summary || {};
+    const missing = data.missing_in_references || [];
+    const uncited = data.uncited_references || [];
     let csv = [`"Generated","${new Date().toLocaleString()}"`];
     csv.push(`"Total in-text citations","${s.in_text_citations_found || 0}"`);
     csv.push(`"References","${s.reference_entries_found || 0}"`);
@@ -1548,24 +1594,24 @@ function exportCSV(data) {
     URL.revokeObjectURL(link.href);
 }
 
-function exportWordFile(data) {
-    if (!data) { alert("No data to export."); return; }
-    const normalized = normalizeData(data);
-    const s = normalized.summary || {};
-    const missing = normalized.missing_in_references || [];
-    const uncited = normalized.uncited_references || [];
-    const acii = normalized.acii || {};
+function exportWordFile() {
+    if (!window.latestResults) { alert("No data to export."); return; }
+    const data = window.latestResults;
+    const s = data.summary || {};
+    const missing = data.missing_in_references || [];
+    const uncited = data.uncited_references || [];
+    const acii = data.acii || {};
     const aciiRating = getACIIRating(acii.ACII);
     let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head><body>
         <h1>CiteIntegrity Report</h1>
         <p>Generated: ${new Date().toLocaleString()}</p>
         <h2>Summary</h2>
         <table border="1"><tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Total Citations</td><td>${s.in_text_citations_found || 0}</td></tr>
-        <tr><td>References</td><td>${s.reference_entries_found || 0}</td></tr>
-        <tr><td>Missing</td><td>${s.missing_in_references || 0}</td></tr>
-        <tr><td>Uncited</td><td>${s.uncited_references || 0}</td></tr>
-        <tr><td>Match Rate</td><td>${s.match_rate || 0}%</td></tr></table>
+        <tr><td>Total Citations</div><td>${s.in_text_citations_found || 0}</div></tr>
+        <tr><td>References</div><td>${s.reference_entries_found || 0}</div></tr>
+        <tr><td>Missing</div><td>${s.missing_in_references || 0}</div></tr>
+        <tr><td>Uncited</div><td>${s.uncited_references || 0}</div></tr>
+        <tr><td>Match Rate</div><td>${s.match_rate || 0}%</div></tr></table>
         <h2>ACII Score: ${acii.ACII || '—'} (${aciiRating.text})</h2>
         <p>${aciiRating.description}</p>
         <h2>Missing Citations</h2><ul>${missing.map(m => `<li>${esc(m.citation_in_text || m)}</li>`).join('')}</ul>
@@ -1630,6 +1676,7 @@ async function runInitialCheck() {
         updateProcessFeedback("Match", "active");
         renderAll(js);
         setStatus("Analysis complete", "good");
+        updateQueueStatus();
         const btnVerify = $("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
         if (js.online_verification_started) startPolling();
@@ -1669,9 +1716,12 @@ const exportCsv = $("btnExportCsvTop");
 const exportWord = $("btnExportWordTop");
 const exportVerify = $("btnExportVerify");
 
-if (exportCsv) exportCsv.addEventListener("click", () => { if (window.latestResults) exportCSV(window.latestResults); else alert("Run a check first."); });
-if (exportWord) exportWord.addEventListener("click", () => { if (window.latestResults) exportWordFile(window.latestResults); else alert("Run a check first."); });
+if (exportCsv) exportCsv.addEventListener("click", () => { if (window.latestResults) exportCSV(); else alert("Run a check first."); });
+if (exportWord) exportWord.addEventListener("click", () => { if (window.latestResults) exportWordFile(); else alert("Run a check first."); });
 if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
+
+setInterval(updateQueueStatus, 5000);
+updateQueueStatus();
 
 console.log("[CiteIntegrity] App initialized - Enhanced visibility, larger fonts, sharper indicators");
 
