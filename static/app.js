@@ -1,4 +1,4 @@
-/* static/app.js — CiteIntegrity Dashboard (FULLY FUNCTIONAL with Suggested References) */
+/* static/app.js — CiteIntegrity Dashboard (FULLY FUNCTIONAL with Suggested References & DOI Links) */
 
 document.addEventListener("DOMContentLoaded", function () {
 
@@ -217,7 +217,7 @@ function generateACIIRecommendations(aciiData) {
 }
 
 /* -------------------------------------------------------
-SUGGESTED REFERENCES FUNCTION (NEW)
+SUGGESTED REFERENCES FUNCTION (WITH DOI LINKS)
 ------------------------------------------------------- */
 
 function appendSuggestedReferences(data) {
@@ -310,6 +310,8 @@ function appendSuggestedReferences(data) {
             row.suggested_references.forEach((s, idx) => {
                 const confidence = s.score || 75;
                 const borderColor = confidence >= 80 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
+                const doiLink = s.doi ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <small style="color: #64748b;">(${esc(s.doi)})</small>` : '';
+                
                 html += `
                     <div class="suggestion-item" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px; border-left: 3px solid ${borderColor};">
                         <div class="suggestion-suggested" style="font-weight: 500; margin-bottom: 6px;">
@@ -318,9 +320,9 @@ function appendSuggestedReferences(data) {
                         <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
                             <span>📅 ${esc(s.year || "N/A")}</span>
                             <span>✍️ ${esc(s.authors || "Unknown author")}</span>
-                            ${s.doi ? `<span>🔗 DOI: ${esc(s.doi)}</span>` : ''}
                             <span>📊 ${Math.round(confidence)}% match</span>
                         </div>
+                        ${doiLink ? `<div class="suggestion-doi" style="margin-top: 6px; font-size: 10px;">${doiLink}</div>` : ''}
                     </div>
                 `;
             });
@@ -356,6 +358,8 @@ function appendSuggestedReferences(data) {
 
             row.suggested_references.forEach((s, idx) => {
                 const confidence = s.score || 75;
+                const doiLink = s.doi ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <small style="color: #64748b;">(${esc(s.doi)})</small>` : '';
+                
                 html += `
                     <div class="suggestion-item" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px;">
                         <div class="suggestion-suggested" style="font-weight: 500; margin-bottom: 6px;">
@@ -364,9 +368,9 @@ function appendSuggestedReferences(data) {
                         <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
                             <span>📅 ${esc(s.year || "N/A")}</span>
                             <span>✍️ ${esc(s.authors || "Unknown author")}</span>
-                            ${s.doi ? `<span>🔗 DOI: ${esc(s.doi)}</span>` : ''}
                             <span>📊 ${Math.round(confidence)}% match</span>
                         </div>
+                        ${doiLink ? `<div class="suggestion-doi" style="margin-top: 6px; font-size: 10px;">${doiLink}</div>` : ''}
                     </div>
                 `;
             });
@@ -425,6 +429,7 @@ function appendSuggestedReferences(data) {
     
     console.log("[Debug] ========== appendSuggestedReferences END ==========");
 }
+
 /* -------------------------------------------------------
 AUTO-FIX FUNCTIONS
 ------------------------------------------------------- */
@@ -829,7 +834,7 @@ function renderC2R(data) {
 function renderR2C(data) {
     const rows = data?.reconciliation_reference_to_intext || [];
     if (!el.r2cBody) return;
-    if (!rows.length) { el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</div></tr>`; return; }
+    if (!rows.length) { el.r2cBody.innerHTML = `<tr><td colspan="4">No mapping available</div></td>`; return; }
     el.r2cBody.innerHTML = rows.map((r, i) => `<tr>
         <td>${i + 1}</div>
         <td>${esc(r.times_cited ?? 0)}</div>
@@ -850,16 +855,22 @@ function renderVerify(data) {
     }
     if (!el.verifyBody) return;
     if (!rows.length) { el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`; return; }
-    el.verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => `<tr>
-        <td>${i + 1}</div>
-        <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : 'not_found')}">${esc(r.status || '')}</span></div>
-        <td>${esc(r.source || '—')}</div>
-        <td>${esc(r.score || '—')}</div>
-        <td>${esc(r.doi || '—')}</div>
-        <td>${esc(r.matched_year || '—')}</div>
-        <td>${esc(r.matched_authors || '—')}</div>
-        <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</div>
-    </tr>`).join("");
+    
+    el.verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
+        const doiLink = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <small style="color: #64748b;">(${esc(r.doi)})</small>` : '';
+        return `
+            <tr>
+                <td>${i + 1}</td>
+                <td><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : 'not_found')}">${esc(r.status || '')}</span></td>
+                <td>${esc(r.source || '—')}</td>
+                <td>${esc(r.score || '—')}</td>
+                <td>${doiLink || '—'}</td>
+                <td>${esc(r.matched_year || '—')}</td>
+                <td>${esc(r.matched_authors || '—')}</td>
+                <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</td>
+            </tr>
+        `;
+    }).join("");
 }
 
 function renderAll(data) {
@@ -1151,6 +1162,6 @@ if (exportVerifyBtn) exportVerifyBtn.addEventListener("click", exportVerificatio
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[CiteIntegrity] App initialized - All features working with Suggested References");
+console.log("[CiteIntegrity] App initialized - All features working with Suggested References & DOI Links");
 
 });
