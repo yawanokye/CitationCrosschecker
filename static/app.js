@@ -216,16 +216,15 @@ function generateACIIRecommendations(aciiData) {
     return html;
 }
 
-/* -------------------------------------------------------
-DISPLAY SUGGESTED REFERENCES (FOR DEDICATED TAB)
-------------------------------------------------------- */
 
 /* -------------------------------------------------------
-DISPLAY SUGGESTED REFERENCES (FIXED - MORE ROBUST)
+DISPLAY SUGGESTED REFERENCES (FIXED - CORRECT DATA PATH)
 ------------------------------------------------------- */
 
 function displaySuggestedReferences(data) {
     console.log("[Debug] ========== displaySuggestedReferences START ==========");
+    console.log("[Debug] Input data type:", typeof data);
+    console.log("[Debug] Input data keys:", data ? Object.keys(data) : "null");
     
     const panel = document.getElementById("suggestedRefsPanel");
     const content = document.getElementById("suggestedRefsContent");
@@ -235,40 +234,50 @@ function displaySuggestedReferences(data) {
         return;
     }
     
-    // Try multiple sources for the data
-    let verificationData = null;
+    // Try multiple possible data paths
+    let verificationRows = null;
     
-    // Source 1: Direct data parameter
+    // Path 1: data.online_verification.rows (direct)
     if (data && data.online_verification && data.online_verification.rows) {
-        verificationData = data.online_verification.rows;
-        console.log("[Debug] Source 1: data.online_verification.rows");
+        verificationRows = data.online_verification.rows;
+        console.log("[Debug] Path 1: data.online_verification.rows");
     }
-    // Source 2: window.latestResults
-    else if (window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
-        verificationData = window.latestResults.online_verification.rows;
-        console.log("[Debug] Source 2: window.latestResults.online_verification.rows");
+    // Path 2: data.data.online_verification.rows (from /verify response)
+    else if (data && data.data && data.data.online_verification && data.data.online_verification.rows) {
+        verificationRows = data.data.online_verification.rows;
+        console.log("[Debug] Path 2: data.data.online_verification.rows");
     }
-    // Source 3: CURRENT_DATA
-    else if (CURRENT_DATA && CURRENT_DATA.online_verification && CURRENT_DATA.online_verification.rows) {
-        verificationData = CURRENT_DATA.online_verification.rows;
-        console.log("[Debug] Source 3: CURRENT_DATA.online_verification.rows");
-    }
-    // Source 4: data.result
+    // Path 3: data.result.online_verification.rows
     else if (data && data.result && data.result.online_verification && data.result.online_verification.rows) {
-        verificationData = data.result.online_verification.rows;
-        console.log("[Debug] Source 4: data.result.online_verification.rows");
+        verificationRows = data.result.online_verification.rows;
+        console.log("[Debug] Path 3: data.result.online_verification.rows");
+    }
+    // Path 4: window.latestResults
+    else if (window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
+        verificationRows = window.latestResults.online_verification.rows;
+        console.log("[Debug] Path 4: window.latestResults.online_verification.rows");
+    }
+    // Path 5: window.latestResults.data.online_verification.rows
+    else if (window.latestResults && window.latestResults.data && window.latestResults.data.online_verification && window.latestResults.data.online_verification.rows) {
+        verificationRows = window.latestResults.data.online_verification.rows;
+        console.log("[Debug] Path 5: window.latestResults.data.online_verification.rows");
+    }
+    // Path 6: CURRENT_DATA
+    else if (CURRENT_DATA && CURRENT_DATA.online_verification && CURRENT_DATA.online_verification.rows) {
+        verificationRows = CURRENT_DATA.online_verification.rows;
+        console.log("[Debug] Path 6: CURRENT_DATA.online_verification.rows");
     }
     
-    console.log("[Debug] Verification data found:", verificationData ? `${verificationData.length} rows` : "None");
+    console.log("[Debug] Verification rows found:", verificationRows ? `${verificationRows.length} rows` : "None");
     
-    if (!verificationData || verificationData.length === 0) {
+    if (!verificationRows || verificationRows.length === 0) {
         panel.style.display = "block";
         content.innerHTML = `
             <div style="text-align: center; padding: 40px; color: #64748b;">
                 <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
                 <h4>No suggested references available</h4>
                 <p style="font-size: 13px; margin-top: 8px;">Run online verification to get suggested references.</p>
-                <p style="font-size: 12px; margin-top: 8px;">Debug: No verification data found.</p>
+                <p style="font-size: 11px; margin-top: 8px; color: #999;">Debug: No verification rows found in any data path.</p>
             </div>
         `;
         return;
@@ -277,8 +286,8 @@ function displaySuggestedReferences(data) {
     // Extract suggestions from verification rows
     let allSuggestions = [];
     
-    verificationData.forEach((row, rowIdx) => {
-        console.log(`[Debug] Processing row ${rowIdx}, has suggested_references:`, 'suggested_references' in row);
+    verificationRows.forEach((row, rowIdx) => {
+        console.log(`[Debug] Row ${rowIdx}: has suggested_references =`, 'suggested_references' in row);
         
         if (row.suggested_references && row.suggested_references.length > 0) {
             console.log(`[Debug] Row ${rowIdx} has ${row.suggested_references.length} suggestions`);
@@ -305,9 +314,9 @@ function displaySuggestedReferences(data) {
         content.innerHTML = `
             <div style="text-align: center; padding: 40px; color: #64748b;">
                 <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
-                <h4>No suggested references available</h4>
-                <p style="font-size: 13px; margin-top: 8px;">The verification completed but no suggested references were found.</p>
-                <p style="font-size: 12px; margin-top: 8px;">Debug: ${verificationData.length} rows processed, 0 had suggested_references.</p>
+                <h4>No suggested references found</h4>
+                <p style="font-size: 13px; margin-top: 8px;">Verification completed but no suggested references were generated.</p>
+                <p style="font-size: 11px; margin-top: 8px; color: #999;">Debug: ${verificationRows.length} rows processed, 0 had suggested_references.</p>
             </div>
         `;
         return;
@@ -375,9 +384,8 @@ function displaySuggestedReferences(data) {
     });
     
     content.innerHTML = html;
-    console.log("[Debug] Suggested references displayed in dedicated tab");
+    console.log("[Debug] Suggested references displayed successfully");
 }
-
 /* -------------------------------------------------------
 AUTO-FIX FUNCTIONS
 ------------------------------------------------------- */
@@ -820,6 +828,11 @@ function renderVerify(data) {
 
 function renderAll(data) {
     if (!data) return;
+    console.log("[Debug] renderAll called with data keys:", Object.keys(data));
+    
+    // Store the raw data for debugging
+    window.rawData = data;
+    
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
@@ -835,7 +848,7 @@ function renderAll(data) {
     renderR2C(normalized);
     renderVerify(normalized);
     
-    // Display suggested references in the dedicated tab
+    // Display suggested references - pass the original data
     displaySuggestedReferences(data);
     
     updateProcessFeedback("Upload", "completed");
