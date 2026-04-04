@@ -220,44 +220,85 @@ function generateACIIRecommendations(aciiData) {
 DISPLAY SUGGESTED REFERENCES (FOR DEDICATED TAB)
 ------------------------------------------------------- */
 
+/* -------------------------------------------------------
+DISPLAY SUGGESTED REFERENCES (FIXED - MORE ROBUST)
+------------------------------------------------------- */
+
 function displaySuggestedReferences(data) {
-    console.log("[Debug] displaySuggestedReferences called");
+    console.log("[Debug] ========== displaySuggestedReferences START ==========");
     
     const panel = document.getElementById("suggestedRefsPanel");
     const content = document.getElementById("suggestedRefsContent");
     
     if (!panel || !content) {
-        console.log("[Debug] Suggested references panel or content not found");
+        console.log("[Debug] Panel or content element not found");
         return;
     }
     
-    // Extract suggestions from online_verification.rows
-    let allSuggestions = [];
+    // Try multiple sources for the data
+    let verificationData = null;
     
+    // Source 1: Direct data parameter
     if (data && data.online_verification && data.online_verification.rows) {
-        console.log(`[Debug] Found ${data.online_verification.rows.length} verification rows`);
-        
-        data.online_verification.rows.forEach((row, rowIdx) => {
-            if (row.suggested_references && row.suggested_references.length > 0) {
-                console.log(`[Debug] Row ${rowIdx} has ${row.suggested_references.length} suggestions`);
-                
-                row.suggested_references.forEach((suggestion, sIdx) => {
-                    allSuggestions.push({
-                        original: row.reference || row.matched_title || 'Unknown reference',
-                        original_status: row.status,
-                        suggested_title: suggestion.title || 'No title available',
-                        suggested_doi: suggestion.doi,
-                        suggested_year: suggestion.year,
-                        suggested_authors: suggestion.authors,
-                        score: suggestion.score || 75,
-                        title_score: suggestion.title_score || 0
-                    });
-                });
-            }
-        });
+        verificationData = data.online_verification.rows;
+        console.log("[Debug] Source 1: data.online_verification.rows");
+    }
+    // Source 2: window.latestResults
+    else if (window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
+        verificationData = window.latestResults.online_verification.rows;
+        console.log("[Debug] Source 2: window.latestResults.online_verification.rows");
+    }
+    // Source 3: CURRENT_DATA
+    else if (CURRENT_DATA && CURRENT_DATA.online_verification && CURRENT_DATA.online_verification.rows) {
+        verificationData = CURRENT_DATA.online_verification.rows;
+        console.log("[Debug] Source 3: CURRENT_DATA.online_verification.rows");
+    }
+    // Source 4: data.result
+    else if (data && data.result && data.result.online_verification && data.result.online_verification.rows) {
+        verificationData = data.result.online_verification.rows;
+        console.log("[Debug] Source 4: data.result.online_verification.rows");
     }
     
-    console.log(`[Debug] Total suggestions found: ${allSuggestions.length}`);
+    console.log("[Debug] Verification data found:", verificationData ? `${verificationData.length} rows` : "None");
+    
+    if (!verificationData || verificationData.length === 0) {
+        panel.style.display = "block";
+        content.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #64748b;">
+                <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
+                <h4>No suggested references available</h4>
+                <p style="font-size: 13px; margin-top: 8px;">Run online verification to get suggested references.</p>
+                <p style="font-size: 12px; margin-top: 8px;">Debug: No verification data found.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Extract suggestions from verification rows
+    let allSuggestions = [];
+    
+    verificationData.forEach((row, rowIdx) => {
+        console.log(`[Debug] Processing row ${rowIdx}, has suggested_references:`, 'suggested_references' in row);
+        
+        if (row.suggested_references && row.suggested_references.length > 0) {
+            console.log(`[Debug] Row ${rowIdx} has ${row.suggested_references.length} suggestions`);
+            
+            row.suggested_references.forEach((suggestion, sIdx) => {
+                allSuggestions.push({
+                    original: row.reference || row.matched_title || 'Unknown reference',
+                    original_status: row.status,
+                    suggested_title: suggestion.title || 'No title available',
+                    suggested_doi: suggestion.doi,
+                    suggested_year: suggestion.year,
+                    suggested_authors: suggestion.authors,
+                    score: suggestion.score || 75,
+                    title_score: suggestion.title_score || 0
+                });
+            });
+        }
+    });
+    
+    console.log(`[Debug] Total suggestions extracted: ${allSuggestions.length}`);
     
     if (allSuggestions.length === 0) {
         panel.style.display = "block";
@@ -265,7 +306,8 @@ function displaySuggestedReferences(data) {
             <div style="text-align: center; padding: 40px; color: #64748b;">
                 <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
                 <h4>No suggested references available</h4>
-                <p style="font-size: 13px; margin-top: 8px;">Run online verification to get suggested references for your citations.</p>
+                <p style="font-size: 13px; margin-top: 8px;">The verification completed but no suggested references were found.</p>
+                <p style="font-size: 12px; margin-top: 8px;">Debug: ${verificationData.length} rows processed, 0 had suggested_references.</p>
             </div>
         `;
         return;
