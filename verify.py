@@ -607,7 +607,7 @@ def _classify(
         return "verified"
 
     # Near-exact title match (independent of DOI)
-    if title_score >= 90:
+    if title_score >= 100:
         return "verified"
 
     # -------------------------------------------------
