@@ -225,6 +225,7 @@ function displaySuggestedReferences(data) {
     console.log("[Debug] ========== displaySuggestedReferences START ==========");
     console.log("[Debug] Input data type:", typeof data);
     console.log("[Debug] Input data keys:", data ? Object.keys(data) : "null");
+    console.log("🔥 FINAL CHECK:", data?.online_verification?.rows);
     
     const panel = document.getElementById("suggestedRefsPanel");
     const content = document.getElementById("suggestedRefsContent");
