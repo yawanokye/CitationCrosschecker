@@ -849,7 +849,7 @@ function renderAll(data) {
     renderVerify(normalized);
     
     // Display suggested references - pass the original data
-    displaySuggestedReferences(data);
+    displaySuggestedReferences(normalized);
     
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
