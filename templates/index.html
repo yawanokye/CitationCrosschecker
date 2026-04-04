@@ -960,7 +960,7 @@
 // COMPLETE APP.JS - ENHANCED VISIBILITY
 // ============================================
 
-// COMPLETE APP.JS - WITH SUGGESTED REFERENCES DISPLAY
+// COMPLETE APP.JS - WITH SUGGESTED REFERENCES DISPLAY & FIXED UPLOAD
 // ============================================
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -1044,59 +1044,82 @@ function resetProcessFeedback() {
     });
 }
 
-// File Area Setup
+// File Area Setup - FIXED
 function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
-    const fileInput = $("file");
+    const fileInput = document.getElementById("file");
     const fileNameSpan = document.getElementById("fileName");
     
-    if (fileArea && fileInput) {
-        fileArea.addEventListener("click", function(e) {
-            if (e.target.classList && e.target.classList.contains("file-name")) return;
-            fileInput.click();
-        });
-        
-        fileArea.addEventListener("dragover", function(e) {
-            e.preventDefault();
-            fileArea.classList.add("drag-over");
-        });
-        
-        fileArea.addEventListener("dragleave", function(e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-        });
-        
-        fileArea.addEventListener("drop", function(e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                fileInput.files = files;
-                const changeEvent = new Event('change', { bubbles: true });
-                fileInput.dispatchEvent(changeEvent);
-            }
-        });
-        
-        fileInput.addEventListener('change', function() {
-            const file = fileInput.files[0];
-            if (file) {
-                if (file.name.toLowerCase().endsWith('.docx')) {
-                    fileNameSpan.textContent = `📄 ${file.name}`;
-                    setStatus("DOCX file selected. Ready to run check.", "good");
-                    const btnCheck = $("btnCheck");
-                    if (btnCheck) btnCheck.disabled = false;
-                } else {
-                    fileNameSpan.textContent = "";
-                    setStatus("Only DOCX files are accepted. Please upload a Word document.", "warn");
-                    fileInput.value = '';
-                    const btnCheck = $("btnCheck");
-                    if (btnCheck) btnCheck.disabled = true;
-                }
-            } else {
-                fileNameSpan.textContent = "";
-            }
-        });
+    console.log("[Debug] setupFileArea - fileArea exists:", !!fileArea);
+    console.log("[Debug] setupFileArea - fileInput exists:", !!fileInput);
+    
+    if (!fileArea || !fileInput) {
+        console.log("[Debug] File area or input not found");
+        return;
     }
+    
+    // Remove existing event listeners by cloning and replacing
+    const newFileArea = fileArea.cloneNode(true);
+    fileArea.parentNode.replaceChild(newFileArea, fileArea);
+    
+    // Update reference
+    const updatedFileArea = document.getElementById("fileArea");
+    const updatedFileInput = document.getElementById("file");
+    const updatedFileNameSpan = document.getElementById("fileName");
+    
+    // Click handler for file area
+    updatedFileArea.addEventListener("click", function(e) {
+        console.log("[Debug] File area clicked");
+        if (e.target.classList && e.target.classList.contains("file-name")) return;
+        updatedFileInput.click();
+    });
+    
+    // Drag and drop handlers
+    updatedFileArea.addEventListener("dragover", function(e) {
+        e.preventDefault();
+        updatedFileArea.classList.add("drag-over");
+    });
+    
+    updatedFileArea.addEventListener("dragleave", function(e) {
+        e.preventDefault();
+        updatedFileArea.classList.remove("drag-over");
+    });
+    
+    updatedFileArea.addEventListener("drop", function(e) {
+        e.preventDefault();
+        updatedFileArea.classList.remove("drag-over");
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            updatedFileInput.files = files;
+            const changeEvent = new Event('change', { bubbles: true });
+            updatedFileInput.dispatchEvent(changeEvent);
+        }
+    });
+    
+    // File input change handler
+    updatedFileInput.addEventListener('change', function() {
+        const file = updatedFileInput.files[0];
+        console.log("[Debug] File selected:", file ? file.name : "none");
+        
+        if (file) {
+            if (file.name.toLowerCase().endsWith('.docx')) {
+                if (updatedFileNameSpan) updatedFileNameSpan.textContent = `📄 ${file.name}`;
+                setStatus("DOCX file selected. Ready to run check.", "good");
+                const btnCheck = document.getElementById("btnCheck");
+                if (btnCheck) btnCheck.disabled = false;
+            } else {
+                if (updatedFileNameSpan) updatedFileNameSpan.textContent = "";
+                setStatus("Only DOCX files are accepted. Please upload a Word document.", "warn");
+                updatedFileInput.value = '';
+                const btnCheck = document.getElementById("btnCheck");
+                if (btnCheck) btnCheck.disabled = true;
+            }
+        } else {
+            if (updatedFileNameSpan) updatedFileNameSpan.textContent = "";
+        }
+    });
+    
+    console.log("[Debug] File area setup complete");
 }
 
 // ACII Rating with Recommendations
@@ -1451,7 +1474,7 @@ function resetVerificationUI() {
         <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">🔍 Likely</div></div>
         <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">⚠️ Needs Review</div></div>
         <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">❌ Not Found</div></div>`;
-    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`;
+    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></td>`;
     updateProgress(0, 0, "processing", "Ready to verify");
     const verifyProgress = $("verifyProgress");
     if (verifyProgress) verifyProgress.style.display = "none";
@@ -1603,15 +1626,15 @@ function renderMissing(data) {
     const rows = data?.missing_in_references || [];
     const body = $("missingBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
-    body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></tr>`).join("");
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></td>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></td>`).join("");
 }
 
 function renderUncited(data) {
     const rows = data?.uncited_references || [];
     const body = $("uncitedBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></td>`; return; }
     body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></td>`).join("");
 }
 
@@ -1764,11 +1787,11 @@ function exportWordFile() {
         <p>Generated: ${new Date().toLocaleString()}</p>
         <h2>Summary</h2>
         <table border="1"><tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Total Citations</div><td>${s.in_text_citations_found || 0}</div></tr>
-        <tr><td>References</div><td>${s.reference_entries_found || 0}</div></tr>
-        <tr><td>Missing</div><td>${s.missing_in_references || 0}</div></tr>
-        <tr><td>Uncited</div><td>${s.uncited_references || 0}</div></tr>
-        <tr><td>Match Rate</div><td>${s.match_rate || 0}%</div></tr></table>
+        <tr><td style="width:220px;">Total Citations</div><td>${s.in_text_citations_found || 0}</div></tr>
+        <tr><td style="width:220px;">References</div><td>${s.reference_entries_found || 0}</div></tr>
+        <tr><td style="width:220px;">Missing</div><td>${s.missing_in_references || 0}</div></tr>
+        <tr><td style="width:220px;">Uncited</div><td>${s.uncited_references || 0}</div></tr>
+        <tr><td style="width:220px;">Match Rate</div><td>${s.match_rate || 0}%</div></tr></table>
         <h2>ACII Score: ${acii.ACII || '—'} (${aciiRating.text})</h2>
         <p>${aciiRating.description}</p>
         <h2>Missing Citations</h2><ul>${missing.map(m => `<li>${esc(m.citation_in_text || m)}</li>`).join('')}</ul>
@@ -1799,13 +1822,17 @@ function exportVerificationCSV() {
 
 // Run Initial Check
 async function runInitialCheck() {
-    const fileInput = $("file");
+    const fileInput = document.getElementById("file");
     const file = fileInput?.files?.[0];
+    
+    console.log("[Debug] runInitialCheck called, file:", file ? file.name : "none");
+    
     if (!file) { setStatus("Please choose a file first", "warn"); return; }
     if (!file.name.toLowerCase().endsWith('.docx')) {
         setStatus("Only DOCX files are accepted.", "warn");
         return;
     }
+    
     resetProcessFeedback();
     updateProcessFeedback("Upload", "active");
     if (POLL_TIMER) clearInterval(POLL_TIMER);
@@ -1813,13 +1840,15 @@ async function runInitialCheck() {
     LAST_JOB_ID = null;
     resetVerificationUI();
     setStatus("Analyzing document...");
+    
     const fd = new FormData();
     fd.append("file", file);
     fd.append("style", "apa");
-    const autofixCheck = $("autofix");
-    const onlineVerifyCheck = $("onlineVerify");
+    const autofixCheck = document.getElementById("autofix");
+    const onlineVerifyCheck = document.getElementById("onlineVerify");
     fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
     fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
+    
     try {
         const res = await fetch("/verify", { method: "POST", body: fd });
         if (res.status === 503) {
@@ -1834,7 +1863,7 @@ async function runInitialCheck() {
         renderAll(js);
         setStatus("Analysis complete", "good");
         updateQueueStatus();
-        const btnVerify = $("btnVerify");
+        const btnVerify = document.getElementById("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
         if (js.online_verification_started) startPolling();
     } catch (err) { setStatus("Error: " + err.message, "bad"); }
@@ -1844,13 +1873,16 @@ async function runInitialCheck() {
 async function runOnlineVerification() {
     if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
     if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
+    
     setStatus("Starting online verification...");
     VERIFICATION_IN_PROGRESS = true;
     updateProgress(0, 0, "processing", "Starting verification...");
-    const btnVerify = $("btnVerify");
+    const btnVerify = document.getElementById("btnVerify");
     if (btnVerify) btnVerify.disabled = true;
+    
     const fd = new FormData();
     fd.append("job_id", LAST_JOB_ID);
+    
     try {
         const res = await fetch("/verify-online", { method: "POST", body: fd });
         const js = await res.json();
@@ -1863,15 +1895,15 @@ async function runOnlineVerification() {
 // Button Events
 setupFileArea();
 
-const btnCheck = $("btnCheck");
+const btnCheck = document.getElementById("btnCheck");
 if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
 
-const btnVerify = $("btnVerify");
+const btnVerify = document.getElementById("btnVerify");
 if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
 
-const exportCsv = $("btnExportCsvTop");
-const exportWord = $("btnExportWordTop");
-const exportVerify = $("btnExportVerify");
+const exportCsv = document.getElementById("btnExportCsvTop");
+const exportWord = document.getElementById("btnExportWordTop");
+const exportVerify = document.getElementById("btnExportVerify");
 
 if (exportCsv) exportCsv.addEventListener("click", () => { if (window.latestResults) exportCSV(); else alert("Run a check first."); });
 if (exportWord) exportWord.addEventListener("click", () => { if (window.latestResults) exportWordFile(); else alert("Run a check first."); });
@@ -1884,7 +1916,6 @@ console.log("[CiteIntegrity] App initialized - Enhanced visibility with Suggeste
 
 });
 
-});
 </script>
 
 </body>
