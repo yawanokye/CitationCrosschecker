@@ -153,6 +153,10 @@ _STOP_WORDS = {
     "these", "those", "among", "across", "study", "studies", "analysis",
     "journal", "review", "research", "paper", "available", "retrieved",
     "accessed", "conference", "proceedings", "press", "university",
+    "springer", "elsevier", "taylor", "francis", "sage", "wiley",
+    "ieee", "nature", "acm", "oxford", "cambridge", "routledge",
+    "macmillan", "pearson", "harpercollins", "penguin", "random", "house",
+    "john", "sons", "inc", "editorial",
 }
 
 _STYLE_ALIASES = {
