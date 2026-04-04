@@ -986,7 +986,7 @@ def verify_references_batch(
         for future in as_completed(futures):
             idx = futures[future]
             try:
-                rows[idx] = future.result(timeout=API_TIMEOUT + 10)  # Add buffer to API timeout
+                rows[idx] = future.result()  # Add buffer to API timeout
                 completed_count += 1
                 
                 # Update progress if tracking
