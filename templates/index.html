@@ -960,6 +960,9 @@
 // COMPLETE APP.JS - ENHANCED VISIBILITY
 // ============================================
 
+// COMPLETE APP.JS - WITH SUGGESTED REFERENCES DISPLAY
+// ============================================
+
 document.addEventListener("DOMContentLoaded", function () {
 
 "use strict";
@@ -1133,7 +1136,7 @@ function generateACIIRecommendations(aciiData) {
     return html;
 }
 
-// Display Suggestions
+// Display Auto-Fix Suggestions
 function displaySuggestions(data) {
     const panel = $("suggestionsPanel");
     const content = $("suggestionsContent");
@@ -1254,6 +1257,146 @@ function displaySuggestions(data) {
     }
     
     content.innerHTML = html;
+}
+
+// ✅ DISPLAY SUGGESTED REFERENCES FROM ONLINE VERIFICATION
+function displaySuggestedReferences(data) {
+    console.log("🚀 displaySuggestedReferences FUNCTION CALLED");
+    
+    const panel = document.getElementById("suggestedRefsPanel");
+    const content = document.getElementById("suggestedRefsContent");
+    
+    if (!panel || !content) {
+        console.log("❌ Panel or content element not found");
+        return;
+    }
+    
+    // Try multiple paths to get verification rows
+    let verifyRows = null;
+    
+    if (data && data.online_verification && data.online_verification.rows) {
+        verifyRows = data.online_verification.rows;
+        console.log("✅ Found data.online_verification.rows");
+    } else if (data && data.data && data.data.online_verification && data.data.online_verification.rows) {
+        verifyRows = data.data.online_verification.rows;
+        console.log("✅ Found data.data.online_verification.rows");
+    } else if (window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
+        verifyRows = window.latestResults.online_verification.rows;
+        console.log("✅ Found window.latestResults.online_verification.rows");
+    }
+    
+    console.log("Verification rows:", verifyRows ? `${verifyRows.length} rows` : "None");
+    
+    if (!verifyRows || verifyRows.length === 0) {
+        panel.style.display = "block";
+        content.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #64748b;">
+                <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
+                <h4>No suggested references available</h4>
+                <p style="font-size: 13px; margin-top: 8px;">Run online verification to get suggested references.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Extract suggestions from rows
+    let allSuggestions = [];
+    
+    verifyRows.forEach((row, idx) => {
+        if (row.suggested_references && row.suggested_references.length > 0) {
+            console.log(`👉 Row ${idx} has ${row.suggested_references.length} suggestions`);
+            row.suggested_references.forEach((suggestion, sIdx) => {
+                allSuggestions.push({
+                    original: row.reference || row.matched_title || 'Unknown reference',
+                    original_status: row.status,
+                    suggested_title: suggestion.title || 'No title available',
+                    suggested_doi: suggestion.doi,
+                    suggested_year: suggestion.year,
+                    suggested_authors: suggestion.authors,
+                    score: suggestion.score || 75,
+                    title_score: suggestion.title_score || 0
+                });
+            });
+        }
+    });
+    
+    console.log(`Total suggestions found: ${allSuggestions.length}`);
+    
+    if (allSuggestions.length === 0) {
+        panel.style.display = "block";
+        content.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #64748b;">
+                <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
+                <h4>No suggested references found</h4>
+                <p style="font-size: 13px; margin-top: 8px;">Verification completed but no suggested references were generated.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    panel.style.display = "block";
+    
+    let html = `<div style="margin-bottom: 20px; padding: 12px 16px; background: #f0fdf4; border-radius: 12px;">
+        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-size: 13px;">
+            <span>📊 Total suggestions: <strong>${allSuggestions.length}</strong></span>
+            <span>🔍 Based on CrossRef & OpenAlex databases</span>
+        </div>
+    </div>`;
+    
+    allSuggestions.forEach((s, idx) => {
+        const confidence = s.score;
+        const borderColor = confidence >= 85 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
+        const confidenceText = confidence >= 85 ? 'High' : (confidence >= 70 ? 'Medium' : 'Low');
+        
+        const doiHtml = s.suggested_doi ? `
+            <div style="margin-top: 8px;">
+                <a href="https://doi.org/${esc(s.suggested_doi)}" target="_blank" style="color: #19b36b; text-decoration: none; font-size: 12px;">
+                    🔗 View Article on DOI.org
+                </a>
+                <span style="font-size: 11px; color: #64748b; margin-left: 8px;">(${esc(s.suggested_doi)})</span>
+            </div>
+        ` : '';
+        
+        const yearHtml = s.suggested_year ? `<span>📅 ${esc(s.suggested_year)}</span>` : '';
+        const authorsHtml = s.suggested_authors && s.suggested_authors.length ? 
+            `<span>✍️ ${esc(Array.isArray(s.suggested_authors) ? s.suggested_authors.join(', ') : s.suggested_authors)}</span>` : '';
+        
+        html += `
+            <div style="border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 16px; overflow: hidden;">
+                <div style="background: ${borderColor}10; padding: 10px 16px; border-bottom: 1px solid #e2e8f0;">
+                    <span style="font-weight: 600;">Suggested Reference #${idx + 1}</span>
+                    <span style="float: right; font-size: 11px; color: ${borderColor};">
+                        ${confidenceText} confidence (${confidence}%)
+                    </span>
+                </div>
+                <div style="padding: 16px;">
+                    <div style="margin-bottom: 12px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Original reference:</div>
+                        <div style="font-size: 12px; color: #e74c3c; text-decoration: line-through; word-break: break-word;">
+                            ${esc(s.original.substring(0, 200))}${s.original.length > 200 ? '…' : ''}
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Suggested replacement:</div>
+                        <div style="font-size: 13px; font-weight: 500; color: #19b36b;">
+                            ✅ ${esc(s.suggested_title)}
+                        </div>
+                        <div style="display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: #64748b; margin-top: 8px;">
+                            ${yearHtml}
+                            ${authorsHtml}
+                        </div>
+                        ${doiHtml}
+                    </div>
+                    <div style="background: #f8fafc; padding: 8px 12px; border-radius: 8px; font-size: 11px; color: #64748b;">
+                        💡 This suggested reference matches ${confidence}% based on title similarity and author information.
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    content.innerHTML = html;
+    console.log("✅ Suggested references displayed successfully");
 }
 
 // Progress Bar
@@ -1460,7 +1603,7 @@ function renderMissing(data) {
     const rows = data?.missing_in_references || [];
     const body = $("missingBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></td>`; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
     body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></tr>`).join("");
 }
 
@@ -1494,7 +1637,7 @@ function renderR2C(data) {
     const rows = data?.reconciliation_reference_to_intext || [];
     const body = $("r2cBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</div></tr>`; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</div></td>`; return; }
     body.innerHTML = rows.slice(0, 30).map((r, i) => `
         <tr>
             <td style="width:50px;">${i + 1}</div>
@@ -1520,7 +1663,7 @@ function renderVerify(data) {
     }
     
     if (!verifyBody) return;
-    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`; return; }
+    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></td>`; return; }
     
     verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
         const doiHtml = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View Article</a> <span class="doi-text">(${esc(r.doi)})</span>` : '—';
@@ -1544,6 +1687,8 @@ function renderVerify(data) {
 
 function renderAll(data) {
     if (!data) return;
+    console.log("🚀 renderAll called");
+    
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
@@ -1559,11 +1704,15 @@ function renderAll(data) {
     renderR2C(normalized);
     renderVerify(normalized);
     
+    // Display auto-fix suggestions
     if (normalized.autofix && normalized.autofix.suggestions) {
         displaySuggestions(normalized.autofix);
     } else if (normalized.suggestions) {
         displaySuggestions({ suggestions: normalized.suggestions });
     }
+    
+    // ✅ DISPLAY SUGGESTED REFERENCES FROM ONLINE VERIFICATION
+    displaySuggestedReferences(normalized);
     
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
@@ -1731,7 +1880,9 @@ if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[CiteIntegrity] App initialized - Enhanced visibility, larger fonts, sharper indicators");
+console.log("[CiteIntegrity] App initialized - Enhanced visibility with Suggested References tab");
+
+});
 
 });
 </script>
