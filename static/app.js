@@ -217,217 +217,101 @@ function generateACIIRecommendations(aciiData) {
 }
 
 /* -------------------------------------------------------
-SUGGESTED REFERENCES FUNCTION (WITH DOI LINKS)
+DISPLAY ALL SUGGESTIONS (NEW FUNCTION)
 ------------------------------------------------------- */
 
-function appendSuggestedReferences(data) {
-    console.log("[Debug] ========== appendSuggestedReferences START ==========");
-    console.log("[Debug] Data type:", typeof data);
-    console.log("[Debug] Data keys:", data ? Object.keys(data) : "null");
-    console.log("[Debug] data.online_verification exists:", !!(data && data.online_verification));
+function displayAllSuggestions(suggestionsList) {
+    const panel = document.getElementById("suggestionsPanel");
+    const content = document.getElementById("suggestionsContent");
     
-    if (!data) {
-        console.log("[Debug] No data for suggested references");
+    if (!panel || !content) return;
+    
+    if (!suggestionsList || suggestionsList.length === 0) {
+        panel.style.display = "none";
         return;
     }
-
-    const container = el.fixSuggestionsContent;
-    if (!container) {
-        console.log("[Debug] No fixSuggestionsContent container found");
-        return;
-    }
-
-    let html = "";
-    let suggestionCount = 0;
-
-    // Check for verification results that might have suggested_references
-    let verifyResults = [];
     
-    if (data.online_verification && data.online_verification.rows) {
-        verifyResults = data.online_verification.rows;
-        console.log(`[Debug] Found ${verifyResults.length} verification rows in data.online_verification`);
-    } else if (data.verification && data.verification.rows) {
-        verifyResults = data.verification.rows;
-        console.log(`[Debug] Found verification.rows: ${verifyResults.length} rows`);
-    } else if (Array.isArray(data.verify)) {
-        verifyResults = data.verify;
-        console.log(`[Debug] Found data.verify: ${verifyResults.length} rows`);
-    } else if (Array.isArray(data)) {
-        verifyResults = data;
-        console.log(`[Debug] Data is array: ${verifyResults.length} rows`);
-    } else if (data.rows && Array.isArray(data.rows)) {
-        verifyResults = data.rows;
-        console.log(`[Debug] Found data.rows: ${verifyResults.length} rows`);
-    } else if (data.result && data.result.online_verification && data.result.online_verification.rows) {
-        verifyResults = data.result.online_verification.rows;
-        console.log(`[Debug] Found data.result.online_verification.rows: ${verifyResults.length} rows`);
-    }
-    
-    // Also check window.latestResults as fallback
-    if (verifyResults.length === 0 && window.latestResults) {
-        console.log("[Debug] Checking window.latestResults...");
-        if (window.latestResults.online_verification && window.latestResults.online_verification.rows) {
-            verifyResults = window.latestResults.online_verification.rows;
-            console.log(`[Debug] Found in window.latestResults: ${verifyResults.length} rows`);
-        } else if (window.latestResults.rows) {
-            verifyResults = window.latestResults.rows;
-            console.log(`[Debug] Found window.latestResults.rows: ${verifyResults.length} rows`);
+    // Deduplicate by original text
+    const seen = new Set();
+    const uniqueSuggestions = [];
+    for (const s of suggestionsList) {
+        const key = (s.original || "").substring(0, 100);
+        if (!seen.has(key)) {
+            seen.add(key);
+            uniqueSuggestions.push(s);
         }
     }
-
-    console.log(`[Debug] Final verifyResults length: ${verifyResults.length}`);
     
-    // Log the first row to see if it has suggested_references
-    if (verifyResults.length > 0) {
-        console.log("[Debug] First row keys:", Object.keys(verifyResults[0]));
-        console.log("[Debug] First row has 'suggested_references':", 'suggested_references' in verifyResults[0]);
-        if (verifyResults[0].suggested_references) {
-            console.log("[Debug] First row suggested_references length:", verifyResults[0].suggested_references.length);
-        }
-    }
-
-    verifyResults.forEach((row, index) => {
-        if (row.suggested_references && row.suggested_references.length > 0) {
-            suggestionCount++;
-            console.log(`[Debug] Row ${index} has ${row.suggested_references.length} suggestions`);
+    panel.style.display = "block";
+    
+    const highConf = uniqueSuggestions.filter(s => s.confidence >= 0.85);
+    const medConf = uniqueSuggestions.filter(s => s.confidence >= 0.70 && s.confidence < 0.85);
+    const lowConf = uniqueSuggestions.filter(s => s.confidence < 0.70);
+    
+    let html = `<div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
+        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
+            <span>✅ High confidence: ${highConf.length}</span>
+            <span>⚠️ Needs review: ${medConf.length + lowConf.length}</span>
+            <span>📋 Total suggestions: ${uniqueSuggestions.length}</span>
+        </div>
+    </div>`;
+    
+    // Group by type
+    const citedSuggestions = uniqueSuggestions.filter(s => s.type === "suggested_reference" || s.category === "citation");
+    const missingSuggestions = uniqueSuggestions.filter(s => s.category === "missing");
+    
+    if (citedSuggestions.length > 0) {
+        html += `<div class="suggestions-section"><h4>📚 Suggested Alternative References (${citedSuggestions.length})</h4>`;
+        html += citedSuggestions.slice(0, 30).map(s => {
+            const confidence = Math.round((s.confidence || 0.75) * 100);
+            const borderColor = confidence >= 85 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
+            const doiHtml = s.doi ? `<div style="margin-top: 6px;"><a href="https://doi.org/${esc(s.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <span style="font-size: 10px; color: #64748b;">(${esc(s.doi)})</span></div>` : '';
+            const yearHtml = s.year ? `<span>📅 ${esc(s.year)}</span>` : '';
+            const authorsHtml = s.authors && s.authors.length ? `<span>✍️ ${esc(Array.isArray(s.authors) ? s.authors.join(', ') : s.authors)}</span>` : '';
             
-            const originalRef = row.reference || row.matched_title || 'Unknown reference';
-            
-            html += `
-                <div class="suggestions-section" style="margin-top: 20px; padding: 12px; background: #f8fafc; border-radius: 10px;">
-                    <div class="suggestion-header" style="margin-bottom: 12px;">
-                        <span style="font-weight: 600; color: #1e293b;">📚 Suggested Reference #${suggestionCount}</span>
-                        <span class="badge ${row.status === 'verified' ? 'verified' : (row.status === 'likely' ? 'likely' : 'needs_review')}" style="margin-left: 10px;">
-                            ${row.status || 'Unknown'}
-                        </span>
+            return `
+                <div class="suggestion-item" style="border-left: 4px solid ${borderColor}; margin-bottom: 12px; padding: 12px; background: #f8fafc; border-radius: 10px;">
+                    <div class="suggestion-original" style="color: #e74c3c; text-decoration: line-through; font-size: 12px; margin-bottom: 8px;">
+                        ❌ ${esc(s.original.substring(0, 200))}${s.original.length > 200 ? '…' : ''}
                     </div>
-                    <div class="suggestion-original" style="font-size: 12px; color: #64748b; margin-bottom: 10px;">
-                        ❌ Original: ${esc(originalRef.substring(0, 200))}${originalRef.length > 200 ? '…' : ''}
+                    <div class="suggestion-suggested" style="color: #19b36b; font-weight: 600; margin-bottom: 8px;">
+                        ✅ ${esc(s.suggested.substring(0, 200))}${s.suggested.length > 200 ? '…' : ''}
                     </div>
-                    <div style="margin-top: 8px;">
-            `;
-
-            row.suggested_references.forEach((s, idx) => {
-                const confidence = s.score || 75;
-                const borderColor = confidence >= 80 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
-                const doiLink = s.doi ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <small style="color: #64748b;">(${esc(s.doi)})</small>` : '';
-                
-                html += `
-                    <div class="suggestion-item" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px; border-left: 3px solid ${borderColor};">
-                        <div class="suggestion-suggested" style="font-weight: 500; margin-bottom: 6px;">
-                            ✅ ${esc(s.title || 'No title available')}
-                        </div>
-                        <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
-                            <span>📅 ${esc(s.year || "N/A")}</span>
-                            <span>✍️ ${esc(s.authors || "Unknown author")}</span>
-                            <span>📊 ${Math.round(confidence)}% match</span>
-                        </div>
-                        ${doiLink ? `<div class="suggestion-doi" style="margin-top: 6px; font-size: 10px;">${doiLink}</div>` : ''}
+                    <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
+                        ${yearHtml}
+                        ${authorsHtml}
+                        <span>📊 ${confidence}% match</span>
                     </div>
-                `;
-            });
-
-            html += `
+                    ${doiHtml}
+                    <div class="suggestion-reason" style="font-size: 10px; color: #64748b; margin-top: 6px;">
+                        💡 ${esc(s.reason || 'Suggested based on title and author similarity')}
                     </div>
                 </div>
             `;
-        }
-    });
-
-    // Also check missing citations for suggestions
-    const missingRows = data.missing_in_references || [];
-    console.log(`[Debug] Checking ${missingRows.length} missing rows for suggestions`);
-    
-    missingRows.forEach((row, index) => {
-        if (row.suggested_references && row.suggested_references.length > 0) {
-            suggestionCount++;
-            console.log(`[Debug] Missing row ${index} has ${row.suggested_references.length} suggestions`);
-            
-            const citationText = row.citation_in_text || row;
-            
-            html += `
-                <div class="suggestions-section" style="margin-top: 20px; padding: 12px; background: #fef2f2; border-radius: 10px; border-left: 3px solid #e74c3c;">
-                    <div class="suggestion-header" style="margin-bottom: 12px;">
-                        <span style="font-weight: 600; color: #1e293b;">📚 Missing Citation Suggestion #${suggestionCount}</span>
-                    </div>
-                    <div class="suggestion-original" style="font-size: 12px; color: #991b1b; margin-bottom: 10px;">
-                        ❌ Missing: ${esc(citationText)}
-                    </div>
-                    <div style="margin-top: 8px;">
-            `;
-
-            row.suggested_references.forEach((s, idx) => {
-                const confidence = s.score || 75;
-                const doiLink = s.doi ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <small style="color: #64748b;">(${esc(s.doi)})</small>` : '';
-                
-                html += `
-                    <div class="suggestion-item" style="margin-top: 10px; padding: 10px; background: white; border-radius: 8px;">
-                        <div class="suggestion-suggested" style="font-weight: 500; margin-bottom: 6px;">
-                            ✅ ${esc(s.title || 'No title available')}
-                        </div>
-                        <div class="suggestion-meta" style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: #64748b;">
-                            <span>📅 ${esc(s.year || "N/A")}</span>
-                            <span>✍️ ${esc(s.authors || "Unknown author")}</span>
-                            <span>📊 ${Math.round(confidence)}% match</span>
-                        </div>
-                        ${doiLink ? `<div class="suggestion-doi" style="margin-top: 6px; font-size: 10px;">${doiLink}</div>` : ''}
-                    </div>
-                `;
-            });
-
-            html += `
-                    </div>
-                </div>
-            `;
-        }
-    });
-
-    if (suggestionCount > 0) {
-        console.log(`[Debug] ✅ Added ${suggestionCount} suggested references to the UI`);
-        
-        // Remove existing suggestions section if present
-        let existingSection = container.querySelector('.suggestions-master-section');
-        if (existingSection) {
-            existingSection.remove();
-        }
-        
-        // Remove any existing "no suggestions" message
-        let noMsg = container.querySelector('.no-suggestions-msg');
-        if (noMsg) noMsg.remove();
-        
-        // Create the master section
-        const masterSection = document.createElement('div');
-        masterSection.className = 'suggestions-master-section';
-        masterSection.style.marginTop = '24px';
-        masterSection.style.borderTop = '2px solid #e2e8f0';
-        masterSection.style.paddingTop = '20px';
-        masterSection.innerHTML = `
-            <h3 style="font-size: 16px; margin-bottom: 16px; color: #1e293b; display: flex; align-items: center; gap: 8px;">
-                📚 Suggested References from Online Verification
-                <span style="background: #667eea; color: white; padding: 2px 8px; border-radius: 20px; font-size: 11px;">${suggestionCount}</span>
-            </h3>
-            ${html}
-        `;
-        
-        container.appendChild(masterSection);
-        console.log("[Debug] Master section appended to container");
-    } else {
-        console.log("[Debug] ❌ No suggested references found in verification results");
-        // Show a message if no suggestions
-        let noMsg = container.querySelector('.no-suggestions-msg');
-        if (!noMsg) {
-            noMsg = document.createElement('div');
-            noMsg.className = 'no-suggestions-msg';
-            noMsg.style.padding = '15px';
-            noMsg.style.textAlign = 'center';
-            noMsg.style.color = '#64748b';
-            noMsg.style.fontSize = '12px';
-            noMsg.innerHTML = '💡 No suggested references available. Run verification to get suggestions.';
-            container.appendChild(noMsg);
-        }
+        }).join('');
+        html += `</div>`;
     }
     
-    console.log("[Debug] ========== appendSuggestedReferences END ==========");
+    if (missingSuggestions.length > 0) {
+        html += `<div class="suggestions-section"><h4>🔍 Missing Reference Suggestions (${missingSuggestions.length})</h4>`;
+        html += missingSuggestions.slice(0, 20).map(s => `
+            <div class="suggestion-item" style="margin-bottom: 12px; padding: 12px; background: #fef2f2; border-radius: 10px; border-left: 4px solid #e74c3c;">
+                <div class="suggestion-original" style="color: #e74c3c; font-size: 12px; margin-bottom: 8px;">
+                    ❌ Missing: ${esc(s.original || '')}
+                </div>
+                <div class="suggestion-suggested" style="color: #19b36b; font-weight: 600;">
+                    ✅ ${esc(s.suggested || '')}
+                </div>
+                <div class="suggestion-meta" style="margin-top: 6px;">
+                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
+                    <span>💡 ${esc(s.reason || '')}</span>
+                </div>
+            </div>
+        `).join('');
+        html += `</div>`;
+    }
+    
+    content.innerHTML = html;
 }
 
 /* -------------------------------------------------------
@@ -520,9 +404,6 @@ function displayFixSuggestions(data) {
     }
     
     if (el.fixSuggestionsContent) el.fixSuggestionsContent.innerHTML = html;
-    
-    // APPEND SUGGESTED REFERENCES AFTER displaying fixes
-    appendSuggestedReferences(window.latestResults || CURRENT_DATA);
 }
 
 async function applyAutoFix() {
@@ -805,22 +686,22 @@ function renderACII(data) {
 function renderMissing(data) {
     const rows = data?.missing_in_references || [];
     if (!el.missingBody) return;
-    if (!rows.length) { el.missingBody.innerHTML = `<tr><td colspan="3">None</div></tr>`; return; }
-    el.missingBody.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></tr>`).join("");
+    if (!rows.length) { el.missingBody.innerHTML = `<tr><td colspan="3">None</div></td>`; return; }
+    el.missingBody.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></td>`).join("");
 }
 
 function renderUncited(data) {
     const rows = data?.uncited_references || [];
     if (!el.uncitedBody) return;
-    if (!rows.length) { el.uncitedBody.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
-    el.uncitedBody.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
+    if (!rows.length) { el.uncitedBody.innerHTML = `<tr><td colspan="2">None</div></td>`; return; }
+    el.uncitedBody.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></td>`).join("");
 }
 
 function renderC2R(data) {
     const c2rRaw = data?.reconciliation_intext_to_reference || [];
     const uniqueCitations = getUniqueCitationsWithCount(c2rRaw);
     if (!el.c2rBody) return;
-    if (!uniqueCitations.length) { el.c2rBody.innerHTML = `<tr><td colspan="6">No mapping available</div></tr>`; return; }
+    if (!uniqueCitations.length) { el.c2rBody.innerHTML = `<tr><td colspan="6">No mapping available</div></td>`; return; }
     el.c2rBody.innerHTML = uniqueCitations.map((item, i) => `<tr>
         <td>${i + 1}</div>
         <td><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></div>
@@ -854,7 +735,7 @@ function renderVerify(data) {
             <div class="kpi">❌ Not Found: ${sum.not_found ?? 0}</div>`;
     }
     if (!el.verifyBody) return;
-    if (!rows.length) { el.verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`; return; }
+    if (!rows.length) { el.verifyBody.innerHTML = `</table><td colspan="9">No verification results. Click "Verify References" to start.</div></tr>`; return; }
     
     el.verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
         const doiLink = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" style="color: #19b36b; text-decoration: none;">🔗 View Article</a> <small style="color: #64748b;">(${esc(r.doi)})</small>` : '';
@@ -875,20 +756,12 @@ function renderVerify(data) {
 
 function renderAll(data) {
     if (!data) return;
-    
-    console.log("[Debug] renderAll called with data keys:", Object.keys(data));
-    
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
     
-    // Enable export buttons
-    const exportCsv = document.getElementById("btnExportCsvTop");
-    const exportWord = document.getElementById("btnExportWordTop");
-    if (exportCsv) exportCsv.disabled = false;
-    if (exportWord) exportWord.disabled = false;
-    
-    if (el.resultsCard) el.resultsCard.style.display = "block";
+    const resultsCard = $("resultsCard");
+    if (resultsCard) resultsCard.style.display = "block";
     
     renderSummaryTable(normalized);
     renderACII(normalized);
@@ -898,43 +771,78 @@ function renderAll(data) {
     renderR2C(normalized);
     renderVerify(normalized);
     
+    // Extract suggestions from online_verification.rows
+    let allSuggestions = [];
+    
+    // Check for suggestions in online_verification.rows
+    if (data.online_verification && data.online_verification.rows) {
+        console.log("[Debug] Found online_verification.rows, extracting suggestions");
+        data.online_verification.rows.forEach(row => {
+            if (row.suggested_references && row.suggested_references.length > 0) {
+                console.log(`[Debug] Row has ${row.suggested_references.length} suggestions`);
+                row.suggested_references.forEach(suggestion => {
+                    allSuggestions.push({
+                        original: row.reference || row.matched_title || 'Unknown reference',
+                        suggested: suggestion.title || '',
+                        confidence: (suggestion.score || 75) / 100,
+                        reason: `Suggested alternative reference with ${suggestion.score || 75}% match`,
+                        type: "suggested_reference",
+                        category: "citation",
+                        action: "review_required",
+                        doi: suggestion.doi,
+                        year: suggestion.year,
+                        authors: suggestion.authors
+                    });
+                });
+            }
+        });
+    }
+    
+    // Also check for autofix suggestions
+    if (normalized.autofix && normalized.autofix.suggestions) {
+        console.log("[Debug] Found autofix suggestions");
+        const autofixSuggestions = normalized.autofix.suggestions;
+        if (autofixSuggestions.citations) {
+            autofixSuggestions.citations.forEach(s => {
+                allSuggestions.push({
+                    original: s.citation || s.original,
+                    suggested: s.suggested,
+                    confidence: s.confidence,
+                    reason: s.reason,
+                    type: s.type,
+                    category: "citation",
+                    action: s.action || "review_required"
+                });
+            });
+        }
+        if (autofixSuggestions.missing) {
+            autofixSuggestions.missing.forEach(s => {
+                allSuggestions.push({
+                    original: s.citation,
+                    suggested: s.suggested,
+                    confidence: s.confidence,
+                    reason: s.reason,
+                    type: s.type,
+                    category: "missing",
+                    action: "add_reference"
+                });
+            });
+        }
+    }
+    
+    // Display all suggestions using the new function
+    displayAllSuggestions(allSuggestions);
+    
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
     updateProcessFeedback("Match", "completed");
     updateProcessFeedback("ACII", "completed");
     
-    if (normalized.autofix && normalized.autofix.suggestions) {
-        FIX_SUGGESTIONS = normalized.autofix;
-        displayFixSuggestions(FIX_SUGGESTIONS);
-        if (el.btnApplyAutofix) el.btnApplyAutofix.disabled = false;
+    const statUploads = $("statUploads");
+    if (statUploads) {
+        const current = parseInt(statUploads.textContent) || 0;
+        statUploads.textContent = current + 1;
     }
-    
-    // 🔥 PASS THE ORIGINAL DATA DIRECTLY - DON'T MODIFY IT
-    // The verification results are in data.online_verification
-    console.log("[Debug] Checking for verification data:");
-    console.log("[Debug] - data.online_verification:", !!data.online_verification);
-    console.log("[Debug] - data.result?.online_verification:", !!(data.result && data.result.online_verification));
-    console.log("[Debug] - window.latestResults?.online_verification:", !!(window.latestResults && window.latestResults.online_verification));
-    
-    // Try multiple locations to find verification results
-    let verificationData = null;
-    
-    if (data.online_verification && data.online_verification.rows) {
-        verificationData = data;
-        console.log("[Debug] Using data.online_verification");
-    } else if (data.result && data.result.online_verification && data.result.online_verification.rows) {
-        verificationData = data.result;
-        console.log("[Debug] Using data.result.online_verification");
-    } else if (window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
-        verificationData = window.latestResults;
-        console.log("[Debug] Using window.latestResults.online_verification");
-    } else {
-        verificationData = data;
-        console.log("[Debug] Using original data (may not have online_verification)");
-    }
-    
-    // Call appendSuggestedReferences with the data that has verification results
-    appendSuggestedReferences(verificationData);
 }
 
 /* -------------------------------------------------------
