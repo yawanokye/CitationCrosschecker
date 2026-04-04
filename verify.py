@@ -586,31 +586,54 @@ def _score(
     }
 
 
-def _classify(doi_match: bool, title_score: int, score: int, year_match: int) -> str:
+# =========================
+# UPDATED CLASSIFICATION
+# =========================
+
+def _classify(
+    doi_match: bool,
+    title_score: int,
+    score: int,
+    year_match: int,
+    author_overlap: int = 0,
+) -> str:
+
+    # -------------------------------
+    # DOI handling (FIXED)
+    # -------------------------------
     if doi_match:
-        return "verified"
-    
-    if score >= 90:
-        return "verified"
-    
-    if title_score >= 65 and year_match:
-        return "verified"
-    
-    if score >= 70:
-        return "likely"
-    
-    if title_score >= 60 and year_match:
-        return "likely"
-    
-    if title_score >= 85:
-        return "likely"
-    
-    if score >= 50:
+        if title_score >= 85:
+            return "verified"
+
+        if title_score >= 75:
+            return "verified"
+
+        if title_score >= 65:
+            return "likely"
+
         return "needs_review"
-    
+
+    # -------------------------------
+    # Non-DOI logic
+    # -------------------------------
+    if score >= 92 and title_score >= 85:
+        return "verified"
+
+    if title_score >= 80:
+        return "verified"
+
+    if score >= 80:
+        return "likely"
+
+    if title_score >= 70:
+        return "likely"
+
+    if score >= 55:
+        return "needs_review"
+
     if title_score >= 60:
         return "needs_review"
-    
+
     return "not_found"
 
 
@@ -659,34 +682,93 @@ def _get_top_suggestions(
     candidates: List[Dict[str, Any]],
     top_k: int = 3,
 ) -> List[Dict[str, Any]]:
-    """Get top suggested references - LOWERED THRESHOLDS to catch more suggestions"""
+
+    def extract_keywords(title):
+        words = re.findall(r"[A-Za-z]{4,}", title.lower())
+        stop = {
+            "study", "analysis", "effect", "impact",
+            "method", "model", "approach", "evidence"
+        }
+        return set(w for w in words if w not in stop)
+
+    def keyword_overlap(t1, t2):
+        k1 = extract_keywords(t1)
+        k2 = extract_keywords(t2)
+        overlap = len(k1 & k2)
+        ratio = overlap / max(len(k1), 1)
+        return overlap, ratio
+
+    PUBLISHER_STOPWORDS = {
+        "elsevier", "springer", "wiley", "ieee", "taylor", "francis",
+        "nature", "acm", "oxford", "cambridge", "routledge", "sage",
+        "macmillan", "pearson", "harpercollins", "penguin",
+        "random", "house", "editorial", "publisher"
+    }
+
     scored = []
-    
-    print(f"[DEBUG] _get_top_suggestions: Processing {len(candidates)} candidates for ref: {ref_title[:60]}...")
+    seen = set()
 
     for cand in candidates:
         doi, title, year, authors = _candidate_fields(cand)
         meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
-        
-        print(f"[DEBUG] Candidate score: {meta['score']}, title_score: {meta['title_score']}, title: {title[:40]}...")
 
-        # LOWERED THRESHOLDS to catch more suggestions
-        if meta["score"] >= 35 or meta["title_score"] >= 45:
-            scored.append({
-                "title": title,
-                "doi": doi,
-                "year": year,
-                "authors": authors,
-                "score": meta["score"],
-                "title_score": meta["title_score"],
-            })
-            print(f"[DEBUG] Added candidate with score {meta['score']}")
+        title_clean = title.lower().strip()
 
-    scored_sorted = sorted(scored, key=lambda x: x["score"], reverse=True)
-    result = scored_sorted[:top_k]
-    print(f"[DEBUG] _get_top_suggestions: Returning {len(result)} suggestions")
-    
-    return result
+        # ---------------------------
+        # 1. Remove publisher noise
+        # ---------------------------
+        if any(p in title_clean for p in PUBLISHER_STOPWORDS):
+            continue
+
+        # ---------------------------
+        # 2. Remove duplicates
+        # ---------------------------
+        if title_clean in seen:
+            continue
+        seen.add(title_clean)
+
+        # ---------------------------
+        # 3. Remove weak matches
+        # ---------------------------
+        if meta["title_score"] < 60:
+            continue
+
+        overlap, overlap_ratio = keyword_overlap(ref_title, title)
+
+        # ---------------------------
+        # 4. RELATED PAPER CRITERIA
+        # ---------------------------
+        if not (
+            (meta["title_score"] >= 70 and overlap >= 2)
+            or (meta["title_score"] >= 65 and overlap_ratio >= 0.3)
+        ):
+            continue
+
+        score = meta["score"]
+
+        # ---------------------------
+        # 5. SOFT AUTHOR BOOST
+        # ---------------------------
+        if set(ref_authors) & set(authors):
+            score += 8
+
+        # ---------------------------
+        # 6. DOI BOOST
+        # ---------------------------
+        if doi:
+            score += 5
+
+        scored.append({
+            "title": title,
+            "doi": doi,
+            "year": year,
+            "score": score,
+            "title_score": meta["title_score"],
+            "overlap": overlap,
+            "confidence": "related",
+        })
+
+    return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
 
 
 def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
@@ -746,6 +828,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 int(best_meta.get("title_score", 0)),
                 int(best_meta.get("score", 0)),
                 int(best_meta.get("year_match", 0)),
+                int(best_meta.get("author_overlap", 0)),
             )
 
             # deep fallback only for weak cases
@@ -772,6 +855,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                         int(best_meta.get("title_score", 0)),
                         int(best_meta.get("score", 0)),
                         int(best_meta.get("year_match", 0)),
+                        int(best_meta.get("author_overlap", 0)),
                     )
 
             row.update({
