@@ -878,6 +878,16 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             })
 
             # -------------------------------------------------
+            # ADD CORRECTION SUGGESTIONS FOR UNVERIFIED REFERENCES
+            # -------------------------------------------------
+            if status in {"needs_review", "not_found"}:
+                try:
+                    row["correction_suggestions"] = suggest_for_unverified(ref, top_k=3)
+                    print(f"[DEBUG] Added {len(row['correction_suggestions'])} correction suggestions")
+                except Exception as e:
+                    print(f"[DEBUG] correction_suggestions error: {e}")
+                    row["correction_suggestions"] = []
+            # -------------------------------------------------
             # ADD SUGGESTED REFERENCES (REFINED)
             # -------------------------------------------------
             if candidates:
