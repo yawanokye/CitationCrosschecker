@@ -421,6 +421,36 @@
             border-top: 1px solid rgba(255,255,255,0.2);
         }
 
+        /* SUGGESTION BOX STYLES */
+        .suggestion-box {
+            background: #f8fafc;
+            border-left: 4px solid #19b36b;
+            padding: 10px 14px;
+            margin-top: 8px;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        .suggestion-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #0f172a;
+        }
+
+        .suggestion-list {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .suggestion-list li {
+            margin-bottom: 6px;
+        }
+
+        .suggestion-meta {
+            color: #64748b;
+            font-size: 11px;
+        }
+
         /* ENHANCED RESULTS TABS */
         .tabs {
             display: flex;
@@ -875,7 +905,7 @@
                 <h3>❌ Citations in text missing from references</h3>
                 <div class="tableWrap">
                     <table class="tbl">
-                        <thead><tr><th style="width:50px;">No.</th><th>Citation in Text</th><th style="width:80px;">Count</th></tr></thead>
+                        <thead><tr><th style="width:50px;">No.</th><th>Citation in Text</th><th style="width:80px;">Count</th><th style="width:300px;">Suggested References</th></tr></thead>
                         <tbody id="missingBody"></tbody>
                     </table>
                 </div>
@@ -922,7 +952,7 @@
                 </div>
                 <div class="tableWrap">
                     <table class="tbl">
-                        <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th></tr></thead>
+                        <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th><th>Corrections</th></tr></thead>
                         <tbody id="verifyBody"></tbody>
                     </table>
                 </div>
@@ -957,10 +987,7 @@
 
 <script>
 // ============================================
-// COMPLETE APP.JS - ENHANCED VISIBILITY
-// ============================================
-
-// COMPLETE APP.JS - WITH SUGGESTED REFERENCES DISPLAY & FIXED UPLOAD
+// COMPLETE APP.JS - WITH SUGGESTED REFERENCES & CORRECTION SUGGESTIONS
 // ============================================
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -1157,6 +1184,60 @@ function generateACIIRecommendations(aciiData) {
     }
     
     return html;
+}
+
+// ============================================
+// SUGGESTION BOX RENDERERS
+// ============================================
+
+function renderMissingSuggestionBox(citationText, suggestionsMap) {
+    const suggestions = (suggestionsMap && suggestionsMap[citationText]) || [];
+    if (!suggestions.length) return "";
+
+    const items = suggestions.map(s => {
+        const doiHtml = s.doi
+            ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>`
+            : "";
+        return `
+            <li>
+                <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
+                <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
+                <div>${doiHtml}</div>
+            </li>
+        `;
+    }).join("");
+
+    return `
+        <div class="suggestion-box">
+            <div class="suggestion-title">💡 Suggested references for missing citation</div>
+            <ul class="suggestion-list">${items}</ul>
+        </div>
+    `;
+}
+
+function renderCorrectionSuggestionBox(row) {
+    const suggestions = row.correction_suggestions || [];
+    if (!suggestions.length) return "";
+
+    const items = suggestions.map(s => {
+        const doiHtml = s.doi
+            ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>`
+            : "";
+        return `
+            <li>
+                <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
+                <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
+                <div>${doiHtml}</div>
+            </li>
+        `;
+    }).join("");
+
+    return `
+        <div class="suggestion-box">
+            <div class="suggestion-title">🔧 Suggested corrections for this reference</div>
+            <ul class="suggestion-list">${items}</ul>
+        </div>
+    `;
 }
 
 // Display Auto-Fix Suggestions
@@ -1474,7 +1555,7 @@ function resetVerificationUI() {
         <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">🔍 Likely</div></div>
         <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">⚠️ Needs Review</div></div>
         <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">❌ Not Found</div></div>`;
-    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></td>`;
+    if (verifyBody) verifyBody.innerHTML = `<tr><td colspan="10">No verification results. Click "Verify References" to start.</div></tr>`;
     updateProgress(0, 0, "processing", "Ready to verify");
     const verifyProgress = $("verifyProgress");
     if (verifyProgress) verifyProgress.style.display = "none";
@@ -1624,18 +1705,30 @@ function renderACII(data) {
 
 function renderMissing(data) {
     const rows = data?.missing_in_references || [];
+    const missingSuggestions = data?.missing_citation_suggestions || {};
     const body = $("missingBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="3">None</div></td>`; return; }
-    body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation_in_text || r)}</div><td style="width:80px;">${esc(r.count_in_text || "")}</div></td>`).join("");
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">None</div></td>`; return; }
+    body.innerHTML = rows.map((r, i) => {
+        const citationText = typeof r === 'string' ? r : (r.citation_in_text || r.citation || '');
+        const suggestionBox = renderMissingSuggestionBox(citationText, missingSuggestions);
+        return `
+            <tr>
+                <td style="width:50px;">${i + 1}</td>
+                <td>${esc(citationText)}</td>
+                <td style="width:80px;">${esc(r.count_in_text || "")}</td>
+                <td style="width:300px;">${suggestionBox}</td>
+            </tr>
+        `;
+    }).join("");
 }
 
 function renderUncited(data) {
     const rows = data?.uncited_references || [];
     const body = $("uncitedBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></td>`; return; }
-    body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></td>`).join("");
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
+    body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
 }
 
 function renderC2R(data) {
@@ -1660,7 +1753,7 @@ function renderR2C(data) {
     const rows = data?.reconciliation_reference_to_intext || [];
     const body = $("r2cBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</div></td>`; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">No mapping available</div></tr>`; return; }
     body.innerHTML = rows.slice(0, 30).map((r, i) => `
         <tr>
             <td style="width:50px;">${i + 1}</div>
@@ -1686,20 +1779,25 @@ function renderVerify(data) {
     }
     
     if (!verifyBody) return;
-    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="9">No verification results. Click "Verify References" to start.</div></td>`; return; }
+    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="10">No verification results. Click "Verify References" to start.</div></tr>`; return; }
     
     verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
         const doiHtml = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View Article</a> <span class="doi-text">(${esc(r.doi)})</span>` : '—';
+        const correctionBox = (r.correction_suggestions && r.correction_suggestions.length) 
+            ? `<td style="width:200px;">${renderCorrectionSuggestionBox(r)}</td>`
+            : `<td style="width:200px;">—</td>`;
+        
         return `
             <tr>
-                <td style="width:50px;">${i + 1}</div>
-                <td style="width:100px;"><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'))}">${esc(r.status || '')}</span></div>
-                <td style="width:100px;">${esc(r.source || '—')}</div>
-                <td style="width:70px;">${esc(r.score || '—')}</div>
-                <td style="width:150px;">${doiHtml}</div>
-                <td style="width:80px;">${esc(r.matched_year || '—')}</div>
-                <td style="max-width:200px;">${esc(r.matched_authors || '—')}</div>
-                <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</div>
+                <td style="width:50px;">${i + 1}</td>
+                <td style="width:100px;"><span class="badge ${r.status === 'verified' ? 'verified' : (r.status === 'likely' ? 'likely' : (r.status === 'needs_review' ? 'needs_review' : 'not_found'))}">${esc(r.status || '')}</span></td>
+                <td style="width:100px;">${esc(r.source || '—')}</td>
+                <td style="width:70px;">${esc(r.score || '—')}</td>
+                <td style="width:150px;">${doiHtml}</td>
+                <td style="width:80px;">${esc(r.matched_year || '—')}</td>
+                <td style="max-width:200px;">${esc(r.matched_authors || '—')}</td>
+                <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</td>
+                ${correctionBox}
             </tr>
         `;
     }).join("");
@@ -1912,7 +2010,7 @@ if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[CiteIntegrity] App initialized - Enhanced visibility with Suggested References tab");
+console.log("[CiteIntegrity] App initialized - Enhanced visibility with Suggested References tab and Correction Suggestions");
 
 });
 
