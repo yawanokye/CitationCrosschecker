@@ -905,7 +905,7 @@
                 <h3>❌ Citations in text missing from references</h3>
                 <div class="tableWrap">
                     <table class="tbl">
-                        <thead><tr><th style="width:50px;">No.</th><th>Citation in Text</th><th style="width:80px;">Count</th><th style="width:300px;">Suggested References</th></tr></thead>
+                        <thead><tr><th style="width:50px;">No.</th><th>Citation in Text</th><th style="width:80px;">Count</th></tr></thead>
                         <tbody id="missingBody"></tbody>
                     </table>
                 </div>
@@ -1734,19 +1734,28 @@ function renderACII(data) {
 
 function renderMissing(data) {
     const rows = data?.missing_in_references || [];
-    const missingSuggestions = data?.missing_citation_suggestions || {};
     const body = $("missingBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="4">None</div></td>`; return; }
+
+    if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="3">None</td></tr>`;
+        return;
+    }
+
     body.innerHTML = rows.map((r, i) => {
-        const citationText = typeof r === 'string' ? r : (r.citation_in_text || r.citation || '');
-        const suggestionBox = renderMissingSuggestionBox(citationText, missingSuggestions);
+        const citationText = typeof r === "string"
+            ? r
+            : (r.citation_in_text || r.citation || "");
+
+        const count = typeof r === "string"
+            ? ""
+            : (r.count_in_text || r.count || "");
+
         return `
             <tr>
                 <td style="width:50px;">${i + 1}</td>
                 <td>${esc(citationText)}</td>
-                <td style="width:80px;">${esc(r.count_in_text || "")}</td>
-                <td style="width:300px;">${suggestionBox}</td>
+                <td style="width:80px;">${esc(String(count))}</td>
             </tr>
         `;
     }).join("");
