@@ -471,7 +471,84 @@ def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
                 summary["offline"] += 1
     
     return summary
+def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        "missing_recovery": [],
+        "verification_recovery": []
+    }
 
+    full_text = result.get("main_text", "") or result.get("full_text", "")
+
+    # -------------------------------------------------
+    # Top section: Missing citation recovery
+    # -------------------------------------------------
+    missing_items = result.get("missing_in_references", []) or []
+    missing_suggestions = result.get("missing_citation_suggestions", {}) or {}
+
+    for item in missing_items:
+        if isinstance(item, dict):
+            citation_text = item.get("citation_in_text", "") or item.get("citation", "")
+            count = item.get("count", 1)
+        else:
+            citation_text = str(item)
+            count = 1
+
+        suggestions = missing_suggestions.get(citation_text, [])
+
+        if citation_text and suggestions:
+            payload["missing_recovery"].append({
+                "citation": citation_text,
+                "count": count,
+                "suggestions": suggestions
+            })
+
+    # -------------------------------------------------
+    # Bottom section: needs_review / not_found
+    # context-specific only
+    # -------------------------------------------------
+    verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
+    c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
+
+    # Build lookup: matched reference -> in-text citation
+    ref_to_citation = {}
+    for r in c2r_rows:
+        matched_ref = r.get("matched_reference", "") or ""
+        in_text = r.get("in_text", "") or r.get("citation", "") or r.get("citation_in_text", "") or ""
+        if matched_ref and in_text and matched_ref not in ref_to_citation:
+            ref_to_citation[matched_ref] = in_text
+
+    for row in verify_rows:
+        status = row.get("status", "")
+        if status not in {"needs_review", "not_found"}:
+            continue
+
+        original_ref = row.get("reference", "") or ""
+        matched_title = row.get("matched_title", "") or ""
+
+        citation_text = ref_to_citation.get(original_ref, "") or ref_to_citation.get(matched_title, "")
+
+        suggestions = []
+        if citation_text and full_text:
+            context = extract_context(full_text, citation_text, window=200)
+            if context:
+                suggestions = suggest_from_context(
+                    context=context,
+                    citation=citation_text,
+                    top_k=3
+                )
+
+        row["correction_suggestions"] = suggestions
+
+        if suggestions:
+            payload["verification_recovery"].append({
+                "reference": original_ref,
+                "status": status,
+                "citation": citation_text,
+                "suggestions": suggestions
+            })
+
+    return payload
+    
 def store_result(result):
     job_id = uuid.uuid4().hex
 
@@ -564,7 +641,8 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                         _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
                                     except Exception as e:
                                         print(f"[DEBUG] Error rebuilding reference mapping: {e}")
-                                    
+                                    # Add context-specific recovery payload
+                                    _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
                                     _store[job_id]["verification"]["results"] = verification_results
                                     _store[job_id]["verification"]["results_count"] = len(verification_results)
                                     _store[job_id]["verification"]["summary"] = summary
@@ -1003,8 +1081,8 @@ async def verify(
                 if not citation_text:
                     continue
         
-                context = extract_context(full_text, citation_text, window=120)
-                missing_citation_suggestions[citation_text] = suggest_from_context(context, citation_text, top_k=3)
+                context = extract_context(full_text, citation_text, window=200)
+                missing_citation_suggestions[citation_text] = suggest_from_context(context=context, citation=citation_text, top_k=3)
         
             result["missing_citation_suggestions"] = missing_citation_suggestions
         
