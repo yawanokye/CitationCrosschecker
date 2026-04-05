@@ -13,20 +13,6 @@ from datetime import datetime
 import requests
 from rapidfuzz import fuzz
 
-# Try to import citation_suggester, but handle if not available
-try:
-    from citation_suggester import suggest_for_unverified
-    CITATION_SUGGESTER_AVAILABLE = True
-    print("[INFO] citation_suggester module loaded successfully")
-except ImportError:
-    CITATION_SUGGESTER_AVAILABLE = False
-    print("[WARNING] citation_suggester module not available - correction suggestions disabled")
-    
-    # Create a dummy function to avoid errors
-    def suggest_for_unverified(ref, top_k=3):
-        """Dummy function when citation_suggester is not available"""
-        return []
-
 
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
 
@@ -890,52 +876,12 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 "year_match": int(best_meta.get("year_match", 0)),
             })
 
+                        # -------------------------------------------------
+            # CONTEXT-SPECIFIC CORRECTIONS WILL BE ADDED LATER IN main.py
             # -------------------------------------------------
-            # ADD CORRECTION SUGGESTIONS FOR UNVERIFIED REFERENCES
-            # -------------------------------------------------
-            if status in {"needs_review", "not_found"}:
-                if CITATION_SUGGESTER_AVAILABLE:
-                    try:
-                        row["correction_suggestions"] = suggest_for_unverified(ref, top_k=3)
-                        print(f"[DEBUG] Added {len(row['correction_suggestions'])} correction suggestions")
-                    except Exception as e:
-                        print(f"[DEBUG] correction_suggestions error: {e}")
-                        row["correction_suggestions"] = []
-                else:
-                    row["correction_suggestions"] = []
-                    print(f"[DEBUG] citation_suggester not available - skipping correction suggestions")
-            else:
-                row["correction_suggestions"] = []
+            row["correction_suggestions"] = []
 
-            # -------------------------------------------------
-            # ADD SUGGESTED REFERENCES (REFINED)
-            # -------------------------------------------------
-            if candidates:
-                suggestions = _get_top_suggestions(
-                    ref_title,
-                    ref_authors,
-                    ref_year,
-                    candidates,
-                    top_k=3,
-                )
-                
-                print(f"[DEBUG] Got {len(suggestions)} suggestions for ref: {ref_title[:60]}...")
-
-                # Avoid returning the same match as suggestion
-                filtered_suggestions = []
-                for s in suggestions:
-                    matched_title = _safe_strip(row.get("matched_title"))
-                    if _safe_strip(s.get("title")) != matched_title:
-                        filtered_suggestions.append(s)
-
-                print(f"[DEBUG] After filtering: {len(filtered_suggestions)} suggestions remain")
-
-                # Only attach meaningful suggestions
-                if filtered_suggestions:
-                    row["suggested_references"] = filtered_suggestions
-                    print(f"[DEBUG] ✅ Added {len(filtered_suggestions)} suggestions to row")
-                else:
-                    print(f"[DEBUG] ❌ No suggestions added - filtered_suggestions is empty")
+          
         else:
             row["status"] = "not_found"
 
