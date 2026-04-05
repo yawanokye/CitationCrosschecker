@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from citation_suggester import suggest_for_unverified
 
 import requests
 from rapidfuzz import fuzz
