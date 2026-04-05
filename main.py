@@ -1004,7 +1004,7 @@ async def verify(
                     continue
         
                 context = extract_context(full_text, citation_text, window=120)
-                missing_citation_suggestions[citation_text] = suggest_from_context(context, top_k=3)
+                missing_citation_suggestions[citation_text] = suggest_from_context(context, citation_text, top_k=3)
         
             result["missing_citation_suggestions"] = missing_citation_suggestions
         
