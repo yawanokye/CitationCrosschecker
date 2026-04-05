@@ -952,7 +952,7 @@
                 </div>
                 <div class="tableWrap">
                     <table class="tbl">
-                        <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th><th>Corrections</th></tr></thead>
+                        <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th></tr></thead>
                         <tbody id="verifyBody"></tbody>
                     </table>
                 </div>
@@ -1817,13 +1817,15 @@ function renderVerify(data) {
     }
     
     if (!verifyBody) return;
-    if (!rows.length) { verifyBody.innerHTML = `<tr><td colspan="10">No verification results. Click "Verify References" to start.</div></tr>`; return; }
+    if (!rows.length) {
+        verifyBody.innerHTML = `<tr><td colspan="8">No verification results. Click "Verify References" to start.</td></tr>`;
+        return;
+    }
     
     verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
-        const doiHtml = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View Article</a> <span class="doi-text">(${esc(r.doi)})</span>` : '—';
-        const correctionBox = (r.correction_suggestions && r.correction_suggestions.length) 
-            ? `<td style="width:200px;">${renderCorrectionSuggestionBox(r)}</td>`
-            : `<td style="width:200px;">—</td>`;
+        const doiHtml = r.doi
+            ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View Article</a> <span class="doi-text">(${esc(r.doi)})</span>`
+            : '—';
         
         return `
             <tr>
@@ -1835,7 +1837,6 @@ function renderVerify(data) {
                 <td style="width:80px;">${esc(r.matched_year || '—')}</td>
                 <td style="max-width:200px;">${esc(r.matched_authors || '—')}</td>
                 <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</td>
-                ${correctionBox}
             </tr>
         `;
     }).join("");
