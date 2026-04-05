@@ -863,7 +863,7 @@
             <button class="tab" data-tab="c2rPane">🔗 Citations → References</button>
             <button class="tab" data-tab="r2cPane">📚 References → Citations</button>
             <button class="tab" data-tab="verifyPane">✅ Verification</button>
-            <button class="tab" data-tab="suggestedRefsPane">💡 Related References</button>
+            <button class="tab" data-tab="recoveryPane">🛠 Recovery</button>
             <button class="tab" data-tab="suggestionsPane">💡 Suggestions</button>
         </div>
 
@@ -958,11 +958,40 @@
                 </div>
             </div>
 
-            <!-- SUGGESTED REFERENCES PANE -->
-            <div id="suggestedRefsPane" class="tabPane">
-                <div id="suggestedRefsPanel" class="card">
-                    <h3>💡 Suggested References from Online Verification</h3>
-                    <div id="suggestedRefsContent"></div>
+            <!-- RECOVERY PANE -->
+            <div id="recoveryPane" class="tabPane">
+                <div class="card">
+                    <h3>🛠 Recovery</h3>
+
+                    <h4 style="margin-bottom: 12px;">Missing Citation Recovery</h4>
+                    <div class="tableWrap" style="margin-bottom: 24px;">
+                        <table class="tbl">
+                            <thead>
+                                <tr>
+                                    <th style="width:50px;">No.</th>
+                                    <th>Citation in Text</th>
+                                    <th style="width:80px;">Count</th>
+                                    <th style="width:320px;">Suggestions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="recoveryMissingBody"></tbody>
+                        </table>
+                    </div>
+
+                    <h4 style="margin-bottom: 12px;">Needs Review / Not Found Recovery</h4>
+                    <div class="tableWrap">
+                        <table class="tbl">
+                            <thead>
+                                <tr>
+                                    <th style="width:50px;">No.</th>
+                                    <th style="width:120px;">Status</th>
+                                    <th>Reference</th>
+                                    <th style="width:320px;">Context Suggestions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="recoveryVerifyBody"></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
             <!-- SUGGESTIONS PANE -->
@@ -1806,6 +1835,75 @@ function renderVerify(data) {
     if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
 }
 
+function renderRecovery(data) {
+    const missingBody = $("recoveryMissingBody");
+    const verifyBody = $("recoveryVerifyBody");
+    if (!missingBody || !verifyBody) return;
+
+    const recovery = data.recovery || {};
+    const missingRows = recovery.missing_recovery || [];
+    const verifyRows = recovery.verification_recovery || [];
+
+    // Top section: missing citation recovery
+    if (!missingRows.length) {
+        missingBody.innerHTML = `<tr><td colspan="4">No missing citation recovery suggestions available.</td></tr>`;
+    } else {
+        missingBody.innerHTML = missingRows.map((row, i) => {
+            const suggestionHtml = (row.suggestions || []).map(s => {
+                const doiHtml = s.doi
+                    ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" class="doi-link">🔗 View</a>`
+                    : "—";
+                return `
+                    <div class="suggestion-box">
+                        <div class="suggestion-title">${esc(s.title || "Untitled")}</div>
+                        <div class="suggestion-meta">${esc((s.authors || []).join(", "))} ${s.year ? `(${esc(s.year)})` : ""}</div>
+                        <div>${doiHtml}</div>
+                    </div>
+                `;
+            }).join("");
+
+            return `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td>${esc(row.citation || "")}</td>
+                    <td>${esc(String(row.count || 1))}</td>
+                    <td>${suggestionHtml}</td>
+                </tr>
+            `;
+        }).join("");
+    }
+
+    // Bottom section: needs_review / not_found
+    if (!verifyRows.length) {
+        verifyBody.innerHTML = `<tr><td colspan="4">No context-specific recovery suggestions for needs review / not found.</td></tr>`;
+    } else {
+        verifyBody.innerHTML = verifyRows.map((row, i) => {
+            const badge = `<span class="badge ${esc(row.status)}">${esc(row.status)}</span>`;
+            const suggestionHtml = (row.suggestions || []).map(s => {
+                const doiHtml = s.doi
+                    ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" class="doi-link">🔗 View</a>`
+                    : "—";
+                return `
+                    <div class="suggestion-box">
+                        <div class="suggestion-title">${esc(s.title || "Untitled")}</div>
+                        <div class="suggestion-meta">${esc((s.authors || []).join(", "))} ${s.year ? `(${esc(s.year)})` : ""}</div>
+                        <div>${doiHtml}</div>
+                    </div>
+                `;
+            }).join("");
+
+            return `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td>${badge}</td>
+                    <td>${esc(row.reference || "")}</td>
+                    <td>${suggestionHtml}</td>
+                </tr>
+            `;
+        }).join("");
+    }
+}
+    
 function renderAll(data) {
     if (!data) return;
     console.log("🚀 renderAll called");
@@ -1817,13 +1915,14 @@ function renderAll(data) {
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
     
-    renderSummaryTable(normalized);
+        renderSummaryTable(normalized);
     renderACII(normalized);
     renderMissing(normalized);
     renderUncited(normalized);
     renderC2R(normalized);
     renderR2C(normalized);
     renderVerify(normalized);
+    renderRecovery(normalized);
     
     // Display auto-fix suggestions
     if (normalized.autofix && normalized.autofix.suggestions) {
@@ -1832,9 +1931,7 @@ function renderAll(data) {
         displaySuggestions({ suggestions: normalized.suggestions });
     }
     
-    // ✅ DISPLAY SUGGESTED REFERENCES FROM ONLINE VERIFICATION
-    displaySuggestedReferences(normalized);
-    
+        
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
     updateProcessFeedback("Match", "completed");
