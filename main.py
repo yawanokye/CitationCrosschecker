@@ -32,6 +32,7 @@ from verify import (
     clear_verification_results
 )
 from acii import compute_acii
+from citation_suggester import extract_context, suggest_from_context
 
 # ===============================
 # DATABASE SETUP - SQLite
@@ -976,7 +977,31 @@ async def verify(
                 status_code=422,
                 content={"error": "Processing failed", "message": result.get("error"), "note": result.get("note", "")}
             )
-
+    # -------------------------------------------------
+    # ADD MISSING CITATION RECOVERY SUGGESTIONS
+    # -------------------------------------------------
+    try:
+        missing_citation_suggestions = {}
+        full_text = result.get("main_text", "") or result.get("full_text", "")
+    
+        missing_items = result.get("missing_in_references", []) or []
+        for item in missing_items:
+            if isinstance(item, dict):
+                citation_text = item.get("citation_in_text", "") or item.get("citation", "")
+            else:
+                citation_text = str(item)
+    
+            if not citation_text:
+                continue
+    
+            context = extract_context(full_text, citation_text, window=120)
+            missing_citation_suggestions[citation_text] = suggest_from_context(context, top_k=3)
+    
+        result["missing_citation_suggestions"] = missing_citation_suggestions
+    
+    except Exception as e:
+        print(f"[DEBUG] missing_citation_suggestions error: {e}")
+        result["missing_citation_suggestions"] = {}
         # Ensure main_text is stored
         if "main_text" not in result and "data" in result:
             result["main_text"] = result["data"].get("main_text", "")
