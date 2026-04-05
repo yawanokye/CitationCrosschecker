@@ -17,9 +17,15 @@ from rapidfuzz import fuzz
 try:
     from citation_suggester import suggest_for_unverified
     CITATION_SUGGESTER_AVAILABLE = True
+    print("[INFO] citation_suggester module loaded successfully")
 except ImportError:
     CITATION_SUGGESTER_AVAILABLE = False
-    print("[WARNING] citation_suggester module not available")
+    print("[WARNING] citation_suggester module not available - correction suggestions disabled")
+    
+    # Create a dummy function to avoid errors
+    def suggest_for_unverified(ref, top_k=3):
+        """Dummy function when citation_suggester is not available"""
+        return []
 
 
 _ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
@@ -32,17 +38,18 @@ MAILTO = (
 ).strip()
 
 # ============================================================
-# TIMEOUT SETTINGS
+# TIMEOUT SETTINGS - ADDED FOR LARGE REFERENCE SETS
 # ============================================================
 
-API_TIMEOUT = 60
-VERIFICATION_TIMEOUT = None
-WORKER_THREADS = 2
-RETRY_ATTEMPTS = 2
-BATCH_DELAY = 0.5
+# Timeout settings (in seconds)
+API_TIMEOUT = 60  # Increased from 45 to 60 seconds per API call
+VERIFICATION_TIMEOUT = None  # No timeout for the overall verification (None = infinite)
+WORKER_THREADS = 2  # Reduce to 2 workers to avoid rate limiting
+RETRY_ATTEMPTS = 2  # Number of retries for failed API calls
+BATCH_DELAY = 0.5  # Delay between references to avoid rate limits
 
 # ============================================================
-# PROGRESS TRACKING
+# PROGRESS TRACKING (Lightweight)
 # ============================================================
 
 @dataclass
@@ -103,6 +110,7 @@ def update_job_progress(job_id: str, progress: int):
                 job.completed_at = datetime.now().isoformat()
                 print(f"[DEBUG] Job {job_id}: COMPLETED - {progress}/{job.total}")
             else:
+                # Print progress every 10 references to avoid spam
                 if progress % 10 == 0:
                     print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")
 
@@ -145,7 +153,7 @@ def is_server_busy_check() -> bool:
 
 
 # ============================================================
-# VERIFICATION CODE
+# ORIGINAL VERIFICATION CODE (PRESERVED)
 # ============================================================
 
 _CACHE: Dict[str, Dict[str, Any]] = {}
@@ -183,6 +191,7 @@ def _normalize_verify_status(s: str) -> str:
         st = "needs_review"
     return st
 
+
 def _safe_str(x: Any) -> str:
     if x is None:
         return ""
@@ -193,8 +202,10 @@ def _safe_str(x: Any) -> str:
     except Exception:
         return ""
 
+
 def _safe_strip(x: Any) -> str:
     return _safe_str(x).strip()
+
 
 def _norm_text(s: str) -> str:
     s = _safe_strip(s).lower()
@@ -202,9 +213,12 @@ def _norm_text(s: str) -> str:
     s = re.sub(r"[^\w\s\-:/]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
+
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
+    """Get JSON from URL with configurable timeout"""
     if timeout is None:
-        timeout = API_TIMEOUT
+        timeout = API_TIMEOUT  # Use the global timeout setting
+    
     try:
         headers = {
             "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
@@ -218,27 +232,33 @@ def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None)
         print(f"[DEBUG] API request failed: {e}")
         return None
 
+
 def _extract_year(text: str) -> str:
     m = _YEAR_RE.search(text or "")
     return m.group(1) if m else ""
 
+
 def _extract_doi(text: str) -> str:
     m = _DOI_RE.search(text or "")
     return m.group(1).rstrip(").,;") if m else ""
+
 
 def _strip_leading_numbering(text: str) -> str:
     t = _safe_strip(text)
     t = re.sub(r"^\s*(\[\s*\d+\s*\]|\(?\d+\)?[\.\)])\s*", "", t)
     return t.strip()
 
+
 def _cache_get(key: str) -> Optional[Dict[str, Any]]:
     with _CACHE_LOCK:
         v = _CACHE.get(key)
         return dict(v) if v else None
 
+
 def _cache_set(key: str, value: Dict[str, Any]) -> None:
     with _CACHE_LOCK:
         _CACHE[key] = dict(value)
+
 
 def _dedupe_preserve(seq: List[str]) -> List[str]:
     seen = set()
@@ -290,6 +310,7 @@ def _extract_authors_from_left(left: str) -> List[str]:
 
     return _dedupe_preserve(cleaned)[:4]
 
+
 def _extract_title_guess(ref: str, year: str) -> str:
     ref_clean = _strip_leading_numbering(ref)
 
@@ -317,6 +338,7 @@ def _extract_title_guess(ref: str, year: str) -> str:
 
     return ref_clean[:180]
 
+
 def _extract_common_fields(ref: str) -> Dict[str, Any]:
     ref = _safe_strip(ref)
     ref = _strip_leading_numbering(ref)
@@ -338,8 +360,10 @@ def _extract_common_fields(ref: str) -> Dict[str, Any]:
         "title": title,
     }
 
+
 def _extract_apa_fields(ref: str) -> Dict[str, Any]:
     return _extract_common_fields(ref)
+
 
 def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
     style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
@@ -359,6 +383,7 @@ def _significant_title_words(title: str, limit: int = 6) -> List[str]:
             continue
         out.append(wl)
     return out[:limit]
+
 
 def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
     fields = _extract_fields_by_style(ref, style)
@@ -438,6 +463,25 @@ def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
 # External queries with retry logic
 # ---------------------------------------------------------
 
+def _query_with_retry(query_func, *args, max_retries=None, delay=2):
+    """Execute query with retry logic"""
+    if max_retries is None:
+        max_retries = RETRY_ATTEMPTS
+    
+    for attempt in range(max_retries):
+        try:
+            result = query_func(*args)
+            if result:
+                return result
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+        except Exception as e:
+            print(f"[DEBUG] Query attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+    return []
+
+
 def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
     if not doi:
         return []
@@ -447,6 +491,7 @@ def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
     if not data or "message" not in data:
         return []
     return [{"source": "crossref", "item": data["message"]}]
+
 
 def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     if not query:
@@ -464,6 +509,7 @@ def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     items = (data or {}).get("message", {}).get("items", [])
     return [{"source": "crossref", "item": it} for it in items]
 
+
 def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
     if not title_query:
         return []
@@ -480,6 +526,7 @@ def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[st
     items = (data or {}).get("message", {}).get("items", [])
     return [{"source": "crossref", "item": it} for it in items]
 
+
 def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     if not query:
         return []
@@ -490,6 +537,7 @@ def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "item": it} for it in items]
+
 
 def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
     if not title_query:
@@ -552,6 +600,10 @@ def _score(
     }
 
 
+# =========================
+# UPDATED CLASSIFICATION
+# =========================
+
 def _classify(
     doi_match: bool,
     title_score: int,
@@ -559,13 +611,11 @@ def _classify(
     year_match: int,
     author_overlap: int = 0,
 ) -> str:
-    """
-    Improved classification:
-    - DOI match alone is NOT enough (must agree with title)
-    - Stricter criteria for "verified"
-    """
-    
+
+    # -------------------------------------------------
     # 1. STRICT VERIFIED (IDENTITY ONLY)
+    # -------------------------------------------------
+
     # DOI must agree with strong title
     if doi_match and title_score >= 80:
         return "verified"
@@ -574,14 +624,20 @@ def _classify(
     if title_score >= 100:
         return "verified"
 
+    # -------------------------------------------------
     # 2. LIKELY (STRONG BUT NOT EXACT)
+    # -------------------------------------------------
+
     if title_score >= 85:
         return "likely"
 
     if score >= 85:
         return "likely"
 
+    # -------------------------------------------------
     # 3. NEEDS REVIEW (SUSPICIOUS / PARTIAL MATCH)
+    # -------------------------------------------------
+
     if title_score >= 75:
         return "needs_review"
 
@@ -592,7 +648,10 @@ def _classify(
     if doi_match:
         return "needs_review"
 
+    # -------------------------------------------------
     # 4. NOT FOUND
+    # -------------------------------------------------
+
     return "not_found"
 
 
@@ -616,24 +675,13 @@ def _best_candidate(
         meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
 
         doi_match = bool(ref_doi and doi and ref_doi.lower() == doi.lower())
-        
-        # Check title agreement for DOI matches
-        title_agrees = meta["title_score"] >= 65
-        
-        # Score calculation: DOI gives boost only if title agrees
-        if doi_match and title_agrees:
-            meta_score = int(meta["score"] + 20)
-        elif doi_match:
-            meta_score = int(meta["score"] - 20)  # Penalize mismatched DOI
-        else:
-            meta_score = int(meta["score"])
+        meta_score = int(meta["score"] + (25 if doi_match else 0))
 
         if meta_score > best_score:
             best_score = meta_score
             best = cand
             best_meta = dict(meta)
             best_meta["doi_match"] = doi_match
-            best_meta["title_agrees"] = title_agrees
             best_meta["doi"] = doi
             best_meta["title"] = title
             best_meta["year"] = year
@@ -643,9 +691,8 @@ def _best_candidate(
 
 
 # ---------------------------------------------------------
-# SUGGESTED REFERENCES (Topic-based)
+# Main verification function with improved error handling
 # ---------------------------------------------------------
-
 def _get_top_suggestions(
     ref_title: str,
     ref_authors: List[str],
@@ -685,22 +732,30 @@ def _get_top_suggestions(
 
         title_clean = title.lower().strip()
 
+        # ---------------------------
         # 1. Remove publisher noise
+        # ---------------------------
         if any(p in title_clean for p in PUBLISHER_STOPWORDS):
             continue
 
+        # ---------------------------
         # 2. Remove duplicates
+        # ---------------------------
         if title_clean in seen:
             continue
         seen.add(title_clean)
 
+        # ---------------------------
         # 3. Remove weak matches
+        # ---------------------------
         if meta["title_score"] < 60:
             continue
 
         overlap, overlap_ratio = keyword_overlap(ref_title, title)
 
+        # ---------------------------
         # 4. RELATED PAPER CRITERIA
+        # ---------------------------
         if not (
             (meta["title_score"] >= 70 and overlap >= 2)
             or (meta["title_score"] >= 65 and overlap_ratio >= 0.3)
@@ -709,11 +764,15 @@ def _get_top_suggestions(
 
         score = meta["score"]
 
+        # ---------------------------
         # 5. SOFT AUTHOR BOOST
+        # ---------------------------
         if set(ref_authors) & set(authors):
             score += 8
 
+        # ---------------------------
         # 6. DOI BOOST
+        # ---------------------------
         if doi:
             score += 5
 
@@ -729,10 +788,6 @@ def _get_top_suggestions(
 
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
 
-
-# ---------------------------------------------------------
-# Main verification function
-# ---------------------------------------------------------
 
 def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
     """Original fast verification function with improved error handling"""
@@ -838,16 +893,20 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             # -------------------------------------------------
             # ADD CORRECTION SUGGESTIONS FOR UNVERIFIED REFERENCES
             # -------------------------------------------------
-            if status in {"needs_review", "not_found"} and CITATION_SUGGESTER_AVAILABLE:
-                try:
-                    row["correction_suggestions"] = suggest_for_unverified(ref, top_k=3)
-                    print(f"[DEBUG] Added {len(row['correction_suggestions'])} correction suggestions")
-                except Exception as e:
-                    print(f"[DEBUG] correction_suggestions error: {e}")
+            if status in {"needs_review", "not_found"}:
+                if CITATION_SUGGESTER_AVAILABLE:
+                    try:
+                        row["correction_suggestions"] = suggest_for_unverified(ref, top_k=3)
+                        print(f"[DEBUG] Added {len(row['correction_suggestions'])} correction suggestions")
+                    except Exception as e:
+                        print(f"[DEBUG] correction_suggestions error: {e}")
+                        row["correction_suggestions"] = []
+                else:
                     row["correction_suggestions"] = []
+                    print(f"[DEBUG] citation_suggester not available - skipping correction suggestions")
             else:
                 row["correction_suggestions"] = []
-            
+
             # -------------------------------------------------
             # ADD SUGGESTED REFERENCES (REFINED)
             # -------------------------------------------------
@@ -889,9 +948,8 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
     _cache_set(cache_key, row)
     return row
 
-
 # ---------------------------------------------------------
-# Public API - Returns ALL results
+# Public API - Returns ALL results (NO TIME LIMITS)
 # ---------------------------------------------------------
 
 def verify_references_batch(
@@ -915,7 +973,7 @@ def verify_references_batch(
     total_refs = len(refs)
     
     # Calculate estimated time
-    est_seconds = total_refs * (API_TIMEOUT / 2)
+    est_seconds = total_refs * (API_TIMEOUT / 2)  # Estimate based on API timeout
     est_minutes = est_seconds / 60
     est_hours = est_minutes / 60
     
@@ -936,6 +994,7 @@ def verify_references_batch(
         print(f"[DEBUG] Created verification job {job_id}")
 
     rows: List[Dict[str, Any]] = [None] * total_refs
+    # Use WORKER_THREADS to control concurrency
     workers = min(WORKER_THREADS, max(1, total_refs))
     print(f"[DEBUG] Using {workers} workers (to avoid rate limits)")
 
@@ -954,4 +1013,140 @@ def verify_references_batch(
             )
             futures[future] = i
 
-        completed_count
+        completed_count = 0
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                rows[idx] = future.result()  # Add buffer to API timeout
+                completed_count += 1
+                
+                # Update progress if tracking
+                if job_id:
+                    update_job_progress(job_id, completed_count)
+                    
+                    # Print progress every 10 references or at completion
+                    if completed_count % 10 == 0 or completed_count == total_refs:
+                        elapsed = time.time() - start_time
+                        rate = completed_count / elapsed if elapsed > 0 else 0
+                        remaining = (total_refs - completed_count) / rate if rate > 0 else 0
+                        print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%) - Rate: {rate:.1f}/sec - Est. remaining: {remaining/60:.1f} min")
+                
+                # Small delay to avoid rate limiting
+                time.sleep(BATCH_DELAY)
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
+                rows[idx] = {
+                    "reference": refs[idx],
+                    "style": normalized_style,
+                    "status": "not_found",
+                    "source": "",
+                    "score": 0,
+                    "doi": "",
+                    "matched_title": "",
+                    "matched_year": "",
+                    "matched_authors": "",
+                    "title_score": 0,
+                    "author_overlap": 0,
+                    "author_similarity": 0,
+                    "year_match": 0,
+                    "query_used": "",
+                    "author": "",
+                    "error": str(e),
+                }
+                completed_count += 1
+                if job_id:
+                    update_job_progress(job_id, completed_count)
+
+    # Count results for debugging
+    result_counts = {
+        "verified": sum(1 for r in rows if r and r.get("status") == "verified"),
+        "likely": sum(1 for r in rows if r and r.get("status") == "likely"),
+        "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
+        "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
+    }
+    print(f"[DEBUG] ========================================")
+    print(f"[DEBUG] Verification COMPLETE for {total_refs} references")
+    print(f"[DEBUG] Results: {result_counts}")
+    print(f"[DEBUG] Total processed: {len([r for r in rows if r is not None])}")
+    print(f"[DEBUG] ========================================")
+
+    for r in rows:
+        if r:
+            r["status"] = _normalize_verify_status(r.get("status"))
+
+    # Store results if job_id was provided
+    if job_id:
+        update_job_progress(job_id, total_refs)  # Final progress update
+        store_verification_results(job_id, rows)  # Store the actual results
+        print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
+        
+        # Debug: Check if first row has suggestions
+        if rows and len(rows) > 0:
+            print(f"[DEBUG] First row has 'suggested_references': {'suggested_references' in rows[0]}")
+            if 'suggested_references' in rows[0]:
+                print(f"[DEBUG] First row has {len(rows[0]['suggested_references'])} suggestions")
+                for s in rows[0]['suggested_references']:
+                    print(f"[DEBUG] Suggestion: {s.get('title', 'N/A')[:60]}...")
+
+    return rows
+
+
+# ---------------------------------------------------------
+# Background job submission (NO TIME LIMITS)
+# ---------------------------------------------------------
+
+def submit_verification(references: List[str], style: str = "apa") -> str:
+    """
+    Submit a verification job and return job ID (runs in background)
+    NO TIME LIMITS - will process all references regardless of count
+    """
+    job_id = uuid.uuid4().hex
+    total_refs = len(references)
+    est_seconds = total_refs * (API_TIMEOUT / 2)
+    est_minutes = est_seconds / 60
+    est_hours = est_minutes / 60
+    
+    print(f"[DEBUG] ========================================")
+    print(f"[DEBUG] Submitting verification job {job_id}")
+    print(f"[DEBUG] Total references: {total_refs}")
+    if est_hours >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
+    elif est_minutes >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_minutes:.1f} minutes")
+    else:
+        print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
+    print(f"[DEBUG] ========================================")
+    
+    def run():
+        print(f"[DEBUG] Starting background thread for job {job_id}")
+        start_time = time.time()
+        results = verify_references_batch(references, style, job_id=job_id)
+        elapsed = time.time() - start_time
+        print(f"[DEBUG] Background thread completed for job {job_id}")
+        print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
+        print(f"[DEBUG] Results count: {len(results)}")
+        
+        # Print final summary
+        verified = sum(1 for r in results if r.get("status") == "verified")
+        likely = sum(1 for r in results if r.get("status") == "likely")
+        needs_review = sum(1 for r in results if r.get("status") == "needs_review")
+        not_found = sum(1 for r in results if r.get("status") == "not_found")
+        print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
+    
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    
+    return job_id
+
+
+def get_verification_status(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get verification job progress (not results)"""
+    return get_job_status(job_id)
+
+
+# Alias for compatibility
+submit_verification_job = submit_verification
+get_queue_status = get_queue_stats
+is_server_busy = is_server_busy_check
