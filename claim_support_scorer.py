@@ -496,13 +496,13 @@ def score_claim_support(
     final_score = round(min(final_score, 100), 1)
     
     # Step 11: Relaxed thresholds for academic writing
-    if final_score >= 60:
+    if final_score >= 50:
         status = "strong_support"
-    elif final_score >= 45:
+    elif final_score >= 35:
         status = "moderate_support"
-    elif final_score >= 30:
+    elif final_score >= 20:
         status = "related_evidence"
-    elif final_score >= 18:
+    elif final_score >= 10:
         status = "weak_or_unclear"
     else:
         status = "insufficient_evidence"
