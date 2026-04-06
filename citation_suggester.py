@@ -1,373 +1,448 @@
-# citation_suggester.py
+# claim_support_scorer.py
 
 import re
-from typing import List, Dict, Any, Tuple
-
-from verify import (
-    _query_crossref,
-    _query_openalex,
-    _candidate_fields,
-    _score,
-    _extract_fields_by_style,
-)
+from typing import Dict, List, Any, Optional, Tuple
+from rapidfuzz import fuzz
 
 # ============================================================
-# HELPER FUNCTIONS FOR ROBUST CONTEXT EXTRACTION
+# ENHANCED CONCEPT MAP FOR SEMANTIC MATCHING
 # ============================================================
 
-_YEAR_RE = r"(?:19|20)\d{2}[a-z]?"
-_SENT_BOUNDARY_RE = r"[.!?;]"
+CONCEPT_MAP = {
+    "improves": "improve",
+    "improve": "improve",
+    "improved": "improve",
+    "enhances": "improve",
+    "enhance": "improve",
+    "enhanced": "improve",
+    "boosts": "improve",
+    "boost": "improve",
+    "strengthens": "improve",
+    "strengthen": "improve",
+    "optimises": "improve",
+    "optimizes": "improve",
+    "optimise": "improve",
+    "optimize": "improve",
+    
+    "reduces": "reduce",
+    "reduce": "reduce",
+    "reduced": "reduce",
+    "mitigates": "reduce",
+    "mitigate": "reduce",
+    "lowers": "reduce",
+    "lower": "reduce",
+    "decreases": "reduce",
+    "decrease": "reduce",
+    "minimizes": "reduce",
+    "minimize": "reduce",
+    
+    "increases": "increase",
+    "increase": "increase",
+    "increased": "increase",
+    "raises": "increase",
+    "raise": "increase",
+    "elevates": "increase",
+    "elevate": "increase",
+    
+    "adoption": "adopt",
+    "adopted": "adopt",
+    "adopt": "adopt",
+    "implementation": "adopt",
+    "implement": "adopt",
+    "use": "adopt",
+    "usage": "adopt",
+    "uptake": "adopt",
+    "acceptance": "adopt",
+    
+    "performance": "performance",
+    "productivity": "performance",
+    "efficiency": "performance",
+    "effectiveness": "performance",
+    "outcome": "performance",
+    "outcomes": "performance",
+    
+    "transparency": "transparency",
+    "accountability": "transparency",
+    "openness": "transparency",
+    
+    "trust": "trust",
+    "credibility": "trust",
+    "confidence": "trust",
+    
+    "risk": "risk",
+    "uncertainty": "risk",
+    "exposure": "risk",
+    
+    "error": "error",
+    "errors": "error",
+    "mistake": "error",
+    "mistakes": "error",
+    
+    "corruption": "corruption",
+    "fraud": "corruption",
+    "misconduct": "corruption",
+    "unethical": "corruption",
+    
+    "reliability": "reliability",
+    "robustness": "reliability",
+    "stability": "reliability",
+    "consistency": "reliability",
+    
+    "positive": "positive",
+    "beneficial": "positive",
+    "advantageous": "positive",
+    "favorable": "positive",
+    
+    "negative": "negative",
+    "harmful": "negative",
+    "detrimental": "negative",
+    "adverse": "negative",
+}
 
-def _norm_ws(s: str) -> str:
-    """Normalize whitespace in a string."""
-    return re.sub(r"\s+", " ", (s or "")).strip()
+# ============================================================
+# RELATION PATTERNS FOR CLAIM-SOURCE MATCHING
+# ============================================================
 
-def _extract_author_year_bits(citation: str):
-    """Extract author surname and year from citation for fallback matching."""
-    citation = citation or ""
-    years = re.findall(_YEAR_RE, citation)
-    year = years[0] if years else ""
+RELATION_PATTERNS = {
+    "improve": [r"\bimprov\w*\b", r"\benhanc\w*\b", r"\bboost\w*\b", r"\bstrength\w*\b"],
+    "reduce": [r"\breduc\w*\b", r"\bmitigat\w*\b", r"\blower\w*\b", r"\bdecreas\w*\b"],
+    "increase": [r"\bincreas\w*\b", r"\brais\w*\b", r"\belevat\w*\b"],
+    "influence": [r"\binfluenc\w*\b", r"\baffect\w*\b", r"\bimpact\w*\b"],
+    "predict": [r"\bpredict\w*\b", r"\bdetermin\w*\b", r"\bexplain\w*\b"],
+    "associate": [r"\bassociat\w*\b", r"\brelat\w*\b", r"\blink\w*\b"],
+    "cause": [r"\bcaus\w*\b", r"\blead\w*\b", r"\bresult\w*\b", r"\bproduc\w*\b"],
+}
 
-    # crude author token extraction, keeps likely surnames
-    tokens = re.findall(r"[A-Z][a-zA-Z'`-]{2,}", citation)
-    stop = {"And", "Et", "Al"}
-    authors = [t for t in tokens if t not in stop]
+# ============================================================
+# ENHANCED STOPWORDS
+# ============================================================
 
-    surname = authors[0] if authors else ""
-    return surname, year
+STOPWORDS = {
+    "this", "that", "these", "those", "there", "their", "they", "them",
+    "with", "from", "using", "used", "use", "study", "analysis", "method",
+    "approach", "results", "table", "figure", "paper", "research",
+    "journal", "review", "would", "could", "should", "might", "what",
+    "when", "where", "which", "while", "about", "into", "through",
+    "during", "without", "between", "among", "within", "across",
+    "article", "articles", "author", "authors", "evidence", "model",
+    "models", "framework", "frameworks", "effect", "effects", "role",
+    "roles", "impact", "impacts", "relationship", "relationships",
+    "factor", "factors", "based", "examines", "examined", "investigates",
+    "investigated", "analysis", "analyses", "data", "study", "studies",
+    "paper", "result", "results", "finding", "findings", "conclusion",
+    "conclusions", "discussion", "section", "chapter", "appendix"
+}
 
-def _find_sentence_span(text: str, pos: int):
-    """Find the sentence boundaries around a position in text."""
-    if pos < 0:
-        return (0, len(text))
-    left = text.rfind(".", 0, pos)
-    left_q = text.rfind("?", 0, pos)
-    left_e = text.rfind("!", 0, pos)
-    left_s = text.rfind(";", 0, pos)
-    left = max(left, left_q, left_e, left_s)
-    left = 0 if left == -1 else left + 1
+# ============================================================
+# CLAIM SIMPLIFIER
+# ============================================================
 
-    candidates = [p for p in [
-        text.find(".", pos),
-        text.find("?", pos),
-        text.find("!", pos),
-        text.find(";", pos),
-    ] if p != -1]
-    right = min(candidates) + 1 if candidates else len(text)
-    return left, right
-
-def split_citation_cluster(citation_text: str) -> List[str]:
+def simplify_claim(claim: str) -> str:
     """
-    Split clustered citations like:
-    (Beck et al., 2021; Zhang et al., 2022; Patel, 2023)
-    into individual citation strings.
+    Reduce claim to its core proposition terms.
+    Removes weak framing expressions and hedge words.
     """
-    if not citation_text:
+    if not claim:
+        return ""
+    
+    claim = claim.strip()
+    
+    # Remove weak framing expressions
+    claim = re.sub(r"\b(this study|this paper|the study|the findings show that|results show that|it was found that|we find that|we show that)\b", "", claim, flags=re.I)
+    
+    # Remove hedge words and weak modifiers
+    claim = re.sub(r"\b(significantly|generally|often|may|might|can|could|appears to|tends to|seems to|potentially|possibly|approximately|roughly|about)\b", "", claim, flags=re.I)
+    
+    # Remove citation markers
+    claim = re.sub(r"\s*\([^)]*\)\s*", " ", claim)
+    claim = re.sub(r"\s*\[[^\]]*\]\s*", " ", claim)
+    
+    # Collapse spaces
+    claim = re.sub(r"\s+", " ", claim).strip(" ,;:-")
+    
+    return claim
+
+# ============================================================
+# CONCEPT EXTRACTION WITH MAPPING
+# ============================================================
+
+def extract_concepts(text: str) -> List[str]:
+    """Extract and normalize concepts from text using concept map."""
+    if not text:
         return []
-
-    c = citation_text.strip()
-
-    if c.startswith("(") and c.endswith(")"):
-        inner = c[1:-1]
-        parts = [p.strip() for p in re.split(r"\s*;\s*", inner) if p.strip()]
-        return [f"({p})" for p in parts]
-
-    # fallback, keep as single citation
-    return [c]
-
-# ============================================================
-# CORE FUNCTIONS
-# ============================================================
-
-def extract_citation_author_year(citation: str) -> Tuple[List[str], str]:
-    """
-    Extract author surname(s) and year from a citation text.
     
-    Args:
-        citation: The citation text (e.g., "(Beck et al., 2021)" or "Beck et al. (2021)")
+    text = text.lower()
     
-    Returns:
-        Tuple of (list of author surnames, year string)
-    """
-    citation = (citation or "").strip()
+    # Extract words (3+ chars, alphabetic)
+    words = re.findall(r"[a-z]{3,}", text)
     
-    # Extract year
-    year_match = re.search(r"\b((?:19|20)\d{2}[a-z]?)\b", citation)
-    year = year_match.group(1) if year_match else ""
-    
-    # Remove year and brackets for author extraction
-    left = re.sub(r"\b(?:19|20)\d{2}[a-z]?\b", "", citation)
-    left = re.sub(r"[\(\)]", " ", left)
-    left = re.sub(r"\bet\s+al\.?\b", "", left, flags=re.I)
-    left = left.replace("&", " and ")
-    
-    authors = []
-    # Split by common separators
-    parts = re.split(r"\band\b|,|;", left, flags=re.I)
-    for p in parts:
-        p = p.strip()
-        if not p:
+    concepts = []
+    for w in words:
+        if w in STOPWORDS:
             continue
-        toks = p.split()
-        if toks:
-            # Take the last token as surname
-            surname = re.sub(r"[^A-Za-z'\-]", "", toks[-1]).lower()
-            if len(surname) >= 2:
-                authors.append(surname)
+        
+        # Map to normalized concept
+        concept = CONCEPT_MAP.get(w, w)
+        concepts.append(concept)
     
     # Deduplicate while preserving order
     seen = set()
     out = []
-    for a in authors:
-        if a not in seen:
-            seen.add(a)
-            out.append(a)
+    for c in concepts:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
     
-    return out[:2], year  # Return at most 2 authors
+    return out
 
+def relation_hits(text: str) -> set:
+    """Detect relation types present in text."""
+    if not text:
+        return set()
+    
+    text = text.lower()
+    hits = set()
+    
+    for rel, patterns in RELATION_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, text):
+                hits.add(rel)
+                break
+    
+    return hits
 
-def extract_context(text: str, citation: str, window: int = 220) -> str:
-    """
-    Robust claim/context extraction for both parenthetical and narrative citations.
-    Returns the most proposition-like text around the citation.
-    """
-    if not text or not citation:
-        return ""
+def keyword_overlap_score(claim: str, source_text: str) -> float:
+    """Calculate keyword overlap with better semantic handling."""
+    claim_keywords = extract_concepts(claim)
+    source_keywords = extract_concepts(source_text)
+    
+    if not claim_keywords:
+        return 0.0
+    
+    # Count matches using set intersection
+    claim_set = set(claim_keywords)
+    source_set = set(source_keywords)
+    
+    matched = len(claim_set & source_set)
+    
+    # Soft denominator: cap at 4 core concepts
+    denominator = min(len(claim_set), 4)
+    ratio = matched / denominator if denominator > 0 else 0
+    
+    return min(ratio, 1.0)
 
-    raw_text = text
-    raw_cit = citation.strip()
+def direction_overlap_score(claim: str, source_text: str) -> float:
+    """Check if direction (positive/negative) is consistent."""
+    claim = claim.lower()
+    source = source_text.lower()
+    
+    positive_words = ["improve", "enhance", "increase", "boost", "strengthen", "beneficial", "positive", "advantage"]
+    negative_words = ["reduce", "decrease", "mitigate", "lower", "minimize", "negative", "harmful", "detrimental"]
+    
+    claim_pos = any(w in claim for w in positive_words)
+    claim_neg = any(w in claim for w in negative_words)
+    source_pos = any(w in source for w in positive_words)
+    source_neg = any(w in source for w in negative_words)
+    
+    if claim_pos and source_pos:
+        return 1.0
+    if claim_neg and source_neg:
+        return 1.0
+    if (claim_pos or claim_neg) and not (source_pos or source_neg):
+        return 0.3  # Neutral source
+    if (claim_pos and source_neg) or (claim_neg and source_pos):
+        return 0.0  # Contradictory
+    
+    return 0.5  # No clear direction
 
-    # 1. exact match first
-    idx = raw_text.find(raw_cit)
+# ============================================================
+# FETCH OPENALEX METADATA WITH CONCEPTS
+# ============================================================
 
-    # 2. whitespace-normalized fallback
-    if idx == -1:
-        text_norm = _norm_ws(raw_text)
-        cit_norm = _norm_ws(raw_cit)
-        idx_norm = text_norm.find(cit_norm)
-        if idx_norm != -1:
-            # approximate back-mapping by searching nearby substring in raw text
-            probe = cit_norm[:40]
-            idx = raw_text.find(probe.split()[0]) if probe else -1
-
-    # 3. author-year fallback
-    if idx == -1:
-        surname, year = _extract_author_year_bits(raw_cit)
-        if surname and year:
-            m = re.search(rf"\b{re.escape(surname)}\b.*?\b{re.escape(year)}\b", raw_text)
-            if not m:
-                m = re.search(rf"\b{re.escape(year)}\b.*?\b{re.escape(surname)}\b", raw_text)
-            if m:
-                idx = m.start()
-                raw_cit = raw_text[m.start():m.end()]
-        elif year:
-            m = re.search(rf"\b{re.escape(year)}\b", raw_text)
-            if m:
-                idx = m.start()
-
-    if idx == -1:
-        return ""
-
-    cit_start = idx
-    cit_end = min(len(raw_text), idx + len(raw_cit))
-
-    sent_left, sent_right = _find_sentence_span(raw_text, cit_start)
-    sentence = raw_text[sent_left:sent_right].strip()
-
-    left_chunk = raw_text[max(sent_left, cit_start - window):cit_start].strip(" ,;:-")
-    right_chunk = raw_text[cit_end:min(sent_right, cit_end + window)].strip(" ,;:-")
-
-    # parenthetical citation, claim usually on the left
-    if raw_cit.startswith("(") and raw_cit.endswith(")"):
-        claim = left_chunk or sentence.replace(raw_cit, "").strip()
-        if not claim:
-            claim = (left_chunk + " " + right_chunk).strip()
-        return re.sub(r"\s+", " ", claim).strip(" ,;:-")
-
-    # narrative citation, claim usually on the right
-    narrative_like = bool(re.search(rf"\(\s*{_YEAR_RE}\s*\)", raw_cit)) or bool(re.search(rf"\b{_YEAR_RE}\b", raw_cit))
-    if narrative_like:
-        claim = right_chunk
-        if not claim:
-            claim = sentence.replace(raw_cit, "").strip()
-        if not claim:
-            claim = left_chunk
-        return re.sub(r"\s+", " ", claim).strip(" ,;:-")
-
-    # fallback
-    claim = sentence.replace(raw_cit, "").strip()
-    if not claim:
-        claim = (left_chunk + " " + right_chunk).strip()
-    return re.sub(r"\s+", " ", claim).strip(" ,;:-")
-
-
-def extract_keywords(text: str) -> List[str]:
-    """Extract meaningful keywords from text for search queries."""
-    words = re.findall(r"[A-Za-z]{4,}", (text or "").lower())
-    stop = {
-        "this", "that", "with", "from", "using", "study", "analysis",
-        "method", "approach", "results", "table", "figure", "paper",
-        "research", "journal", "review", "these", "those", "their",
-        "would", "could", "should", "might", "what", "when", "where",
-        "which", "while", "there", "about", "into", "through", "during"
+def fetch_openalex_metadata_by_doi(doi: str) -> Dict[str, Any]:
+    """Fetch OpenAlex metadata including concepts for better matching."""
+    if not doi:
+        return {}
+    
+    import requests
+    from verify import _safe_get_json
+    
+    doi = doi.replace("https://doi.org/", "").strip()
+    url = f"https://api.openalex.org/works/https://doi.org/{doi}"
+    data = _safe_get_json(url)
+    
+    if not data:
+        return {}
+    
+    result = {
+        "title": data.get("title", ""),
+        "abstract": data.get("abstract", ""),
+        "publication_year": data.get("publication_year", ""),
+        "concepts": []
     }
-    seen = set()
-    out = []
-    for w in words:
-        if w in stop or w in seen:
-            continue
-        seen.add(w)
-        out.append(w)
-    return out[:10]
+    
+    # Extract concept display names
+    for concept in data.get("concepts", [])[:8]:
+        concept_name = concept.get("display_name", "")
+        if concept_name:
+            result["concepts"].append(concept_name)
+    
+    return result
 
-
-def suggest_from_context(context: str, citation: str = "", top_k: int = 3) -> List[Dict[str, Any]]:
-    """
-    Suggest references based on surrounding context AND citation text.
+def build_source_text_from_metadata(metadata: Dict[str, Any]) -> str:
+    """Build enriched source text from title, abstract, and concepts."""
+    parts = []
     
-    Uses hybrid query: author(s) + year + context keywords for optimal precision.
-    
-    Args:
-        context: The surrounding text where the citation appears
-        citation: The original citation text (e.g., "(Beck et al., 2021)")
-        top_k: Number of suggestions to return
-    
-    Returns:
-        List of suggested reference dictionaries
-    """
-    keywords = extract_keywords(context)
-    authors, year = extract_citation_author_year(citation)
-    
-    # Build hybrid query
-    query_parts = []
-    if authors:
-        query_parts.extend(authors[:2])  # Use up to 2 authors
-    if year:
-        query_parts.append(year)
-    if keywords:
-        query_parts.extend(keywords[:8])  # Use up to 8 keywords
-    
-    query = " ".join(query_parts).strip()
-    
-    # Fallback to context-only if hybrid query is empty
-    if not query and keywords:
-        query = " ".join(keywords[:6])
-    
-    if not query:
-        return []
-    
-    # Search both CrossRef and OpenAlex
-    candidates = []
-    candidates.extend(_query_crossref(query, rows=8))
-    candidates.extend(_query_openalex(query, rows=8))
-    
-    # Deduplicate by title
-    seen = set()
-    suggestions = []
-    
-    for cand in candidates:
-        doi, title, cand_year, authors_list = _candidate_fields(cand)
-        if not title:
-            continue
-        
-        # Create unique key
-        key = f"{title.lower()}|{cand_year}|{doi.lower()}"
-        if key in seen:
-            continue
-        seen.add(key)
-        
-        # Calculate relevance score (prioritize year and author matches)
-        relevance = 75  # Base score
-        
-        # Boost if year matches
-        if year and cand_year and year[:4] == cand_year[:4]:
-            relevance += 15
-        
-        # Boost if any author matches
-        if authors and authors_list:
-            if any(a in [au.lower() for au in authors_list] for a in authors):
-                relevance += 20
-        
-        suggestions.append({
-            "title": title,
-            "year": cand_year,
-            "authors": authors_list,
-            "doi": doi,
-            "type": "context",
-            "relevance": relevance
-        })
-    
-    # Sort by relevance
-    suggestions.sort(key=lambda x: x.get("relevance", 0), reverse=True)
-    return suggestions[:top_k]
-
-
-def suggest_for_unverified(ref: str, top_k: int = 3) -> List[Dict[str, Any]]:
-    """
-    Suggest corrected references for unverified/needs_review references.
-    
-    Uses extracted fields from the reference string.
-    
-    Args:
-        ref: The reference string to correct
-        top_k: Number of suggestions to return
-    
-    Returns:
-        List of suggested reference dictionaries
-    """
-    fields = _extract_fields_by_style(ref, "apa")
-    title = fields.get("title", "") or ""
-    authors = fields.get("authors", []) or []
-    year = fields.get("year", "") or ""
-
-    query_parts = []
+    title = metadata.get("title", "")
     if title:
-        query_parts.append(title)
-    if authors:
-        query_parts.extend(authors[:2])
-    if year:
-        query_parts.append(year)
+        parts.append(title)
+    
+    abstract = metadata.get("abstract", "")
+    if abstract:
+        parts.append(abstract)
+    
+    concepts = metadata.get("concepts", [])
+    if concepts:
+        parts.append(" ".join(concepts))
+    
+    return " ".join(parts)
 
-    query = " ".join(query_parts).strip()
-    if not query:
-        return []
+# ============================================================
+# MAIN SCORING FUNCTION (IMPROVED)
+# ============================================================
 
-    # Search both CrossRef and OpenAlex
-    candidates = []
-    candidates.extend(_query_crossref(query, rows=8))
-    candidates.extend(_query_openalex(query, rows=8))
+def score_claim_support(
+    claim: str,
+    source_title: str,
+    source_abstract: str = "",
+    source_concepts: List[str] = None
+) -> Dict[str, Any]:
+    """
+    Score how well a source supports a claim.
+    
+    Returns:
+        Dictionary with score, status, and detailed components
+    """
+    if not claim or not source_title:
+        return {
+            "score": 0,
+            "status": "insufficient_evidence",
+            "title_overlap": 0,
+            "abstract_overlap": 0,
+            "keyword_overlap": 0,
+            "direction_overlap": 0,
+            "relation_overlap": 0,
+            "partial_support": False
+        }
+    
+    # Step 1: Simplify the claim
+    claim_simplified = simplify_claim(claim)
+    if not claim_simplified:
+        claim_simplified = claim
+    
+    # Step 2: Build enriched source text
+    source_parts = [source_title]
+    if source_abstract:
+        source_parts.append(source_abstract)
+    if source_concepts:
+        source_parts.append(" ".join(source_concepts))
+    source_text = " ".join(source_parts).lower()
+    
+    # Step 3: Extract concepts
+    claim_concepts = extract_concepts(claim_simplified)
+    source_concepts_extracted = extract_concepts(source_text)
+    
+    # Step 4: Calculate overlaps
+    claim_set = set(claim_concepts)
+    source_set = set(source_concepts_extracted)
+    
+    title_overlap = len(claim_set & source_set)
+    abstract_overlap = title_overlap  # For compatibility, but we use enriched source
+    
+    # Step 5: Weighted concept ratio (cap at 4 core concepts)
+    weighted_overlap = title_overlap  # Title and abstract already combined
+    denominator = max(min(len(claim_set), 4), 1)
+    concept_ratio = min(weighted_overlap / denominator, 1.0)
+    
+    # Step 6: Keyword overlap
+    keyword_ratio = keyword_overlap_score(claim_simplified, source_text)
+    
+    # Step 7: Direction overlap
+    direction_ratio = direction_overlap_score(claim_simplified, source_text)
+    
+    # Step 8: Relation overlap
+    claim_rels = relation_hits(claim_simplified)
+    source_rels = relation_hits(source_text)
+    relation_overlap = len(claim_rels & source_rels)
+    relation_bonus = 10 if relation_overlap > 0 else 0
+    
+    # Step 9: Partial support bonus
+    partial_support_bonus = 0
+    if title_overlap >= 2:
+        partial_support_bonus += 10
+    if relation_overlap > 0 and title_overlap >= 1:
+        partial_support_bonus += 10
+    
+    # Step 10: Calculate final score
+    # Weights: 55% concept, 15% direction, 10% keyword, plus bonuses
+    base_score = (
+        55 * concept_ratio +
+        15 * direction_ratio +
+        10 * keyword_ratio
+    )
+    
+    final_score = base_score + relation_bonus + partial_support_bonus
+    final_score = round(min(final_score, 100), 1)
+    
+    # Step 11: Determine status with relaxed thresholds
+    if final_score >= 70:
+        status = "strong_support"
+    elif final_score >= 55:
+        status = "moderate_support"
+    elif final_score >= 38:
+        status = "related_evidence"
+    elif final_score >= 22:
+        status = "weak_or_unclear"
+    else:
+        status = "insufficient_evidence"
+    
+    return {
+        "score": final_score,
+        "status": status,
+        "title_overlap": title_overlap,
+        "abstract_overlap": abstract_overlap,
+        "keyword_overlap": round(keyword_ratio * 100, 1),
+        "direction_overlap": round(direction_ratio * 100, 1),
+        "relation_overlap": relation_overlap,
+        "partial_support": partial_support_bonus > 0,
+        "claim_simplified": claim_simplified[:200],
+        "concept_matches": list(claim_set & source_set)[:10]
+    }
 
-    seen = set()
-    suggestions = []
+# ============================================================
+# BATCH PROCESSING WITH CLUSTER AWARENESS
+# ============================================================
 
-    for cand in candidates:
-        doi, cand_title, cand_year, cand_authors = _candidate_fields(cand)
-        if not cand_title:
-            continue
-
-        # Calculate score using existing _score function
-        meta = _score(title, authors, year, cand_title, cand_authors, cand_year)
-
-        # Require at least 70% title similarity for corrections
-        if meta["title_score"] < 70:
-            continue
-
-        key = f"{cand_title.lower()}|{cand_year}|{doi.lower()}"
-        if key in seen:
-            continue
-        seen.add(key)
-
-        suggestions.append({
-            "title": cand_title,
-            "year": cand_year,
-            "authors": cand_authors,
-            "doi": doi,
-            "score": meta["score"],
-            "title_score": meta["title_score"],
-            "author_similarity": meta["author_similarity"],
-            "year_match": meta["year_match"],
-            "type": "correction"
-        })
-
-    suggestions.sort(key=lambda x: (x.get("score", 0), x.get("title_score", 0)), reverse=True)
-    return suggestions[:top_k]
+def score_claim_support_batch(
+    claims: List[str],
+    source_title: str,
+    source_abstract: str = "",
+    source_concepts: List[str] = None
+) -> List[Dict[str, Any]]:
+    """Score multiple claims against the same source."""
+    results = []
+    for claim in claims:
+        if claim:
+            results.append(score_claim_support(claim, source_title, source_abstract, source_concepts))
+        else:
+            results.append({
+                "score": 0,
+                "status": "insufficient_evidence",
+                "title_overlap": 0,
+                "abstract_overlap": 0,
+                "keyword_overlap": 0,
+                "direction_overlap": 0,
+                "relation_overlap": 0,
+                "partial_support": False
+            })
+    return results
