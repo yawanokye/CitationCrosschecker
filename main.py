@@ -33,6 +33,7 @@ from verify import (
 )
 from acii import compute_acii
 from citation_suggester import extract_context, suggest_from_context
+from claim_checker import build_claim_support_rows
 
 # ===============================
 # DATABASE SETUP - SQLite
@@ -643,6 +644,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                         print(f"[DEBUG] Error rebuilding reference mapping: {e}")
                                     # Add context-specific recovery payload
                                     _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
+                                    _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
                                     _store[job_id]["verification"]["results"] = verification_results
                                     _store[job_id]["verification"]["results_count"] = len(verification_results)
                                     _store[job_id]["verification"]["summary"] = summary
