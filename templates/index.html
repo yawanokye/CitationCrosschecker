@@ -864,6 +864,7 @@
             <button class="tab" data-tab="r2cPane">📚 References → Citations</button>
             <button class="tab" data-tab="verifyPane">✅ Verification</button>
             <button class="tab" data-tab="recoveryPane">🛠 Recovery</button>
+            <button class="tab" data-tab="claimSupportPane">🧠 Claim Support</button>
             <button class="tab" data-tab="suggestionsPane">💡 Suggestions</button>
         </div>
 
@@ -990,6 +991,26 @@
                                 </tr>
                             </thead>
                             <tbody id="recoveryVerifyBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div id="claimSupportPane" class="tabPane">
+                <div class="card">
+                    <h3>🧠 Claim-to-Source Check</h3>
+                    <div class="tableWrap">
+                        <table class="tbl">
+                            <thead>
+                                <tr>
+                                    <th style="width:50px;">No.</th>
+                                    <th style="width:180px;">Citation</th>
+                                    <th>Claim Extracted</th>
+                                    <th>Matched Source</th>
+                                    <th style="width:150px;">Support Status</th>
+                                    <th style="width:80px;">Score</th>
+                                </tr>
+                            </thead>
+                            <tbody id="claimSupportBody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -1914,6 +1935,45 @@ function renderRecovery(data) {
     }
 }
     
+function renderClaimSupport(data) {
+    const body = $("claimSupportBody");
+    if (!body) return;
+
+    const rows = data?.claim_support || [];
+
+    if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="6">No claim-to-source checks available yet.</td></tr>`;
+        return;
+    }
+
+    body.innerHTML = rows.map((r, i) => {
+        const doiHtml = r.doi
+            ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View</a>`
+            : "—";
+
+        let badgeClass = "not_found";
+        if (r.support_status === "strong_support") badgeClass = "verified";
+        else if (r.support_status === "moderate_support") badgeClass = "likely";
+        else if (r.support_status === "related_evidence") badgeClass = "needs_review";
+        else if (r.support_status === "weak_or_unclear") badgeClass = "needs_review";
+        else badgeClass = "offline";
+
+        return `
+            <tr>
+                <td>${i + 1}</td>
+                <td>${esc(r.citation || "")}</td>
+                <td style="max-width:320px;">${esc(r.claim || "")}</td>
+                <td style="max-width:280px;">
+                    ${esc((r.source_title || "").substring(0, 80))}${(r.source_title || "").length > 80 ? "…" : ""}
+                    <div>${doiHtml}</div>
+                </td>
+                <td><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></td>
+                <td>${esc(String(r.support_score ?? ""))}</td>
+            </tr>
+        `;
+    }).join("");
+}
+    
 function renderAll(data) {
     if (!data) return;
     console.log("🚀 renderAll called");
@@ -1933,6 +1993,7 @@ function renderAll(data) {
     renderR2C(normalized);
     renderVerify(normalized);
     renderRecovery(normalized);
+    renderClaimSupport(normalized);
     
     // Display auto-fix suggestions
     if (normalized.autofix && normalized.autofix.suggestions) {
