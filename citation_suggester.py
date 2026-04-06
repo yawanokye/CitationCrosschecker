@@ -109,8 +109,8 @@ def extract_citation_author_year(citation: str) -> Tuple[List[str], str]:
 
 def extract_context(text: str, citation: str, window: int = 300) -> str:
     """
-    Aggressive claim extraction for narrative citations.
-    For narrative citations (Author Year verb...), returns everything after the citation.
+    FORCE right-side extraction for narrative citations.
+    Returns the claim that follows the citation (Author Year verb...).
     """
     if not text or not citation:
         return ""
@@ -119,26 +119,26 @@ def extract_context(text: str, citation: str, window: int = 300) -> str:
     raw_cit = citation.strip()
 
     # ============================================================
-    # FIND CITATION POSITION (MULTIPLE STRATEGIES)
+    # FIND CITATION POSITION
     # ============================================================
     idx = -1
     
-    # Strategy 1: Exact match
+    # Exact match
     idx = raw_text.find(raw_cit)
     
-    # Strategy 2: Normalized match
+    # Normalized match
     if idx == -1:
         text_norm = re.sub(r"\s+", " ", raw_text)
         cit_norm = re.sub(r"\s+", " ", raw_cit)
         idx_norm = text_norm.find(cit_norm)
         if idx_norm != -1:
-            # Find approximate position in original
+            # Find position in original
             probe = cit_norm[:50]
             for match in re.finditer(re.escape(probe[:20]), raw_text):
                 idx = match.start()
                 break
     
-    # Strategy 3: Author-year pattern match
+    # Author-year pattern match
     if idx == -1:
         # Extract author surname and year
         author_match = re.search(r'([A-Z][a-z]+(?:\s+et\s+al\.?)?)', raw_cit)
@@ -147,7 +147,6 @@ def extract_context(text: str, citation: str, window: int = 300) -> str:
         if author_match and year_match:
             author = author_match.group(1)
             year = year_match.group(1)
-            # Look for "Author year" pattern
             pattern = rf'{re.escape(author)}.*?\b{year}\b'
             m = re.search(pattern, raw_text)
             if m:
@@ -161,54 +160,59 @@ def extract_context(text: str, citation: str, window: int = 300) -> str:
     cit_end = min(len(raw_text), idx + len(raw_cit))
 
     # ============================================================
-    # DETECT IF THIS IS A NARRATIVE CITATION
+    # DETECT NARRATIVE CITATION (MUST USE RIGHT CHUNK)
     # ============================================================
-    is_narrative = False
     
-    # Look at the text immediately after the citation
-    after_text = raw_text[cit_end:cit_end + 100]
+    # Check citation pattern
+    # Pattern 1: Author (Year) - narrative
+    pattern1 = re.search(r'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s*\(\s*(?:19|20)\d{2}\s*\)', raw_cit)
     
-    # Common narrative verbs (academic writing)
-    narrative_verbs = {
+    # Pattern 2: Author Year (no parentheses)
+    pattern2 = re.search(r'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s+(?:19|20)\d{2}', raw_cit)
+    
+    # Pattern 3: Check if citation is at beginning of sentence (not in parentheses)
+    # Look at surrounding characters
+    before_char = raw_text[cit_start - 1:cit_start] if cit_start > 0 else ""
+    after_char = raw_text[cit_end:cit_end + 1] if cit_end < len(raw_text) else ""
+    
+    is_parenthetical = raw_cit.startswith("(") and raw_cit.endswith(")")
+    is_narrative = (pattern1 or pattern2) and not is_parenthetical
+    
+    # Also check for narrative verbs after citation
+    after_text = raw_text[cit_end:min(cit_end + 150, len(raw_text))]
+    narrative_verbs = [
         'argues', 'argue', 'stated', 'states', 'state', 'claimed', 'claims', 'claim',
         'suggested', 'suggests', 'suggest', 'found', 'finds', 'find', 'showed', 'shows', 'show',
         'demonstrated', 'demonstrates', 'demonstrate', 'reported', 'reports', 'report',
         'proposed', 'proposes', 'propose', 'described', 'describes', 'describe',
-        'presented', 'presents', 'present', 'discussed', 'discusses', 'discuss',
         'examined', 'examines', 'examine', 'investigated', 'investigates', 'investigate',
-        'analyzed', 'analyzes', 'analyze', 'assessed', 'assesses', 'assess',
-        'evaluated', 'evaluates', 'evaluate', 'concluded', 'concludes', 'conclude',
+        'analyzed', 'analyzes', 'analyze', 'concluded', 'concludes', 'conclude',
         'noted', 'notes', 'note', 'observed', 'observes', 'observe',
         'emphasized', 'emphasizes', 'emphasize', 'highlighted', 'highlights', 'highlight',
-        'indicated', 'indicates', 'indicate', 'explained', 'explains', 'explain'
-    }
+        'indicated', 'indicates', 'indicate', 'explained', 'explains', 'explain',
+        'wrote', 'writes', 'write', 'published', 'publishes', 'publish'
+    ]
     
-    # Check if first word after citation is a narrative verb
+    # Clean after_text to get first word
     after_clean = after_text.lstrip()
     first_word = after_clean.split()[0].lower() if after_clean.split() else ""
     
     if first_word in narrative_verbs:
         is_narrative = True
-    
-    # Also check for citation patterns that indicate narrative
-    # Pattern: Author (Year) verb
-    if re.search(r'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s*\(\s*(?:19|20)\d{2}\s*\)', raw_cit):
-        is_narrative = True
-    # Pattern: Author Year verb (no parentheses)
-    if re.search(r'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s+(?:19|20)\d{2}', raw_cit):
-        is_narrative = True
 
     # ============================================================
-    # EXTRACT CLAIM BASED ON CITATION TYPE
+    # EXTRACT CLAIM - FORCE RIGHT SIDE FOR NARRATIVE
     # ============================================================
     
-    # Parenthetical: (Author, Year) - claim is BEFORE
-    if raw_cit.startswith("(") and raw_cit.endswith(")"):
-        # Get everything before the citation (within sentence)
-        sent_start = max(raw_text.rfind('.', 0, cit_start), 
-                        raw_text.rfind('!', 0, cit_start),
-                        raw_text.rfind('?', 0, cit_start),
-                        raw_text.rfind('\n', 0, cit_start)) + 1
+    # PARENTHETICAL: (Author, Year) - claim is BEFORE
+    if is_parenthetical:
+        # Find start of sentence
+        sent_start = max(
+            raw_text.rfind('.', 0, cit_start),
+            raw_text.rfind('!', 0, cit_start),
+            raw_text.rfind('?', 0, cit_start),
+            raw_text.rfind('\n', 0, cit_start)
+        ) + 1
         if sent_start == 0:
             sent_start = max(0, cit_start - 200)
         
@@ -216,60 +220,52 @@ def extract_context(text: str, citation: str, window: int = 300) -> str:
         if claim:
             return re.sub(r"\s+", " ", claim).strip(" ,;:-")
     
-    # Narrative citation - claim is EVERYTHING AFTER
+    # NARRATIVE: Author (Year) verb... - claim is AFTER
     if is_narrative:
-        # Find the end of the sentence/paragraph
+        # Find sentence end or take window characters
+        # Look for period, question mark, or new paragraph
         sent_end = raw_text.find('.', cit_end)
-        para_end = raw_text.find('\n\n', cit_end)
+        if sent_end == -1 or sent_end > cit_end + window:
+            sent_end = min(len(raw_text), cit_end + window)
+        else:
+            sent_end = sent_end + 1  # Include the period
         
-        # Take up to 300 characters or until sentence ends
-        end_pos = min(
-            sent_end + 1 if sent_end != -1 else len(raw_text),
-            para_end if para_end != -1 else len(raw_text),
-            cit_end + window
-        )
+        claim = raw_text[cit_end:sent_end].strip()
         
-        claim = raw_text[cit_end:end_pos].strip()
+        # If claim is empty or too short, take more characters
+        if len(claim) < 20 and cit_end + window < len(raw_text):
+            claim = raw_text[cit_end:cit_end + window].strip()
         
-        # Remove leading punctuation/space
+        # Clean up: remove leading punctuation and extra spaces
         claim = re.sub(r'^[\s,;:]+', '', claim)
+        claim = re.sub(r'\s+', ' ', claim)
         
-        # If we got something, return it
-        if claim and len(claim) > 10:
-            return re.sub(r"\s+", " ", claim).strip()
-        
-        # Fallback: take next 200 characters regardless
-        claim = raw_text[cit_end:cit_end + window].strip()
-        return re.sub(r"\s+", " ", claim).strip(" ,;:-")
+        if claim:
+            return claim
     
     # ============================================================
-    # FALLBACK: Use sentence-based extraction
+    # FALLBACK: If no clear pattern, try both sides
     # ============================================================
     
-    # Find sentence boundaries
-    sent_start = max(raw_text.rfind('.', 0, cit_start),
-                    raw_text.rfind('!', 0, cit_start),
-                    raw_text.rfind('?', 0, cit_start)) + 1
-    if sent_start == 0:
-        sent_start = max(0, cit_start - 100)
+    # Try left side
+    left_start = max(0, cit_start - window)
+    left_claim = raw_text[left_start:cit_start].strip()
     
-    sent_end = raw_text.find('.', cit_end)
-    if sent_end == -1:
-        sent_end = min(len(raw_text), cit_end + window)
+    # Try right side  
+    right_end = min(len(raw_text), cit_end + window)
+    right_claim = raw_text[cit_end:right_end].strip()
+    
+    # Prefer right side for academic writing (claims usually follow citation)
+    if len(right_claim) > len(left_claim):
+        claim = right_claim
     else:
-        sent_end += 1
-    
-    sentence = raw_text[sent_start:sent_end].strip()
-    
-    # Remove the citation from the sentence
-    claim = sentence.replace(raw_cit, "").strip()
+        claim = left_claim
     
     # Clean up
-    claim = re.sub(r'^\s*[,;:]+', '', claim)
+    claim = re.sub(r'^[\s,;:]+', '', claim)
     claim = re.sub(r'\s+', ' ', claim)
     
     return claim
-
 
 def extract_keywords(text: str) -> List[str]:
     """Extract meaningful keywords from text for search queries."""
