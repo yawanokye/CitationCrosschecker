@@ -127,7 +127,6 @@ def extract_context(text: str, citation: str, window: int = 220) -> str:
         cit_norm = _norm_ws(raw_cit)
         idx_norm = text_norm.find(cit_norm)
         if idx_norm != -1:
-            # approximate back-mapping by searching nearby substring in raw text
             probe = cit_norm[:40]
             idx = raw_text.find(probe.split()[0]) if probe else -1
 
@@ -152,33 +151,98 @@ def extract_context(text: str, citation: str, window: int = 220) -> str:
     cit_start = idx
     cit_end = min(len(raw_text), idx + len(raw_cit))
 
+    # Find sentence boundaries
     sent_left, sent_right = _find_sentence_span(raw_text, cit_start)
     sentence = raw_text[sent_left:sent_right].strip()
 
+    # Extract chunks around citation
     left_chunk = raw_text[max(sent_left, cit_start - window):cit_start].strip(" ,;:-")
     right_chunk = raw_text[cit_end:min(sent_right, cit_end + window)].strip(" ,;:-")
 
-    # parenthetical citation, claim usually on the left
+    # ============================================================
+    # IMPROVED NARRATIVE CITATION DETECTION
+    # ============================================================
+    
+    # Pattern 1: Author (Year) verb... (classic narrative)
+    # e.g., "Beck et al. (2021) argue that X improves Y"
+    narrative_pattern1 = re.search(
+        rf'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s*\(\s*{_YEAR_RE}\s*\)\s+(\w+)', 
+        raw_cit
+    )
+    
+    # Pattern 2: Citation at beginning of sentence with verb after
+    # e.g., "(Beck et al., 2021) found that X..."
+    narrative_pattern2 = re.search(
+        rf'\(\s*[^)]+{_YEAR_RE}[^)]*\)\s+(\w+)', 
+        raw_cit
+    )
+    
+    # Pattern 3: Author (Year) without parentheses around year
+    # e.g., "Beck et al. 2021 examined X"
+    narrative_pattern3 = re.search(
+        rf'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s+{_YEAR_RE}\s+(\w+)', 
+        raw_cit
+    )
+    
+    is_narrative = bool(narrative_pattern1 or narrative_pattern2 or narrative_pattern3)
+    
+    # Also detect if there's a verb immediately after the citation in the original text
+    verb_after = False
+    if cit_end < len(raw_text):
+        next_word_match = re.match(r'\s+([a-z]+)', raw_text[cit_end:cit_end + 30])
+        if next_word_match:
+            verb = next_word_match.group(1).lower()
+            # Common academic verbs indicating narrative citation
+            narrative_verbs = {'argue', 'state', 'claim', 'suggest', 'find', 'show', 
+                               'demonstrate', 'report', 'propose', 'describe', 'present',
+                               'discuss', 'examine', 'investigate', 'analyze', 'assess',
+                               'evaluate', 'compare', 'contrast', 'review', 'conclude',
+                               'note', 'observe', 'emphasize', 'highlight', 'indicate'}
+            if verb in narrative_verbs:
+                verb_after = True
+                is_narrative = True
+
+    # ============================================================
+    # EXTRACT CLAIM BASED ON CITATION TYPE
+    # ============================================================
+    
+    # Parenthetical citation: claim is on the LEFT
     if raw_cit.startswith("(") and raw_cit.endswith(")"):
         claim = left_chunk or sentence.replace(raw_cit, "").strip()
         if not claim:
-            claim = (left_chunk + " " + right_chunk).strip()
+            claim = right_chunk
         return re.sub(r"\s+", " ", claim).strip(" ,;:-")
 
-    # narrative citation, claim usually on the right
-    narrative_like = bool(re.search(rf"\(\s*{_YEAR_RE}\s*\)", raw_cit)) or bool(re.search(rf"\b{_YEAR_RE}\b", raw_cit))
-    if narrative_like:
+    # Narrative citation: claim is on the RIGHT (after the citation)
+    if is_narrative or verb_after:
+        # Priority 1: Right chunk (most common for narrative)
         claim = right_chunk
-        if not claim:
+        
+        # Priority 2: If right chunk is too short, look ahead further
+        if len(claim) < 20 and cit_end + 100 < len(raw_text):
+            extended_right = raw_text[cit_end:min(sent_right, cit_end + 200)].strip(" ,;:-")
+            if len(extended_right) > len(claim):
+                claim = extended_right
+        
+        # Priority 3: Extract from sentence after removing citation
+        if not claim or len(claim) < 10:
+            # Remove the citation from sentence and take the rest
             claim = sentence.replace(raw_cit, "").strip()
+            # If the citation was at the beginning, take the whole sentence after it
+            if claim and len(claim) > 0:
+                pass
+        
+        # Priority 4: Fallback to left chunk
         if not claim:
             claim = left_chunk
+        
         return re.sub(r"\s+", " ", claim).strip(" ,;:-")
 
-    # fallback
+    # Default: use both chunks
     claim = sentence.replace(raw_cit, "").strip()
     if not claim:
         claim = (left_chunk + " " + right_chunk).strip()
+    
     return re.sub(r"\s+", " ", claim).strip(" ,;:-")
 
 
