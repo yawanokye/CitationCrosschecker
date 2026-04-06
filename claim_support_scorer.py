@@ -323,13 +323,13 @@ def score_claim_support(
     # ============================================================
     # RELAXED THRESHOLDS (UPDATED)
     # ============================================================
-    if final_score >= 55:      # Was 70
+    if final_score >= 50:      # Was 70
         status = "strong_support"
-    elif final_score >= 40:    # Was 55
+    elif final_score >= 35:    # Was 55
         status = "moderate_support"
-    elif final_score >= 25:    # Was 38
+    elif final_score >= 20:    # Was 38
         status = "related_evidence"
-    elif final_score >= 15:    # Was 22
+    elif final_score >= 10:    # Was 22
         status = "weak_or_unclear"
     else:
         status = "insufficient_evidence"
