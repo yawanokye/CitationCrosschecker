@@ -126,10 +126,10 @@ def extract_citation_author_year(citation: str) -> Tuple[List[str], str]:
     return out[:2], year  # Return at most 2 authors
 
 
-def extract_context(text: str, citation: str, window: int = 220) -> str:
+def extract_context(text: str, citation: str, window: int = 400) -> str:
     """
-    Robust claim/context extraction for both parenthetical and narrative citations.
-    Returns the most proposition-like text around the citation.
+    AGGRESSIVE claim extraction for narrative citations.
+    For narrative citations (Author Year verb...), returns EVERYTHING after the citation.
     """
     if not text or not citation:
         return ""
@@ -137,68 +137,138 @@ def extract_context(text: str, citation: str, window: int = 220) -> str:
     raw_text = text
     raw_cit = citation.strip()
 
-    # 1. exact match first
+    # ============================================================
+    # FIND CITATION POSITION
+    # ============================================================
+    idx = -1
+    
+    # Exact match
     idx = raw_text.find(raw_cit)
-
-    # 2. whitespace-normalized fallback
+    
+    # Normalized match
     if idx == -1:
-        text_norm = _norm_ws(raw_text)
-        cit_norm = _norm_ws(raw_cit)
+        text_norm = re.sub(r"\s+", " ", raw_text)
+        cit_norm = re.sub(r"\s+", " ", raw_cit)
         idx_norm = text_norm.find(cit_norm)
         if idx_norm != -1:
-            # approximate back-mapping by searching nearby substring in raw text
-            probe = cit_norm[:40]
-            idx = raw_text.find(probe.split()[0]) if probe else -1
-
-    # 3. author-year fallback
+            probe = cit_norm[:50]
+            for match in re.finditer(re.escape(probe[:20]), raw_text):
+                idx = match.start()
+                break
+    
+    # Author-year pattern match
     if idx == -1:
-        surname, year = _extract_author_year_bits(raw_cit)
-        if surname and year:
-            m = re.search(rf"\b{re.escape(surname)}\b.*?\b{re.escape(year)}\b", raw_text)
-            if not m:
-                m = re.search(rf"\b{re.escape(year)}\b.*?\b{re.escape(surname)}\b", raw_text)
+        author_match = re.search(r'([A-Z][a-z]+(?:\s+et\s+al\.?)?)', raw_cit)
+        year_match = re.search(r'\b(19|20)\d{2}\b', raw_cit)
+        
+        if author_match and year_match:
+            author = author_match.group(1)
+            year = year_match.group(1)
+            pattern = rf'{re.escape(author)}.*?\b{year}\b'
+            m = re.search(pattern, raw_text)
             if m:
                 idx = m.start()
                 raw_cit = raw_text[m.start():m.end()]
-        elif year:
-            m = re.search(rf"\b{re.escape(year)}\b", raw_text)
-            if m:
-                idx = m.start()
-
+    
     if idx == -1:
         return ""
 
     cit_start = idx
     cit_end = min(len(raw_text), idx + len(raw_cit))
 
-    sent_left, sent_right = _find_sentence_span(raw_text, cit_start)
-    sentence = raw_text[sent_left:sent_right].strip()
+    # ============================================================
+    # DETECT NARRATIVE VS PARENTHETICAL
+    # ============================================================
+    
+    is_parenthetical = raw_cit.startswith("(") and raw_cit.endswith(")")
+    
+    # Check for narrative patterns
+    pattern1 = re.search(r'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s*\(\s*(?:19|20)\d{2}\s*\)', raw_cit)
+    pattern2 = re.search(r'[A-Z][a-z]+(?:\s+et\s+al\.?)?\s+(?:19|20)\d{2}', raw_cit)
+    
+    is_narrative = (pattern1 or pattern2) and not is_parenthetical
+    
+    # Check for narrative verbs after citation
+    after_text = raw_text[cit_end:min(cit_end + 150, len(raw_text))]
+    narrative_verbs = {
+        'argues', 'argue', 'stated', 'states', 'state', 'claimed', 'claims', 'claim',
+        'suggested', 'suggests', 'suggest', 'found', 'finds', 'find', 'showed', 'shows', 'show',
+        'demonstrated', 'demonstrates', 'demonstrate', 'reported', 'reports', 'report',
+        'proposed', 'proposes', 'propose', 'described', 'describes', 'describe',
+        'examined', 'examines', 'examine', 'investigated', 'investigates', 'investigate',
+        'analyzed', 'analyzes', 'analyze', 'concluded', 'concludes', 'conclude',
+        'noted', 'notes', 'note', 'observed', 'observes', 'observe',
+        'emphasized', 'emphasizes', 'emphasize', 'highlighted', 'highlights', 'highlight',
+        'indicated', 'indicates', 'indicate', 'explained', 'explains', 'explain',
+        'wrote', 'writes', 'write', 'published', 'publishes', 'publish'
+    }
+    
+    after_clean = after_text.lstrip()
+    first_word = after_clean.split()[0].lower() if after_clean.split() else ""
+    
+    if first_word in narrative_verbs:
+        is_narrative = True
 
-    left_chunk = raw_text[max(sent_left, cit_start - window):cit_start].strip(" ,;:-")
-    right_chunk = raw_text[cit_end:min(sent_right, cit_end + window)].strip(" ,;:-")
-
-    # parenthetical citation, claim usually on the left
-    if raw_cit.startswith("(") and raw_cit.endswith(")"):
-        claim = left_chunk or sentence.replace(raw_cit, "").strip()
-        if not claim:
-            claim = (left_chunk + " " + right_chunk).strip()
-        return re.sub(r"\s+", " ", claim).strip(" ,;:-")
-
-    # narrative citation, claim usually on the right
-    narrative_like = bool(re.search(rf"\(\s*{_YEAR_RE}\s*\)", raw_cit)) or bool(re.search(rf"\b{_YEAR_RE}\b", raw_cit))
-    if narrative_like:
-        claim = right_chunk
-        if not claim:
-            claim = sentence.replace(raw_cit, "").strip()
-        if not claim:
-            claim = left_chunk
-        return re.sub(r"\s+", " ", claim).strip(" ,;:-")
-
-    # fallback
-    claim = sentence.replace(raw_cit, "").strip()
-    if not claim:
-        claim = (left_chunk + " " + right_chunk).strip()
-    return re.sub(r"\s+", " ", claim).strip(" ,;:-")
+    # ============================================================
+    # EXTRACT CLAIM - FORCE RIGHT SIDE FOR NARRATIVE
+    # ============================================================
+    
+    # PARENTHETICAL: claim is BEFORE
+    if is_parenthetical:
+        sent_start = max(
+            raw_text.rfind('.', 0, cit_start),
+            raw_text.rfind('!', 0, cit_start),
+            raw_text.rfind('?', 0, cit_start),
+            raw_text.rfind('\n', 0, cit_start)
+        ) + 1
+        if sent_start == 0:
+            sent_start = max(0, cit_start - window)
+        
+        claim = raw_text[sent_start:cit_start].strip()
+        if claim:
+            return re.sub(r"\s+", " ", claim).strip(" ,;:-")
+    
+    # NARRATIVE: claim is AFTER (take up to window characters or until sentence ends)
+    if is_narrative:
+        # Find sentence end (period, question mark, exclamation)
+        sent_end = raw_text.find('.', cit_end)
+        if sent_end == -1 or sent_end > cit_end + window:
+            sent_end = min(len(raw_text), cit_end + window)
+        else:
+            sent_end = sent_end + 1  # Include the period
+        
+        claim = raw_text[cit_end:sent_end].strip()
+        
+        # If claim is too short, take more
+        if len(claim) < 30 and cit_end + window < len(raw_text):
+            claim = raw_text[cit_end:cit_end + window].strip()
+        
+        # Clean up
+        claim = re.sub(r'^[\s,;:]+', '', claim)
+        claim = re.sub(r'\s+', ' ', claim)
+        
+        if claim and len(claim) > 10:
+            return claim
+    
+    # ============================================================
+    # FALLBACK: Try right side first (academic writing prefers claim after citation)
+    # ============================================================
+    
+    right_end = min(len(raw_text), cit_end + window)
+    right_claim = raw_text[cit_end:right_end].strip()
+    right_claim = re.sub(r'^[\s,;:]+', '', right_claim)
+    
+    if right_claim and len(right_claim) > 15:
+        return re.sub(r"\s+", " ", right_claim)
+    
+    # Last resort: left side
+    left_start = max(0, cit_start - window)
+    left_claim = raw_text[left_start:cit_start].strip()
+    
+    if left_claim:
+        return re.sub(r"\s+", " ", left_claim)
+    
+    return ""
 
 
 def extract_keywords(text: str) -> List[str]:
