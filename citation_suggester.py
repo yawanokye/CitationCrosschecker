@@ -1,288 +1,60 @@
-# claim_checker.py
+# citation_suggester.py
 
 import re
-from typing import Dict, Any, List, Set
+from typing import List, Dict, Any, Tuple
 
-from citation_suggester import extract_context, extract_keywords
-from verify import _safe_get_json
+from verify import (
+    _query_crossref,
+    _query_openalex,
+    _candidate_fields,
+    _score,
+    _extract_fields_by_style,
+)
 
+# ============================================================
+# HELPER FUNCTIONS FOR ROBUST CONTEXT EXTRACTION
+# ============================================================
 
-# ---------------------------------------------------------
-# Normalization dictionaries
-# ---------------------------------------------------------
+_YEAR_RE = r"(?:19|20)\d{2}[a-z]?"
+_SENT_BOUNDARY_RE = r"[.!?;]"
 
-CONCEPT_MAP = {
-    # improvement / strengthening
-    "improves": "improve",
-    "improve": "improve",
-    "improved": "improve",
-    "improving": "improve",
-    "enhances": "improve",
-    "enhance": "improve",
-    "enhanced": "improve",
-    "enhancing": "improve",
-    "boosts": "improve",
-    "boost": "improve",
-    "boosted": "improve",
-    "strengthens": "improve",
-    "strengthen": "improve",
-    "strengthened": "improve",
-    "optimises": "improve",
-    "optimizes": "improve",
-    "optimise": "improve",
-    "optimize": "improve",
-    "facilitates": "improve",
-    "facilitate": "improve",
+def _norm_ws(s: str) -> str:
+    """Normalize whitespace in a string."""
+    return re.sub(r"\s+", " ", (s or "")).strip()
 
-    # reduction / mitigation
-    "reduces": "reduce",
-    "reduce": "reduce",
-    "reduced": "reduce",
-    "reducing": "reduce",
-    "mitigates": "reduce",
-    "mitigate": "reduce",
-    "mitigated": "reduce",
-    "lowers": "reduce",
-    "lower": "reduce",
-    "decreases": "reduce",
-    "decrease": "reduce",
-    "decreased": "reduce",
-    "minimizes": "reduce",
-    "minimize": "reduce",
-    "lessens": "reduce",
-    "lessen": "reduce",
+def _extract_author_year_bits(citation: str):
+    """Extract author surname and year from citation for fallback matching."""
+    citation = citation or ""
+    years = re.findall(_YEAR_RE, citation)
+    year = years[0] if years else ""
 
-    # increase / growth
-    "increases": "increase",
-    "increase": "increase",
-    "increased": "increase",
-    "increasing": "increase",
-    "raises": "increase",
-    "raise": "increase",
-    "raised": "increase",
-    "elevates": "increase",
-    "elevate": "increase",
-    "growth": "increase",
-    "expands": "increase",
-    "expand": "increase",
+    # crude author token extraction, keeps likely surnames
+    tokens = re.findall(r"[A-Z][a-zA-Z'`-]{2,}", citation)
+    stop = {"And", "Et", "Al"}
+    authors = [t for t in tokens if t not in stop]
 
-    # adoption / implementation / use
-    "adoption": "adopt",
-    "adopted": "adopt",
-    "adopt": "adopt",
-    "adopting": "adopt",
-    "implementation": "adopt",
-    "implement": "adopt",
-    "implemented": "adopt",
-    "implementing": "adopt",
-    "use": "adopt",
-    "uses": "adopt",
-    "usage": "adopt",
-    "utilisation": "adopt",
-    "utilization": "adopt",
-    "uptake": "adopt",
-    "acceptance": "adopt",
-    "readiness": "adopt",
+    surname = authors[0] if authors else ""
+    return surname, year
 
-    # performance / effectiveness
-    "performance": "performance",
-    "productivity": "performance",
-    "efficiency": "performance",
-    "effective": "performance",
-    "effectiveness": "performance",
-    "outcome": "performance",
-    "outcomes": "performance",
-    "success": "performance",
+def _find_sentence_span(text: str, pos: int):
+    """Find the sentence boundaries around a position in text."""
+    if pos < 0:
+        return (0, len(text))
+    left = text.rfind(".", 0, pos)
+    left_q = text.rfind("?", 0, pos)
+    left_e = text.rfind("!", 0, pos)
+    left_s = text.rfind(";", 0, pos)
+    left = max(left, left_q, left_e, left_s)
+    left = 0 if left == -1 else left + 1
 
-    # reliability / robustness
-    "reliability": "reliability",
-    "reliable": "reliability",
-    "robustness": "reliability",
-    "robust": "reliability",
-    "stability": "reliability",
-    "stable": "reliability",
-    "consistency": "reliability",
-    "consistent": "reliability",
-    "accuracy": "reliability",
-    "accurate": "reliability",
-
-    # trust / credibility
-    "trust": "trust",
-    "credibility": "trust",
-    "credible": "trust",
-    "confidence": "trust",
-    "confidence-building": "trust",
-
-    # transparency / accountability
-    "transparency": "transparency",
-    "transparent": "transparency",
-    "accountability": "transparency",
-    "accountable": "transparency",
-    "openness": "transparency",
-    "disclosure": "transparency",
-
-    # risk / uncertainty
-    "risk": "risk",
-    "risks": "risk",
-    "uncertainty": "risk",
-    "exposure": "risk",
-    "volatility": "risk",
-    "vulnerability": "risk",
-
-    # errors / failure
-    "error": "error",
-    "errors": "error",
-    "mistake": "error",
-    "mistakes": "error",
-    "failure": "failure",
-    "failures": "failure",
-
-    # ethics / corruption
-    "corruption": "corruption",
-    "fraud": "corruption",
-    "misconduct": "corruption",
-    "unethical": "corruption",
-    "ethics": "ethics",
-    "ethical": "ethics",
-    "integrity": "ethics",
-    "compliance": "ethics",
-
-    # behaviour / intention
-    "behaviour": "behaviour",
-    "behavior": "behaviour",
-    "intention": "intention",
-    "intentions": "intention",
-    "willingness": "intention",
-    "attitude": "attitude",
-    "attitudes": "attitude",
-
-    # systems / applications
-    "application": "application",
-    "applications": "application",
-    "app": "application",
-    "apps": "application",
-    "software": "application",
-    "system": "application",
-    "systems": "application",
-    "platform": "application",
-    "platforms": "application",
-
-    # finance / cost
-    "cost": "cost",
-    "costs": "cost",
-    "expense": "cost",
-    "expenses": "cost",
-    "price": "cost",
-    "prices": "cost",
-    "profitability": "profit",
-    "profit": "profit",
-}
-
-DIRECTION_WORDS = {
-    "improve", "reduce", "increase", "predict", "influence",
-    "affect", "support", "enhance", "adopt", "associate",
-    "explain", "determine"
-}
-
-STOPWORDS_LIGHT = {
-    "this", "that", "with", "from", "using", "study", "analysis",
-    "method", "approach", "results", "paper", "research", "journal",
-    "review", "these", "those", "their", "would", "could", "should",
-    "might", "what", "when", "where", "which", "while", "there",
-    "about", "into", "through", "during", "according", "significantly",
-    "current", "finding", "findings", "article", "articles", "author",
-    "authors", "evidence", "model", "models", "framework", "frameworks",
-    "effect", "effects", "role", "roles", "impact", "impacts",
-    "relationship", "relationships", "factor", "factors", "based",
-    "examines", "examined", "investigates", "investigated", "data",
-    "report", "reports", "reported", "among", "across", "within",
-    "between", "toward", "towards", "because", "therefore", "thus",
-    "overall", "general", "generally", "specific", "various",
-    "several", "many", "more", "less", "most", "such"
-}
-
-RELATION_PATTERNS = {
-    "improve": [
-        r"\bimprov\w*\b", r"\benhanc\w*\b", r"\bboost\w*\b",
-        r"\bstrength\w*\b", r"\boptimi[sz]\w*\b", r"\bfacilitat\w*\b"
-    ],
-    "reduce": [
-        r"\breduc\w*\b", r"\bmitigat\w*\b", r"\blower\w*\b",
-        r"\bdecreas\w*\b", r"\bminimi[sz]\w*\b", r"\blessen\w*\b"
-    ],
-    "increase": [
-        r"\bincreas\w*\b", r"\brais\w*\b", r"\belevat\w*\b",
-        r"\bgrow\w*\b", r"\bexpand\w*\b"
-    ],
-    "influence": [
-        r"\binfluenc\w*\b", r"\baffect\w*\b", r"\bimpact\w*\b"
-    ],
-    "predict": [
-        r"\bpredict\w*\b", r"\bdetermin\w*\b", r"\bexplain\w*\b"
-    ],
-    "associate": [
-        r"\bassociat\w*\b", r"\brelat\w*\b", r"\blink\w*\b",
-        r"\bconnect\w*\b"
-    ],
-    "adopt": [
-        r"\badopt\w*\b", r"\bimplement\w*\b", r"\buse\w*\b",
-        r"\butili[sz]\w*\b", r"\buptake\b", r"\baccept\w*\b"
-    ],
-}
-
-
-# ---------------------------------------------------------
-# Claim extraction
-# ---------------------------------------------------------
-
-def simplify_claim(claim: str) -> str:
-    """
-    Remove noisy framing language so scoring focuses on the core proposition.
-    """
-    claim = (claim or "").strip()
-
-    claim = re.sub(
-        r"\b(this study|this paper|the study|the findings show that|"
-        r"results show that|it was found that|the authors found that|"
-        r"the evidence suggests that|the results indicate that)\b",
-        "",
-        claim,
-        flags=re.I
-    )
-    claim = re.sub(
-        r"\b(significantly|generally|often|may|might|can|could|"
-        r"appears to|tends to|likely|possibly|probably)\b",
-        "",
-        claim,
-        flags=re.I
-    )
-    claim = re.sub(r"\s+", " ", claim).strip(" ,;:-")
-    return claim
-
-
-def extract_claim_from_citation(full_text: str, citation_text: str) -> str:
-    """
-    Extract a proposition-like claim using contextual citation logic.
-    Requires the improved extract_context in citation_suggester.py.
-    """
-    context = extract_context(full_text, citation_text, window=220)
-    if not context:
-        return ""
-
-    claim = context.strip()
-    claim = re.sub(r"\s+", " ", claim).strip(" ,;:-")
-    claim = re.sub(
-        r"^(according to|as noted by|as argued by|based on|as reported by)\s+",
-        "",
-        claim,
-        flags=re.I
-    )
-
-    claim = simplify_claim(claim)
-
-    # trim very long claim text
-    return claim[:400]
-
+    candidates = [p for p in [
+        text.find(".", pos),
+        text.find("?", pos),
+        text.find("!", pos),
+        text.find(";", pos),
+    ] if p != -1]
+    right = min(candidates) + 1 if candidates else len(text)
+    return left, right
 
 def split_citation_cluster(citation_text: str) -> List[str]:
     """
@@ -300,274 +72,302 @@ def split_citation_cluster(citation_text: str) -> List[str]:
         parts = [p.strip() for p in re.split(r"\s*;\s*", inner) if p.strip()]
         return [f"({p})" for p in parts]
 
+    # fallback, keep as single citation
     return [c]
 
+# ============================================================
+# CORE FUNCTIONS
+# ============================================================
 
-# ---------------------------------------------------------
-# Source evidence retrieval
-# ---------------------------------------------------------
-
-def fetch_openalex_metadata_by_doi(doi: str) -> Dict[str, Any]:
+def extract_citation_author_year(citation: str) -> Tuple[List[str], str]:
     """
-    Fetch metadata from OpenAlex using DOI.
+    Extract author surname(s) and year from a citation text.
+    
+    Args:
+        citation: The citation text (e.g., "(Beck et al., 2021)" or "Beck et al. (2021)")
+    
+    Returns:
+        Tuple of (list of author surnames, year string)
     """
-    if not doi:
-        return {}
+    citation = (citation or "").strip()
+    
+    # Extract year
+    year_match = re.search(r"\b((?:19|20)\d{2}[a-z]?)\b", citation)
+    year = year_match.group(1) if year_match else ""
+    
+    # Remove year and brackets for author extraction
+    left = re.sub(r"\b(?:19|20)\d{2}[a-z]?\b", "", citation)
+    left = re.sub(r"[\(\)]", " ", left)
+    left = re.sub(r"\bet\s+al\.?\b", "", left, flags=re.I)
+    left = left.replace("&", " and ")
+    
+    authors = []
+    # Split by common separators
+    parts = re.split(r"\band\b|,|;", left, flags=re.I)
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        toks = p.split()
+        if toks:
+            # Take the last token as surname
+            surname = re.sub(r"[^A-Za-z'\-]", "", toks[-1]).lower()
+            if len(surname) >= 2:
+                authors.append(surname)
+    
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for a in authors:
+        if a not in seen:
+            seen.add(a)
+            out.append(a)
+    
+    return out[:2], year  # Return at most 2 authors
 
-    doi = doi.replace("https://doi.org/", "").strip()
-    if not doi:
-        return {}
 
-    url = f"https://api.openalex.org/works/https://doi.org/{doi}"
-    data = _safe_get_json(url)
-
-    return data or {}
-
-
-def reconstruct_openalex_abstract(data: Dict[str, Any]) -> str:
+def extract_context(text: str, citation: str, window: int = 220) -> str:
     """
-    Reconstruct abstract from OpenAlex inverted index.
+    Robust claim/context extraction for both parenthetical and narrative citations.
+    Returns the most proposition-like text around the citation.
     """
-    inv = (data or {}).get("abstract_inverted_index") or {}
-    if not inv:
+    if not text or not citation:
         return ""
 
-    words = {}
-    for token, positions in inv.items():
-        for p in positions:
-            words[p] = token
+    raw_text = text
+    raw_cit = citation.strip()
 
-    try:
-        return " ".join(words[i] for i in sorted(words))
-    except Exception:
+    # 1. exact match first
+    idx = raw_text.find(raw_cit)
+
+    # 2. whitespace-normalized fallback
+    if idx == -1:
+        text_norm = _norm_ws(raw_text)
+        cit_norm = _norm_ws(raw_cit)
+        idx_norm = text_norm.find(cit_norm)
+        if idx_norm != -1:
+            # approximate back-mapping by searching nearby substring in raw text
+            probe = cit_norm[:40]
+            idx = raw_text.find(probe.split()[0]) if probe else -1
+
+    # 3. author-year fallback
+    if idx == -1:
+        surname, year = _extract_author_year_bits(raw_cit)
+        if surname and year:
+            m = re.search(rf"\b{re.escape(surname)}\b.*?\b{re.escape(year)}\b", raw_text)
+            if not m:
+                m = re.search(rf"\b{re.escape(year)}\b.*?\b{re.escape(surname)}\b", raw_text)
+            if m:
+                idx = m.start()
+                raw_cit = raw_text[m.start():m.end()]
+        elif year:
+            m = re.search(rf"\b{re.escape(year)}\b", raw_text)
+            if m:
+                idx = m.start()
+
+    if idx == -1:
         return ""
 
+    cit_start = idx
+    cit_end = min(len(raw_text), idx + len(raw_cit))
 
-def extract_openalex_topics(data: Dict[str, Any]) -> str:
-    """
-    Pull concept/topic display names as fallback semantic evidence.
-    """
-    items = []
+    sent_left, sent_right = _find_sentence_span(raw_text, cit_start)
+    sentence = raw_text[sent_left:sent_right].strip()
 
-    for c in (data or {}).get("concepts", [])[:8]:
-        name = (c or {}).get("display_name", "")
-        if name:
-            items.append(name)
+    left_chunk = raw_text[max(sent_left, cit_start - window):cit_start].strip(" ,;:-")
+    right_chunk = raw_text[cit_end:min(sent_right, cit_end + window)].strip(" ,;:-")
 
-    primary_topic = ((data or {}).get("primary_topic") or {})
-    primary_name = primary_topic.get("display_name", "")
-    if primary_name:
-        items.append(primary_name)
+    # parenthetical citation, claim usually on the left
+    if raw_cit.startswith("(") and raw_cit.endswith(")"):
+        claim = left_chunk or sentence.replace(raw_cit, "").strip()
+        if not claim:
+            claim = (left_chunk + " " + right_chunk).strip()
+        return re.sub(r"\s+", " ", claim).strip(" ,;:-")
 
-    return " ".join(items).strip()
+    # narrative citation, claim usually on the right
+    narrative_like = bool(re.search(rf"\(\s*{_YEAR_RE}\s*\)", raw_cit)) or bool(re.search(rf"\b{_YEAR_RE}\b", raw_cit))
+    if narrative_like:
+        claim = right_chunk
+        if not claim:
+            claim = sentence.replace(raw_cit, "").strip()
+        if not claim:
+            claim = left_chunk
+        return re.sub(r"\s+", " ", claim).strip(" ,;:-")
+
+    # fallback
+    claim = sentence.replace(raw_cit, "").strip()
+    if not claim:
+        claim = (left_chunk + " " + right_chunk).strip()
+    return re.sub(r"\s+", " ", claim).strip(" ,;:-")
 
 
-# ---------------------------------------------------------
-# Normalization helpers
-# ---------------------------------------------------------
-
-def normalize_terms(text: str) -> List[str]:
-    words = re.findall(r"[A-Za-z][A-Za-z\-]{2,}", (text or "").lower())
+def extract_keywords(text: str) -> List[str]:
+    """Extract meaningful keywords from text for search queries."""
+    words = re.findall(r"[A-Za-z]{4,}", (text or "").lower())
+    stop = {
+        "this", "that", "with", "from", "using", "study", "analysis",
+        "method", "approach", "results", "table", "figure", "paper",
+        "research", "journal", "review", "these", "those", "their",
+        "would", "could", "should", "might", "what", "when", "where",
+        "which", "while", "there", "about", "into", "through", "during"
+    }
+    seen = set()
     out = []
     for w in words:
-        if w in STOPWORDS_LIGHT:
+        if w in stop or w in seen:
             continue
-        out.append(CONCEPT_MAP.get(w, w))
-    return out
+        seen.add(w)
+        out.append(w)
+    return out[:10]
 
 
-def concept_set(text: str) -> Set[str]:
-    return set(normalize_terms(text))
-
-
-def direction_set(text: str) -> Set[str]:
-    return {w for w in normalize_terms(text) if w in DIRECTION_WORDS}
-
-
-def relation_hits(text: str) -> Set[str]:
-    text = (text or "").lower()
-    hits = set()
-    for rel, patterns in RELATION_PATTERNS.items():
-        for p in patterns:
-            if re.search(p, text):
-                hits.add(rel)
-                break
-    return hits
-
-
-# ---------------------------------------------------------
-# Support scoring
-# ---------------------------------------------------------
-
-def score_claim_support(claim: str, source_title: str, source_abstract: str, source_topics: str = "") -> Dict[str, Any]:
+def suggest_from_context(context: str, citation: str = "", top_k: int = 3) -> List[Dict[str, Any]]:
     """
-    Hybrid score for paraphrase-aware support assessment.
-    Uses concepts, direction words, relation patterns, and partial support.
+    Suggest references based on surrounding context AND citation text.
+    
+    Uses hybrid query: author(s) + year + context keywords for optimal precision.
+    
+    Args:
+        context: The surrounding text where the citation appears
+        citation: The original citation text (e.g., "(Beck et al., 2021)")
+        top_k: Number of suggestions to return
+    
+    Returns:
+        List of suggested reference dictionaries
     """
-    claim = simplify_claim(claim)
-
-    source_text = " ".join(
-        part for part in [source_title, source_abstract, source_topics] if part
-    ).strip()
-
-    claim_concepts = concept_set(claim)
-    title_concepts = concept_set(source_title)
-    abstract_concepts = concept_set(source_abstract)
-    topic_concepts = concept_set(source_topics)
-
-    claim_dirs = direction_set(claim)
-    source_dirs = direction_set(source_text)
-
-    # Concept overlap
-    title_overlap = len(claim_concepts & title_concepts)
-    abstract_overlap = len(claim_concepts & abstract_concepts)
-    topic_overlap = len(claim_concepts & topic_concepts)
-
-    total_claim_concepts = max(len(claim_concepts), 1)
-
-    weighted_overlap = (
-        (title_overlap * 1.5) +
-        (abstract_overlap * 1.0) +
-        (topic_overlap * 0.8)
-    )
-
-    # softer denominator so long claims are not punished too harshly
-    concept_ratio = weighted_overlap / max(min(total_claim_concepts, 4), 1)
-    concept_ratio = min(concept_ratio, 1.0)
-
-    # Direction overlap
-    direction_overlap = len(claim_dirs & source_dirs)
-    direction_ratio = 1.0 if claim_dirs and direction_overlap > 0 else (0.6 if not claim_dirs else 0.0)
-
-    # Keyword overlap
-    claim_kw = set(extract_keywords(claim))
-    source_kw = set(extract_keywords(source_text))
-    keyword_overlap = len(claim_kw & source_kw)
-    keyword_ratio = min(keyword_overlap / max(min(len(claim_kw), 4), 1), 1.0)
-
-    # Relation overlap
-    claim_rels = relation_hits(claim)
-    source_rels = relation_hits(source_text)
-    relation_overlap = len(claim_rels & source_rels)
-    relation_bonus = 10 if relation_overlap > 0 else 0
-
-    # Partial support bonus
-    partial_support_bonus = 0
-    if (title_overlap + abstract_overlap + topic_overlap) >= 2:
-        partial_support_bonus += 10
-    if relation_overlap > 0 and (title_overlap + abstract_overlap + topic_overlap) >= 1:
-        partial_support_bonus += 10
-
-    # Weighted total
-    score = (
-        55 * concept_ratio +
-        15 * direction_ratio +
-        10 * keyword_ratio +
-        relation_bonus +
-        partial_support_bonus
-    )
-
-    score = round(min(score, 100), 1)
-
-    if score >= 70:
-        status = "strong_support"
-    elif score >= 55:
-        status = "moderate_support"
-    elif score >= 38:
-        status = "related_evidence"
-    elif score >= 22:
-        status = "weak_or_unclear"
-    else:
-        status = "insufficient_evidence"
-
-    return {
-        "score": score,
-        "status": status,
-        "title_overlap": title_overlap,
-        "abstract_overlap": abstract_overlap,
-        "topic_overlap": topic_overlap,
-        "keyword_overlap": keyword_overlap,
-        "direction_overlap": direction_overlap,
-        "relation_overlap": relation_overlap,
-        "concept_ratio": round(concept_ratio, 3),
-        "direction_ratio": round(direction_ratio, 3),
-        "keyword_ratio": round(keyword_ratio, 3),
-    }
+    keywords = extract_keywords(context)
+    authors, year = extract_citation_author_year(citation)
+    
+    # Build hybrid query
+    query_parts = []
+    if authors:
+        query_parts.extend(authors[:2])  # Use up to 2 authors
+    if year:
+        query_parts.append(year)
+    if keywords:
+        query_parts.extend(keywords[:8])  # Use up to 8 keywords
+    
+    query = " ".join(query_parts).strip()
+    
+    # Fallback to context-only if hybrid query is empty
+    if not query and keywords:
+        query = " ".join(keywords[:6])
+    
+    if not query:
+        return []
+    
+    # Search both CrossRef and OpenAlex
+    candidates = []
+    candidates.extend(_query_crossref(query, rows=8))
+    candidates.extend(_query_openalex(query, rows=8))
+    
+    # Deduplicate by title
+    seen = set()
+    suggestions = []
+    
+    for cand in candidates:
+        doi, title, cand_year, authors_list = _candidate_fields(cand)
+        if not title:
+            continue
+        
+        # Create unique key
+        key = f"{title.lower()}|{cand_year}|{doi.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        
+        # Calculate relevance score (prioritize year and author matches)
+        relevance = 75  # Base score
+        
+        # Boost if year matches
+        if year and cand_year and year[:4] == cand_year[:4]:
+            relevance += 15
+        
+        # Boost if any author matches
+        if authors and authors_list:
+            if any(a in [au.lower() for au in authors_list] for a in authors):
+                relevance += 20
+        
+        suggestions.append({
+            "title": title,
+            "year": cand_year,
+            "authors": authors_list,
+            "doi": doi,
+            "type": "context",
+            "relevance": relevance
+        })
+    
+    # Sort by relevance
+    suggestions.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+    return suggestions[:top_k]
 
 
-# ---------------------------------------------------------
-# Build claim-support rows
-# ---------------------------------------------------------
-
-def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+def suggest_for_unverified(ref: str, top_k: int = 3) -> List[Dict[str, Any]]:
     """
-    Build claim-to-source checks using verified/likely references only.
-    Handles clustered citations as one claim checked against multiple sources.
+    Suggest corrected references for unverified/needs_review references.
+    
+    Uses extracted fields from the reference string.
+    
+    Args:
+        ref: The reference string to correct
+        top_k: Number of suggestions to return
+    
+    Returns:
+        List of suggested reference dictionaries
     """
-    full_text = result.get("main_text", "") or result.get("full_text", "")
-    verification_rows = (result.get("online_verification") or {}).get("rows", []) or []
-    c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
+    fields = _extract_fields_by_style(ref, "apa")
+    title = fields.get("title", "") or ""
+    authors = fields.get("authors", []) or []
+    year = fields.get("year", "") or ""
 
-    verified_lookup = {}
-    for vr in verification_rows:
-        if vr.get("status") in {"verified", "likely"}:
-            verified_lookup[vr.get("reference", "")] = vr
+    query_parts = []
+    if title:
+        query_parts.append(title)
+    if authors:
+        query_parts.extend(authors[:2])
+    if year:
+        query_parts.append(year)
 
-    out = []
+    query = " ".join(query_parts).strip()
+    if not query:
+        return []
 
-    for row in c2r_rows:
-        matched_ref = row.get("matched_reference", "") or ""
-        citation_text = row.get("in_text", "") or row.get("citation", "") or row.get("citation_in_text", "") or ""
+    # Search both CrossRef and OpenAlex
+    candidates = []
+    candidates.extend(_query_crossref(query, rows=8))
+    candidates.extend(_query_openalex(query, rows=8))
 
-        if not matched_ref or not citation_text:
+    seen = set()
+    suggestions = []
+
+    for cand in candidates:
+        doi, cand_title, cand_year, cand_authors = _candidate_fields(cand)
+        if not cand_title:
             continue
 
-        vr = verified_lookup.get(matched_ref)
-        if not vr:
+        # Calculate score using existing _score function
+        meta = _score(title, authors, year, cand_title, cand_authors, cand_year)
+
+        # Require at least 70% title similarity for corrections
+        if meta["title_score"] < 70:
             continue
 
-        citation_items = split_citation_cluster(citation_text)
+        key = f"{cand_title.lower()}|{cand_year}|{doi.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
 
-        for cit in citation_items:
-            claim = extract_claim_from_citation(full_text, cit)
-            if not claim:
-                continue
+        suggestions.append({
+            "title": cand_title,
+            "year": cand_year,
+            "authors": cand_authors,
+            "doi": doi,
+            "score": meta["score"],
+            "title_score": meta["title_score"],
+            "author_similarity": meta["author_similarity"],
+            "year_match": meta["year_match"],
+            "type": "correction"
+        })
 
-            source_title = vr.get("matched_title", "") or ""
-            doi = vr.get("doi", "") or ""
-
-            ox = fetch_openalex_metadata_by_doi(doi) if doi else {}
-            source_abstract = reconstruct_openalex_abstract(ox)
-            source_topics = extract_openalex_topics(ox)
-
-            if not source_title and not source_abstract and not source_topics:
-                continue
-
-            support = score_claim_support(
-                claim=claim,
-                source_title=source_title,
-                source_abstract=source_abstract,
-                source_topics=source_topics,
-            )
-
-            out.append({
-                "citation": cit,
-                "claim": claim,
-                "reference": matched_ref,
-                "source_title": source_title,
-                "doi": doi,
-                "support_score": support["score"],
-                "support_status": support["status"],
-                "evidence_used": "title+abstract+topics" if (source_abstract or source_topics) else "title_only",
-                "title_overlap": support["title_overlap"],
-                "abstract_overlap": support["abstract_overlap"],
-                "topic_overlap": support["topic_overlap"],
-                "keyword_overlap": support["keyword_overlap"],
-                "direction_overlap": support["direction_overlap"],
-                "relation_overlap": support["relation_overlap"],
-                "concept_ratio": support["concept_ratio"],
-                "direction_ratio": support["direction_ratio"],
-                "keyword_ratio": support["keyword_ratio"],
-            })
-
-    return out
+    suggestions.sort(key=lambda x: (x.get("score", 0), x.get("title_score", 0)), reverse=True)
+    return suggestions[:top_k]
