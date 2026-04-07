@@ -620,6 +620,7 @@
         .badge.matched { background: #27ae60; color: white; }
         .badge.needs_review { background: #e67e22; color: white; }
         .badge.offline { background: #95a5a6; color: white; }
+        .badge.no_evidence_found { background: #7f8c8d; color: white; }
 
         .progress-container {
             background: #e2e8f0;
@@ -1951,24 +1952,44 @@ function renderClaimSupport(data) {
             ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View</a>`
             : "—";
 
-        let badgeClass = "not_found";
+        let badgeClass = "offline";
         if (r.support_status === "strong_support") badgeClass = "verified";
         else if (r.support_status === "moderate_support") badgeClass = "likely";
         else if (r.support_status === "related_evidence") badgeClass = "needs_review";
         else if (r.support_status === "weak_or_unclear") badgeClass = "needs_review";
-        else badgeClass = "offline";
+        else if (r.support_status === "insufficient_evidence") badgeClass = "not_found";
+        else if (r.support_status === "no_evidence_found") badgeClass = "no_evidence_found";
+
+        const supportLabel =
+            r.support_status === "no_evidence_found"
+                ? "No evidence found"
+                : r.support_status === "insufficient_evidence"
+                ? "Insufficient evidence"
+                : (r.support_status || "");
+
+        const claimText = r.claim && r.claim.trim()
+            ? esc(r.claim)
+            : `<span style="color:#7f8c8d;">No evidence found</span>`;
+
+        const titleText = r.source_title && r.source_title.trim()
+            ? `${esc((r.source_title || "").substring(0, 90))}${(r.source_title || "").length > 90 ? "…" : ""}`
+            : `<span style="color:#7f8c8d;">No evidence found</span>`;
+
+        const scoreText = r.support_status === "no_evidence_found"
+            ? "—"
+            : esc(String(r.support_score ?? ""));
 
         return `
             <tr>
                 <td>${i + 1}</td>
                 <td>${esc(r.citation || "")}</td>
-                <td style="max-width:320px;">${esc(r.claim || "")}</td>
+                <td style="max-width:320px;">${claimText}</td>
                 <td style="max-width:280px;">
-                    ${esc((r.source_title || "").substring(0, 80))}${(r.source_title || "").length > 80 ? "…" : ""}
-                    <div>${doiHtml}</div>
+                    ${titleText}
+                    <div style="margin-top:4px;">${doiHtml}</div>
                 </td>
-                <td><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></td>
-                <td>${esc(String(r.support_score ?? ""))}</td>
+                <td><span class="badge ${badgeClass}">${esc(supportLabel)}</span></td>
+                <td title="${esc(r.score_explanation || '')}">${scoreText}</td>
             </tr>
         `;
     }).join("");
