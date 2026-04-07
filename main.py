@@ -496,12 +496,14 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
 
         suggestions = missing_suggestions.get(citation_text, [])
 
-        if citation_text and suggestions:
-            payload["missing_recovery"].append({
-                "citation": citation_text,
-                "count": count,
-                "suggestions": suggestions
-            })
+        payload["verification_recovery"].append({
+            "reference": original_ref,
+            "status": status if suggestions else "no_evidence_found",
+            "citation": citation_text,
+            "suggestions": suggestions,
+            "message": "" if suggestions else "No evidence found."
+        })
+            
 
     # -------------------------------------------------
     # Bottom section: needs_review / not_found
