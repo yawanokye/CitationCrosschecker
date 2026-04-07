@@ -1870,64 +1870,94 @@ function renderVerify(data) {
 function renderRecovery(data) {
     const missingBody = $("recoveryMissingBody");
     const verifyBody = $("recoveryVerifyBody");
+
     if (!missingBody || !verifyBody) return;
 
-    const recovery = data.recovery || {};
-    const missingRows = recovery.missing_recovery || [];
-    const verifyRows = recovery.verification_recovery || [];
+    const rec = data?.recovery || {};
+    const missingRows = rec.missing_recovery || [];
+    const verifyRows = rec.verification_recovery || [];
 
-    // Top section: missing citation recovery
+    // Missing citation recovery
     if (!missingRows.length) {
-        missingBody.innerHTML = `<tr><td colspan="4">No missing citation recovery suggestions available.</td></tr>`;
+        missingBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</td></tr>`;
     } else {
         missingBody.innerHTML = missingRows.map((row, i) => {
-            const suggestionHtml = (row.suggestions || []).map(s => {
-                const doiHtml = s.doi
-                    ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" class="doi-link">🔗 View</a>`
-                    : "—";
-                return `
+            const suggestions = row.suggestions || [];
+
+            const suggestionHtml = suggestions.length
+                ? `
                     <div class="suggestion-box">
-                        <div class="suggestion-title">${esc(s.title || "Untitled")}</div>
-                        <div class="suggestion-meta">${esc((s.authors || []).join(", "))} ${s.year ? `(${esc(s.year)})` : ""}</div>
-                        <div>${doiHtml}</div>
+                        <div class="suggestion-title">💡 Suggested references</div>
+                        <ul class="suggestion-list">
+                            ${suggestions.map(s => `
+                                <li>
+                                    <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
+                                    <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
+                                    <div>
+                                        ${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}
+                                    </div>
+                                </li>
+                            `).join("")}
+                        </ul>
                     </div>
-                `;
-            }).join("");
+                `
+                : `<span class="badge no_evidence_found">No evidence found</span>`;
 
             return `
                 <tr>
                     <td>${i + 1}</td>
                     <td>${esc(row.citation || "")}</td>
-                    <td>${esc(String(row.count || 1))}</td>
+                    <td>${esc(String(row.count ?? 1))}</td>
                     <td>${suggestionHtml}</td>
                 </tr>
             `;
         }).join("");
     }
 
-    // Bottom section: needs_review / not_found
+    // Verification recovery
     if (!verifyRows.length) {
-        verifyBody.innerHTML = `<tr><td colspan="4">No context-specific recovery suggestions for needs review / not found.</td></tr>`;
+        verifyBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</td></tr>`;
     } else {
         verifyBody.innerHTML = verifyRows.map((row, i) => {
-            const badge = `<span class="badge ${esc(row.status)}">${esc(row.status)}</span>`;
-            const suggestionHtml = (row.suggestions || []).map(s => {
-                const doiHtml = s.doi
-                    ? `<a href="https://doi.org/${esc(s.doi)}" target="_blank" class="doi-link">🔗 View</a>`
-                    : "—";
-                return `
+            const suggestions = row.suggestions || [];
+
+            let badgeClass = "offline";
+            if (row.status === "needs_review") badgeClass = "needs_review";
+            else if (row.status === "not_found") badgeClass = "not_found";
+            else if (row.status === "no_evidence_found") badgeClass = "no_evidence_found";
+
+            const statusLabel =
+                row.status === "no_evidence_found"
+                    ? "No evidence found"
+                    : row.status === "needs_review"
+                    ? "Needs review"
+                    : row.status === "not_found"
+                    ? "Not found"
+                    : (row.status || "");
+
+            const suggestionHtml = suggestions.length
+                ? `
                     <div class="suggestion-box">
-                        <div class="suggestion-title">${esc(s.title || "Untitled")}</div>
-                        <div class="suggestion-meta">${esc((s.authors || []).join(", "))} ${s.year ? `(${esc(s.year)})` : ""}</div>
-                        <div>${doiHtml}</div>
+                        <div class="suggestion-title">🔧 Context suggestions</div>
+                        <ul class="suggestion-list">
+                            ${suggestions.map(s => `
+                                <li>
+                                    <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
+                                    <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
+                                    <div>
+                                        ${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}
+                                    </div>
+                                </li>
+                            `).join("")}
+                        </ul>
                     </div>
-                `;
-            }).join("");
+                `
+                : `<span class="badge no_evidence_found">No evidence found</span>`;
 
             return `
                 <tr>
                     <td>${i + 1}</td>
-                    <td>${badge}</td>
+                    <td><span class="badge ${badgeClass}">${esc(statusLabel)}</span></td>
                     <td>${esc(row.reference || "")}</td>
                     <td>${suggestionHtml}</td>
                 </tr>
@@ -1935,7 +1965,6 @@ function renderRecovery(data) {
         }).join("");
     }
 }
-    
 function renderClaimSupport(data) {
     const body = $("claimSupportBody");
     if (!body) return;
