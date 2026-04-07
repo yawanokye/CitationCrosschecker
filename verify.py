@@ -776,7 +776,7 @@ def _get_top_suggestions(
 
 
 def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
-    """Original fast verification function with improved error handling"""
+    """Original fast verification function with author-mismatch gating"""
     cache_key = f"{style}::{ref}"
     cached = _cache_get(cache_key)
     if cached:
@@ -802,6 +802,8 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
         "year_match": 0,
         "query_used": query,
         "author": ", ".join(ref_authors),
+        "author_mismatch_flag": 0,
+        "match_note": "",
     }
 
     candidates: List[Dict[str, Any]] = []
@@ -835,6 +837,21 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 int(best_meta.get("author_overlap", 0)),
             )
 
+            # -------------------------------------------------
+            # AUTHOR-MISMATCH GATE, first pass
+            # If the reference clearly has author information, but the matched
+            # candidate has zero author overlap, do not trust the match.
+            # -------------------------------------------------
+            ref_has_authors = bool(ref_authors)
+            cand_has_authors = bool(best_meta.get("authors", []))
+            author_overlap = int(best_meta.get("author_overlap", 0))
+
+            if ref_has_authors and cand_has_authors and author_overlap == 0:
+                status = "needs_review"
+                best_meta["author_mismatch_flag"] = 1
+            else:
+                best_meta["author_mismatch_flag"] = 0
+
             # deep fallback only for weak cases
             if status in {"needs_review", "not_found"}:
                 deep_candidates = list(candidates)
@@ -854,6 +871,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                     best = best2
                     best_meta = best_meta2
                     candidates = deep_candidates
+
                     status = _classify(
                         bool(best_meta.get("doi_match")),
                         int(best_meta.get("title_score", 0)),
@@ -861,6 +879,19 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                         int(best_meta.get("year_match", 0)),
                         int(best_meta.get("author_overlap", 0)),
                     )
+
+                    # -------------------------------------------------
+                    # AUTHOR-MISMATCH GATE, deep fallback
+                    # -------------------------------------------------
+                    ref_has_authors = bool(ref_authors)
+                    cand_has_authors = bool(best_meta.get("authors", []))
+                    author_overlap = int(best_meta.get("author_overlap", 0))
+
+                    if ref_has_authors and cand_has_authors and author_overlap == 0:
+                        status = "needs_review"
+                        best_meta["author_mismatch_flag"] = 1
+                    else:
+                        best_meta["author_mismatch_flag"] = 0
 
             row.update({
                 "status": status,
@@ -874,14 +905,19 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 "author_overlap": int(best_meta.get("author_overlap", 0)),
                 "author_similarity": int(best_meta.get("author_similarity", 0)),
                 "year_match": int(best_meta.get("year_match", 0)),
+                "author_mismatch_flag": int(best_meta.get("author_mismatch_flag", 0)),
+                "match_note": (
+                    "Author mismatch, forced to needs_review"
+                    if int(best_meta.get("author_mismatch_flag", 0)) == 1
+                    else ""
+                ),
             })
 
-                        # -------------------------------------------------
+            # -------------------------------------------------
             # CONTEXT-SPECIFIC CORRECTIONS WILL BE ADDED LATER IN main.py
             # -------------------------------------------------
             row["correction_suggestions"] = []
 
-          
         else:
             row["status"] = "not_found"
 
@@ -893,7 +929,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
     row["status"] = _normalize_verify_status(row.get("status"))
     _cache_set(cache_key, row)
     return row
-
+    
 # ---------------------------------------------------------
 # Public API - Returns ALL results (NO TIME LIMITS)
 # ---------------------------------------------------------
