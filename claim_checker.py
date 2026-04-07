@@ -7,21 +7,29 @@ from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by
 def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Build claim-to-source support rows.
-    Never silently drops a row. If no meaningful claim or no usable source evidence
-    is found, classify it as no_evidence_found.
+    Never silently drops a row.
+
+    Clear separation:
+    - claim field: what was extracted, or "No claim extracted"
+    - source_title field: matched source, or reason source is unavailable
+    - support_status field: support decision, including "no_evidence_found"
     """
     out = []
 
     full_text = result.get("main_text", "") or result.get("full_text", "")
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
-    # Build verified lookup from online_verification
     online_verification = result.get("online_verification", {}) or {}
     verify_rows = online_verification.get("rows", []) or []
 
     verified_lookup = {}
+    all_verify_lookup = {}
+
     for row in verify_rows:
         ref = row.get("reference", "") or ""
+        if ref:
+            all_verify_lookup[ref] = row
+
         status = row.get("status", "")
         if status in ["verified", "likely"] and ref:
             verified_lookup[ref] = row
@@ -38,9 +46,9 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not matched_ref or not citation_text:
             out.append({
                 "citation": citation_text,
-                "claim": "",
+                "claim": "No claim extracted",
                 "reference": matched_ref,
-                "source_title": "",
+                "source_title": "No source found",
                 "doi": "",
                 "support_score": 0,
                 "support_status": "no_evidence_found",
@@ -52,18 +60,33 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "relation_overlap": 0,
                 "partial_support": False,
                 "concept_matches": [],
-                "score_explanation": "No evidence found. Citation-reference mapping was incomplete."
+                "score_explanation": "Citation-reference mapping was incomplete."
             })
             continue
 
         vr = verified_lookup.get(matched_ref)
+
         if not vr:
+            fallback_vr = all_verify_lookup.get(matched_ref, {})
+            mismatch_flag = int(fallback_vr.get("author_mismatch_flag", 0))
+
+            source_label = "No source found"
+            note = "No trusted source evidence was available."
+
+            if fallback_vr:
+                source_label = fallback_vr.get("matched_title", "") or "No source found"
+                if mismatch_flag == 1:
+                    source_label = "Source excluded, author mismatch"
+                    note = "Matched source was excluded because of author mismatch."
+                elif fallback_vr.get("status") in {"needs_review", "not_found"}:
+                    note = f"Matched source was not trusted because verification status is {fallback_vr.get('status')}."
+
             out.append({
                 "citation": citation_text,
-                "claim": "",
+                "claim": "No claim extracted",
                 "reference": matched_ref,
-                "source_title": "",
-                "doi": "",
+                "source_title": source_label,
+                "doi": fallback_vr.get("doi", "") or "",
                 "support_score": 0,
                 "support_status": "no_evidence_found",
                 "evidence_used": "none",
@@ -74,7 +97,8 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "relation_overlap": 0,
                 "partial_support": False,
                 "concept_matches": [],
-                "score_explanation": "No evidence found. The matched reference was not verified or likely, so no usable source evidence was available."
+                "match_note": fallback_vr.get("match_note", ""),
+                "score_explanation": note
             })
             continue
 
@@ -82,41 +106,17 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         for cit in citation_items:
             claim = extract_context(full_text, cit, window=300)
-
-            if not claim or len(claim.strip()) < 10:
-                out.append({
-                    "citation": cit,
-                    "claim": "",
-                    "reference": matched_ref,
-                    "source_title": vr.get("matched_title", "") or "",
-                    "doi": vr.get("doi", "") or "",
-                    "support_score": 0,
-                    "support_status": "no_evidence_found",
-                    "evidence_used": "none",
-                    "title_overlap": 0,
-                    "abstract_overlap": 0,
-                    "keyword_overlap": 0,
-                    "direction_overlap": 0,
-                    "relation_overlap": 0,
-                    "partial_support": False,
-                    "concept_matches": [],
-                    "score_explanation": "No evidence found. No meaningful claim could be extracted from the citation context."
-                })
-                continue
+            claim = (claim or "").strip()
 
             source_title = vr.get("matched_title", "") or ""
             doi = vr.get("doi", "") or ""
 
-            metadata = fetch_openalex_metadata_by_doi(doi) if doi else {}
-            source_abstract = metadata.get("abstract", "")
-            source_concepts = metadata.get("concepts", [])
-
-            if not source_title and not source_abstract and not source_concepts:
+            if not claim or len(claim) < 10:
                 out.append({
                     "citation": cit,
-                    "claim": claim,
+                    "claim": "No claim extracted",
                     "reference": matched_ref,
-                    "source_title": "",
+                    "source_title": source_title or "No source found",
                     "doi": doi,
                     "support_score": 0,
                     "support_status": "no_evidence_found",
@@ -128,7 +128,34 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "relation_overlap": 0,
                     "partial_support": False,
                     "concept_matches": [],
-                    "score_explanation": "No evidence found. No usable source title, abstract, or concepts were available for support checking."
+                    "match_note": vr.get("match_note", ""),
+                    "score_explanation": "No meaningful claim could be extracted from the citation context."
+                })
+                continue
+
+            metadata = fetch_openalex_metadata_by_doi(doi) if doi else {}
+            source_abstract = metadata.get("abstract", "")
+            source_concepts = metadata.get("concepts", [])
+
+            if not source_title and not source_abstract and not source_concepts:
+                out.append({
+                    "citation": cit,
+                    "claim": claim,
+                    "reference": matched_ref,
+                    "source_title": "No source found",
+                    "doi": doi,
+                    "support_score": 0,
+                    "support_status": "no_evidence_found",
+                    "evidence_used": "none",
+                    "title_overlap": 0,
+                    "abstract_overlap": 0,
+                    "keyword_overlap": 0,
+                    "direction_overlap": 0,
+                    "relation_overlap": 0,
+                    "partial_support": False,
+                    "concept_matches": [],
+                    "match_note": vr.get("match_note", ""),
+                    "score_explanation": "No usable source title, abstract, or concepts were available for support checking."
                 })
                 continue
 
@@ -160,6 +187,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "relation_overlap": support.get("relation_overlap", 0),
                 "partial_support": support.get("partial_support", False),
                 "concept_matches": support.get("concept_matches", []),
+                "match_note": vr.get("match_note", ""),
                 "score_explanation": (
                     f"title={support.get('title_overlap', 0)}, "
                     f"abstract={support.get('abstract_overlap', 0)}, "
