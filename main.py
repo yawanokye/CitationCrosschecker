@@ -496,18 +496,16 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
 
         suggestions = missing_suggestions.get(citation_text, [])
 
-        payload["verification_recovery"].append({
-            "reference": original_ref,
-            "status": status if suggestions else "no_evidence_found",
-            "citation": citation_text,
-            "suggestions": suggestions,
-            "message": "" if suggestions else "No evidence found."
-        })
-            
+        if citation_text:
+            payload["missing_recovery"].append({
+                "citation": citation_text,
+                "count": count,
+                "suggestions": suggestions,
+                "message": "" if suggestions else "No evidence found."
+            })
 
     # -------------------------------------------------
     # Bottom section: needs_review / not_found
-    # context-specific only
     # -------------------------------------------------
     verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
@@ -524,12 +522,12 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
         status = row.get("status", "")
         if status not in {"needs_review", "not_found"}:
             continue
-    
+
         original_ref = row.get("reference", "") or ""
         matched_title = row.get("matched_title", "") or ""
-    
+
         citation_text = ref_to_citation.get(original_ref, "") or ref_to_citation.get(matched_title, "")
-    
+
         suggestions = []
         if citation_text and full_text:
             context = extract_context(full_text, citation_text, window=200)
@@ -539,15 +537,17 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
                     citation=citation_text,
                     top_k=3
                 )
-    
+
         payload["verification_recovery"].append({
             "reference": original_ref,
-            "status": status if suggestions else "no_evidence_found",
+            "status": status,
             "citation": citation_text,
             "suggestions": suggestions,
             "message": "" if suggestions else "No evidence found."
         })
-    
+
+    return payload
+
 def store_result(result):
     job_id = uuid.uuid4().hex
 
