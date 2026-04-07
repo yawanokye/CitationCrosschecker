@@ -639,8 +639,7 @@ def _classify(
     # -------------------------------------------------
 
     return "not_found"
-
-
+    
 # ---------------------------------------------------------
 # Candidate selection
 # ---------------------------------------------------------
@@ -845,12 +844,14 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             ref_has_authors = bool(ref_authors)
             cand_has_authors = bool(best_meta.get("authors", []))
             author_overlap = int(best_meta.get("author_overlap", 0))
-
+            
             if ref_has_authors and cand_has_authors and author_overlap == 0:
                 status = "needs_review"
                 best_meta["author_mismatch_flag"] = 1
+                best_meta["match_note"] = "Author mismatch"
             else:
                 best_meta["author_mismatch_flag"] = 0
+                best_meta["match_note"] = ""
 
             # deep fallback only for weak cases
             if status in {"needs_review", "not_found"}:
@@ -886,12 +887,14 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                     ref_has_authors = bool(ref_authors)
                     cand_has_authors = bool(best_meta.get("authors", []))
                     author_overlap = int(best_meta.get("author_overlap", 0))
-
+                    
                     if ref_has_authors and cand_has_authors and author_overlap == 0:
                         status = "needs_review"
                         best_meta["author_mismatch_flag"] = 1
+                        best_meta["match_note"] = "Author mismatch"
                     else:
                         best_meta["author_mismatch_flag"] = 0
+                        best_meta["match_note"] = ""
 
             row.update({
                 "status": status,
@@ -906,11 +909,7 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
                 "author_similarity": int(best_meta.get("author_similarity", 0)),
                 "year_match": int(best_meta.get("year_match", 0)),
                 "author_mismatch_flag": int(best_meta.get("author_mismatch_flag", 0)),
-                "match_note": (
-                    "Author mismatch, forced to needs_review"
-                    if int(best_meta.get("author_mismatch_flag", 0)) == 1
-                    else ""
-                ),
+                "match_note": best_meta.get("match_note", ""),
             })
 
             # -------------------------------------------------
