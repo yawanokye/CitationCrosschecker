@@ -1,7 +1,146 @@
-# enhanced_verify.py - Add these functions to your verify.py
+# verify.py — Complete with full metadata capture for APA/Harvard formatting
+
+import os
+import re
+import threading
+import time
+import uuid
+from typing import List, Dict, Any, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from datetime import datetime
 
 import requests
-from typing import List, Dict, Any, Optional, Tuple
+from rapidfuzz import fuzz
+
+
+_ALLOWED_VERIFY_STATUSES = {"verified", "likely", "needs_review", "not_found", "offline"}
+
+MAILTO = (
+    os.getenv("CITATION_CROSSCHECKER_MAILTO")
+    or os.getenv("CROSSREF_MAILTO")
+    or os.getenv("OPENALEX_MAILTO")
+    or ""
+).strip()
+
+# ============================================================
+# TIMEOUT SETTINGS - ADDED FOR LARGE REFERENCE SETS
+# ============================================================
+
+# Timeout settings (in seconds)
+API_TIMEOUT = 60  # Increased from 45 to 60 seconds per API call
+VERIFICATION_TIMEOUT = None  # No timeout for the overall verification (None = infinite)
+WORKER_THREADS = 2  # Reduce to 2 workers to avoid rate limiting
+RETRY_ATTEMPTS = 2  # Number of retries for failed API calls
+BATCH_DELAY = 0.5  # Delay between references to avoid rate limits
+
+# ============================================================
+# PROGRESS TRACKING (Lightweight)
+# ============================================================
+
+@dataclass
+class VerificationJob:
+    """Simple job tracking - does NOT store results (to avoid duplication)"""
+    job_id: str
+    total: int
+    progress: int = 0
+    status: str = "pending"
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+
+# Simple in-memory job storage - only for progress, NOT for results
+_jobs: Dict[str, VerificationJob] = {}
+_jobs_lock = threading.Lock()
+
+# Store verification RESULTS (different from progress tracking)
+_verification_results: Dict[str, List[Dict[str, Any]]] = {}
+_verification_results_lock = threading.Lock()
+
+def store_verification_results(job_id: str, results: List[Dict[str, Any]]):
+    """Store completed verification results"""
+    with _verification_results_lock:
+        _verification_results[job_id] = results
+        print(f"[DEBUG] Stored {len(results)} results for job {job_id}")
+
+def get_verification_results(job_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Get stored verification results"""
+    with _verification_results_lock:
+        return _verification_results.get(job_id)
+
+def clear_verification_results(job_id: str):
+    """Clear verification results (optional cleanup)"""
+    with _verification_results_lock:
+        if job_id in _verification_results:
+            del _verification_results[job_id]
+
+def create_verification_job(job_id: str, total: int) -> str:
+    """Create a new verification job for tracking progress only"""
+    with _jobs_lock:
+        _jobs[job_id] = VerificationJob(
+            job_id=job_id,
+            total=total,
+            started_at=datetime.now().isoformat(),
+            status="processing"
+        )
+    return job_id
+
+def update_job_progress(job_id: str, progress: int):
+    """Update job progress (does NOT store results)"""
+    with _jobs_lock:
+        if job_id in _jobs:
+            job = _jobs[job_id]
+            job.progress = progress
+            if progress >= job.total:
+                job.status = "completed"
+                job.completed_at = datetime.now().isoformat()
+                print(f"[DEBUG] Job {job_id}: COMPLETED - {progress}/{job.total}")
+            else:
+                # Print progress every 10 references to avoid spam
+                if progress % 10 == 0:
+                    print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")
+
+def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get job progress status"""
+    with _jobs_lock:
+        if job_id not in _jobs:
+            return None
+        job = _jobs[job_id]
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "progress": job.progress,
+            "total": job.total,
+            "percentage": int((job.progress / job.total) * 100) if job.total > 0 else 0,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+            "error": job.error
+        }
+
+def get_queue_stats() -> Dict[str, Any]:
+    """Get queue statistics"""
+    with _jobs_lock:
+        pending = sum(1 for j in _jobs.values() if j.status == "pending")
+        processing = sum(1 for j in _jobs.values() if j.status == "processing")
+        completed = sum(1 for j in _jobs.values() if j.status == "completed")
+    
+    return {
+        "queue_size": 0,
+        "pending_jobs": pending,
+        "processing_jobs": processing,
+        "total_jobs": len(_jobs),
+        "is_busy": processing > 10
+    }
+
+def is_server_busy_check() -> bool:
+    """Check if server is busy"""
+    stats = get_queue_stats()
+    return stats["processing_jobs"] > 20
+
+
+# ============================================================
+# ENHANCED METADATA FETCHING FROM CROSSREF
+# ============================================================
 
 def fetch_full_crossref_metadata(doi: str) -> Optional[Dict[str, Any]]:
     """
@@ -44,7 +183,7 @@ def parse_full_crossref_message(message: Dict[str, Any]) -> Dict[str, Any]:
         # Build properly formatted author string for APA
         if given and family:
             # Extract initials from given name
-            initials = " ".join([f"{name[0].upper()}." for name in given.split()])
+            initials = " ".join([f"{name[0].upper()}." for name in given.split() if name[0].isalpha()])
             author_str = f"{family}, {initials}"
         elif family:
             author_str = family
@@ -109,8 +248,8 @@ def parse_full_crossref_message(message: Dict[str, Any]) -> Dict[str, Any]:
         "year": str(year) if year else "",
         "month": month,
         "day": day,
-        "volume": volume,
-        "issue": issue,
+        "volume": str(volume) if volume else "",
+        "issue": str(issue) if issue else "",
         "page": page,
         "first_page": first_page,
         "last_page": last_page,
@@ -147,7 +286,7 @@ def build_apa7_from_metadata(metadata: Dict[str, Any]) -> str:
     # Title (sentence case)
     title = metadata.get("title", "")
     if title:
-        # Convert to sentence case (preserve proper nouns)
+        # Convert to sentence case (preserve proper nouns - simplified)
         title = title[0].upper() + title[1:].lower() if len(title) > 1 else title.upper()
         title_str = f"{title}."
     else:
@@ -203,9 +342,9 @@ def build_harvard_from_metadata(metadata: Dict[str, Any]) -> str:
     elif len(authors) == 1:
         authors_str = authors[0].get("family", authors[0].get("given", ""))
     elif len(authors) == 2:
-        authors_str = f"{authors[0].get('family')} and {authors[1].get('family')}"
+        authors_str = f"{authors[0].get('family', '')} and {authors[1].get('family', '')}"
     else:
-        authors_str = f"{authors[0].get('family')} et al."
+        authors_str = f"{authors[0].get('family', '')} et al."
     
     # Year in parentheses
     year = metadata.get("year", "n.d.")
@@ -252,7 +391,547 @@ def build_harvard_from_metadata(metadata: Dict[str, Any]) -> str:
     return " ".join(filter(None, parts))
 
 
-# Replace the _verify_single_reference function in verify.py
+# ============================================================
+# ORIGINAL VERIFICATION CODE (PRESERVED)
+# ============================================================
+
+_CACHE: Dict[str, Dict[str, Any]] = {}
+_CACHE_LOCK = threading.Lock()
+
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})(?:[a-z])?\b", re.I)
+_DOI_RE = re.compile(r"(10\.\d{4,9}/[^\s]+)", re.I)
+
+_STOP_WORDS = {
+    "and", "the", "with", "from", "into", "using", "that", "this", "their",
+    "these", "those", "among", "across", "study", "studies", "analysis",
+    "journal", "review", "research", "paper", "available", "retrieved",
+    "accessed", "conference", "proceedings", "press", "university",
+    "springer", "elsevier", "taylor", "francis", "sage", "wiley",
+    "ieee", "nature", "acm", "oxford", "cambridge", "routledge",
+    "macmillan", "pearson", "harpercollins", "penguin", "random", "house",
+    "john", "sons", "inc", "editorial", "publisher", "page",
+}
+
+_STYLE_ALIASES = {
+    "apa": "apa",
+    "harvard": "apa",
+    "ieee": "ieee",
+    "vancouver": "vancouver",
+}
+
+
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+
+def _normalize_verify_status(s: str) -> str:
+    st = (s or "").strip().lower().replace(" ", "_")
+    if st not in _ALLOWED_VERIFY_STATUSES:
+        st = "needs_review"
+    return st
+
+
+def _safe_str(x: Any) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    try:
+        return str(x)
+    except Exception:
+        return ""
+
+
+def _safe_strip(x: Any) -> str:
+    return _safe_str(x).strip()
+
+
+def _norm_text(s: str) -> str:
+    s = _safe_strip(s).lower()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"[^\w\s\-:/]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
+    """Get JSON from URL with configurable timeout"""
+    if timeout is None:
+        timeout = API_TIMEOUT
+    
+    try:
+        headers = {
+            "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
+            "Accept": "application/json",
+        }
+        r = requests.get(url, params=params, timeout=timeout, headers=headers)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception as e:
+        print(f"[DEBUG] API request failed: {e}")
+        return None
+
+
+def _extract_year(text: str) -> str:
+    m = _YEAR_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def _extract_doi(text: str) -> str:
+    m = _DOI_RE.search(text or "")
+    return m.group(1).rstrip(").,;") if m else ""
+
+
+def _strip_leading_numbering(text: str) -> str:
+    t = _safe_strip(text)
+    t = re.sub(r"^\s*(\[\s*\d+\s*\]|\(?\d+\)?[\.\)])\s*", "", t)
+    return t.strip()
+
+
+def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+    with _CACHE_LOCK:
+        v = _CACHE.get(key)
+        return dict(v) if v else None
+
+
+def _cache_set(key: str, value: Dict[str, Any]) -> None:
+    with _CACHE_LOCK:
+        _CACHE[key] = dict(value)
+
+
+def _dedupe_preserve(seq: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in seq:
+        k = _safe_strip(x).lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(_safe_strip(x))
+    return out
+
+
+# ---------------------------------------------------------
+# Reference field extraction
+# ---------------------------------------------------------
+
+def _extract_authors_from_left(left: str) -> List[str]:
+    left = _safe_strip(left)
+    if not left:
+        return []
+
+    left = re.sub(r"\bet\s+al\.?\b", "", left, flags=re.I)
+    left = left.replace("&", " and ")
+    left = re.sub(r"\s+", " ", left).strip()
+
+    candidates: List[str] = []
+
+    if "," in left:
+        parts = [p.strip() for p in left.split(",") if p.strip()]
+        if parts:
+            candidates.append(parts[0].split()[-1])
+            for p in parts[1:]:
+                bits = p.split()
+                if bits and len(bits[0]) > 1 and bits[0][0].isupper():
+                    candidates.append(bits[0])
+    else:
+        parts = re.split(r"\band\b", left, flags=re.I)
+        for p in parts:
+            toks = p.strip().split()
+            if toks:
+                candidates.append(toks[-1])
+
+    cleaned = []
+    for c in candidates:
+        c = re.sub(r"[^A-Za-z'\-]", "", c).lower().strip()
+        if len(c) >= 2:
+            cleaned.append(c)
+
+    return _dedupe_preserve(cleaned)[:4]
+
+
+def _extract_title_guess(ref: str, year: str) -> str:
+    ref_clean = _strip_leading_numbering(ref)
+
+    if year:
+        parts = re.split(rf"[\(\[]?\s*{re.escape(year)}\s*[\)\]]?", ref_clean, maxsplit=1, flags=re.I)
+        if len(parts) >= 2:
+            right = parts[1].strip(" .,:;")
+            if right:
+                title = re.split(r"\.\s+(?:In|Journal|Proceedings|Vol|No|pp\.?|https?://|doi)", right, maxsplit=1, flags=re.I)[0]
+                title = title.strip(" .,:;\"'")
+                if len(title) >= 6:
+                    return title
+
+    m = re.search(r'["“](.+?)["”]', ref_clean)
+    if m:
+        title = m.group(1).strip()
+        if len(title) >= 6:
+            return title
+
+    bits = [b.strip() for b in ref_clean.split(".") if b.strip()]
+    if len(bits) >= 2:
+        for b in bits[1:3]:
+            if len(b) >= 6 and not _YEAR_RE.search(b):
+                return b
+
+    return ref_clean[:180]
+
+
+def _extract_common_fields(ref: str) -> Dict[str, Any]:
+    ref = _safe_strip(ref)
+    ref = _strip_leading_numbering(ref)
+
+    year = _extract_year(ref)
+    doi = _extract_doi(ref)
+
+    left = ref
+    if year:
+        left = ref.split(year, 1)[0].strip(" ,.;:()[]")
+
+    authors = _extract_authors_from_left(left)
+    title = _extract_title_guess(ref, year)
+
+    return {
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "title": title,
+    }
+
+
+def _extract_apa_fields(ref: str) -> Dict[str, Any]:
+    return _extract_common_fields(ref)
+
+
+def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
+    style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
+    return _extract_apa_fields(ref)
+
+
+# ---------------------------------------------------------
+# Query building
+# ---------------------------------------------------------
+
+def _significant_title_words(title: str, limit: int = 6) -> List[str]:
+    words = re.findall(r"[A-Za-z]{3,}", title or "")
+    out = []
+    for w in words:
+        wl = w.lower()
+        if wl in _STOP_WORDS:
+            continue
+        out.append(wl)
+    return out[:limit]
+
+
+def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
+    fields = _extract_fields_by_style(ref, style)
+
+    authors = fields.get("authors", []) or []
+    year = fields.get("year", "") or ""
+    doi = fields.get("doi", "") or ""
+    title = fields.get("title", "") or ""
+
+    title_words = _significant_title_words(title, limit=7)
+    title_only = " ".join(title_words[:6]).strip()
+
+    query_parts: List[str] = []
+
+    if authors:
+        query_parts.extend(authors[:2])
+
+    if title_words:
+        query_parts.extend(title_words)
+
+    if year:
+        query_parts.append(year)
+
+    query = " ".join(query_parts).strip()
+
+    if not query:
+        raw_words = re.findall(r"[A-Za-z]{3,}", ref or "")
+        query = " ".join(raw_words[:10] + ([year] if year else []))
+
+    return query, authors, year, doi, title_only
+
+
+# ---------------------------------------------------------
+# Candidate extraction
+# ---------------------------------------------------------
+
+def _candidate_fields(cand: Dict[str, Any]) -> Tuple[str, str, str, List[str]]:
+    src = cand.get("source")
+    item = cand.get("item") or {}
+
+    doi = ""
+    title = ""
+    year = ""
+    authors: List[str] = []
+
+    if src == "crossref":
+        doi = _safe_strip(item.get("DOI"))
+
+        titles = item.get("title") or []
+        title = _safe_strip(titles[0]) if titles else ""
+
+        issued = item.get("issued") or item.get("published-print") or item.get("published-online") or {}
+        year = _safe_str((issued.get("date-parts", [[None]])[0][0])).strip()
+
+        for au in (item.get("author") or [])[:6]:
+            fam = _safe_strip(au.get("family")).lower()
+            fam = re.sub(r"[^a-z'\-]", "", fam)
+            if fam:
+                authors.append(fam)
+
+    elif src == "openalex":
+        doi = _safe_strip(item.get("doi")).replace("https://doi.org/", "")
+        title = _safe_strip(item.get("title"))
+        year = _safe_strip(item.get("publication_year"))
+
+        for a in (item.get("authorships") or [])[:6]:
+            name = _safe_strip(a.get("author", {}).get("display_name"))
+            if name:
+                surname = re.sub(r"[^a-z'\-]", "", name.split()[-1].lower())
+                if surname:
+                    authors.append(surname)
+
+    return doi, _norm_text(title), year, authors
+
+
+# ---------------------------------------------------------
+# External queries with retry logic
+# ---------------------------------------------------------
+
+def _query_with_retry(query_func, *args, max_retries=None, delay=2):
+    """Execute query with retry logic"""
+    if max_retries is None:
+        max_retries = RETRY_ATTEMPTS
+    
+    for attempt in range(max_retries):
+        try:
+            result = query_func(*args)
+            if result:
+                return result
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+        except Exception as e:
+            print(f"[DEBUG] Query attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+    return []
+
+
+def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
+    if not doi:
+        return []
+    url = f"https://api.crossref.org/works/{doi}"
+    params = {"mailto": MAILTO} if MAILTO else None
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    if not data or "message" not in data:
+        return []
+    return [{"source": "crossref", "item": data["message"]}]
+
+
+def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
+    if not query:
+        return []
+    url = "https://api.crossref.org/works"
+    params: Dict[str, Any] = {
+        "query.bibliographic": query,
+        "rows": rows,
+        "sort": "score",
+        "order": "desc",
+    }
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("message", {}).get("items", [])
+    return [{"source": "crossref", "item": it} for it in items]
+
+
+def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
+    if not title_query:
+        return []
+    url = "https://api.crossref.org/works"
+    params: Dict[str, Any] = {
+        "query.title": title_query,
+        "rows": rows,
+        "sort": "score",
+        "order": "desc",
+    }
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("message", {}).get("items", [])
+    return [{"source": "crossref", "item": it} for it in items]
+
+
+def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
+    if not query:
+        return []
+    url = "https://api.openalex.org/works"
+    params: Dict[str, Any] = {"search": query, "per-page": rows}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("results", [])
+    return [{"source": "openalex", "item": it} for it in items]
+
+
+def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
+    if not title_query:
+        return []
+    url = "https://api.openalex.org/works"
+    params: Dict[str, Any] = {"search": title_query, "per-page": rows}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("results", [])
+    return [{"source": "openalex", "item": it} for it in items]
+
+
+# ---------------------------------------------------------
+# Scoring and classification
+# ---------------------------------------------------------
+
+def _score(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    cand_title: str,
+    cand_authors: List[str],
+    cand_year: str,
+) -> Dict[str, Any]:
+    ref_title = _norm_text(ref_title)
+    cand_title = _norm_text(cand_title)
+
+    token_score = fuzz.token_set_ratio(ref_title, cand_title) if ref_title and cand_title else 0
+    partial_score = fuzz.partial_ratio(ref_title, cand_title) if ref_title and cand_title else 0
+    title_score = int((token_score * 0.7) + (partial_score * 0.3))
+
+    if ref_authors and cand_authors:
+        ref_author_set = set(ref_authors)
+        cand_author_set = set(cand_authors)
+        
+        intersection = len(ref_author_set & cand_author_set)
+        union = len(ref_author_set | cand_author_set)
+        
+        if union > 0:
+            author_similarity = (intersection / union) * 100
+        else:
+            author_similarity = 0
+            
+        author_overlap = intersection
+    else:
+        author_similarity = 0
+        author_overlap = 0
+    
+    year_match = 1 if ref_year and cand_year and ref_year[:4] == cand_year[:4] else 0
+    
+    score = (title_score * 0.6) + (author_similarity * 0.3) + (year_match * 10)
+
+    return {
+        "score": int(score),
+        "title_score": int(title_score),
+        "author_overlap": int(author_overlap),
+        "author_similarity": int(author_similarity),
+        "year_match": int(year_match),
+    }
+
+
+# =========================
+# UPDATED CLASSIFICATION
+# =========================
+
+def _classify(
+    doi_match: bool,
+    title_score: int,
+    score: int,
+    year_match: int,
+    author_overlap: int = 0,
+) -> str:
+
+    # -------------------------------------------------
+    # 1. STRICT VERIFIED (IDENTITY ONLY)
+    # -------------------------------------------------
+
+    # DOI must agree with strong title
+    if doi_match and title_score >= 80:
+        return "verified"
+
+    # Near-exact title match (independent of DOI)
+    if title_score >= 100:
+        return "verified"
+
+    # -------------------------------------------------
+    # 2. LIKELY (STRONG BUT NOT EXACT)
+    # -------------------------------------------------
+
+    if title_score >= 85:
+        return "likely"
+
+    if score >= 85:
+        return "likely"
+
+    # -------------------------------------------------
+    # 3. NEEDS REVIEW (SUSPICIOUS / PARTIAL MATCH)
+    # -------------------------------------------------
+
+    if title_score >= 75:
+        return "needs_review"
+
+    if score >= 60:
+        return "needs_review"
+
+    # DOI exists but title mismatch → suspicious
+    if doi_match:
+        return "needs_review"
+
+    # -------------------------------------------------
+    # 4. NOT FOUND
+    # -------------------------------------------------
+
+    return "not_found"
+    
+# ---------------------------------------------------------
+# Candidate selection
+# ---------------------------------------------------------
+
+def _best_candidate(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    ref_doi: str,
+    candidates: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    best = None
+    best_meta: Dict[str, Any] = {}
+    best_score = -1
+
+    for cand in candidates:
+        doi, title, year, authors = _candidate_fields(cand)
+        meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
+
+        doi_match = bool(ref_doi and doi and ref_doi.lower() == doi.lower())
+        meta_score = int(meta["score"] + (25 if doi_match else 0))
+
+        if meta_score > best_score:
+            best_score = meta_score
+            best = cand
+            best_meta = dict(meta)
+            best_meta["doi_match"] = doi_match
+            best_meta["doi"] = doi
+            best_meta["title"] = title
+            best_meta["year"] = year
+            best_meta["authors"] = authors
+
+    return best, best_meta
+
+
+# ---------------------------------------------------------
+# ENHANCED VERIFICATION FUNCTION WITH FULL METADATA
+# ---------------------------------------------------------
+
 def _verify_single_reference_enhanced(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
     """
     Enhanced verification that captures FULL metadata from Crossref.
@@ -322,59 +1001,244 @@ def _verify_single_reference_enhanced(ref: str, style: str, use_crossref: bool, 
     return original_result
 
 
-def format_verified_reference_list_enhanced(
-    verification_rows: List[Dict[str, Any]],
-    style: str = "apa7"
+# ---------------------------------------------------------
+# Public API - Returns ALL results (NO TIME LIMITS)
+# ---------------------------------------------------------
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    job_id: str = None,
+    enhanced: bool = True,  # NEW: Use enhanced verification by default
 ) -> List[Dict[str, Any]]:
     """
-    Format verified references using the enhanced metadata.
+    Verify references batch with optional progress tracking.
+    ALWAYS returns ALL results. NO TIME LIMITS - processes all references.
+    
+    Args:
+        references: List of reference strings to verify
+        style: Citation style ("apa", "harvard", etc.)
+        throttle_s: Delay between requests (deprecated, use BATCH_DELAY instead)
+        use_crossref: Whether to query Crossref API
+        use_openalex: Whether to query OpenAlex API
+        job_id: Optional job ID for progress tracking
+        enhanced: If True, use enhanced verification with full metadata capture
+    
+    Returns:
+        List of verification results with full metadata
     """
-    formatted_refs = []
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    if not refs:
+        print("[DEBUG] No references to verify")
+        return []
+
+    normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
+    total_refs = len(refs)
     
-    for i, row in enumerate(verification_rows):
-        status = row.get("status", "unknown")
-        
-        if status not in ["verified", "likely", "needs_review"]:
-            continue
-        
-        # Check if we have full metadata
-        if "apa7_reference" in row and style == "apa7":
-            formatted = row["apa7_reference"]
-        elif "harvard_reference" in row and style == "harvard":
-            formatted = row["harvard_reference"]
-        elif "full_metadata" in row:
-            # Build from full metadata
-            if style == "apa7":
-                formatted = build_apa7_from_metadata(row["full_metadata"])
-            else:
-                formatted = build_harvard_from_metadata(row["full_metadata"])
-        else:
-            # Fall back to original formatter
-            ref_dict = {
-                "authors": row.get("matched_authors", ""),
-                "year": row.get("matched_year", ""),
-                "title": row.get("matched_title", ""),
-                "doi": row.get("doi", ""),
-                "source": row.get("matched_container_title", row.get("source", "")),
-                "volume": row.get("matched_volume", ""),
-                "issue": row.get("matched_issue", ""),
-                "pages": row.get("matched_pages", ""),
-            }
-            formatted = format_reference(ref_dict, style)
-        
-        formatted_refs.append({
-            "index": i + 1,
-            "original_reference": row.get("reference", ""),
-            "formatted_reference": formatted,
-            "status": status,
-            "doi": row.get("doi", ""),
-            "title": row.get("matched_title", ""),
-            "year": row.get("matched_year", ""),
-            "volume": row.get("matched_volume", ""),
-            "issue": row.get("matched_issue", ""),
-            "pages": row.get("matched_pages", ""),
-            "journal": row.get("matched_container_title", ""),
-            "authors": row.get("matched_authors", ""),
-        })
+    # Calculate estimated time
+    est_seconds = total_refs * (API_TIMEOUT / 2)
+    est_minutes = est_seconds / 60
+    est_hours = est_minutes / 60
     
-    return formatted_refs
+    print(f"[DEBUG] ========================================")
+    print(f"[DEBUG] Starting verification for {total_refs} references")
+    print(f"[DEBUG] Style: {normalized_style}")
+    print(f"[DEBUG] Enhanced mode: {enhanced}")
+    if est_hours >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
+    elif est_minutes >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_minutes:.1f} minutes")
+    else:
+        print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
+    print(f"[DEBUG] ========================================")
+
+    # Create job for progress tracking if job_id provided
+    if job_id:
+        create_verification_job(job_id, total_refs)
+        print(f"[DEBUG] Created verification job {job_id}")
+
+    rows: List[Dict[str, Any]] = [None] * total_refs
+    # Use WORKER_THREADS to control concurrency
+    workers = min(WORKER_THREADS, max(1, total_refs))
+    print(f"[DEBUG] Using {workers} workers (to avoid rate limits)")
+
+    # Select verification function
+    verify_func = _verify_single_reference_enhanced if enhanced else _verify_single_reference
+
+    start_time = time.time()
+    
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        
+        for i, ref in enumerate(refs):
+            future = executor.submit(
+                verify_func,
+                ref,
+                normalized_style,
+                use_crossref,
+                use_openalex,
+            )
+            futures[future] = i
+
+        completed_count = 0
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                rows[idx] = future.result()
+                completed_count += 1
+                
+                # Update progress if tracking
+                if job_id:
+                    update_job_progress(job_id, completed_count)
+                    
+                    # Print progress every 10 references or at completion
+                    if completed_count % 10 == 0 or completed_count == total_refs:
+                        elapsed = time.time() - start_time
+                        rate = completed_count / elapsed if elapsed > 0 else 0
+                        remaining = (total_refs - completed_count) / rate if rate > 0 else 0
+                        print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%) - Rate: {rate:.1f}/sec - Est. remaining: {remaining/60:.1f} min")
+                
+                # Small delay to avoid rate limiting
+                time.sleep(BATCH_DELAY)
+                    
+            except Exception as e:
+                print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
+                rows[idx] = {
+                    "reference": refs[idx],
+                    "style": normalized_style,
+                    "status": "not_found",
+                    "source": "",
+                    "score": 0,
+                    "doi": "",
+                    "matched_title": "",
+                    "matched_year": "",
+                    "matched_authors": "",
+                    "title_score": 0,
+                    "author_overlap": 0,
+                    "author_similarity": 0,
+                    "year_match": 0,
+                    "query_used": "",
+                    "author": "",
+                    "error": str(e),
+                }
+                completed_count += 1
+                if job_id:
+                    update_job_progress(job_id, completed_count)
+
+    # Count results for debugging
+    result_counts = {
+        "verified": sum(1 for r in rows if r and r.get("status") == "verified"),
+        "likely": sum(1 for r in rows if r and r.get("status") == "likely"),
+        "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
+        "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
+    }
+    print(f"[DEBUG] ========================================")
+    print(f"[DEBUG] Verification COMPLETE for {total_refs} references")
+    print(f"[DEBUG] Results: {result_counts}")
+    print(f"[DEBUG] Total processed: {len([r for r in rows if r is not None])}")
+    print(f"[DEBUG] ========================================")
+
+    for r in rows:
+        if r:
+            r["status"] = _normalize_verify_status(r.get("status"))
+
+    # Store results if job_id was provided
+    if job_id:
+        update_job_progress(job_id, total_refs)
+        store_verification_results(job_id, rows)
+        print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
+
+    return rows
+
+
+# ---------------------------------------------------------
+# Background job submission (NO TIME LIMITS)
+# ---------------------------------------------------------
+
+def submit_verification(references: List[str], style: str = "apa", enhanced: bool = True) -> str:
+    """
+    Submit a verification job and return job ID (runs in background)
+    NO TIME LIMITS - will process all references regardless of count
+    
+    Args:
+        references: List of reference strings to verify
+        style: Citation style ("apa", "harvard", etc.)
+        enhanced: If True, use enhanced verification with full metadata capture
+    
+    Returns:
+        Job ID for tracking progress
+    """
+    job_id = uuid.uuid4().hex
+    total_refs = len(references)
+    est_seconds = total_refs * (API_TIMEOUT / 2)
+    est_minutes = est_seconds / 60
+    est_hours = est_minutes / 60
+    
+    print(f"[DEBUG] ========================================")
+    print(f"[DEBUG] Submitting verification job {job_id}")
+    print(f"[DEBUG] Total references: {total_refs}")
+    print(f"[DEBUG] Enhanced mode: {enhanced}")
+    if est_hours >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
+    elif est_minutes >= 1:
+        print(f"[DEBUG] Estimated time: ~{est_minutes:.1f} minutes")
+    else:
+        print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
+    print(f"[DEBUG] ========================================")
+    
+    def run():
+        print(f"[DEBUG] Starting background thread for job {job_id}")
+        start_time = time.time()
+        results = verify_references_batch(references, style, job_id=job_id, enhanced=enhanced)
+        elapsed = time.time() - start_time
+        print(f"[DEBUG] Background thread completed for job {job_id}")
+        print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
+        print(f"[DEBUG] Results count: {len(results)}")
+        
+        # Print final summary
+        verified = sum(1 for r in results if r.get("status") == "verified")
+        likely = sum(1 for r in results if r.get("status") == "likely")
+        needs_review = sum(1 for r in results if r.get("status") == "needs_review")
+        not_found = sum(1 for r in results if r.get("status") == "not_found")
+        print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
+    
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    
+    return job_id
+
+
+def get_verification_status(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get verification job progress (not results)"""
+    return get_job_status(job_id)
+
+
+# ============================================================
+# EXPORTS AND ALIASES (for compatibility)
+# ============================================================
+
+# Alias for backward compatibility
+submit_verification_job = submit_verification
+get_queue_status = get_queue_stats
+is_server_busy = is_server_busy_check
+
+# Enhanced functions exports
+__all__ = [
+    'verify_references_batch',
+    'submit_verification',
+    'submit_verification_job',
+    'get_verification_status',
+    'get_verification_results',
+    'clear_verification_results',
+    'get_queue_status',
+    'is_server_busy',
+    'fetch_full_crossref_metadata',
+    'parse_full_crossref_message',
+    'build_apa7_from_metadata',
+    'build_harvard_from_metadata',
+    '_verify_single_reference_enhanced',
+]
