@@ -518,14 +518,14 @@ def format_verified_reference_list(
         
         # Build reference dict with all possible fields
         ref_dict = {
-            "authors": row.get("matched_authors", row.get("authors", [])),
+            "authors": row.get("matched_authors_full", row.get("matched_authors", row.get("authors", []))),
             "year": row.get("matched_year", row.get("year", "")),
             "title": row.get("matched_title", row.get("title", "")),
             "doi": row.get("doi", ""),
-            "source": row.get("source", row.get("journal", "")),
-            "volume": row.get("volume", ""),
-            "issue": row.get("issue", ""),
-            "pages": row.get("pages", ""),
+            "source": row.get("matched_container_title", row.get("journal", "")),
+            "volume": row.get("matched_volume", row.get("volume", "")),
+            "issue": row.get("matched_issue", row.get("issue", "")),
+            "pages": row.get("matched_pages", row.get("pages", "")),
             "publisher": row.get("publisher", ""),
             "book_title": row.get("book_title", ""),
             "editors": row.get("editors", []),
