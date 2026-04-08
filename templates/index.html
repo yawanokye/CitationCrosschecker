@@ -948,13 +948,24 @@
 
             <!-- VERIFY PANE -->
             <div id="verifyPane" class="tabPane">
-                <div class="verify-top">
-                    <h3>✅ Online verification</h3>
-                    <div class="kpi-dashboard" id="verifyDash"></div>
+                <div class="verify-top" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
+                    <h3 style="margin: 0;">✅ Online verification</h3>
+                    <div style="display: flex; gap: 8px;">
+                        <select id="exportStyleSelect" style="padding: 6px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 12px; background: white;">
+                            <option value="apa7">APA 7th Edition</option>
+                            <option value="apa6">APA 6th Edition</option>
+                            <option value="harvard">Harvard Style</option>
+                        </select>
+                        <button id="exportReferencesBtn" class="btn-small" style="background: #19b36b; color: white; border: none; padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 12px;">📄 Export DOCX</button>
+                        <button id="exportReferencesHtmlBtn" class="btn-small btn-outline" style="padding: 6px 16px;">🌐 Export HTML</button>
+                    </div>
                 </div>
+                <div class="kpi-dashboard" id="verifyDash"></div>
                 <div class="tableWrap">
                     <table class="tbl">
-                        <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th></tr></thead>
+                        <thead>
+                            <tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th></tr>
+                        </thead>
                         <tbody id="verifyBody"></tbody>
                     </table>
                 </div>
@@ -1122,6 +1133,62 @@ function resetProcessFeedback() {
     });
 }
 
+// ============================================
+// EXPORT REFERENCES FUNCTIONS
+// ============================================
+
+async function exportReferences(format = 'docx') {
+    if (!LAST_JOB_ID) {
+        showNotification("No job found. Please run verification first.", "error");
+        return;
+    }
+    
+    const styleSelect = document.getElementById("exportStyleSelect");
+    const style = styleSelect ? styleSelect.value : "apa7";
+    
+    showNotification(`Exporting references in ${style.toUpperCase()} format...`, "info");
+    
+    const formData = new FormData();
+    formData.append("job_id", LAST_JOB_ID);
+    formData.append("style", style);
+    formData.append("format_type", format);
+    
+    try {
+        const response = await fetch("/export-references", {
+            method: "POST",
+            body: formData
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || "Export failed");
+        }
+        
+        const contentDisposition = response.headers.get("Content-Disposition");
+        let filename = `citeintegrity_references.${format === 'docx' ? 'docx' : 'html'}`;
+        if (contentDisposition) {
+            const match = contentDisposition.match(/filename=(.+)/);
+            if (match) filename = match[1];
+        }
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showNotification(`References exported successfully as ${format.toUpperCase()}!`, "success");
+        
+    } catch (error) {
+        console.error("Export error:", error);
+        showNotification(`Export failed: ${error.message}`, "error");
+    }
+}
+
 // File Area Setup - FIXED
 function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
@@ -1199,6 +1266,46 @@ function setupFileArea() {
     
     console.log("[Debug] File area setup complete");
 }
+
+// [REST OF YOUR EXISTING FUNCTIONS GO HERE]
+// ... (ACII Rating, Suggestion Box, Progress Bar, Queue Status, etc.)
+// ... (render functions, runInitialCheck, runOnlineVerification, etc.)
+
+// Button Events - ADD THESE AT THE BOTTOM OF DOMContentLoaded
+setupFileArea();
+
+const btnCheck = document.getElementById("btnCheck");
+if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
+
+const btnVerify = document.getElementById("btnVerify");
+if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
+
+// Export button events - ADD THESE
+const exportBtn = document.getElementById("exportReferencesBtn");
+const exportHtmlBtn = document.getElementById("exportReferencesHtmlBtn");
+
+if (exportBtn) {
+    exportBtn.addEventListener("click", () => exportReferences('docx'));
+}
+
+if (exportHtmlBtn) {
+    exportHtmlBtn.addEventListener("click", () => exportReferences('html'));
+}
+
+const exportCsv = document.getElementById("btnExportCsvTop");
+const exportWord = document.getElementById("btnExportWordTop");
+const exportVerify = document.getElementById("btnExportVerify");
+
+if (exportCsv) exportCsv.addEventListener("click", () => { if (window.latestResults) exportCSV(); else alert("Run a check first."); });
+if (exportWord) exportWord.addEventListener("click", () => { if (window.latestResults) exportWordFile(); else alert("Run a check first."); });
+if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
+
+setInterval(updateQueueStatus, 5000);
+updateQueueStatus();
+
+console.log("[CiteIntegrity] App initialized - Enhanced visibility with export functionality");
+
+});
 
 // ACII Rating with Recommendations
 function getACIIRating(score) {
@@ -2137,6 +2244,64 @@ function exportVerificationCSV() {
     URL.revokeObjectURL(link.href);
 }
 
+// ============================================
+// EXPORT REFERENCES FUNCTIONS
+// ============================================
+
+async function exportReferences(format = 'docx') {
+    if (!LAST_JOB_ID) {
+        showNotification("No job found. Please run verification first.", "error");
+        return;
+    }
+    
+    const styleSelect = document.getElementById("exportStyleSelect");
+    const style = styleSelect ? styleSelect.value : "apa7";
+    
+    showNotification(`Exporting references in ${style.toUpperCase()} format...`, "info");
+    
+    const formData = new FormData();
+    formData.append("job_id", LAST_JOB_ID);
+    formData.append("style", style);
+    formData.append("format_type", format);
+    
+    try {
+        const response = await fetch("/export-references", {
+            method: "POST",
+            body: formData
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || "Export failed");
+        }
+        
+        // Get filename from Content-Disposition header
+        const contentDisposition = response.headers.get("Content-Disposition");
+        let filename = `citeintegrity_references.${format === 'docx' ? 'docx' : 'html'}`;
+        if (contentDisposition) {
+            const match = contentDisposition.match(/filename=(.+)/);
+            if (match) filename = match[1];
+        }
+        
+        // Download the file
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        showNotification(`References exported successfully as ${format.toUpperCase()}!`, "success");
+        
+    } catch (error) {
+        console.error("Export error:", error);
+        showNotification(`Export failed: ${error.message}`, "error");
+    }
+}
+    
 // Run Initial Check
 async function runInitialCheck() {
     const fileInput = document.getElementById("file");
