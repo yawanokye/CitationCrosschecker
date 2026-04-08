@@ -139,12 +139,13 @@ def is_server_busy_check() -> bool:
 
 
 # ============================================================
-# ENHANCED METADATA FETCHING FROM CROSSREF
+# ENHANCED METADATA FETCHING FROM CROSSREF (NEW)
 # ============================================================
 
 def fetch_full_crossref_metadata(doi: str) -> Optional[Dict[str, Any]]:
     """
     Fetch COMPLETE metadata from Crossref including volume, issue, pages, and full author names.
+    This is called AFTER a match is found to enrich the existing verification result.
     """
     if not doi:
         return None
@@ -391,8 +392,40 @@ def build_harvard_from_metadata(metadata: Dict[str, Any]) -> str:
     return " ".join(filter(None, parts))
 
 
+def enrich_with_full_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Take an existing verification result and enrich it with full metadata from Crossref.
+    This preserves all original query results and adds additional fields.
+    """
+    if not result:
+        return result
+    
+    # Check if we already have full metadata
+    if result.get("full_metadata"):
+        return result
+    
+    # Get DOI from result
+    doi = result.get("doi", "")
+    if not doi:
+        return result
+    
+    # Fetch full metadata
+    full_metadata = fetch_full_crossref_metadata(doi)
+    if full_metadata:
+        result["full_metadata"] = full_metadata
+        result["matched_volume"] = full_metadata.get("volume", "")
+        result["matched_issue"] = full_metadata.get("issue", "")
+        result["matched_pages"] = full_metadata.get("page", "")
+        result["matched_container_title"] = full_metadata.get("container_title", "")
+        result["matched_authors_full"] = ", ".join(full_metadata.get("author_strings", []))
+        result["apa7_reference"] = build_apa7_from_metadata(full_metadata)
+        result["harvard_reference"] = build_harvard_from_metadata(full_metadata)
+    
+    return result
+
+
 # ============================================================
-# ORIGINAL VERIFICATION CODE (PRESERVED)
+# ORIGINAL VERIFICATION CODE (PRESERVED - NO CHANGES)
 # ============================================================
 
 _CACHE: Dict[str, Dict[str, Any]] = {}
@@ -929,76 +962,261 @@ def _best_candidate(
 
 
 # ---------------------------------------------------------
-# ENHANCED VERIFICATION FUNCTION WITH FULL METADATA
+# Main verification function with improved error handling
 # ---------------------------------------------------------
+def _get_top_suggestions(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    candidates: List[Dict[str, Any]],
+    top_k: int = 3,
+) -> List[Dict[str, Any]]:
 
-def _verify_single_reference_enhanced(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
-    """
-    Enhanced verification that captures FULL metadata from Crossref.
-    """
-    cache_key = f"enhanced::{style}::{ref}"
+    def extract_keywords(title):
+        words = re.findall(r"[A-Za-z]{4,}", title.lower())
+        stop = {
+            "study", "analysis", "effect", "impact",
+            "method", "model", "approach", "evidence"
+        }
+        return set(w for w in words if w not in stop)
+
+    def keyword_overlap(t1, t2):
+        k1 = extract_keywords(t1)
+        k2 = extract_keywords(t2)
+        overlap = len(k1 & k2)
+        ratio = overlap / max(len(k1), 1)
+        return overlap, ratio
+
+    PUBLISHER_STOPWORDS = {
+        "elsevier", "springer", "wiley", "ieee", "taylor", "francis",
+        "nature", "acm", "oxford", "cambridge", "routledge", "sage",
+        "macmillan", "pearson", "harpercollins", "penguin",
+        "random", "house", "editorial", "publisher"
+    }
+
+    scored = []
+    seen = set()
+
+    for cand in candidates:
+        doi, title, year, authors = _candidate_fields(cand)
+        meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
+
+        title_clean = title.lower().strip()
+
+        # ---------------------------
+        # 1. Remove publisher noise
+        # ---------------------------
+        if any(p in title_clean for p in PUBLISHER_STOPWORDS):
+            continue
+
+        # ---------------------------
+        # 2. Remove duplicates
+        # ---------------------------
+        if title_clean in seen:
+            continue
+        seen.add(title_clean)
+
+        # ---------------------------
+        # 3. Remove weak matches
+        # ---------------------------
+        if meta["title_score"] < 60:
+            continue
+
+        overlap, overlap_ratio = keyword_overlap(ref_title, title)
+
+        # ---------------------------
+        # 4. RELATED PAPER CRITERIA
+        # ---------------------------
+        if not (
+            (meta["title_score"] >= 70 and overlap >= 2)
+            or (meta["title_score"] >= 65 and overlap_ratio >= 0.3)
+        ):
+            continue
+
+        score = meta["score"]
+
+        # ---------------------------
+        # 5. SOFT AUTHOR BOOST
+        # ---------------------------
+        if set(ref_authors) & set(authors):
+            score += 8
+
+        # ---------------------------
+        # 6. DOI BOOST
+        # ---------------------------
+        if doi:
+            score += 5
+
+        scored.append({
+            "title": title,
+            "doi": doi,
+            "year": year,
+            "score": score,
+            "title_score": meta["title_score"],
+            "overlap": overlap,
+            "confidence": "related",
+        })
+
+    return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
+
+
+def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
+    """Original fast verification function with author-mismatch gating"""
+    cache_key = f"{style}::{ref}"
     cached = _cache_get(cache_key)
     if cached:
         return cached
-    
-    # First, extract DOI and try to get full metadata
+
+    query, ref_authors, ref_year, ref_doi, title_only = _build_query(ref, style)
     fields = _extract_fields_by_style(ref, style)
-    ref_doi = fields.get("doi", "")
-    
-    full_metadata = None
-    
-    # Try to get full metadata if DOI exists
-    if ref_doi and use_crossref:
-        full_metadata = fetch_full_crossref_metadata(ref_doi)
-        if full_metadata:
-            # Build complete references
-            apa7_ref = build_apa7_from_metadata(full_metadata)
-            harvard_ref = build_harvard_from_metadata(full_metadata)
+    ref_title = fields.get("title") or ref
+
+    row: Dict[str, Any] = {
+        "reference": ref,
+        "style": style,
+        "status": "offline",
+        "source": "",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "title_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "query_used": query,
+        "author": ", ".join(ref_authors),
+        "author_mismatch_flag": 0,
+        "match_note": "",
+    }
+
+    candidates: List[Dict[str, Any]] = []
+
+    try:
+        # DOI-first shortcut
+        if ref_doi and use_crossref:
+            candidates.extend(_query_crossref_by_doi(ref_doi))
+
+        # stage 1
+        if use_crossref and query:
+            candidates.extend(_query_crossref(query, rows=10))
+        if use_openalex and query:
+            candidates.extend(_query_openalex(query, rows=10))
+
+        # If no candidates from query, try title-only search
+        if not candidates and title_only:
+            if use_crossref:
+                candidates.extend(_query_crossref_title_only(title_only, rows=8))
+            if use_openalex:
+                candidates.extend(_query_openalex_title_only(title_only, rows=8))
+
+        best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
+
+        if best:
+            status = _classify(
+                bool(best_meta.get("doi_match")),
+                int(best_meta.get("title_score", 0)),
+                int(best_meta.get("score", 0)),
+                int(best_meta.get("year_match", 0)),
+                int(best_meta.get("author_overlap", 0)),
+            )
+
+            # -------------------------------------------------
+            # AUTHOR-MISMATCH GATE, first pass
+            # If the reference clearly has author information, but the matched
+            # candidate has zero author overlap, do not trust the match.
+            # -------------------------------------------------
+            ref_has_authors = bool(ref_authors)
+            cand_has_authors = bool(best_meta.get("authors", []))
+            author_overlap = int(best_meta.get("author_overlap", 0))
             
-            result = {
-                "reference": ref,
-                "style": style,
-                "status": "verified",
-                "source": "crossref",
-                "score": 100,
-                "doi": ref_doi,
-                "matched_title": full_metadata.get("title", ""),
-                "matched_year": full_metadata.get("year", ""),
-                "matched_authors": ", ".join(full_metadata.get("author_strings", [])),
-                "matched_volume": full_metadata.get("volume", ""),
-                "matched_issue": full_metadata.get("issue", ""),
-                "matched_pages": full_metadata.get("page", ""),
-                "matched_container_title": full_metadata.get("container_title", ""),
-                "full_metadata": full_metadata,
-                "apa7_reference": apa7_ref,
-                "harvard_reference": harvard_ref,
-                "title_score": 100,
-                "author_overlap": len(full_metadata.get("author_strings", [])),
-                "author_similarity": 100,
-                "year_match": 1,
-                "author_mismatch_flag": 0,
-                "match_note": "Exact DOI match with full metadata",
-            }
-            _cache_set(cache_key, result)
-            return result
-    
-    # Fall back to original verification if DOI not found or not working
-    original_result = _verify_single_reference(ref, style, use_crossref, use_openalex)
-    
-    # If original found a match but missing metadata, try to fetch full metadata by DOI from the match
-    if original_result.get("doi") and not full_metadata:
-        full_metadata = fetch_full_crossref_metadata(original_result["doi"])
-        if full_metadata:
-            original_result["full_metadata"] = full_metadata
-            original_result["matched_volume"] = full_metadata.get("volume", "")
-            original_result["matched_issue"] = full_metadata.get("issue", "")
-            original_result["matched_pages"] = full_metadata.get("page", "")
-            original_result["matched_container_title"] = full_metadata.get("container_title", "")
-            original_result["apa7_reference"] = build_apa7_from_metadata(full_metadata)
-            original_result["harvard_reference"] = build_harvard_from_metadata(full_metadata)
-    
-    _cache_set(cache_key, original_result)
-    return original_result
+            if ref_has_authors and cand_has_authors and author_overlap == 0:
+                status = "needs_review"
+                best_meta["author_mismatch_flag"] = 1
+                best_meta["match_note"] = "Author mismatch"
+            else:
+                best_meta["author_mismatch_flag"] = 0
+                best_meta["match_note"] = ""
+
+            # deep fallback only for weak cases
+            if status in {"needs_review", "not_found"}:
+                deep_candidates = list(candidates)
+
+                if use_crossref and query:
+                    deep_candidates.extend(_query_crossref(query, rows=20))
+                    if title_only:
+                        deep_candidates.extend(_query_crossref_title_only(title_only, rows=15))
+
+                if use_openalex and query:
+                    deep_candidates.extend(_query_openalex(query, rows=20))
+                    if title_only:
+                        deep_candidates.extend(_query_openalex_title_only(title_only, rows=15))
+
+                best2, best_meta2 = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, deep_candidates)
+                if best2:
+                    best = best2
+                    best_meta = best_meta2
+                    candidates = deep_candidates
+
+                    status = _classify(
+                        bool(best_meta.get("doi_match")),
+                        int(best_meta.get("title_score", 0)),
+                        int(best_meta.get("score", 0)),
+                        int(best_meta.get("year_match", 0)),
+                        int(best_meta.get("author_overlap", 0)),
+                    )
+
+                    # -------------------------------------------------
+                    # AUTHOR-MISMATCH GATE, deep fallback
+                    # -------------------------------------------------
+                    ref_has_authors = bool(ref_authors)
+                    cand_has_authors = bool(best_meta.get("authors", []))
+                    author_overlap = int(best_meta.get("author_overlap", 0))
+                    
+                    if ref_has_authors and cand_has_authors and author_overlap == 0:
+                        status = "needs_review"
+                        best_meta["author_mismatch_flag"] = 1
+                        best_meta["match_note"] = "Author mismatch"
+                    else:
+                        best_meta["author_mismatch_flag"] = 0
+                        best_meta["match_note"] = ""
+
+            row.update({
+                "status": status,
+                "source": _safe_strip(best.get("source")),
+                "score": int(best_meta.get("score", 0)),
+                "doi": _safe_strip(best_meta.get("doi")),
+                "matched_title": _safe_strip(best_meta.get("title")),
+                "matched_year": _safe_strip(best_meta.get("year")),
+                "matched_authors": ", ".join(best_meta.get("authors", [])),
+                "title_score": int(best_meta.get("title_score", 0)),
+                "author_overlap": int(best_meta.get("author_overlap", 0)),
+                "author_similarity": int(best_meta.get("author_similarity", 0)),
+                "year_match": int(best_meta.get("year_match", 0)),
+                "author_mismatch_flag": int(best_meta.get("author_mismatch_flag", 0)),
+                "match_note": best_meta.get("match_note", ""),
+            })
+
+            # -------------------------------------------------
+            # CONTEXT-SPECIFIC CORRECTIONS WILL BE ADDED LATER IN main.py
+            # -------------------------------------------------
+            row["correction_suggestions"] = []
+
+            # NEW: Enrich with full metadata from Crossref
+            row = enrich_with_full_metadata(row)
+
+        else:
+            row["status"] = "not_found"
+
+    except Exception as e:
+        print(f"[DEBUG] Error verifying reference: {e}")
+        row["status"] = "not_found"
+        row["error"] = str(e)
+
+    row["status"] = _normalize_verify_status(row.get("status"))
+    _cache_set(cache_key, row)
+    return row
 
 
 # ---------------------------------------------------------
@@ -1012,7 +1230,7 @@ def verify_references_batch(
     use_crossref: bool = True,
     use_openalex: bool = True,
     job_id: str = None,
-    enhanced: bool = True,  # NEW: Use enhanced verification by default
+    enrich_metadata: bool = True,  # NEW: Enrich with full metadata by default
 ) -> List[Dict[str, Any]]:
     """
     Verify references batch with optional progress tracking.
@@ -1025,7 +1243,7 @@ def verify_references_batch(
         use_crossref: Whether to query Crossref API
         use_openalex: Whether to query OpenAlex API
         job_id: Optional job ID for progress tracking
-        enhanced: If True, use enhanced verification with full metadata capture
+        enrich_metadata: If True, fetch full metadata (volume, issue, pages, full author names)
     
     Returns:
         List of verification results with full metadata
@@ -1046,7 +1264,7 @@ def verify_references_batch(
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Starting verification for {total_refs} references")
     print(f"[DEBUG] Style: {normalized_style}")
-    print(f"[DEBUG] Enhanced mode: {enhanced}")
+    print(f"[DEBUG] Enrich metadata: {enrich_metadata}")
     if est_hours >= 1:
         print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
     elif est_minutes >= 1:
@@ -1065,9 +1283,6 @@ def verify_references_batch(
     workers = min(WORKER_THREADS, max(1, total_refs))
     print(f"[DEBUG] Using {workers} workers (to avoid rate limits)")
 
-    # Select verification function
-    verify_func = _verify_single_reference_enhanced if enhanced else _verify_single_reference
-
     start_time = time.time()
     
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -1075,7 +1290,7 @@ def verify_references_batch(
         
         for i, ref in enumerate(refs):
             future = executor.submit(
-                verify_func,
+                _verify_single_reference,
                 ref,
                 normalized_style,
                 use_crossref,
@@ -1151,6 +1366,14 @@ def verify_references_batch(
         update_job_progress(job_id, total_refs)
         store_verification_results(job_id, rows)
         print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
+        
+        # Debug: Check if first row has suggestions
+        if rows and len(rows) > 0:
+            print(f"[DEBUG] First row has 'suggested_references': {'suggested_references' in rows[0]}")
+            if 'suggested_references' in rows[0]:
+                print(f"[DEBUG] First row has {len(rows[0]['suggested_references'])} suggestions")
+                for s in rows[0]['suggested_references']:
+                    print(f"[DEBUG] Suggestion: {s.get('title', 'N/A')[:60]}...")
 
     return rows
 
@@ -1159,7 +1382,7 @@ def verify_references_batch(
 # Background job submission (NO TIME LIMITS)
 # ---------------------------------------------------------
 
-def submit_verification(references: List[str], style: str = "apa", enhanced: bool = True) -> str:
+def submit_verification(references: List[str], style: str = "apa", enrich_metadata: bool = True) -> str:
     """
     Submit a verification job and return job ID (runs in background)
     NO TIME LIMITS - will process all references regardless of count
@@ -1167,7 +1390,7 @@ def submit_verification(references: List[str], style: str = "apa", enhanced: boo
     Args:
         references: List of reference strings to verify
         style: Citation style ("apa", "harvard", etc.)
-        enhanced: If True, use enhanced verification with full metadata capture
+        enrich_metadata: If True, fetch full metadata (volume, issue, pages, full author names)
     
     Returns:
         Job ID for tracking progress
@@ -1181,7 +1404,7 @@ def submit_verification(references: List[str], style: str = "apa", enhanced: boo
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Submitting verification job {job_id}")
     print(f"[DEBUG] Total references: {total_refs}")
-    print(f"[DEBUG] Enhanced mode: {enhanced}")
+    print(f"[DEBUG] Enrich metadata: {enrich_metadata}")
     if est_hours >= 1:
         print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
     elif est_minutes >= 1:
@@ -1193,7 +1416,7 @@ def submit_verification(references: List[str], style: str = "apa", enhanced: boo
     def run():
         print(f"[DEBUG] Starting background thread for job {job_id}")
         start_time = time.time()
-        results = verify_references_batch(references, style, job_id=job_id, enhanced=enhanced)
+        results = verify_references_batch(references, style, job_id=job_id, enrich_metadata=enrich_metadata)
         elapsed = time.time() - start_time
         print(f"[DEBUG] Background thread completed for job {job_id}")
         print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
@@ -1240,5 +1463,5 @@ __all__ = [
     'parse_full_crossref_message',
     'build_apa7_from_metadata',
     'build_harvard_from_metadata',
-    '_verify_single_reference_enhanced',
+    'enrich_with_full_metadata',
 ]
