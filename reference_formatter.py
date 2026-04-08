@@ -2,7 +2,9 @@
 
 import re
 import io
-from typing import List, Dict, Any, Optional
+import json
+import argparse
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 
 try:
@@ -37,6 +39,155 @@ REFERENCE_STYLES = {
 }
 
 # ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def parse_author(author: Union[str, Dict]) -> str:
+    """
+    Parse various author formats to 'Last, F.' or 'Last, F. M.'
+    
+    Handles:
+    - "abubakari, gross, boateng" -> error (needs first names)
+    - "Smith, John A." -> "Smith, J. A."
+    - "John A. Smith" -> "Smith, J. A."
+    - "Smith, J. A." -> "Smith, J. A."
+    - {"last": "Smith", "first": "John A."} -> "Smith, J. A."
+    """
+    # Handle dict input
+    if isinstance(author, dict):
+        last = author.get("last", "")
+        first = author.get("first", "")
+        if last:
+            if first:
+                # Extract initials
+                initials = ''.join([name[0].upper() + '.' for name in first.split() if name[0].isalpha()])
+                return f"{last}, {initials}"
+            return last
+        return ""
+    
+    # Handle string input
+    if not author or not isinstance(author, str):
+        return ""
+    
+    author = author.strip()
+    
+    # Already formatted as "Last, F." or "Last, F. M."
+    if ',' in author:
+        parts = author.split(',', 1)
+        last = parts[0].strip()
+        first_part = parts[1].strip() if len(parts) > 1 else ""
+        
+        # Extract initials from first part
+        if first_part:
+            # Handle "J. A." or "John A." format
+            initials = []
+            for token in first_part.split():
+                if token and token[0].isalpha():
+                    initials.append(token[0].upper() + '.')
+            return f"{last}, {' '.join(initials)}"
+        return last
+    
+    # "First Last" or "First Middle Last" format
+    parts = author.split()
+    if len(parts) >= 2:
+        last = parts[-1]
+        initials = [p[0].upper() + '.' for p in parts[:-1] if p and p[0].isalpha()]
+        return f"{last}, {' '.join(initials)}"
+    
+    # Single name
+    return author
+
+
+def parse_authors(authors: Union[List, str, None]) -> List[str]:
+    """Parse a list of authors from various input formats."""
+    if not authors:
+        return []
+    
+    if isinstance(authors, list):
+        return [parse_author(a) for a in authors if a]
+    
+    if isinstance(authors, str):
+        # Split by "and", "&", or comma
+        author_list = re.split(r'\s+and\s+|\s*&\s*|,\s*(?![^()]*\))', authors)
+        return [parse_author(a.strip()) for a in author_list if a.strip()]
+    
+    return []
+
+
+def sentence_case(text: str) -> str:
+    """
+    Convert to sentence case, preserving proper nouns and acronyms.
+    
+    Rules:
+    - First letter of first word capitalized
+    - Words that are ALL CAPS (acronyms) preserved
+    - Words that start with capital and rest lowercase preserved (proper nouns)
+    - All other words lowercased
+    """
+    if not text:
+        return ""
+    
+    # Split into sentences (simplified)
+    sentences = re.split(r'([.!?:;])', text)
+    result = []
+    capitalize_next = True
+    
+    for part in sentences:
+        if not part:
+            continue
+            
+        if part in '.!?:;':
+            result.append(part)
+            capitalize_next = True
+            continue
+        
+        if capitalize_next and part and part[0].isalpha():
+            part = part[0].upper() + part[1:]
+            capitalize_next = False
+        
+        # Process each word while preserving proper nouns and acronyms
+        words = part.split()
+        processed_words = []
+        
+        for word in words:
+            # Preserve words that are ALL CAPS (acronyms like APA, DNA, HIV)
+            if word.isupper() and len(word) > 1:
+                processed_words.append(word)
+            # Preserve words that start with capital and rest lowercase (proper nouns)
+            elif word and word[0].isupper() and word[1:].islower() and len(word) > 1:
+                processed_words.append(word)
+            # Preserve Roman numerals (I, II, III, IV, etc.)
+            elif word.upper() in ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']:
+                processed_words.append(word.upper())
+            else:
+                processed_words.append(word.lower())
+        
+        result.append(' '.join(processed_words))
+    
+    return ''.join(result)
+
+
+def format_doi(doi: str, style: str = "apa7") -> str:
+    """Format DOI according to citation style."""
+    if not doi:
+        return ""
+    
+    # Clean DOI
+    doi = doi.strip()
+    doi = re.sub(r'^https?://doi\.org/', '', doi)
+    doi = re.sub(r'^doi:', '', doi, flags=re.IGNORECASE)
+    
+    if style == "apa6":
+        return f" doi:{doi}"
+    elif style == "apa7":
+        return f" https://doi.org/{doi}"
+    elif style == "harvard":
+        return f" doi:{doi}"
+    else:
+        return f" https://doi.org/{doi}"
+
+
+# ============================================================
 # APA 6th FORMATTER
 # ============================================================
 
@@ -45,26 +196,10 @@ def _format_authors_apa6(authors: List[str], max_authors: int = 7) -> str:
     if not authors:
         return ""
     
-    formatted = []
-    for i, author in enumerate(authors[:max_authors]):
-        if isinstance(author, str):
-            if ',' in author:
-                formatted.append(author)
-            else:
-                parts = author.split()
-                if len(parts) >= 2:
-                    last = parts[-1]
-                    first = parts[0][0] + "."
-                    formatted.append(f"{last}, {first}")
-                else:
-                    formatted.append(author)
-        elif isinstance(author, dict):
-            last = author.get("last", "")
-            first = author.get("first", "")
-            if last:
-                formatted.append(f"{last}, {first[0]}." if first else last)
+    formatted = [a for a in authors if a]
     
-    if len(authors) > max_authors:
+    if len(formatted) > max_authors:
+        formatted = formatted[:max_authors]
         formatted.append("…")
     
     if len(formatted) == 1:
@@ -77,25 +212,27 @@ def _format_authors_apa6(authors: List[str], max_authors: int = 7) -> str:
 
 def format_reference_apa6(reference: Dict[str, Any]) -> str:
     """Format a reference in APA 6th edition style."""
-    authors = reference.get("authors", [])
-    year = reference.get("year", "")
-    title = reference.get("title", "")
-    source = reference.get("source", "")
-    volume = reference.get("volume", "")
-    issue = reference.get("issue", "")
-    pages = reference.get("pages", "")
-    doi = reference.get("doi", "")
+    # Extract with safe defaults
+    authors = parse_authors(reference.get("authors", []))
+    year = reference.get("year", "") or ""
+    title = reference.get("title", "") or ""
+    source = reference.get("source", "") or ""
+    volume = reference.get("volume", "") or ""
+    issue = reference.get("issue", "") or ""
+    pages = reference.get("pages", "") or ""
+    doi = reference.get("doi", "") or ""
+    
+    # Handle missing data
+    if not authors and not title:
+        return "[Incomplete reference]"
     
     authors_str = _format_authors_apa6(authors)
     year_str = f"({year})" if year else "(n.d.)"
     
     # Sentence case for article titles
-    if title:
-        title_str = title[0].upper() + title[1:].lower() if title else ""
-    else:
-        title_str = ""
+    title_str = sentence_case(title) if title else "[No title]"
     
-    # Journal name in italics
+    # Journal/source name in italics
     source_str = f" *{source}*" if source else ""
     
     # Volume, issue, pages
@@ -107,16 +244,17 @@ def format_reference_apa6(reference: Dict[str, Any]) -> str:
         if pages:
             vol_issue_pages += f", {pages}"
     
-    # DOI (APA 6th uses "doi:" prefix)
-    doi_str = f" doi:{doi}" if doi else ""
+    # DOI
+    doi_str = format_doi(doi, "apa6")
     
+    # Build reference
     parts = [authors_str, year_str, f"{title_str}."]
     if source_str:
         parts.append(source_str + vol_issue_pages + ".")
     if doi_str:
         parts.append(doi_str)
     
-    return " ".join(parts)
+    return " ".join(filter(None, parts))
 
 
 # ============================================================
@@ -128,26 +266,10 @@ def _format_authors_apa7(authors: List[str], max_authors: int = 20) -> str:
     if not authors:
         return ""
     
-    formatted = []
-    for i, author in enumerate(authors[:max_authors]):
-        if isinstance(author, str):
-            if ',' in author:
-                formatted.append(author)
-            else:
-                parts = author.split()
-                if len(parts) >= 2:
-                    last = parts[-1]
-                    first = parts[0][0] + "."
-                    formatted.append(f"{last}, {first}")
-                else:
-                    formatted.append(author)
-        elif isinstance(author, dict):
-            last = author.get("last", "")
-            first = author.get("first", "")
-            if last:
-                formatted.append(f"{last}, {first[0]}." if first else last)
+    formatted = [a for a in authors if a]
     
-    if len(authors) > max_authors:
+    if len(formatted) > max_authors:
+        formatted = formatted[:max_authors]
         formatted.append("…")
     
     if len(formatted) == 1:
@@ -160,46 +282,102 @@ def _format_authors_apa7(authors: List[str], max_authors: int = 20) -> str:
 
 def format_reference_apa7(reference: Dict[str, Any]) -> str:
     """Format a reference in APA 7th edition style."""
-    authors = reference.get("authors", [])
-    year = reference.get("year", "")
-    title = reference.get("title", "")
-    source = reference.get("source", "")
-    volume = reference.get("volume", "")
-    issue = reference.get("issue", "")
-    pages = reference.get("pages", "")
-    doi = reference.get("doi", "")
+    # Extract with safe defaults
+    authors = parse_authors(reference.get("authors", []))
+    year = reference.get("year", "") or ""
+    title = reference.get("title", "") or ""
+    source = reference.get("source", "") or ""
+    volume = reference.get("volume", "") or ""
+    issue = reference.get("issue", "") or ""
+    pages = reference.get("pages", "") or ""
+    doi = reference.get("doi", "") or ""
+    publisher = reference.get("publisher", "") or ""
+    
+    # Handle missing data
+    if not authors and not title:
+        return "[Incomplete reference]"
     
     authors_str = _format_authors_apa7(authors)
     year_str = f"({year})" if year else "(n.d.)"
     
     # Sentence case for article titles
-    if title:
-        title_str = title[0].upper() + title[1:].lower() if title else ""
-    else:
-        title_str = ""
+    title_str = sentence_case(title) if title else "[No title]"
     
-    # Journal name in italics
-    source_str = f" *{source}*" if source else ""
+    # Determine reference type
+    is_book = bool(publisher) and not source
+    is_chapter = bool(reference.get("book_title", ""))
     
-    # Volume, issue, pages (APA 7th uses no comma before volume)
-    vol_issue_pages = ""
-    if volume:
-        vol_issue_pages = f" *{volume}*"
-        if issue and issue != volume:
-            vol_issue_pages += f"({issue})"
+    if is_chapter:
+        # Book chapter format
+        book_title = reference.get("book_title", "") or ""
+        editors = parse_authors(reference.get("editors", []))
+        edition = reference.get("edition", "") or ""
+        
+        book_info = sentence_case(book_title) if book_title else ""
+        if editors:
+            editor_str = ", ".join(editors)
+            if len(editors) == 1:
+                editor_str += " (Ed.)"
+            else:
+                editor_str += " (Eds.)"
+            book_info = f"In {editor_str}, {book_info}"
+        
+        if edition:
+            book_info += f" ({edition} ed.)"
+        
+        if publisher:
+            book_info += f" {publisher}"
+        
         if pages:
-            vol_issue_pages += f", {pages}"
+            book_info += f" (pp. {pages})"
+        
+        parts = [authors_str, year_str, f"{title_str}."]
+        if book_info:
+            parts.append(book_info + ".")
+        if doi:
+            parts.append(format_doi(doi, "apa7"))
+        
+        return " ".join(filter(None, parts))
     
-    # DOI (APA 7th uses https://doi.org/)
-    doi_str = f" https://doi.org/{doi}" if doi else ""
+    elif is_book:
+        # Book format
+        edition = reference.get("edition", "") or ""
+        
+        book_info = sentence_case(title_str)
+        if edition:
+            book_info += f" ({edition} ed.)"
+        book_info += f" {publisher}"
+        
+        parts = [authors_str, year_str, f"{book_info}."]
+        if doi:
+            parts.append(format_doi(doi, "apa7"))
+        
+        return " ".join(filter(None, parts))
     
-    parts = [authors_str, year_str, f"{title_str}."]
-    if source_str:
-        parts.append(source_str + vol_issue_pages + ".")
-    if doi_str:
-        parts.append(doi_str)
-    
-    return " ".join(parts)
+    else:
+        # Journal article format
+        # Journal name in italics
+        source_str = f" *{source}*" if source else ""
+        
+        # Volume, issue, pages (APA 7th uses no comma before volume)
+        vol_issue_pages = ""
+        if volume:
+            if source_str:
+                vol_issue_pages = f" *{volume}*"
+            else:
+                vol_issue_pages = f" {volume}"
+            if issue and issue != volume:
+                vol_issue_pages += f"({issue})"
+            if pages:
+                vol_issue_pages += f", {pages}"
+        
+        parts = [authors_str, year_str, f"{title_str}."]
+        if source_str:
+            parts.append(source_str + vol_issue_pages + ".")
+        if doi:
+            parts.append(format_doi(doi, "apa7"))
+        
+        return " ".join(filter(None, parts))
 
 
 # ============================================================
@@ -211,26 +389,9 @@ def _format_authors_harvard(authors: List[str], max_authors: int = 3) -> str:
     if not authors:
         return ""
     
-    formatted = []
-    for i, author in enumerate(authors[:max_authors]):
-        if isinstance(author, str):
-            if ',' in author:
-                formatted.append(author)
-            else:
-                parts = author.split()
-                if len(parts) >= 2:
-                    last = parts[-1]
-                    first = parts[0][0] + "."
-                    formatted.append(f"{last}, {first}")
-                else:
-                    formatted.append(author)
-        elif isinstance(author, dict):
-            last = author.get("last", "")
-            first = author.get("first", "")
-            if last:
-                formatted.append(f"{last}, {first[0]}." if first else last)
+    formatted = [a for a in authors if a]
     
-    if len(authors) > max_authors:
+    if len(formatted) > max_authors:
         return f"{formatted[0]} et al."
     
     if len(formatted) == 1:
@@ -243,23 +404,25 @@ def _format_authors_harvard(authors: List[str], max_authors: int = 3) -> str:
 
 def format_reference_harvard(reference: Dict[str, Any]) -> str:
     """Format a reference in Harvard style."""
-    authors = reference.get("authors", [])
-    year = reference.get("year", "")
-    title = reference.get("title", "")
-    source = reference.get("source", "")
-    volume = reference.get("volume", "")
-    issue = reference.get("issue", "")
-    pages = reference.get("pages", "")
-    doi = reference.get("doi", "")
+    # Extract with safe defaults
+    authors = parse_authors(reference.get("authors", []))
+    year = reference.get("year", "") or ""
+    title = reference.get("title", "") or ""
+    source = reference.get("source", "") or ""
+    volume = reference.get("volume", "") or ""
+    issue = reference.get("issue", "") or ""
+    pages = reference.get("pages", "") or ""
+    doi = reference.get("doi", "") or ""
+    
+    # Handle missing data
+    if not authors and not title:
+        return "[Incomplete reference]"
     
     authors_str = _format_authors_harvard(authors)
     year_str = f"({year})" if year else "(n.d.)"
     
-    # Sentence case with single quotes for Harvard
-    if title:
-        title_str = title[0].upper() + title[1:].lower() if title else ""
-    else:
-        title_str = ""
+    # Sentence case - Harvard uses single quotes around article titles
+    title_str = sentence_case(title) if title else "[No title]"
     
     # Journal name in italics
     source_str = f" *{source}*" if source else ""
@@ -274,15 +437,16 @@ def format_reference_harvard(reference: Dict[str, Any]) -> str:
             vol_issue_pages += f", pp. {pages}"
     
     # DOI
-    doi_str = f" doi:{doi}" if doi else ""
+    doi_str = format_doi(doi, "harvard")
     
-    parts = [authors_str, year_str, f"'{title_str}'."]
+    # Build reference - note: no quotes around title in Harvard for journals
+    parts = [authors_str, year_str, f"{title_str}."]
     if source_str:
         parts.append(source_str + vol_issue_pages + ".")
     if doi_str:
         parts.append(doi_str)
     
-    return " ".join(parts)
+    return " ".join(filter(None, parts))
 
 
 # ============================================================
@@ -294,7 +458,7 @@ def format_reference(reference: Dict[str, Any], style: str = "apa7") -> str:
     Format a reference in the specified style.
     
     Args:
-        reference: Dict with keys: authors, year, title, source, volume, issue, pages, doi
+        reference: Dict with keys: authors, year, title, source, volume, issue, pages, doi, publisher
         style: "apa6", "apa7", or "harvard"
     
     Returns:
@@ -308,6 +472,25 @@ def format_reference(reference: Dict[str, Any], style: str = "apa7") -> str:
         return format_reference_harvard(reference)
     else:
         return format_reference_apa7(reference)
+
+
+def validate_reference(ref: Dict[str, Any]) -> List[str]:
+    """Return list of missing required fields."""
+    missing = []
+    
+    # At least one of authors or title should exist
+    if not ref.get("authors") and not ref.get("title"):
+        missing.append("authors or title")
+    
+    # Year is recommended
+    if not ref.get("year"):
+        missing.append("year (recommended)")
+    
+    # For journal articles, source is important
+    if ref.get("type") == "article" and not ref.get("source"):
+        missing.append("source/journal name")
+    
+    return missing
 
 
 def format_verified_reference_list(
@@ -333,24 +516,28 @@ def format_verified_reference_list(
         if status not in ["verified", "likely", "needs_review"]:
             continue
         
-        # Parse authors from string or list
-        authors = row.get("matched_authors", "")
-        if isinstance(authors, str):
-            authors_list = [a.strip() for a in authors.split(",") if a.strip()]
-        else:
-            authors_list = authors or []
-        
-        # Build reference dict
+        # Build reference dict with all possible fields
         ref_dict = {
-            "authors": authors_list,
-            "year": row.get("matched_year", ""),
-            "title": row.get("matched_title", ""),
+            "authors": row.get("matched_authors", row.get("authors", [])),
+            "year": row.get("matched_year", row.get("year", "")),
+            "title": row.get("matched_title", row.get("title", "")),
             "doi": row.get("doi", ""),
-            "source": row.get("source", "")
+            "source": row.get("source", row.get("journal", "")),
+            "volume": row.get("volume", ""),
+            "issue": row.get("issue", ""),
+            "pages": row.get("pages", ""),
+            "publisher": row.get("publisher", ""),
+            "book_title": row.get("book_title", ""),
+            "editors": row.get("editors", []),
+            "edition": row.get("edition", ""),
+            "type": row.get("type", "article")
         }
         
         # Format the reference
         formatted = format_reference(ref_dict, style)
+        
+        # Get validation issues
+        issues = validate_reference(ref_dict)
         
         formatted_refs.append({
             "index": i + 1,
@@ -360,8 +547,9 @@ def format_verified_reference_list(
             "doi": row.get("doi", ""),
             "title": ref_dict["title"],
             "year": ref_dict["year"],
-            "authors": authors_list,
-            "verification_score": row.get("score", 0)
+            "authors": parse_authors(ref_dict["authors"]),
+            "verification_score": row.get("score", 0),
+            "validation_issues": issues
         })
     
     return formatted_refs
@@ -408,7 +596,7 @@ def export_references_to_docx(
     
     # Add summary statistics
     if formatted_refs:
-        summary_para = document.add_heading("Summary", level=2)
+        document.add_heading("Summary", level=2)
         
         status_counts = {}
         for ref in formatted_refs:
@@ -424,7 +612,7 @@ def export_references_to_docx(
         document.add_paragraph()  # Spacer
     
     # Add references
-    references_heading = document.add_heading("References", level=2)
+    document.add_heading("References", level=2)
     
     for ref in formatted_refs:
         p = document.add_paragraph()
@@ -443,6 +631,10 @@ def export_references_to_docx(
                 status_run.font.color.rgb = RGBColor(255, 165, 0)
             elif ref['status'] == 'likely':
                 status_run.font.color.rgb = RGBColor(0, 128, 0)
+        
+        # Add validation warnings
+        if ref.get('validation_issues'):
+            p.add_run(f"\n  ⚠️ Missing: {', '.join(ref['validation_issues'])}")
         
         # Add DOI link if available
         if ref.get('doi'):
@@ -529,6 +721,11 @@ def export_references_to_html(
             .status-verified {{ background-color: #d4edda; color: #155724; }}
             .status-likely {{ background-color: #d1ecf1; color: #0c5460; }}
             .status-needs_review {{ background-color: #fff3cd; color: #856404; }}
+            .validation-warning {{
+                color: #856404;
+                font-size: 9pt;
+                margin-left: 0.5in;
+            }}
             .doi {{
                 font-size: 9pt;
                 color: #0066cc;
@@ -572,6 +769,13 @@ def export_references_to_html(
             <span class="status-badge {status_class}">{status_display}</span>
         """
         
+        if ref.get('validation_issues'):
+            html += f"""
+            <div class="validation-warning">
+                ⚠️ Missing: {', '.join(ref['validation_issues'])}
+            </div>
+            """
+        
         if ref.get('doi'):
             html += f"""
             <div class="doi">
@@ -587,3 +791,92 @@ def export_references_to_html(
     """
     
     return html
+
+
+# ============================================================
+# COMMAND-LINE INTERFACE
+# ============================================================
+
+def load_references_from_file(filepath: str) -> List[Dict[str, Any]]:
+    """Load references from JSON or text file."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        if filepath.endswith('.json'):
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict) and 'references' in data:
+                return data['references']
+            else:
+                return [data]
+        else:
+            # Assume plain text with one reference per line
+            lines = f.readlines()
+            return [{"raw_reference": line.strip(), "title": line.strip()} for line in lines if line.strip()]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Format references in APA6, APA7, or Harvard style")
+    parser.add_argument("input", help="Input file (JSON or text)")
+    parser.add_argument("--style", "-s", choices=["apa6", "apa7", "harvard"], default="apa7",
+                        help="Citation style (default: apa7)")
+    parser.add_argument("--output", "-o", help="Output file (.docx, .html, or .txt)")
+    parser.add_argument("--format", "-f", choices=["docx", "html", "text"], default="text",
+                        help="Output format (default: text)")
+    parser.add_argument("--title", "-t", default="Verified Reference List",
+                        help="Document title for DOCX/HTML output")
+    
+    args = parser.parse_args()
+    
+    # Load references
+    try:
+        references = load_references_from_file(args.input)
+    except Exception as e:
+        print(f"Error loading file: {e}")
+        return
+    
+    # Format references
+    formatted_refs = []
+    for i, ref in enumerate(references):
+        formatted = format_reference(ref, args.style)
+        formatted_refs.append({
+            "index": i + 1,
+            "formatted_reference": formatted,
+            "status": "verified",
+            "doi": ref.get("doi", ""),
+            "title": ref.get("title", ""),
+            "year": ref.get("year", ""),
+            "authors": parse_authors(ref.get("authors", [])),
+            "validation_issues": validate_reference(ref)
+        })
+    
+    # Output
+    if args.output:
+        if args.format == "docx":
+            if DOCX_AVAILABLE:
+                buffer = export_references_to_docx(formatted_refs, args.style, args.title)
+                with open(args.output, 'wb') as f:
+                    f.write(buffer.getvalue())
+                print(f"Saved to {args.output}")
+            else:
+                print("ERROR: python-docx not installed. Install with: pip install python-docx")
+        elif args.format == "html":
+            html = export_references_to_html(formatted_refs, args.style, args.title)
+            with open(args.output, 'w', encoding='utf-8') as f:
+                f.write(html)
+            print(f"Saved to {args.output}")
+        else:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                for ref in formatted_refs:
+                    f.write(ref['formatted_reference'] + '\n\n')
+            print(f"Saved to {args.output}")
+    else:
+        # Print to console
+        for ref in formatted_refs:
+            print(f"{ref['index']}. {ref['formatted_reference']}")
+            if ref.get('validation_issues'):
+                print(f"   ⚠️ Missing: {', '.join(ref['validation_issues'])}")
+            print()
+
+
+if __name__ == "__main__":
+    main()
