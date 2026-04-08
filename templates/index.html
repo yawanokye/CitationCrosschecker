@@ -1141,62 +1141,71 @@ function setupFileArea() {
     const fileNameSpan = document.getElementById("fileName");
     
     if (!fileArea || !fileInput) {
-        console.log("[Debug] File area or input not found");
+        console.error("[Debug] File area or input not found");
         return;
     }
     
-    const newFileArea = fileArea.cloneNode(true);
-    fileArea.parentNode.replaceChild(newFileArea, fileArea);
+    // Remove existing listeners by creating a new click handler
+    const clickHandler = function(e) {
+        // Don't trigger if clicking on the file name display
+        if (e.target === fileNameSpan || (e.target.classList && e.target.classList.contains("file-name"))) {
+            return;
+        }
+        console.log("[Debug] File area clicked");
+        fileInput.click();
+    };
     
-    const updatedFileArea = document.getElementById("fileArea");
-    const updatedFileInput = document.getElementById("file");
-    const updatedFileNameSpan = document.getElementById("fileName");
+    // Remove old listener if exists, then add new one
+    fileArea.removeEventListener("click", clickHandler);
+    fileArea.addEventListener("click", clickHandler);
     
-    updatedFileArea.addEventListener("click", function(e) {
-        if (e.target.classList && e.target.classList.contains("file-name")) return;
-        updatedFileInput.click();
+    // Drag and drop handlers
+    fileArea.addEventListener("dragover", function(e) {
+        e.preventDefault();
+        fileArea.classList.add("drag-over");
     });
     
-    updatedFileArea.addEventListener("dragover", function(e) {
+    fileArea.addEventListener("dragleave", function(e) {
         e.preventDefault();
-        updatedFileArea.classList.add("drag-over");
+        fileArea.classList.remove("drag-over");
     });
     
-    updatedFileArea.addEventListener("dragleave", function(e) {
+    fileArea.addEventListener("drop", function(e) {
         e.preventDefault();
-        updatedFileArea.classList.remove("drag-over");
-    });
-    
-    updatedFileArea.addEventListener("drop", function(e) {
-        e.preventDefault();
-        updatedFileArea.classList.remove("drag-over");
+        fileArea.classList.remove("drag-over");
         const files = e.dataTransfer.files;
         if (files.length > 0) {
-            updatedFileInput.files = files;
+            fileInput.files = files;
             const changeEvent = new Event('change', { bubbles: true });
-            updatedFileInput.dispatchEvent(changeEvent);
+            fileInput.dispatchEvent(changeEvent);
         }
     });
     
-    updatedFileInput.addEventListener('change', function() {
-        const file = updatedFileInput.files[0];
+    // File input change handler
+    fileInput.addEventListener('change', function() {
+        const file = fileInput.files[0];
         if (file) {
             if (file.name.toLowerCase().endsWith('.docx')) {
-                if (updatedFileNameSpan) updatedFileNameSpan.textContent = `📄 ${file.name}`;
+                if (fileNameSpan) {
+                    fileNameSpan.textContent = `✅ ${file.name}`;
+                }
                 setStatus("DOCX file selected. Ready to run check.", "good");
                 const btnCheck = document.getElementById("btnCheck");
                 if (btnCheck) btnCheck.disabled = false;
             } else {
-                if (updatedFileNameSpan) updatedFileNameSpan.textContent = "";
-                setStatus("Only DOCX files are accepted. Please upload a Word document.", "warn");
-                updatedFileInput.value = '';
+                if (fileNameSpan) {
+                    fileNameSpan.textContent = `❌ Please select a DOCX file`;
+                }
+                setStatus("Only DOCX files are accepted.", "warn");
+                fileInput.value = '';
                 const btnCheck = document.getElementById("btnCheck");
                 if (btnCheck) btnCheck.disabled = true;
             }
-        } else {
-            if (updatedFileNameSpan) updatedFileNameSpan.textContent = "";
         }
     });
+    
+    fileArea.style.cursor = "pointer";
+    console.log("[Debug] File area setup complete");
 }
 
 // Progress Bar
