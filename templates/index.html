@@ -1048,8 +1048,9 @@
 </footer>
 
 <script>
+<script>
 // ============================================
-// COMPLETE APP.JS - WITH SUGGESTED REFERENCES & CORRECTION SUGGESTIONS
+// COMPLETE APP.JS - FIXED VERSION
 // ============================================
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -1133,93 +1134,29 @@ function resetProcessFeedback() {
     });
 }
 
-// ============================================
-// EXPORT REFERENCES FUNCTIONS
-// ============================================
-
-async function exportReferences(format = 'docx') {
-    if (!LAST_JOB_ID) {
-        showNotification("No job found. Please run verification first.", "error");
-        return;
-    }
-    
-    const styleSelect = document.getElementById("exportStyleSelect");
-    const style = styleSelect ? styleSelect.value : "apa7";
-    
-    showNotification(`Exporting references in ${style.toUpperCase()} format...`, "info");
-    
-    const formData = new FormData();
-    formData.append("job_id", LAST_JOB_ID);
-    formData.append("style", style);
-    formData.append("format_type", format);
-    
-    try {
-        const response = await fetch("/export-references", {
-            method: "POST",
-            body: formData
-        });
-        
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || "Export failed");
-        }
-        
-        const contentDisposition = response.headers.get("Content-Disposition");
-        let filename = `citeintegrity_references.${format === 'docx' ? 'docx' : 'html'}`;
-        if (contentDisposition) {
-            const match = contentDisposition.match(/filename=(.+)/);
-            if (match) filename = match[1];
-        }
-        
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        
-        showNotification(`References exported successfully as ${format.toUpperCase()}!`, "success");
-        
-    } catch (error) {
-        console.error("Export error:", error);
-        showNotification(`Export failed: ${error.message}`, "error");
-    }
-}
-
-// File Area Setup - FIXED
+// File Area Setup
 function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
     const fileInput = document.getElementById("file");
     const fileNameSpan = document.getElementById("fileName");
-    
-    console.log("[Debug] setupFileArea - fileArea exists:", !!fileArea);
-    console.log("[Debug] setupFileArea - fileInput exists:", !!fileInput);
     
     if (!fileArea || !fileInput) {
         console.log("[Debug] File area or input not found");
         return;
     }
     
-    // Remove existing event listeners by cloning and replacing
     const newFileArea = fileArea.cloneNode(true);
     fileArea.parentNode.replaceChild(newFileArea, fileArea);
     
-    // Update reference
     const updatedFileArea = document.getElementById("fileArea");
     const updatedFileInput = document.getElementById("file");
     const updatedFileNameSpan = document.getElementById("fileName");
     
-    // Click handler for file area
     updatedFileArea.addEventListener("click", function(e) {
-        console.log("[Debug] File area clicked");
         if (e.target.classList && e.target.classList.contains("file-name")) return;
         updatedFileInput.click();
     });
     
-    // Drag and drop handlers
     updatedFileArea.addEventListener("dragover", function(e) {
         e.preventDefault();
         updatedFileArea.classList.add("drag-over");
@@ -1241,11 +1178,8 @@ function setupFileArea() {
         }
     });
     
-    // File input change handler
     updatedFileInput.addEventListener('change', function() {
         const file = updatedFileInput.files[0];
-        console.log("[Debug] File selected:", file ? file.name : "none");
-        
         if (file) {
             if (file.name.toLowerCase().endsWith('.docx')) {
                 if (updatedFileNameSpan) updatedFileNameSpan.textContent = `📄 ${file.name}`;
@@ -1263,402 +1197,6 @@ function setupFileArea() {
             if (updatedFileNameSpan) updatedFileNameSpan.textContent = "";
         }
     });
-    
-    console.log("[Debug] File area setup complete");
-}
-
-// [REST OF YOUR EXISTING FUNCTIONS GO HERE]
-// ... (ACII Rating, Suggestion Box, Progress Bar, Queue Status, etc.)
-// ... (render functions, runInitialCheck, runOnlineVerification, etc.)
-
-// Button Events - ADD THESE AT THE BOTTOM OF DOMContentLoaded
-setupFileArea();
-
-const btnCheck = document.getElementById("btnCheck");
-if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
-
-const btnVerify = document.getElementById("btnVerify");
-if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
-
-// Export button events - ADD THESE
-const exportBtn = document.getElementById("exportReferencesBtn");
-const exportHtmlBtn = document.getElementById("exportReferencesHtmlBtn");
-
-if (exportBtn) {
-    exportBtn.addEventListener("click", () => exportReferences('docx'));
-}
-
-if (exportHtmlBtn) {
-    exportHtmlBtn.addEventListener("click", () => exportReferences('html'));
-}
-
-const exportCsv = document.getElementById("btnExportCsvTop");
-const exportWord = document.getElementById("btnExportWordTop");
-const exportVerify = document.getElementById("btnExportVerify");
-
-if (exportCsv) exportCsv.addEventListener("click", () => { if (window.latestResults) exportCSV(); else alert("Run a check first."); });
-if (exportWord) exportWord.addEventListener("click", () => { if (window.latestResults) exportWordFile(); else alert("Run a check first."); });
-if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
-
-setInterval(updateQueueStatus, 5000);
-updateQueueStatus();
-
-console.log("[CiteIntegrity] App initialized - Enhanced visibility with export functionality");
-
-});
-
-// ACII Rating with Recommendations
-function getACIIRating(score) {
-    score = Number(score);
-    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity with excellent recency and balance." };
-    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity with good recency and diversity." };
-    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity with acceptable recency." };
-    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity. Improvements needed in recency or diversity." };
-    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity. Significant room for improvement." };
-    return { text: "Poor", class: "poor", description: "Low citation integrity. Many citations are unverified or lack author diversity." };
-}
-
-function generateACIIRecommendations(aciiData) {
-    if (!aciiData) return "<div>No recommendation data available.</div>";
-    
-    const comp = aciiData.components || {};
-    const recs = aciiData.recommendations || {};
-    let html = "";
-    
-    if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
-    if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
-    if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
-    if (recs.priority) html += `<div class="priority">🎯 ${esc(recs.priority)}</div>`;
-    
-    if (!html) {
-        const v = comp.verification_integrity?.score || 0;
-        const recency = comp.recency?.score || 0;
-        const diversity = comp.author_diversity?.score || 0;
-        
-        if (v < 60) html += `<div>🔍 Low verification rate (${v}%). Run online verification to improve credibility.</div>`;
-        if (recency < 50) html += `<div>📅 Only ${recency}% of references are recent (≤5 years). Add current sources.</div>`;
-        if (diversity < 50) html += `<div>👥 Limited author diversity (${diversity}%). Expand your citation base.</div>`;
-        if (!html) html += `<div>✨ Your citations look good! Consider adding more recent sources to maintain relevance.</div>`;
-    }
-    
-    return html;
-}
-
-// ============================================
-// SUGGESTION BOX RENDERERS
-// ============================================
-
-function renderMissingSuggestionBox(citationText, suggestionsMap) {
-    const suggestions = (suggestionsMap && suggestionsMap[citationText]) || [];
-    if (!suggestions.length) return "";
-
-    const items = suggestions.map(s => {
-        const doiHtml = s.doi
-            ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>`
-            : "";
-        return `
-            <li>
-                <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
-                <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
-                <div>${doiHtml}</div>
-            </li>
-        `;
-    }).join("");
-
-    return `
-        <div class="suggestion-box">
-            <div class="suggestion-title">💡 Suggested references for missing citation</div>
-            <ul class="suggestion-list">${items}</ul>
-        </div>
-    `;
-}
-
-function renderCorrectionSuggestionBox(row) {
-    const suggestions = row.correction_suggestions || [];
-    if (!suggestions.length) return "";
-
-    const items = suggestions.map(s => {
-        const doiHtml = s.doi
-            ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>`
-            : "";
-        return `
-            <li>
-                <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
-                <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
-                <div>${doiHtml}</div>
-            </li>
-        `;
-    }).join("");
-
-    return `
-        <div class="suggestion-box">
-            <div class="suggestion-title">🔧 Suggested corrections for this reference</div>
-            <ul class="suggestion-list">${items}</ul>
-        </div>
-    `;
-}
-
-// Display Auto-Fix Suggestions
-function displaySuggestions(data) {
-    const panel = $("suggestionsPanel");
-    const content = $("suggestionsContent");
-    
-    if (!panel || !content) return;
-    
-    const suggestions = data?.suggestions || data;
-    const citations = suggestions?.citations || [];
-    const missing = suggestions?.missing || [];
-    const unmatched = suggestions?.unmatched || [];
-    const references = suggestions?.references || [];
-    
-    const allSuggestions = [
-        ...citations.map(s => ({ ...s, category: "citation", action: s.action || "review_required" })),
-        ...missing.map(s => ({ ...s, category: "missing", action: "add_reference" })),
-        ...unmatched.map(s => ({ ...s, category: "unmatched", action: "review_required" })),
-        ...references.map(s => ({ ...s, category: "reference", action: "optional_fix" }))
-    ];
-    
-    const seen = new Set();
-    const uniqueSuggestions = [];
-    for (const s of allSuggestions) {
-        const key = (s.citation || s.original || "").substring(0, 100);
-        if (!seen.has(key)) {
-            seen.add(key);
-            uniqueSuggestions.push(s);
-        }
-    }
-    
-    if (uniqueSuggestions.length === 0) {
-        panel.style.display = "none";
-        return;
-    }
-    
-    panel.style.display = "block";
-    
-    const highConf = uniqueSuggestions.filter(s => s.confidence >= 0.85);
-    const medConf = uniqueSuggestions.filter(s => s.confidence >= 0.70 && s.confidence < 0.85);
-    const lowConf = uniqueSuggestions.filter(s => s.confidence < 0.70);
-    
-    let html = `<div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
-        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
-            <span>✅ High confidence: ${highConf.length}</span>
-            <span>⚠️ Needs review: ${medConf.length + lowConf.length}</span>
-            <span>📋 Total suggestions: ${uniqueSuggestions.length}</span>
-        </div>
-    </div>`;
-    
-    const byCategory = {
-        citation: uniqueSuggestions.filter(s => s.category === "citation"),
-        missing: uniqueSuggestions.filter(s => s.category === "missing"),
-        unmatched: uniqueSuggestions.filter(s => s.category === "unmatched"),
-        reference: uniqueSuggestions.filter(s => s.category === "reference")
-    };
-    
-    if (byCategory.citation.length > 0) {
-        html += `<div class="suggestions-section"><h4>📝 Citation Suggestions (${byCategory.citation.length})</h4>`;
-        html += byCategory.citation.slice(0, 20).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : s.confidence >= 0.7 ? 'med-conf' : 'low-conf'}">
-                <div class="suggestion-original">❌ ${esc(s.citation || s.original || '')}</div>
-                <div class="suggestion-suggested">✅ ${esc(s.suggested || '')}</div>
-                <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action ${s.action === 'add_reference' ? 'action-add' : s.action === 'optional_fix' ? 'action-optional' : 'action-review'}">${s.action === 'add_reference' ? 'Add reference' : s.action === 'optional_fix' ? 'Optional' : 'Review required'}</span>
-                </div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    
-    if (byCategory.missing.length > 0) {
-        html += `<div class="suggestions-section"><h4>🔍 Missing Reference Suggestions (${byCategory.missing.length})</h4>`;
-        html += byCategory.missing.slice(0, 20).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="suggestion-original">❌ Missing: ${esc(s.citation || s.original || '')}</div>
-                <div class="suggestion-suggested">✅ Suggested: ${esc(s.suggested || '')}</div>
-                <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action action-add">Add to references</span>
-                </div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    
-    if (byCategory.unmatched.length > 0) {
-        html += `<div class="suggestions-section"><h4>⚠️ Unmatched Citation Suggestions (${byCategory.unmatched.length})</h4>`;
-        html += byCategory.unmatched.slice(0, 20).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="suggestion-original">❌ ${esc(s.citation || s.original || '')}</div>
-                <div class="suggestion-suggested">✅ ${esc(s.suggested || '')}</div>
-                <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action action-review">Review required</span>
-                </div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    
-    if (byCategory.reference.length > 0) {
-        html += `<div class="suggestions-section"><h4>📚 Reference Formatting Suggestions (${byCategory.reference.length})</h4>`;
-        html += byCategory.reference.slice(0, 15).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="suggestion-original">${esc((s.original || "").substring(0, 150))}${(s.original || "").length > 150 ? '…' : ''}</div>
-                <div class="suggestion-suggested">${esc((s.suggested || "").substring(0, 150))}${(s.suggested || "").length > 150 ? '…' : ''}</div>
-                <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action action-optional">Optional improvement</span>
-                </div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    
-    content.innerHTML = html;
-}
-
-// ✅ DISPLAY SUGGESTED REFERENCES FROM ONLINE VERIFICATION
-function displaySuggestedReferences(data) {
-    console.log("🚀 displaySuggestedReferences FUNCTION CALLED");
-    
-    const panel = document.getElementById("suggestedRefsPanel");
-    const content = document.getElementById("suggestedRefsContent");
-    
-    if (!panel || !content) {
-        console.log("❌ Panel or content element not found");
-        return;
-    }
-    
-    // Try multiple paths to get verification rows
-    let verifyRows = null;
-    
-    if (data && data.online_verification && data.online_verification.rows) {
-        verifyRows = data.online_verification.rows;
-        console.log("✅ Found data.online_verification.rows");
-    } else if (data && data.data && data.data.online_verification && data.data.online_verification.rows) {
-        verifyRows = data.data.online_verification.rows;
-        console.log("✅ Found data.data.online_verification.rows");
-    } else if (window.latestResults && window.latestResults.online_verification && window.latestResults.online_verification.rows) {
-        verifyRows = window.latestResults.online_verification.rows;
-        console.log("✅ Found window.latestResults.online_verification.rows");
-    }
-    
-    console.log("Verification rows:", verifyRows ? `${verifyRows.length} rows` : "None");
-    
-    if (!verifyRows || verifyRows.length === 0) {
-        panel.style.display = "block";
-        content.innerHTML = `
-            <div style="text-align: center; padding: 40px; color: #64748b;">
-                <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
-                <h4>No suggested references available</h4>
-                <p style="font-size: 13px; margin-top: 8px;">Run online verification to get suggested references.</p>
-            </div>
-        `;
-        return;
-    }
-    
-    // Extract suggestions from rows
-    let allSuggestions = [];
-    
-    verifyRows.forEach((row, idx) => {
-        if (row.suggested_references && row.suggested_references.length > 0) {
-            console.log(`👉 Row ${idx} has ${row.suggested_references.length} suggestions`);
-            row.suggested_references.forEach((suggestion, sIdx) => {
-                allSuggestions.push({
-                    original: row.reference || row.matched_title || 'Unknown reference',
-                    original_status: row.status,
-                    suggested_title: suggestion.title || 'No title available',
-                    suggested_doi: suggestion.doi,
-                    suggested_year: suggestion.year,
-                    suggested_authors: suggestion.authors,
-                    score: suggestion.score || 75,
-                    title_score: suggestion.title_score || 0
-                });
-            });
-        }
-    });
-    
-    console.log(`Total suggestions found: ${allSuggestions.length}`);
-    
-    if (allSuggestions.length === 0) {
-        panel.style.display = "block";
-        content.innerHTML = `
-            <div style="text-align: center; padding: 40px; color: #64748b;">
-                <div style="font-size: 48px; margin-bottom: 16px;">💡</div>
-                <h4>No suggested references found</h4>
-                <p style="font-size: 13px; margin-top: 8px;">Verification completed but no suggested references were generated.</p>
-            </div>
-        `;
-        return;
-    }
-    
-    panel.style.display = "block";
-    
-    let html = `<div style="margin-bottom: 20px; padding: 12px 16px; background: #f0fdf4; border-radius: 12px;">
-        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-size: 13px;">
-            <span>📊 Total suggestions: <strong>${allSuggestions.length}</strong></span>
-            <span>🔍 Based on CrossRef & OpenAlex databases</span>
-        </div>
-    </div>`;
-    
-    allSuggestions.forEach((s, idx) => {
-        const confidence = s.score;
-        const borderColor = confidence >= 85 ? '#19b36b' : (confidence >= 70 ? '#f39c12' : '#e74c3c');
-        const confidenceText = confidence >= 85 ? 'High' : (confidence >= 70 ? 'Medium' : 'Low');
-        
-        const doiHtml = s.suggested_doi ? `
-            <div style="margin-top: 8px;">
-                <a href="https://doi.org/${esc(s.suggested_doi)}" target="_blank" style="color: #19b36b; text-decoration: none; font-size: 12px;">
-                    🔗 View Article on DOI.org
-                </a>
-                <span style="font-size: 11px; color: #64748b; margin-left: 8px;">(${esc(s.suggested_doi)})</span>
-            </div>
-        ` : '';
-        
-        const yearHtml = s.suggested_year ? `<span>📅 ${esc(s.suggested_year)}</span>` : '';
-        const authorsHtml = s.suggested_authors && s.suggested_authors.length ? 
-            `<span>✍️ ${esc(Array.isArray(s.suggested_authors) ? s.suggested_authors.join(', ') : s.suggested_authors)}</span>` : '';
-        
-        html += `
-            <div style="border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 16px; overflow: hidden;">
-                <div style="background: ${borderColor}10; padding: 10px 16px; border-bottom: 1px solid #e2e8f0;">
-                    <span style="font-weight: 600;">Suggested Reference #${idx + 1}</span>
-                    <span style="float: right; font-size: 11px; color: ${borderColor};">
-                        ${confidenceText} confidence (${confidence}%)
-                    </span>
-                </div>
-                <div style="padding: 16px;">
-                    <div style="margin-bottom: 12px;">
-                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Original reference:</div>
-                        <div style="font-size: 12px; color: #e74c3c; text-decoration: line-through; word-break: break-word;">
-                            ${esc(s.original.substring(0, 200))}${s.original.length > 200 ? '…' : ''}
-                        </div>
-                    </div>
-                    <div style="margin-bottom: 12px;">
-                        <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Suggested replacement:</div>
-                        <div style="font-size: 13px; font-weight: 500; color: #19b36b;">
-                            ✅ ${esc(s.suggested_title)}
-                        </div>
-                        <div style="display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: #64748b; margin-top: 8px;">
-                            ${yearHtml}
-                            ${authorsHtml}
-                        </div>
-                        ${doiHtml}
-                    </div>
-                    <div style="background: #f8fafc; padding: 8px 12px; border-radius: 8px; font-size: 11px; color: #64748b;">
-                        💡 This suggested reference matches ${confidence}% based on title similarity and author information.
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-    
-    content.innerHTML = html;
-    console.log("✅ Suggested references displayed successfully");
 }
 
 // Progress Bar
@@ -1867,26 +1405,14 @@ function renderMissing(data) {
     if (!body) return;
 
     if (!rows.length) {
-        body.innerHTML = `<tr><td colspan="3">None</td></tr>`;
+        body.innerHTML = `<tr><td colspan="3">None</div></tr>`;
         return;
     }
 
     body.innerHTML = rows.map((r, i) => {
-        const citationText = typeof r === "string"
-            ? r
-            : (r.citation_in_text || r.citation || "");
-
-        const count = typeof r === "string"
-            ? ""
-            : (r.count_in_text || r.count || "");
-
-        return `
-            <tr>
-                <td style="width:50px;">${i + 1}</td>
-                <td>${esc(citationText)}</td>
-                <td style="width:80px;">${esc(String(count))}</td>
-            </tr>
-        `;
+        const citationText = typeof r === "string" ? r : (r.citation_in_text || r.citation || "");
+        const count = typeof r === "string" ? "" : (r.count_in_text || r.count || "");
+        return `<tr><td style="width:50px;">${i + 1}</div><td>${esc(citationText)}</div><td style="width:80px;">${esc(String(count))}</div></tr>`;
     }).join("");
 }
 
@@ -1894,7 +1420,7 @@ function renderUncited(data) {
     const rows = data?.uncited_references || [];
     const body = $("uncitedBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></td>`; return; }
     body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
 }
 
@@ -1947,15 +1473,12 @@ function renderVerify(data) {
     
     if (!verifyBody) return;
     if (!rows.length) {
-        verifyBody.innerHTML = `<tr><td colspan="8">No verification results. Click "Verify References" to start.</td></tr>`;
+        verifyBody.innerHTML = `<tr><td colspan="8">No verification results. Click "Verify References" to start.</div></tr>`;
         return;
     }
     
     verifyBody.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((r, i) => {
-        const doiHtml = r.doi
-            ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View Article</a> <span class="doi-text">(${esc(r.doi)})</span>`
-            : '—';
-        
+        const doiHtml = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View Article</a> <span class="doi-text">(${esc(r.doi)})</span>` : '—';
         return `
             <tr>
                 <td style="width:50px;">${i + 1}</td>
@@ -1965,7 +1488,7 @@ function renderVerify(data) {
                 <td style="width:150px;">${doiHtml}</td>
                 <td style="width:80px;">${esc(r.matched_year || '—')}</td>
                 <td style="max-width:200px;">${esc(r.matched_authors || '—')}</td>
-                <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</td>
+                <td style="max-width:250px;">${esc((r.matched_title || '').substring(0, 60))}${(r.matched_title || '').length > 60 ? '…' : ''}</div>
             </tr>
         `;
     }).join("");
@@ -1977,98 +1500,44 @@ function renderVerify(data) {
 function renderRecovery(data) {
     const missingBody = $("recoveryMissingBody");
     const verifyBody = $("recoveryVerifyBody");
-
     if (!missingBody || !verifyBody) return;
 
     const rec = data?.recovery || {};
     const missingRows = rec.missing_recovery || [];
     const verifyRows = rec.verification_recovery || [];
 
-    // Missing citation recovery
     if (!missingRows.length) {
-        missingBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</td></tr>`;
+        missingBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</div></tr>`;
     } else {
         missingBody.innerHTML = missingRows.map((row, i) => {
             const suggestions = row.suggestions || [];
-
-            const suggestionHtml = suggestions.length
-                ? `
-                    <div class="suggestion-box">
-                        <div class="suggestion-title">💡 Suggested references</div>
-                        <ul class="suggestion-list">
-                            ${suggestions.map(s => `
-                                <li>
-                                    <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
-                                    <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
-                                    <div>
-                                        ${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}
-                                    </div>
-                                </li>
-                            `).join("")}
-                        </ul>
-                    </div>
-                `
-                : `<span class="badge no_evidence_found">No evidence found</span>`;
-
-            return `
-                <tr>
-                    <td>${i + 1}</td>
-                    <td>${esc(row.citation || "")}</td>
-                    <td>${esc(String(row.count ?? 1))}</td>
-                    <td>${suggestionHtml}</td>
-                </tr>
-            `;
+            const suggestionHtml = suggestions.length ? `
+                <div class="suggestion-box">
+                    <div class="suggestion-title">💡 Suggested references</div>
+                    <ul class="suggestion-list">
+                        ${suggestions.map(s => `<li><div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div><div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div><div>${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}</div></li>`).join("")}
+                    </ul>
+                </div>
+            ` : `<span class="badge no_evidence_found">No evidence found</span>`;
+            return `<tr><td>${i + 1}</div><td>${esc(row.citation || "")}</div><td>${esc(String(row.count ?? 1))}</div><td>${suggestionHtml}</div></tr>`;
         }).join("");
     }
 
-    // Verification recovery
     if (!verifyRows.length) {
-        verifyBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</td></tr>`;
+        verifyBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</div></tr>`;
     } else {
         verifyBody.innerHTML = verifyRows.map((row, i) => {
             const suggestions = row.suggestions || [];
-
-            let badgeClass = "offline";
-            if (row.status === "needs_review") badgeClass = "needs_review";
-            else if (row.status === "not_found") badgeClass = "not_found";
-            else if (row.status === "no_evidence_found") badgeClass = "no_evidence_found";
-
-            const statusLabel =
-                row.status === "no_evidence_found"
-                    ? "No evidence found"
-                    : row.status === "needs_review"
-                    ? "Needs review"
-                    : row.status === "not_found"
-                    ? "Not found"
-                    : (row.status || "");
-
-            const suggestionHtml = suggestions.length
-                ? `
-                    <div class="suggestion-box">
-                        <div class="suggestion-title">🔧 Context suggestions</div>
-                        <ul class="suggestion-list">
-                            ${suggestions.map(s => `
-                                <li>
-                                    <div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div>
-                                    <div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div>
-                                    <div>
-                                        ${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}
-                                    </div>
-                                </li>
-                            `).join("")}
-                        </ul>
-                    </div>
-                `
-                : `<span class="badge no_evidence_found">No evidence found</span>`;
-
-            return `
-                <tr>
-                    <td>${i + 1}</td>
-                    <td><span class="badge ${badgeClass}">${esc(statusLabel)}</span></td>
-                    <td>${esc(row.reference || "")}</td>
-                    <td>${suggestionHtml}</td>
-                </tr>
-            `;
+            let badgeClass = row.status === "needs_review" ? "needs_review" : (row.status === "not_found" ? "not_found" : "offline");
+            const suggestionHtml = suggestions.length ? `
+                <div class="suggestion-box">
+                    <div class="suggestion-title">🔧 Context suggestions</div>
+                    <ul class="suggestion-list">
+                        ${suggestions.map(s => `<li><div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div><div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div><div>${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}</div></li>`).join("")}
+                    </ul>
+                </div>
+            ` : `<span class="badge no_evidence_found">No evidence found</span>`;
+            return `<tr><td>${i + 1}</div><td><span class="badge ${badgeClass}">${esc(row.status || "")}</span></div><td>${esc(row.reference || "")}</div><td>${suggestionHtml}</div></tr>`;
         }).join("");
     }
 }
@@ -2076,74 +1545,33 @@ function renderRecovery(data) {
 function renderClaimSupport(data) {
     const body = $("claimSupportBody");
     if (!body) return;
-
     const rows = data?.claim_support || [];
-
     if (!rows.length) {
-        body.innerHTML = `<tr><td colspan="6">No claim-to-source checks available yet.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="6">No claim-to-source checks available yet.</div></tr>`;
         return;
     }
-
     body.innerHTML = rows.map((r, i) => {
-        const doiHtml = r.doi
-            ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View</a>`
-            : "—";
-
+        const doiHtml = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View</a>` : "—";
         let badgeClass = "offline";
         if (r.support_status === "strong_support") badgeClass = "verified";
         else if (r.support_status === "moderate_support") badgeClass = "likely";
         else if (r.support_status === "related_evidence") badgeClass = "needs_review";
         else if (r.support_status === "weak_or_unclear") badgeClass = "needs_review";
         else if (r.support_status === "insufficient_evidence") badgeClass = "not_found";
-        else if (r.support_status === "no_evidence_found") badgeClass = "no_evidence_found";
-
-        const supportLabel =
-            r.support_status === "no_evidence_found"
-                ? "No evidence found"
-                : r.support_status === "insufficient_evidence"
-                ? "Insufficient evidence"
-                : (r.support_status || "");
-
-        const claimText = r.claim && r.claim.trim()
-            ? esc(r.claim)
-            : `<span style="color:#7f8c8d;">No evidence found</span>`;
-
-        const titleText = r.source_title && r.source_title.trim()
-            ? `${esc((r.source_title || "").substring(0, 90))}${(r.source_title || "").length > 90 ? "…" : ""}`
-            : `<span style="color:#7f8c8d;">No evidence found</span>`;
-
-        const scoreText = r.support_status === "no_evidence_found"
-            ? "—"
-            : esc(String(r.support_score ?? ""));
-
-        return `
-            <tr>
-                <td>${i + 1}</td>
-                <td>${esc(r.citation || "")}</td>
-                <td style="max-width:320px;">${claimText}</td>
-                <td style="max-width:280px;">
-                    ${titleText}
-                    <div style="margin-top:4px;">${doiHtml}</div>
-                </td>
-                <td><span class="badge ${badgeClass}">${esc(supportLabel)}</span></td>
-                <td title="${esc(r.score_explanation || '')}">${scoreText}</td>
-            </tr>
-        `;
+        const claimText = r.claim && r.claim.trim() ? esc(r.claim) : `<span style="color:#7f8c8d;">No evidence found</span>`;
+        const titleText = r.source_title && r.source_title.trim() ? `${esc((r.source_title || "").substring(0, 90))}${(r.source_title || "").length > 90 ? "…" : ""}` : `<span style="color:#7f8c8d;">No evidence found</span>`;
+        return `<tr><td>${i + 1}</div><td>${esc(r.citation || "")}</div><td style="max-width:320px;">${claimText}</div><td style="max-width:280px;">${titleText}<div style="margin-top:4px;">${doiHtml}</div></div><td><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></div><td>${esc(String(r.support_score ?? ""))}</div></tr>`;
     }).join("");
 }
     
 function renderAll(data) {
     if (!data) return;
-    console.log("🚀 renderAll called");
-    
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
-    
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
-    
-        renderSummaryTable(normalized);
+    renderSummaryTable(normalized);
     renderACII(normalized);
     renderMissing(normalized);
     renderUncited(normalized);
@@ -2152,20 +1580,15 @@ function renderAll(data) {
     renderVerify(normalized);
     renderRecovery(normalized);
     renderClaimSupport(normalized);
-    
-    // Display auto-fix suggestions
     if (normalized.autofix && normalized.autofix.suggestions) {
         displaySuggestions(normalized.autofix);
     } else if (normalized.suggestions) {
         displaySuggestions({ suggestions: normalized.suggestions });
     }
-    
-        
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
     updateProcessFeedback("Match", "completed");
     updateProcessFeedback("ACII", "completed");
-    
     const statUploads = $("statUploads");
     if (statUploads) {
         const current = parseInt(statUploads.textContent) || 0;
@@ -2244,46 +1667,31 @@ function exportVerificationCSV() {
     URL.revokeObjectURL(link.href);
 }
 
-// ============================================
-// EXPORT REFERENCES FUNCTIONS
-// ============================================
-
+// Export References Function
 async function exportReferences(format = 'docx') {
     if (!LAST_JOB_ID) {
         showNotification("No job found. Please run verification first.", "error");
         return;
     }
-    
     const styleSelect = document.getElementById("exportStyleSelect");
     const style = styleSelect ? styleSelect.value : "apa7";
-    
     showNotification(`Exporting references in ${style.toUpperCase()} format...`, "info");
-    
     const formData = new FormData();
     formData.append("job_id", LAST_JOB_ID);
     formData.append("style", style);
     formData.append("format_type", format);
-    
     try {
-        const response = await fetch("/export-references", {
-            method: "POST",
-            body: formData
-        });
-        
+        const response = await fetch("/export-references", { method: "POST", body: formData });
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.detail || "Export failed");
         }
-        
-        // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get("Content-Disposition");
         let filename = `citeintegrity_references.${format === 'docx' ? 'docx' : 'html'}`;
         if (contentDisposition) {
             const match = contentDisposition.match(/filename=(.+)/);
             if (match) filename = match[1];
         }
-        
-        // Download the file
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -2293,9 +1701,7 @@ async function exportReferences(format = 'docx') {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        
         showNotification(`References exported successfully as ${format.toUpperCase()}!`, "success");
-        
     } catch (error) {
         console.error("Export error:", error);
         showNotification(`Export failed: ${error.message}`, "error");
@@ -2306,15 +1712,11 @@ async function exportReferences(format = 'docx') {
 async function runInitialCheck() {
     const fileInput = document.getElementById("file");
     const file = fileInput?.files?.[0];
-    
-    console.log("[Debug] runInitialCheck called, file:", file ? file.name : "none");
-    
     if (!file) { setStatus("Please choose a file first", "warn"); return; }
     if (!file.name.toLowerCase().endsWith('.docx')) {
         setStatus("Only DOCX files are accepted.", "warn");
         return;
     }
-    
     resetProcessFeedback();
     updateProcessFeedback("Upload", "active");
     if (POLL_TIMER) clearInterval(POLL_TIMER);
@@ -2322,7 +1724,6 @@ async function runInitialCheck() {
     LAST_JOB_ID = null;
     resetVerificationUI();
     setStatus("Analyzing document...");
-    
     const fd = new FormData();
     fd.append("file", file);
     fd.append("style", "apa");
@@ -2330,7 +1731,6 @@ async function runInitialCheck() {
     const onlineVerifyCheck = document.getElementById("onlineVerify");
     fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
     fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
-    
     try {
         const res = await fetch("/verify", { method: "POST", body: fd });
         if (res.status === 503) {
@@ -2355,16 +1755,13 @@ async function runInitialCheck() {
 async function runOnlineVerification() {
     if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
     if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
-    
     setStatus("Starting online verification...");
     VERIFICATION_IN_PROGRESS = true;
     updateProgress(0, 0, "processing", "Starting verification...");
     const btnVerify = document.getElementById("btnVerify");
     if (btnVerify) btnVerify.disabled = true;
-    
     const fd = new FormData();
     fd.append("job_id", LAST_JOB_ID);
-    
     try {
         const res = await fetch("/verify-online", { method: "POST", body: fd });
         const js = await res.json();
@@ -2374,7 +1771,149 @@ async function runOnlineVerification() {
     } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
 }
 
-// Button Events
+// ACII Rating Function (must be defined before use)
+function getACIIRating(score) {
+    score = Number(score);
+    if (score >= 90) return { text: "Excellent", class: "excellent", description: "Outstanding citation integrity with excellent recency and balance." };
+    if (score >= 80) return { text: "Very Good", class: "very-good", description: "Strong citation integrity with good recency and diversity." };
+    if (score >= 70) return { text: "Good", class: "good", description: "Satisfactory citation integrity with acceptable recency." };
+    if (score >= 60) return { text: "Moderate", class: "moderate", description: "Adequate citation integrity. Improvements needed in recency or diversity." };
+    if (score >= 50) return { text: "Weak", class: "weak", description: "Below average citation integrity. Significant room for improvement." };
+    return { text: "Poor", class: "poor", description: "Low citation integrity. Many citations are unverified or lack author diversity." };
+}
+
+function generateACIIRecommendations(aciiData) {
+    if (!aciiData) return "<div>No recommendation data available.</div>";
+    const comp = aciiData.components || {};
+    const recs = aciiData.recommendations || {};
+    let html = "";
+    if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
+    if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
+    if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
+    if (recs.priority) html += `<div class="priority">🎯 ${esc(recs.priority)}</div>`;
+    if (!html) {
+        const v = comp.verification_integrity?.score || 0;
+        const recency = comp.recency?.score || 0;
+        const diversity = comp.author_diversity?.score || 0;
+        if (v < 60) html += `<div>🔍 Low verification rate (${v}%). Run online verification to improve credibility.</div>`;
+        if (recency < 50) html += `<div>📅 Only ${recency}% of references are recent (≤5 years). Add current sources.</div>`;
+        if (diversity < 50) html += `<div>👥 Limited author diversity (${diversity}%). Expand your citation base.</div>`;
+        if (!html) html += `<div>✨ Your citations look good! Consider adding more recent sources to maintain relevance.</div>`;
+    }
+    return html;
+}
+
+function displaySuggestions(data) {
+    const panel = $("suggestionsPanel");
+    const content = $("suggestionsContent");
+    if (!panel || !content) return;
+    const suggestions = data?.suggestions || data;
+    const citations = suggestions?.citations || [];
+    const missing = suggestions?.missing || [];
+    const unmatched = suggestions?.unmatched || [];
+    const references = suggestions?.references || [];
+    const allSuggestions = [
+        ...citations.map(s => ({ ...s, category: "citation", action: s.action || "review_required" })),
+        ...missing.map(s => ({ ...s, category: "missing", action: "add_reference" })),
+        ...unmatched.map(s => ({ ...s, category: "unmatched", action: "review_required" })),
+        ...references.map(s => ({ ...s, category: "reference", action: "optional_fix" }))
+    ];
+    const seen = new Set();
+    const uniqueSuggestions = [];
+    for (const s of allSuggestions) {
+        const key = (s.citation || s.original || "").substring(0, 100);
+        if (!seen.has(key)) {
+            seen.add(key);
+            uniqueSuggestions.push(s);
+        }
+    }
+    if (uniqueSuggestions.length === 0) {
+        panel.style.display = "none";
+        return;
+    }
+    panel.style.display = "block";
+    const highConf = uniqueSuggestions.filter(s => s.confidence >= 0.85);
+    const medConf = uniqueSuggestions.filter(s => s.confidence >= 0.70 && s.confidence < 0.85);
+    const lowConf = uniqueSuggestions.filter(s => s.confidence < 0.70);
+    let html = `<div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
+        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
+            <span>✅ High confidence: ${highConf.length}</span>
+            <span>⚠️ Needs review: ${medConf.length + lowConf.length}</span>
+            <span>📋 Total suggestions: ${uniqueSuggestions.length}</span>
+        </div>
+    </div>`;
+    const byCategory = {
+        citation: uniqueSuggestions.filter(s => s.category === "citation"),
+        missing: uniqueSuggestions.filter(s => s.category === "missing"),
+        unmatched: uniqueSuggestions.filter(s => s.category === "unmatched"),
+        reference: uniqueSuggestions.filter(s => s.category === "reference")
+    };
+    if (byCategory.citation.length > 0) {
+        html += `<div class="suggestions-section"><h4>📝 Citation Suggestions (${byCategory.citation.length})</h4>`;
+        html += byCategory.citation.slice(0, 20).map(s => `
+            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : s.confidence >= 0.7 ? 'med-conf' : 'low-conf'}">
+                <div class="suggestion-original">❌ ${esc(s.citation || s.original || '')}</div>
+                <div class="suggestion-suggested">✅ ${esc(s.suggested || '')}</div>
+                <div class="suggestion-meta">
+                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
+                    <span>📝 ${esc(s.reason || '')}</span>
+                    <span class="suggestion-action ${s.action === 'add_reference' ? 'action-add' : s.action === 'optional_fix' ? 'action-optional' : 'action-review'}">${s.action === 'add_reference' ? 'Add reference' : s.action === 'optional_fix' ? 'Optional' : 'Review required'}</span>
+                </div>
+            </div>
+        `).join('');
+        html += `</div>`;
+    }
+    if (byCategory.missing.length > 0) {
+        html += `<div class="suggestions-section"><h4>🔍 Missing Reference Suggestions (${byCategory.missing.length})</h4>`;
+        html += byCategory.missing.slice(0, 20).map(s => `
+            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
+                <div class="suggestion-original">❌ Missing: ${esc(s.citation || s.original || '')}</div>
+                <div class="suggestion-suggested">✅ Suggested: ${esc(s.suggested || '')}</div>
+                <div class="suggestion-meta">
+                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
+                    <span>📝 ${esc(s.reason || '')}</span>
+                    <span class="suggestion-action action-add">Add to references</span>
+                </div>
+            </div>
+        `).join('');
+        html += `</div>`;
+    }
+    if (byCategory.unmatched.length > 0) {
+        html += `<div class="suggestions-section"><h4>⚠️ Unmatched Citation Suggestions (${byCategory.unmatched.length})</h4>`;
+        html += byCategory.unmatched.slice(0, 20).map(s => `
+            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
+                <div class="suggestion-original">❌ ${esc(s.citation || s.original || '')}</div>
+                <div class="suggestion-suggested">✅ ${esc(s.suggested || '')}</div>
+                <div class="suggestion-meta">
+                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
+                    <span>📝 ${esc(s.reason || '')}</span>
+                    <span class="suggestion-action action-review">Review required</span>
+                </div>
+            </div>
+        `).join('');
+        html += `</div>`;
+    }
+    if (byCategory.reference.length > 0) {
+        html += `<div class="suggestions-section"><h4>📚 Reference Formatting Suggestions (${byCategory.reference.length})</h4>`;
+        html += byCategory.reference.slice(0, 15).map(s => `
+            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
+                <div class="suggestion-original">${esc((s.original || "").substring(0, 150))}${(s.original || "").length > 150 ? '…' : ''}</div>
+                <div class="suggestion-suggested">${esc((s.suggested || "").substring(0, 150))}${(s.suggested || "").length > 150 ? '…' : ''}</div>
+                <div class="suggestion-meta">
+                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
+                    <span>📝 ${esc(s.reason || '')}</span>
+                    <span class="suggestion-action action-optional">Optional improvement</span>
+                </div>
+            </div>
+        `).join('');
+        html += `</div>`;
+    }
+    content.innerHTML = html;
+}
+
+// ============================================
+// BUTTON EVENT LISTENERS (AT THE BOTTOM - CRITICAL!)
+// ============================================
 setupFileArea();
 
 const btnCheck = document.getElementById("btnCheck");
@@ -2382,6 +1921,12 @@ if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
 
 const btnVerify = document.getElementById("btnVerify");
 if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
+
+// Export buttons
+const exportBtn = document.getElementById("exportReferencesBtn");
+const exportHtmlBtn = document.getElementById("exportReferencesHtmlBtn");
+if (exportBtn) exportBtn.addEventListener("click", () => exportReferences('docx'));
+if (exportHtmlBtn) exportHtmlBtn.addEventListener("click", () => exportReferences('html'));
 
 const exportCsv = document.getElementById("btnExportCsvTop");
 const exportWord = document.getElementById("btnExportWordTop");
@@ -2394,10 +1939,9 @@ if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[CiteIntegrity] App initialized - Enhanced visibility with Suggested References tab and Correction Suggestions");
+console.log("[CiteIntegrity] App initialized - Ready for use");
 
 });
-
 </script>
 
 </body>
