@@ -34,6 +34,12 @@ from verify import (
 from acii import compute_acii
 from citation_suggester import extract_context, suggest_from_context
 from claim_checker import build_claim_support_rows
+from reference_formatter import (
+    format_verified_reference_list,
+    export_references_to_docx,
+    export_references_to_html,
+    DOCX_AVAILABLE
+)
 
 # ===============================
 # DATABASE SETUP - SQLite
@@ -1511,6 +1517,67 @@ def get_performance_stats(
         "references_per_day": round(stats["total_stats"]["total_references_checked"] / days_online, 2)
     }
     return performance
+
+# ============================================================
+# EXPORT REFERENCES ENDPOINT
+# ============================================================
+
+@app.post("/export-references")
+async def export_references(
+    job_id: str = Form(...),
+    style: str = Form("apa7"),
+    format_type: str = Form("docx")
+):
+    """
+    Export verified references to DOCX or HTML.
+    """
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    
+    result = job.get("result", {})
+    online_verification = result.get("online_verification", {})
+    verification_rows = online_verification.get("rows", [])
+    
+    if not verification_rows:
+        raise HTTPException(400, "No verification results available. Run online verification first.")
+    
+    # Format references
+    formatted_refs = format_verified_reference_list(verification_rows, style)
+    
+    if not formatted_refs:
+        raise HTTPException(400, "No verified references found to export.")
+    
+    if format_type == "docx":
+        if not DOCX_AVAILABLE:
+            raise HTTPException(500, "DOCX export not available. Please install python-docx.")
+        
+        docx_buffer = export_references_to_docx(formatted_refs, style)
+        
+        if not docx_buffer:
+            raise HTTPException(500, "Failed to generate DOCX file.")
+        
+        filename = f"citeintegrity_references_{job_id[:8]}_{style}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        
+        return Response(
+            content=docx_buffer.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    
+    elif format_type == "html":
+        html_content = export_references_to_html(formatted_refs, style)
+        
+        filename = f"citeintegrity_references_{job_id[:8]}_{style}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        
+        return Response(
+            content=html_content,
+            media_type="text/html",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    
+    else:
+        raise HTTPException(400, "Invalid format. Use 'docx' or 'html'.")
 
 # ============================================================
 # DEBUG STATS ENDPOINT
