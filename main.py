@@ -373,7 +373,54 @@ async def lifespan(app_instance: FastAPI):
     print("👋 Shutting down...")
 
 app = FastAPI(title=APP_TITLE, lifespan=lifespan)
+from fastapi import Request
+from fastapi.responses import HTMLResponse
 
+@app.middleware("http")
+async def redirect_with_message(request: Request, call_next):
+    host = request.headers.get("host", "")
+
+    if "citationcrosschecker.onrender.com" in host:
+        return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Moved Permanently</title>
+            <meta http-equiv="refresh" content="2;url=https://citeintegrity.org{request.url.path}">
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    padding-top: 80px;
+                    background: #f9f9f9;
+                }}
+                .box {{
+                    background: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    display: inline-block;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }}
+                a {{
+                    color: #6c2bd9;
+                    text-decoration: none;
+                    font-weight: bold;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h2>Moved Permanently</h2>
+                <p>This service is now available at:</p>
+                <p><a href="https://citeintegrity.org">citeintegrity.org</a></p>
+                <p>You will be redirected automatically...</p>
+            </div>
+        </body>
+        </html>
+        """, status_code=301)
+
+    return await call_next(request)
+    
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 templates_dir = os.path.join(BASE_DIR, "templates")
