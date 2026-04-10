@@ -1,13 +1,18 @@
-# engine.py (COMPLETE - with non-invasive Suggestion Engine)
+# engine.py (OPTIMIZED - with caching and early break)
 __version__ = "1.5.0"
 
 import re
 import io
 import unicodedata
+import threading
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
 from pdf_to_docx_pipeline import process_pdf
+
+# Cache for norm_space
+_NORM_CACHE = {}
+_NORM_CACHE_LOCK = threading.Lock()
 
 ENGINE_BUILD = "commercial-2026-03-01-final"
 
@@ -128,11 +133,28 @@ _DECADE_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})s\b", re.I)
 # Small helpers
 # -----------------------------
 def norm_space(s: str) -> str:
-    s = s or ""
-    s = unicodedata.normalize("NFKC", s)
-    s = s.replace("\u00a0", " ")
-    s = re.sub(r"[ \t]+", " ", s)
-    return s.strip()
+    """Normalize whitespace with caching for performance."""
+    if not s:
+        return ""
+    
+    # Check cache
+    with _NORM_CACHE_LOCK:
+        if s in _NORM_CACHE:
+            return _NORM_CACHE[s]
+    
+    # Normalize
+    result = s
+    result = unicodedata.normalize("NFKC", result)
+    result = result.replace("\u00a0", " ")
+    result = re.sub(r"[ \t]+", " ", result)
+    result = result.strip()
+    
+    # Store in cache (limit size to prevent memory issues)
+    with _NORM_CACHE_LOCK:
+        if len(_NORM_CACHE) < 20000:
+            _NORM_CACHE[s] = result
+    
+    return result
 
 
 def soft_lower(s: str) -> str:
@@ -1242,6 +1264,9 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
                     if score > best_score:
                         best_score = score
                         best_ref = rr.reference_full
+                        # EARLY EXIT: If we found a very good match (95%+), stop searching
+                        if best_score >= 95:
+                            break
 
             if best_ref and best_score >= 74:
                 cite_counts_by_ref[best_ref] += 1
@@ -2040,6 +2065,11 @@ def _generate_citation_fixes(
                             if score > best_score and score >= 75:
                                 best_score = score
                                 best_match = ref_auth
+                                # Early exit on very high confidence
+                                if best_score >= 95:
+                                    break
+                if best_score >= 95:
+                    break
         
         if best_match and best_match.lower() != auth.lower():
             alt_citation = re.sub(r'\b' + re.escape(auth) + r'\b', best_match, citation, count=1)
