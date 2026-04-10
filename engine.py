@@ -2209,8 +2209,8 @@ def run_crosscheck(
         # =========================
         # 6. LIMIT WORKLOAD (SAFE)
         # =========================
-        cites = cites[:500]
-        references = references[:200]
+        cites = cites[:800]
+        references = references[:500]
     
         # =========================
         # 7. PARSE REFERENCES
