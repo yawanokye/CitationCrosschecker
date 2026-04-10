@@ -1137,73 +1137,75 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
-    """Optimized reconciliation - handles 1000+ references efficiently"""
+    """Balanced reconciliation - fast but accurate with fuzzy fallback"""
     
-    # Build fast lookup indexes
+    # ============================================================
+    # STEP 1: Build fast lookup indexes
+    # ============================================================
     alias_map: Dict[str, str] = {}
-    refs_by_year: Dict[str, List[Tuple[str, List[str]]]] = defaultdict(list)
+    refs_by_year: Dict[str, List[RefAY]] = defaultdict(list)
     
     for r in references:
         ref_full = r.reference_full
         if not ref_full:
             continue
         
-        # Store by key
+        # Store by exact key
         alias_map[r.key.lower()] = ref_full
         
-        # Extract year and surnames
+        # Store by year for fallback
         ym = YEAR_RE.search(ref_full)
-        if not ym:
-            continue
+        if ym:
+            refs_by_year[_base_year(ym.group(1))].append(r)
         
-        year_full = ym.group(1)
-        year_base = _base_year(year_full)
-        left = ref_full[: ym.start()].strip(" ,;()")
-        surnames = _surnames_from_author_blob(left)
-        
-        # Store in year index
-        refs_by_year[year_base].append((ref_full, surnames))
-        
-        # Create alias keys for surname variations
-        if surnames:
-            alias_map[f"{surnames[0]}|{year_full}".lower()] = ref_full
-            if year_base != year_full:
-                alias_map[f"{surnames[0]}|{year_base}".lower()] = ref_full
+        # Create surname-based aliases
+        ym = YEAR_RE.search(ref_full)
+        if ym:
+            year_full = ym.group(1)
+            year_base = _base_year(year_full)
+            left = ref_full[: ym.start()].strip(" ,;()")
+            surnames = _surnames_from_author_blob(left)
             
-            if len(surnames) >= 2:
-                alias_map[f"{surnames[0]}+{surnames[1]}|{year_full}".lower()] = ref_full
-                alias_map[f"{surnames[1]}+{surnames[0]}|{year_full}".lower()] = ref_full
+            if surnames:
+                alias_map[f"{surnames[0]}|{year_full}".lower()] = ref_full
                 if year_base != year_full:
-                    alias_map[f"{surnames[0]}+{surnames[1]}|{year_base}".lower()] = ref_full
-                    alias_map[f"{surnames[1]}+{surnames[0]}|{year_base}".lower()] = ref_full
+                    alias_map[f"{surnames[0]}|{year_base}".lower()] = ref_full
+                
+                if len(surnames) >= 2:
+                    alias_map[f"{surnames[0]}+{surnames[1]}|{year_full}".lower()] = ref_full
+                    alias_map[f"{surnames[1]}+{surnames[0]}|{year_full}".lower()] = ref_full
     
+    # ============================================================
+    # STEP 2: Process each citation with multiple strategies
+    # ============================================================
     cite_counts_by_ref = Counter()
     parsed_cites: List[Tuple[str, str, str]] = []
     
-    for c in citations:
-        citation = norm_space(c)
-        if not citation:
-            parsed_cites.append(("", citation, ""))
+    for citation in citations:
+        c = norm_space(citation)
+        if not c:
+            parsed_cites.append(("", c, ""))
             continue
         
-        parsed = _parse_author_year_from_cite(citation)
+        # Parse citation
+        parsed = _parse_author_year_from_cite(c)
         if not parsed:
-            parsed_cites.append(("", citation, ""))
+            parsed_cites.append(("", c, ""))
             continue
         
         auth, year = parsed
         year_base = _base_year(year) if len(year) >= 4 else year
         
-        # Build candidate keys
+        # Strategy 1: Direct key lookup
         cand_keys = [f"{auth}|{year}".lower()]
         if year_base and year_base != year:
             cand_keys.append(f"{auth}|{year_base}".lower())
         
-        # Extract surnames from citation
-        ym = YEAR_RE.search(citation)
+        # Extract surnames for additional keys
+        ym = YEAR_RE.search(c)
         cite_surnames = []
         if ym:
-            left = (citation[: ym.start()] or "").strip(" ,;()")
+            left = (c[: ym.start()] or "").strip(" ,;()")
             cite_surnames = _surnames_from_author_blob(left)
             if cite_surnames:
                 cand_keys.append(f"{cite_surnames[0]}|{ym.group(1)}".lower())
@@ -1214,36 +1216,51 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
                     cand_keys.append(f"{cite_surnames[1]}+{cite_surnames[0]}|{ym.group(1)}".lower())
         
         # Handle et al.
-        if re.search(r"\bet\s+al\.?", citation, re.I):
-            m = re.search(r"([A-Z][A-Za-z'\-]+)\s+et\s+al", citation, re.I)
+        if re.search(r"\bet\s+al\.?", c, re.I):
+            m = re.search(r"([A-Z][A-Za-z'\-]+)\s+et\s+al", c, re.I)
             if m:
                 first_author = m.group(1).lower()
                 cand_keys.append(f"{first_author}|{year}".lower())
                 if year_base and year_base != year:
                     cand_keys.append(f"{first_author}|{year_base}".lower())
         
-        # Try direct lookup
         matched_ref = None
         used_key = None
+        
+        # Try direct lookup first
         for k in cand_keys:
             if k in alias_map:
                 matched_ref = alias_map[k]
                 used_key = k
                 break
         
-        # Fallback: year-based surname overlap
+        # Strategy 2: Year + surname overlap (fast)
         if not matched_ref and year_base and cite_surnames:
             cite_set = set(cite_surnames)
             best_ref = ""
             best_score = 0
             
-            for ref_full, ref_surnames in refs_by_year.get(year_base, []):
-                if not ref_surnames:
+            for rr in refs_by_year.get(year_base, [])[:30]:  # Limit to 30 for speed
+                ref_full = rr.reference_full
+                ym_r = YEAR_RE.search(ref_full)
+                if not ym_r:
                     continue
-                overlap = len(cite_set & set(ref_surnames))
+                left_r = ref_full[: ym_r.start()].strip(" ,;()")
+                ref_names = _surnames_from_author_blob(left_r)
+                
+                if not ref_names:
+                    continue
+                
+                overlap = len(cite_set & set(ref_names))
                 if overlap == 0:
                     continue
+                
                 score = (overlap * 100) // len(cite_set)
+                
+                # Bonus for first author match
+                if cite_surnames and ref_names and cite_surnames[0] == ref_names[0]:
+                    score += 15
+                
                 if score > best_score:
                     best_score = score
                     best_ref = ref_full
@@ -1254,13 +1271,60 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
                 matched_ref = best_ref
                 used_key = f"overlap:{best_score}"
         
+        # Strategy 3: Fuzzy matching (original logic - for difficult cases)
+        if not matched_ref:
+            best_ref = ""
+            best_score = 0
+            ym_c = YEAR_RE.search(c)
+            if ym_c:
+                yb = _base_year(ym_c.group(1))
+                left_c = (c[: ym_c.start()] or "").strip(" ,;()")
+                cite_names = _surnames_from_author_blob(left_c)
+                
+                # Check all references with matching year (for accuracy)
+                for rr in refs_by_year.get(yb, []):
+                    ref_full = rr.reference_full
+                    ym_r = YEAR_RE.search(ref_full)
+                    if not ym_r:
+                        continue
+                    left_r = ref_full[: ym_r.start()].strip(" ,;()")
+                    ref_names = _surnames_from_author_blob(left_r)
+                    
+                    # Calculate overlap score
+                    overlap = len(set(cite_names) & set(ref_names))
+                    score_overlap = int(round(100 * (overlap / max(1, len(set(cite_names))))))
+                    
+                    score = score_overlap
+                    
+                    # Use fuzzy matching for better accuracy
+                    if FUZZ_OK and fuzz and cite_names and ref_names:
+                        try:
+                            score1 = fuzz.token_set_ratio(" ".join(cite_names), " ".join(ref_names))
+                            score2 = fuzz.partial_ratio(" ".join(cite_names), " ".join(ref_names))
+                            score_fuzz = int(round(0.6 * score1 + 0.4 * score2))
+                            score = max(score, score_fuzz)
+                        except Exception:
+                            pass
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_ref = ref_full
+                        if best_score >= 85:  # Early exit on good match
+                            break
+            
+            if best_ref and best_score >= 65:  # Lower threshold for fuzzy
+                matched_ref = best_ref
+                used_key = f"fuzzy:{best_score}"
+        
         if matched_ref:
             cite_counts_by_ref[matched_ref] += 1
-            parsed_cites.append((matched_ref, citation, used_key or ""))
+            parsed_cites.append((matched_ref, c, used_key or ""))
         else:
-            parsed_cites.append(("", citation, ""))
+            parsed_cites.append(("", c, ""))
     
-    # Build output
+    # ============================================================
+    # STEP 3: Build output structures
+    # ============================================================
     c2r = []
     missing_counter = Counter()
     
@@ -1306,7 +1370,10 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
     missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
     unique_intext_count = len(set([norm_space(c) for c in citations if norm_space(c)]))
     
+    print(f"[DEBUG] Reconciliation results: {len([p for p in parsed_cites if p[0]])} matched, {len(missing_rows)} missing")
+    
     return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
+    
 
 
 # ============================================================================
