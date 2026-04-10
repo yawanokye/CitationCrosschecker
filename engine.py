@@ -682,71 +682,129 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 # ============================================================================
 
 def extract_author_year_citations(text: str) -> List[str]:
-    """Extract ALL citations from text - comprehensive patterns that catch everything"""
+    """Extract ALL citations from academic text - handles APA/Harvard formats comprehensively"""
     if not text:
         return []
     
-    t = text.replace("\u2019", "'")
+    t = text.replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
     citations = set()
     
-    # Pattern 1: Parenthetical citations (Author, Year) or (Author et al., Year)
-    # This captures (Smith, 2020), (Smith & Jones, 2020), (Smith et al., 2020)
-    paren_pattern = re.compile(r'\(([^()]{0,200}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,200}?)\)')
+    # Pattern 1: Standard parenthetical (Author, Year) - captures (Smith, 2020)
+    # Also handles multiple citations separated by semicolons
+    paren_pattern = re.compile(r'\(([^()]{0,300}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,300}?)\)')
     for m in paren_pattern.finditer(t):
         inside = m.group(1).strip()
         # Skip if it's just a year
         if re.match(r'^\s*(?:19|20)\d{2}\s*$', inside):
-            continue
-        # Skip if too short
-        if len(inside) < 4:
             continue
         # Split multiple citations separated by semicolons
         parts = re.split(r'\s*;\s*', inside)
         for part in parts:
             part = part.strip()
             if part and re.search(r'\b(?:19|20)\d{2}\b', part):
+                # Clean up the citation
+                part = re.sub(r'\s+', ' ', part)
                 citations.add(part)
     
-    # Pattern 2: Narrative citations - Author (Year) or Author et al. (Year)
+    # Pattern 2: Narrative citations - Author (Year) - captures Smith (2020)
     narr_pattern = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+et\s+al\.?)?)\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)')
     for m in narr_pattern.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
         citations.add(f"{author}, {year}")
     
-    # Pattern 3: Author (Year) with single author
-    single_pattern = re.compile(r'\b([A-Z][a-z]+)\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)')
-    for m in single_pattern.finditer(t):
+    # Pattern 3: "According to Author (Year)" or "Author (Year)" with text after
+    # Also captures "Author et al. (Year)"
+    pattern3 = re.compile(r'\b(?:According\s+to\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+et\s+al\.?)?),\s+((?:19|20)\d{2}[a-z]?)')
+    for m in pattern3.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
-        # Avoid duplicates with pattern 2
-        if f"{author}, {year}" not in citations:
+        # Check if this is part of a parenthetical (already captured)
+        if not re.search(rf'{re.escape(author)},\s+{year}\s*\)', t[max(0, m.start()-10):m.end()+10]):
             citations.add(f"{author}, {year}")
     
-    # Pattern 4: (Author year) without comma - e.g., (Smith 2020)
-    nocomma_pattern = re.compile(r'\(([A-Z][a-z]+(?:\s+et\s+al\.?)?)\s+((?:19|20)\d{2}[a-z]?)\)')
-    for m in nocomma_pattern.finditer(t):
+    # Pattern 4: "Author (year)" without comma - captures Smith (2020)
+    pattern4 = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+\(((?:19|20)\d{2}[a-z]?)\)')
+    for m in pattern4.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
         citations.add(f"{author}, {year}")
     
-    # Pattern 5: Author (year) with et al.
-    etal_pattern = re.compile(r'\b([A-Z][a-z]+)\s+et\s+al\.?\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)')
-    for m in etal_pattern.finditer(t):
+    # Pattern 5: Citations with page numbers - (Author, year, p. 15)
+    pattern5 = re.compile(r'\(([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+et\s+al\.?)?),\s+((?:19|20)\d{2}[a-z]?)(?:,\s+(?:p\.|pp\.|page)\s+\d+)?\)')
+    for m in pattern5.finditer(t):
+        author = m.group(1).strip()
+        year = m.group(2).strip()
+        citations.add(f"{author}, {year}")
+    
+    # Pattern 6: "Author et al. (year)" - captures Smith et al. (2020)
+    pattern6 = re.compile(r'\b([A-Z][a-z]+)\s+et\s+al\.?\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)')
+    for m in pattern6.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
         citations.add(f"{author} et al., {year}")
     
-    # Pattern 6: Author, Year (with comma inside parentheses)
-    comma_pattern = re.compile(r'\(([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+((?:19|20)\d{2}[a-z]?)\)')
-    for m in comma_pattern.finditer(t):
+    # Pattern 7: "Author & Author (year)" - captures Smith & Jones (2020)
+    pattern7 = re.compile(r'\b([A-Z][a-z]+\s+&\s+[A-Z][a-z]+)\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)')
+    for m in pattern7.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
         citations.add(f"{author}, {year}")
     
-    # Pattern 7: Multiple authors with & inside parentheses
-    ampersand_pattern = re.compile(r'\(([A-Z][a-z]+\s+&\s+[A-Z][a-z]+),\s+((?:19|20)\d{2}[a-z]?)\)')
-    for m in ampersand_pattern.finditer(t):
+    # Pattern 8: "Author, Author, and Author (year)" - three authors
+    pattern8 = re.compile(r'\b([A-Z][a-z]+,\s+[A-Z][a-z]+,\s+and\s+[A-Z][a-z]+)\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)')
+    for m in pattern8.finditer(t):
+        author = m.group(1).strip()
+        year = m.group(2).strip()
+        citations.add(f"{author}, {year}")
+    
+    # Pattern 9: Citations in square brackets [Author, year]
+    pattern9 = re.compile(r'\[([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+((?:19|20)\d{2}[a-z]?)\]')
+    for m in pattern9.finditer(t):
+        author = m.group(1).strip()
+        year = m.group(2).strip()
+        citations.add(f"{author}, {year}")
+    
+    # Pattern 10: "Author (year, year)" - multiple years for same author
+    pattern10 = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+\(((?:19|20)\d{2}[a-z]?(?:,\s*(?:19|20)\d{2}[a-z]?)+)\)')
+    for m in pattern10.finditer(t):
+        author = m.group(1).strip()
+        years_part = m.group(2).strip()
+        years = re.findall(r'(?:19|20)\d{2}[a-z]?', years_part)
+        for year in years:
+            citations.add(f"{author}, {year}")
+    
+    # Pattern 11: "Author (year); Author (year)" - semicolon separated narrative
+    pattern11 = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(((?:19|20)\d{2}[a-z]?)\)\s*;\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(((?:19|20)\d{2}[a-z]?)\)')
+    for m in pattern11.finditer(t):
+        author1, year1, author2, year2 = m.group(1), m.group(2), m.group(3), m.group(4)
+        citations.add(f"{author1}, {year1}")
+        citations.add(f"{author2}, {year2}")
+    
+    # Pattern 12: "Author (year) and Author (year)" - with 'and'
+    pattern12 = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(((?:19|20)\d{2}[a-z]?)\)\s+and\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(((?:19|20)\d{2}[a-z]?)\)')
+    for m in pattern12.finditer(t):
+        author1, year1, author2, year2 = m.group(1), m.group(2), m.group(3), m.group(4)
+        citations.add(f"{author1}, {year1}")
+        citations.add(f"{author2}, {year2}")
+    
+    # Pattern 13: Citations at end of sentences with period
+    pattern13 = re.compile(r'\(([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+((?:19|20)\d{2}[a-z]?)\)\.')
+    for m in pattern13.finditer(t):
+        author = m.group(1).strip()
+        year = m.group(2).strip()
+        citations.add(f"{author}, {year}")
+    
+    # Pattern 14: "see Author (year)" - with 'see' prefix
+    pattern14 = re.compile(r'\bsee\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(((?:19|20)\d{2}[a-z]?)\)')
+    for m in pattern14.finditer(t):
+        author = m.group(1).strip()
+        year = m.group(2).strip()
+        citations.add(f"{author}, {year}")
+    
+    # Pattern 15: "e.g., Author (year)" - with 'e.g.,' prefix
+    pattern15 = re.compile(r'\be\.g\.,?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\(((?:19|20)\d{2}[a-z]?)\)')
+    for m in pattern15.finditer(t):
         author = m.group(1).strip()
         year = m.group(2).strip()
         citations.add(f"{author}, {year}")
@@ -766,9 +824,15 @@ def extract_author_year_citations(text: str) -> List[str]:
             continue
         valid_citations.append(c)
     
-    print(f"[DEBUG] Extracted {len(valid_citations)} citations")
+    print(f"[DEBUG] Extracted {len(valid_citations)} unique citations")
+    
+    # Print first 30 for debugging
+    if valid_citations:
+        print(f"[DEBUG] Sample citations (first 30):")
+        for i, cite in enumerate(valid_citations[:30]):
+            print(f"  {i+1}. {cite}")
+    
     return valid_citations
-
 
 def extract_references_fast(ref_lines: List[str]) -> List[str]:
     """Fast reference extraction from reference section lines"""
