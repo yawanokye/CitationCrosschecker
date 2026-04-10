@@ -2137,6 +2137,9 @@ def run_crosscheck(
     if name.endswith(".docx"):
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
         references_raw = _merge_reference_lines(ref_block_lines)
+        if not references_raw:
+            print("[WARNING] No references from merge, using raw ref lines")
+            references_raw = ref_block_lines
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
 
@@ -2162,11 +2165,77 @@ def run_crosscheck(
     too_large = main_text_len > 2_000_000
 
     if style_hint == "apa":
-        cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
-        refs = [parse_reference_author_year(r) for r in references_raw]
-        refs = [r for r in refs if r is not None]
 
-        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
+        # =========================
+        # 1. LIMIT ONLY MAIN TEXT (NOT REFERENCES)
+        # =========================
+        MAIN_TEXT_LIMIT = 150000
+        main_text_limited = main_text[:MAIN_TEXT_LIMIT]
+    
+        # =========================
+        # 2. FAST CITATION EXTRACTION
+        # =========================
+        cites = extract_citations_fast(main_text_limited)
+        cites = [c for c in cites if len(c) > 5]
+    
+        print(f"[DEBUG] Citations extracted: {len(cites)}")
+    
+        # =========================
+        # 3. FAST REFERENCE EXTRACTION (FROM REF SECTION)
+        # =========================
+        references = extract_references_fast(ref_block_lines)
+    
+        print(f"[DEBUG] References (ref section): {len(references)}")
+    
+        # =========================
+        # 4. FALLBACK IF WEAK
+        # =========================
+        if len(references) < 5:
+            print("[WARNING] Weak reference extraction, using fallback")
+    
+            combined_text = main_text + "\n".join(ref_block_lines)
+            references = extract_references_generalized(combined_text)
+    
+            print(f"[DEBUG] References (fallback): {len(references)}")
+    
+        # =========================
+        # 5. SAFETY CHECK
+        # =========================
+        if not references:
+            return {
+                "error": "No references detected. Ensure your document has a reference section."
+            }
+    
+        # =========================
+        # 6. LIMIT WORKLOAD (SAFE)
+        # =========================
+        cites = cites[:500]
+        references = references[:200]
+    
+        # =========================
+        # 7. PARSE REFERENCES
+        # =========================
+        refs = []
+        for r in references:
+            parsed = parse_reference_author_year(r)
+            if parsed:
+                refs.append(parsed)
+    
+        print(f"[DEBUG] Parsed references: {len(refs)}")
+    
+        if not refs:
+            return {
+                "error": "References detected but could not be parsed."
+            }
+    
+        # =========================
+        # 8. FAST RECONCILIATION
+        # =========================
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(
+            cites,
+            refs
+        )
+    
         ref_count = len(refs)
 
     elif style_s == "ieee":
