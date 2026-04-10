@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+import time
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -373,9 +374,32 @@ async def lifespan(app_instance: FastAPI):
     print("👋 Shutting down...")
 
 app = FastAPI(title=APP_TITLE, lifespan=lifespan)
-from fastapi import Request
-from fastapi.responses import HTMLResponse
+# --- GLOBAL PROTECTION CONTROLS ---
+processing = False
 
+BLOCKED_PATHS = [
+    "/wp-admin",
+    "/wordpress",
+    "/wp-login",
+    "/xmlrpc.php"
+]
+
+BAD_AGENTS = ["bot", "crawler", "scanner", "spider"]
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    path = request.url.path.lower()
+    ua = request.headers.get("user-agent", "").lower()
+
+    for blocked in BLOCKED_PATHS:
+        if path.startswith(blocked):
+            return Response(status_code=404)
+
+    if any(b in ua for b in BAD_AGENTS):
+        return Response(status_code=403)
+
+    return await call_next(request)
+    
 @app.middleware("http")
 async def redirect_with_message(request: Request, call_next):
     host = request.headers.get("host", "")
