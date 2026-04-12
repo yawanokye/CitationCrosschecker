@@ -497,7 +497,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "img-src 'self' data:; "
-        "script-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
         "font-src 'self' data:; "
         "connect-src 'self'; "
