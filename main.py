@@ -382,28 +382,49 @@ app = FastAPI(
 processing = False
 
 BLOCKED_PATHS = [
+    # Existing (keep)
     "/wp-admin",
     "/wordpress",
     "/wp-login",
-    "/xmlrpc.php"
+    "/xmlrpc.php",
+
+    # 🔥 ADD THESE (CRITICAL)
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/debug",
+    "/private-stats"
 ]
 
-BAD_AGENTS = ["bot", "crawler", "scanner", "spider"]
+BAD_AGENTS = [
+    "bot", "crawler", "scanner", "spider",
+    "curl", "wget", "python-requests",
+    "httpclient", "scrapy", "libwww"
+]
 
+# =========================
+# SECURITY MIDDLEWARE (1st)
+# =========================
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
 
+    # 🔒 Block sensitive endpoints
     for blocked in BLOCKED_PATHS:
         if path.startswith(blocked):
-            return Response(status_code=404)
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
 
+    # 🤖 Block bots
     if any(b in ua for b in BAD_AGENTS):
-        return Response(status_code=403)
+        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
 
     return await call_next(request)
-    
+
+
+# =========================
+# REDIRECT MIDDLEWARE (2nd)
+# =========================
 @app.middleware("http")
 async def redirect_with_message(request: Request, call_next):
     host = request.headers.get("host", "")
@@ -448,6 +469,50 @@ async def redirect_with_message(request: Request, call_next):
         """, status_code=301)
 
     return await call_next(request)
+
+
+# =========================
+# SECURITY HEADERS (3rd)
+# =========================
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+
+    # 🔐 HSTS (force HTTPS)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+
+    # 🛡️ Clickjacking protection
+    response.headers["X-Frame-Options"] = "DENY"
+
+    # 🛡️ MIME sniffing protection
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+    # 🛡️ XSS protection (legacy browsers)
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+
+    # 🛡️ Referrer policy
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    # 🛡️ Content Security Policy (safe default)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data:; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none';"
+    )
+
+    # 🛡️ Permissions policy
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=()"
+    )
+
+    # 🛡️ Prevent caching of sensitive responses
+    response.headers["Cache-Control"] = "no-store"
+
+    return response
     
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
