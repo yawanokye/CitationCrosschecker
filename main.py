@@ -398,8 +398,7 @@ BLOCKED_PATHS = [
 
 BAD_AGENTS = [
     "bot", "crawler", "scanner", "spider",
-    "curl", "wget", "python-requests",
-    "httpclient", "scrapy", "libwww"
+       "httpclient", "scrapy", "libwww"
 ]
 
 # =========================
