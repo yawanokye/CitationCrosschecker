@@ -409,9 +409,15 @@ async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
 
-    # 🔒 Block sensitive endpoints
+   
+    # 🔒 Block sensitive endpoints (with exceptions)
     for blocked in BLOCKED_PATHS:
         if path.startswith(blocked):
+    
+            # ✅ Allow private-stats for your frontend
+            if path.startswith("/private-stats"):
+                return await call_next(request)
+    
             return JSONResponse(status_code=404, content={"detail": "Not found"})
 
     # 🤖 Block bots
