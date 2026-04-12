@@ -791,13 +791,13 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                             
                             if status.get("status") == "completed":
                                 verification_results = None
-                                max_attempts = 60
+                                max_attempts = 20
                                 for attempt in range(max_attempts):
                                     verification_results = get_verification_results(verification_job_id)
                                     if verification_results:
                                         print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
                                         break
-                                    time.sleep(3)
+                                    time.sleep(2)
                                 
                                 if verification_results:
                                     summary = _compute_verification_summary(verification_results)
