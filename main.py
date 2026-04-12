@@ -373,7 +373,11 @@ async def lifespan(app_instance: FastAPI):
     yield
     print("👋 Shutting down...")
 
-app = FastAPI(title=APP_TITLE, lifespan=lifespan)
+app = FastAPI(
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None
+)
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
 
