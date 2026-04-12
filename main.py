@@ -732,7 +732,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
         
         last_progress = -1
         no_progress_count = 0
-        max_no_progress = 300
+        max_no_progress = 500
         
         while True:
             try:
@@ -748,6 +748,40 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                         no_progress_count = 0
                         last_progress = current_progress
                     
+                    # =========================
+                    # 🔥 STALL DETECTION
+                    # =========================
+                    if no_progress_count > 30:  # ~60–90 seconds depending on sleep
+                        print(f"[DEBUG] Stalled verification detected for job {job_id}")
+                    
+                        try:
+                            partial_results = get_verification_results(verification_job_id)
+                    
+                            with _lock:
+                                if job_id in _store:
+                                    if partial_results:
+                                        print(f"[DEBUG] Saving partial results: {len(partial_results)}")
+                    
+                                        _store[job_id]["result"]["online_verification"] = {
+                                            "rows": partial_results,
+                                            "summary": _compute_verification_summary(partial_results)
+                                        }
+                    
+                                        _store[job_id]["verification"]["state"] = "completed"
+                                        _store[job_id]["verification"]["message"] = "Completed with partial results"
+                                    else:
+                                        _store[job_id]["verification"]["state"] = "error"
+                                        _store[job_id]["verification"]["message"] = "Verification stalled (no results)"
+                    
+                        except Exception as e:
+                            print(f"[ERROR] Failed to recover results: {e}")
+                    
+                        break  # 🔴 exit loop cleanly
+                    
+                    
+                    # =========================
+                    # 🔄 NORMAL PROGRESS UPDATE
+                    # =========================
                     with _lock:
                         if job_id in _store:
                             _store[job_id]["verification"]["progress"] = current_progress
@@ -757,13 +791,13 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                             
                             if status.get("status") == "completed":
                                 verification_results = None
-                                max_attempts = 20
+                                max_attempts = 60
                                 for attempt in range(max_attempts):
                                     verification_results = get_verification_results(verification_job_id)
                                     if verification_results:
                                         print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
                                         break
-                                    time.sleep(2)
+                                    time.sleep(3)
                                 
                                 if verification_results:
                                     summary = _compute_verification_summary(verification_results)
