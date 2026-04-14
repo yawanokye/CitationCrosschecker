@@ -1489,11 +1489,15 @@ async def get_fix_log(job_id: str):
 
 @app.post("/verify-online")
 async def verify_online(job_id: str = Form(...)):
+
     job = get_job(job_id)
 
     if not job:
         raise HTTPException(404, "Job not found")
 
+    # =========================
+    # 🚫 PREVENT DUPLICATE RUNS
+    # =========================
     if job["verification"]["state"] == "running":
         return {
             "started": False,
@@ -1502,7 +1506,7 @@ async def verify_online(job_id: str = Form(...)):
             "progress": job["verification"].get("progress", 0),
             "total": job["verification"].get("total", 0)
         }
-    
+
     if job["verification"]["state"] == "completed":
         return {
             "started": False,
@@ -1510,41 +1514,72 @@ async def verify_online(job_id: str = Form(...)):
             "job_id": job_id,
             "completed": True
         }
-    
+
+    # =========================
+    # 📚 GET REFERENCES
+    # =========================
     refs = job["result"].get("references_raw", [])
-    
+
     if not refs:
-        update_verification_status(job_id, state="completed", message="No references to verify")
+        update_verification_status(
+            job_id,
+            state="completed",
+            message="No references to verify"
+        )
         return {
             "started": False,
             "message": "No references to verify",
             "job_id": job_id
         }
-    
-    print(f"[DEBUG] Starting verification for job {job_id} with {len(refs)} references")
-    
+
+    print(f"[DEBUG] Starting BATCH verification for job {job_id} with {len(refs)} references")
+
+    # =========================
+    # ⚙️ BATCH SETTINGS
+    # =========================
+    batch_size = 50 if len(refs) > 200 else 100
+    total_batches = (len(refs) + batch_size - 1) // batch_size
+
+    # =========================
+    # 📊 INITIAL STATUS
+    # =========================
     update_verification_status(
         job_id,
         state="running",
         total=len(refs),
         progress=0,
         percentage=0,
-        started_at=now()
+        started_at=now(),
+        batch_size=batch_size,
+        total_batches=total_batches,
+        completed_batches=0,
+        message="Starting batched verification"
     )
-    
-    verification_job_id = submit_verification(refs, style="apa")
-    update_verification_status(job_id, verification_job_id=verification_job_id)
+
     stats_tracker.add_verification(job_id, len(refs), success=True)
-    start_progress_sync(job_id, verification_job_id)
-    
+
+    # =========================
+    # 🚀 START BATCH PROCESSING
+    # =========================
+    start_progress_sync(
+        job_id,
+        refs,
+        style="apa",
+        batch_size=batch_size
+    )
+
+    # =========================
+    # 📤 RESPONSE
+    # =========================
     return {
         "started": True,
         "job_id": job_id,
-        "verification_job_id": verification_job_id,
         "total_references": len(refs),
-        "estimated_time_seconds": len(refs) * 4,
-        "estimated_time_formatted": format_time(len(refs) * 4),
-        "message": "Verification started. Check /online/status for progress."
+        "batch_size": batch_size,
+        "total_batches": total_batches,
+        "estimated_time_seconds": len(refs) * 2,
+        "estimated_time_formatted": format_time(len(refs) * 2),
+        "message": "Batched verification started. Check /online/status for progress."
     }
 
 # ============================================================
