@@ -732,129 +732,175 @@ def update_verification_status(job_id: str, **kwargs):
         if job_id in _store:
             _store[job_id]["verification"].update(kwargs)
 
-def start_progress_sync(job_id: str, verification_job_id: str):
+def start_progress_sync(job_id: str, refs: list, style: str = "apa", batch_size: int = 50):
+    import threading
+    import time
+
     def sync():
-        print(f"[DEBUG] Sync thread started for job {job_id}")
-        
-        last_progress = -1
-        no_progress_count = 0
-        max_no_progress = 500
-        
-        while True:
+        print(f"[DEBUG] Batch verification started for job {job_id}")
+
+        total_refs = len(refs)
+        batches = [refs[i:i + batch_size] for i in range(0, total_refs, batch_size)]
+        total_batches = len(batches)
+
+        all_results = []
+
+        start_time = time.time()
+        MAX_RUNTIME = 60 * 30  # 30 minutes overall
+
+        with _lock:
+            if job_id in _store:
+                _store[job_id]["verification"].update({
+                    "state": "running",
+                    "progress": 0,
+                    "total": total_refs,
+                    "percentage": 0,
+                    "started_at": now(),
+                    "batch_size": batch_size,
+                    "total_batches": total_batches,
+                    "completed_batches": 0,
+                    "results": [],
+                    "results_count": 0,
+                    "message": "Starting batch verification"
+                })
+
+        for batch_index, batch in enumerate(batches, start=1):
+
+            print(f"[DEBUG] Running batch {batch_index}/{total_batches} ({len(batch)} refs)")
+
             try:
-                status = get_verification_status(verification_job_id)
-                
+                verification_job_id = submit_verification(batch, style=style)
+            except Exception as e:
+                print(f"[ERROR] Failed to submit batch {batch_index}: {e}")
+                continue
+
+            last_progress = -1
+            batch_start = time.time()
+            BATCH_TIMEOUT = 60 * 10  # 10 minutes per batch
+
+            while True:
+                try:
+                    status = get_verification_status(verification_job_id)
+                except Exception as e:
+                    print(f"[WARN] status error: {e}")
+                    time.sleep(3)
+                    continue
+
                 if status:
                     current_progress = status.get("progress", 0)
-                    total = status.get("total", 0)
-                    
-                    if current_progress == last_progress:
-                        no_progress_count += 1
-                    else:
-                        no_progress_count = 0
-                        last_progress = current_progress
-                    
-                    # =========================
-                    # 🔥 STALL DETECTION
-                    # =========================
-                    if no_progress_count > 30:  # ~60–90 seconds depending on sleep
-                        print(f"[DEBUG] Stalled verification detected for job {job_id}")
-                    
-                        try:
-                            partial_results = get_verification_results(verification_job_id)
-                    
-                            with _lock:
-                                if job_id in _store:
-                                    if partial_results:
-                                        print(f"[DEBUG] Saving partial results: {len(partial_results)}")
-                    
-                                        _store[job_id]["result"]["online_verification"] = {
-                                            "rows": partial_results,
-                                            "summary": _compute_verification_summary(partial_results)
-                                        }
-                    
-                                        _store[job_id]["verification"]["state"] = "completed"
-                                        _store[job_id]["verification"]["message"] = "Completed with partial results"
-                                    else:
-                                        _store[job_id]["verification"]["state"] = "error"
-                                        _store[job_id]["verification"]["message"] = "Verification stalled (no results)"
-                    
-                        except Exception as e:
-                            print(f"[ERROR] Failed to recover results: {e}")
-                    
-                        break  # 🔴 exit loop cleanly
-                    
-                    
-                    # =========================
-                    # 🔄 NORMAL PROGRESS UPDATE
-                    # =========================
+                    batch_total = status.get("total", len(batch))
+
+                    # ===== SAFE PROGRESS UPDATE =====
+                    completed_before = (batch_index - 1) * batch_size
+                    overall_progress = completed_before + current_progress
+                    percentage = round((overall_progress / max(total_refs, 1)) * 100, 1)
+
                     with _lock:
                         if job_id in _store:
-                            _store[job_id]["verification"]["progress"] = current_progress
-                            _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
-                            _store[job_id]["verification"]["state"] = status.get("status", "running")
-                            _store[job_id]["verification"]["total"] = total
-                            
-                            if status.get("status") == "completed":
-                                verification_results = None
-                                max_attempts = 20
-                                for attempt in range(max_attempts):
-                                    verification_results = get_verification_results(verification_job_id)
-                                    if verification_results:
-                                        print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
-                                        break
-                                    time.sleep(2)
-                                
-                                if verification_results:
-                                    summary = _compute_verification_summary(verification_results)
-                                    
-                                    _store[job_id]["result"]["online_verification"] = {
-                                        "rows": verification_results,
-                                        "summary": summary
-                                    }
-                                    
-                                    try:
-                                        _store[job_id]["result"]["acii"] = compute_acii(
-                                            _store[job_id]["result"], 
-                                            verification_results
-                                        )
-                                    except Exception as e:
-                                        print(f"[DEBUG] ACII computation error: {e}")
-                                    
-                                    try:
-                                        _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                                    except Exception as e:
-                                        print(f"[DEBUG] Error rebuilding reference mapping: {e}")
-                                    # Add context-specific recovery payload
-                                    _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
-                                    _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
-                                    _store[job_id]["verification"]["results"] = verification_results
-                                    _store[job_id]["verification"]["results_count"] = len(verification_results)
-                                    _store[job_id]["verification"]["summary"] = summary
-                                else:
-                                    _store[job_id]["verification"]["state"] = "error"
-                                    _store[job_id]["verification"]["message"] = "No results retrieved after completion"
-                                
-                                _store[job_id]["verification"]["state"] = "completed"
-                                _store[job_id]["verification"]["completed_at"] = now()
-                                break
-                                
-                            elif status.get("status") == "error":
-                                with _lock:
-                                    if job_id in _store:
-                                        _store[job_id]["verification"]["state"] = "error"
-                                        _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
-                                break
-                else:
-                    print(f"[DEBUG] No status found for verification job {verification_job_id}, waiting...")
-                
+                            _store[job_id]["verification"]["progress"] = overall_progress
+                            _store[job_id]["verification"]["percentage"] = percentage
+                            _store[job_id]["verification"]["total"] = total_refs
+                            _store[job_id]["verification"]["message"] = f"Batch {batch_index}/{total_batches}"
+
+                    print(f"[DEBUG] Batch {batch_index}: {current_progress}/{batch_total}")
+
+                    # ===== EXIT ONLY WHEN COMPLETE =====
+                    if status.get("status") == "completed" or current_progress >= batch_total:
+                        break
+
+                # ===== TIME-BASED SAFETY =====
+                if time.time() - batch_start > BATCH_TIMEOUT:
+                    print(f"[WARN] Batch {batch_index} timeout reached")
+                    break
+
+                time.sleep(3)
+
+            # ===== FETCH RESULTS =====
+            try:
+                batch_results = get_verification_results(verification_job_id) or []
+                print(f"[DEBUG] Batch {batch_index} results: {len(batch_results)}")
+                all_results.extend(batch_results)
             except Exception as e:
-                print(f"[DEBUG] Error in sync thread: {e}")
-            
-            time.sleep(2)
-        
-        print(f"[DEBUG] Sync thread exiting for job {job_id}")
-    
+                print(f"[ERROR] Failed to fetch batch results: {e}")
+
+            # ===== UPDATE STORE AFTER EACH BATCH =====
+            with _lock:
+                if job_id in _store:
+                    _store[job_id]["verification"]["completed_batches"] = batch_index
+                    _store[job_id]["verification"]["results"] = all_results
+                    _store[job_id]["verification"]["results_count"] = len(all_results)
+
+                    progress = len(all_results)
+                    percentage = round((progress / max(total_refs, 1)) * 100, 1)
+
+                    _store[job_id]["verification"]["progress"] = progress
+                    _store[job_id]["verification"]["percentage"] = percentage
+
+            # ===== GLOBAL TIMEOUT =====
+            if time.time() - start_time > MAX_RUNTIME:
+                print(f"[WARN] Global timeout reached")
+                break
+
+        # ===== FINALIZE =====
+        print(f"[DEBUG] Finalizing verification for job {job_id}")
+
+        try:
+            summary = _compute_verification_summary(all_results)
+        except Exception as e:
+            print(f"[ERROR] Summary failed: {e}")
+            summary = {}
+
+        with _lock:
+            if job_id in _store:
+
+                _store[job_id]["result"]["online_verification"] = {
+                    "rows": all_results,
+                    "summary": summary
+                }
+
+                try:
+                    _store[job_id]["result"]["acii"] = compute_acii(
+                        _store[job_id]["result"], all_results
+                    )
+                except Exception as e:
+                    print(f"[DEBUG] ACII error: {e}")
+
+                try:
+                    _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(
+                        _store[job_id]["result"]
+                    )
+                except Exception as e:
+                    print(f"[DEBUG] mapping error: {e}")
+
+                try:
+                    _store[job_id]["result"]["recovery"] = build_context_specific_recovery(
+                        _store[job_id]["result"]
+                    )
+                except Exception as e:
+                    print(f"[DEBUG] recovery error: {e}")
+
+                try:
+                    _store[job_id]["result"]["claim_support"] = build_claim_support_rows(
+                        _store[job_id]["result"]
+                    )
+                except Exception as e:
+                    print(f"[DEBUG] claim support error: {e}")
+
+                _store[job_id]["verification"]["summary"] = summary
+                _store[job_id]["verification"]["completed_at"] = now()
+
+                if len(all_results) >= total_refs:
+                    _store[job_id]["verification"]["state"] = "completed"
+                    _store[job_id]["verification"]["message"] = "Completed"
+                elif all_results:
+                    _store[job_id]["verification"]["state"] = "partial"
+                    _store[job_id]["verification"]["message"] = "Partial completion"
+                else:
+                    _store[job_id]["verification"]["state"] = "error"
+                    _store[job_id]["verification"]["message"] = "No results"
+
+        print(f"[DEBUG] Batch verification finished for job {job_id}")
+
     thread = threading.Thread(target=sync, daemon=True)
     thread.start()
     return thread
