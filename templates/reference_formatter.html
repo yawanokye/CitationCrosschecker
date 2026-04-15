@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reference Formatter | CiteIntegrity</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Reference Formatter</h1>
+        <p>Paste a reference and format it into APA 7 or Harvard.</p>
+
+        <form id="formatterForm">
+            <label for="raw_reference">Paste reference</label>
+            <textarea id="raw_reference" name="raw_reference" rows="8" required></textarea>
+
+            <label for="style">Style</label>
+            <select id="style" name="style">
+                <option value="apa">APA 7</option>
+                <option value="apa6">APA 6</option>
+                <option value="harvard">Harvard</option>
+            </select>
+
+            <div id="variantWrap" style="display:none;">
+                <label for="variant">Harvard variant</label>
+                <select id="variant" name="variant">
+                    <option value="generic">Harvard Generic</option>
+                    <option value="ucc">Harvard UCC</option>
+                    <option value="ctr">Harvard Cite Them Right-like</option>
+                </select>
+            </div>
+
+            <label for="source_type">Source type</label>
+            <select id="source_type" name="source_type">
+                <option value="journal">Journal Article</option>
+                <option value="book">Book</option>
+                <option value="webpage">Web Page</option>
+            </select>
+
+            <button type="submit">Format Reference</button>
+        </form>
+
+        <div id="resultBox">
+            <h2>Formatted Output</h2>
+            <pre id="formattedOutput"></pre>
+            <button id="copyBtn" type="button">Copy</button>
+
+            <h3>Warnings</h3>
+            <ul id="warnings"></ul>
+        </div>
+    </div>
+
+    <script src="/static/reference_formatter.js"></script>
+</body>
+</html>
