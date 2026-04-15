@@ -1,20 +1,32 @@
 # =========================================
-# formatter.py — CiteIntegrity Core Formatter + Repair Engine
+# formatter.py — CiteIntegrity Pro Complete
+# Integrated Formatting Engine + Web Server
 # =========================================
 
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
 import re
+import json
+from typing import Dict, List, Optional
+import traceback
+from datetime import datetime
 import requests
-from typing import List, Dict, Optional, Tuple
 from difflib import SequenceMatcher
-import time
 
 # =========================================
-# 0. CONFIGURATION
+# FLASK APP INITIALIZATION
 # =========================================
+app = Flask(__name__)
+app.secret_key = 'citeintegrity-secret-key-2024'
+CORS(app)
+
+# =========================================
+# CONFIGURATION
+# =========================================
+CACHE_DOI_LOOKUPS = {}
 OPENALEX_MAX_RESULTS = 5
 CROSSREF_TIMEOUT = 5
 OPENALEX_TIMEOUT = 5
-CACHE_DOI_LOOKUPS = {}  # Simple in-memory cache
 
 # =========================================
 # 1. PARSE REFERENCE
@@ -96,13 +108,27 @@ def auto_correct_parsed(parsed: dict) -> dict:
         parsed["authors"] = re.sub(r'et\.\s+al', 'et al', parsed["authors"], re.I)
         # Fix multiple commas
         parsed["authors"] = re.sub(r',,+', ',', parsed["authors"])
+        # Fix "M, A" pattern to "M.A."
+        if re.search(r'[A-Z],\s+[A-Z]', parsed["authors"]):
+            parts = parsed["authors"].split(',')
+            if len(parts) >= 2:
+                last = parts[0]
+                initials = ''.join([p.strip() for p in parts[1:]])
+                parsed["authors"] = f"{last}, {initials}."
     
     # Fix title case issues (first letter capital)
     if parsed["title"]:
         if parsed["title"][0].islower():
             parsed["title"] = parsed["title"][0].upper() + parsed["title"][1:]
     
-    # Extract DOI from title if missing (sometimes DOIs hide there)
+    # Remove duplicate volume/issue info in source
+    if parsed["source"]:
+        # Remove duplicate patterns like "12(2), 45-60, 12(2), 45-60"
+        parts = re.split(r',\s*(?=\d+\()', parsed["source"])
+        if len(parts) > 1:
+            parsed["source"] = parts[0]
+    
+    # Extract DOI from title if missing
     if not parsed["doi"] and parsed["title"]:
         doi_in_title = re.search(r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", parsed["title"], re.I)
         if doi_in_title:
@@ -130,11 +156,16 @@ def fetch_from_crossref(doi: str) -> dict:
         
         data = res.json()["message"]
         
+        # Handle author parsing safely
+        authors = []
+        for a in data.get("author", []):
+            family = a.get("family", "")
+            given = a.get("given", "")
+            if family or given:
+                authors.append(f"{family} {given}".strip())
+        
         result = {
-            "authors": ", ".join(
-                [f"{a.get('family', '')} {a.get('given', '')}".strip() 
-                 for a in data.get("author", []) if a.get('family') or a.get('given')]
-            ),
+            "authors": ", ".join(authors[:10]),
             "year": str(data.get("issued", {}).get("date-parts", [[None]])[0][0]) if data.get("issued") else "",
             "title": data.get("title", [""])[0] if data.get("title") else "",
             "source": data.get("container-title", [""])[0] if data.get("container-title") else "",
@@ -150,12 +181,13 @@ def fetch_from_crossref(doi: str) -> dict:
         CACHE_DOI_LOOKUPS[doi] = result
         return result
         
-    except Exception:
+    except Exception as e:
+        print(f"Crossref error for {doi}: {e}")
         return {}
 
 
 def fetch_from_openalex(doi: str) -> dict:
-    """Fetch metadata from OpenAlex (better coverage for preprints/grey literature)"""
+    """Fetch metadata from OpenAlex"""
     try:
         url = f"https://api.openalex.org/works/https://doi.org/{doi}"
         res = requests.get(url, timeout=OPENALEX_TIMEOUT)
@@ -165,18 +197,23 @@ def fetch_from_openalex(doi: str) -> dict:
         
         data = res.json()
         
-        # Parse OpenAlex format
         authors = []
-        for author in data.get("authorships", []):
-            a = author.get("author", {})
-            if a.get("display_name"):
-                authors.append(a["display_name"])
+        for authorship in data.get("authorships", []):
+            author = authorship.get("author", {})
+            if author.get("display_name"):
+                authors.append(author["display_name"])
+        
+        source_name = ""
+        if data.get("host_venue"):
+            source_name = data.get("host_venue", {}).get("display_name", "")
+        elif data.get("primary_location", {}).get("source"):
+            source_name = data.get("primary_location", {}).get("source", {}).get("display_name", "")
         
         result = {
-            "authors": ", ".join(authors[:10]),  # Limit to 10 authors
+            "authors": ", ".join(authors[:10]),
             "year": str(data.get("publication_year", "")),
             "title": data.get("title", ""),
-            "source": data.get("host_venue", {}).get("display_name", ""),
+            "source": source_name,
             "volume": data.get("biblio", {}).get("volume", ""),
             "issue": data.get("biblio", {}).get("issue", ""),
             "pages": f"{data.get('biblio', {}).get('first_page', '')}-{data.get('biblio', {}).get('last_page', '')}".strip("-"),
@@ -188,13 +225,13 @@ def fetch_from_openalex(doi: str) -> dict:
         
         return result
         
-    except Exception:
+    except Exception as e:
+        print(f"OpenAlex error for {doi}: {e}")
         return {}
 
 
 def fetch_from_doi(doi: str, prefer_openalex: bool = False) -> dict:
-    """Fetch DOI metadata with fallback between Crossref and OpenAlex"""
-    
+    """Fetch DOI metadata with fallback"""
     if prefer_openalex:
         result = fetch_from_openalex(doi)
         if result and result.get("title"):
@@ -208,20 +245,23 @@ def fetch_from_doi(doi: str, prefer_openalex: bool = False) -> dict:
 
 
 # =========================================
-# 2.5 OPENALEX SEARCH (for missing DOIs)
+# 3. OPENALEX SEARCH (for missing DOIs)
 # =========================================
 
 def search_openalex_by_metadata(title: str, author: str = None, year: str = None) -> List[Dict]:
     """Search OpenAlex by title/author/year to find DOI"""
+    if not title:
+        return []
     
-    query = f"https://api.openalex.org/works?search={title}"
+    clean_title = re.sub(r'[^\w\s]', '', title)[:200]
+    query = f"https://api.openalex.org/works?search={requests.utils.quote(clean_title)}"
     
-    if author:
-        # Extract last name for better matching
-        author_last = author.split(",")[0].split()[-1]
-        query += f"&filter=authorships.author.display_name:{author_last}"
+    if author and len(author) > 2:
+        author_last = author.split(",")[0].split()[-1] if author else ""
+        if author_last:
+            query += f"&filter=authorships.author.display_name:{author_last}"
     
-    if year:
+    if year and year.isdigit():
         query += f"&filter=publication_year:{year}"
     
     query += f"&per-page={OPENALEX_MAX_RESULTS}"
@@ -236,103 +276,46 @@ def search_openalex_by_metadata(title: str, author: str = None, year: str = None
         
         for work in data.get("results", []):
             if work.get("doi"):
-                # Calculate relevance score
                 score = work.get("relevance_score", 0) * 100
-                
-                # Boost exact title match
-                if work.get("title", "").lower() == title.lower():
+                work_title = work.get("title", "")
+                if work_title and work_title.lower() == title.lower():
                     score += 30
+                elif work_title and title.lower() in work_title.lower():
+                    score += 15
                 
                 results.append({
                     "doi": work["doi"].replace("https://doi.org/", ""),
                     "score": score,
-                    "title": work.get("title", ""),
+                    "title": work_title,
                     "source": "OpenAlex",
                     "year": str(work.get("publication_year", "")),
-                    "authors": work.get("authorships", [{}])[0].get("author", {}).get("display_name", "")
+                    "authors": work.get("authorships", [{}])[0].get("author", {}).get("display_name", "") if work.get("authorships") else ""
                 })
         
         return sorted(results, key=lambda x: x["score"], reverse=True)
         
-    except Exception:
-        return []
-
-
-def search_crossref_by_metadata(title: str, author: str = None, year: str = None) -> List[Dict]:
-    """Search Crossref by metadata as fallback"""
-    
-    query = f"https://api.crossref.org/works?query.title={title}"
-    
-    if author:
-        query += f"&query.author={author}"
-    
-    if year:
-        query += f"&filter=from-pub-date:{year},until-pub-date:{year}"
-    
-    query += f"&rows={OPENALEX_MAX_RESULTS}"
-    
-    try:
-        response = requests.get(query, timeout=CROSSREF_TIMEOUT)
-        if response.status_code != 200:
-            return []
-        
-        data = response.json()
-        results = []
-        
-        for item in data.get("message", {}).get("items", []):
-            if item.get("DOI"):
-                score = 70  # Base score for Crossref match
-                
-                # Boost exact title
-                if item.get("title", [""])[0].lower() == title.lower():
-                    score += 30
-                
-                results.append({
-                    "doi": item["DOI"],
-                    "score": score,
-                    "title": item.get("title", [""])[0],
-                    "source": "Crossref",
-                    "year": str(item.get("issued", {}).get("date-parts", [[None]])[0][0]),
-                    "authors": ", ".join([f"{a.get('family', '')}" for a in item.get("author", [])[:3]])
-                })
-        
-        return sorted(results, key=lambda x: x["score"], reverse=True)
-        
-    except Exception:
+    except Exception as e:
+        print(f"OpenAlex search error: {e}")
         return []
 
 
 def find_doi_for_reference(parsed: dict) -> List[Dict]:
     """Find DOI matches for a reference without DOI"""
-    
     if not parsed["title"]:
         return []
     
-    # Try OpenAlex first (better coverage)
-    matches = search_openalex_by_metadata(
+    return search_openalex_by_metadata(
         parsed["title"], 
         parsed["authors"].split(",")[0] if parsed["authors"] else None,
         parsed["year"]
     )
-    
-    # If no OpenAlex matches, try Crossref
-    if not matches:
-        matches = search_crossref_by_metadata(
-            parsed["title"],
-            parsed["authors"].split(",")[0] if parsed["authors"] else None,
-            parsed["year"]
-        )
-    
-    return matches
 
 
 def rank_doi_matches(matches: List[Dict], original_parsed: dict) -> List[Dict]:
     """Rank multiple DOI matches by confidence"""
-    
     for match in matches:
         confidence = match.get("score", 50)
         
-        # Compare authors
         if original_parsed["authors"] and match.get("authors"):
             author_similarity = SequenceMatcher(
                 None, 
@@ -341,12 +324,10 @@ def rank_doi_matches(matches: List[Dict], original_parsed: dict) -> List[Dict]:
             ).ratio()
             confidence += author_similarity * 30
         
-        # Compare year
         if original_parsed["year"] and match.get("year"):
             if original_parsed["year"] == match["year"]:
                 confidence += 20
         
-        # Compare title
         if original_parsed["title"] and match.get("title"):
             title_similarity = SequenceMatcher(
                 None,
@@ -361,55 +342,52 @@ def rank_doi_matches(matches: List[Dict], original_parsed: dict) -> List[Dict]:
 
 
 # =========================================
-# 3. AUTHOR CLEANING
+# 4. AUTHOR CLEANING
 # =========================================
 def clean_authors(authors: str) -> str:
     if not authors:
-        return ""
+        return "Author Unknown"
+    
+    if "et al" in authors.lower():
+        return authors.strip()
     
     parts = [a.strip() for a in authors.split(",") if a.strip()]
     formatted = []
     
-    for p in parts:
-        # Handle "et al"
-        if "et al" in p.lower():
-            formatted.append(p.strip())
-            continue
-        
+    for p in parts[:20]:
         names = p.split()
         if len(names) >= 2:
             last = names[-1]
-            initials = " ".join([n[0] + "." for n in names[:-1] if n[0].isalpha()])
-            formatted.append(f"{last}, {initials}".strip())
+            initials = []
+            for n in names[:-1]:
+                if n and n[0].isalpha():
+                    initials.append(n[0] + ".")
+            formatted.append(f"{last}, {' '.join(initials)}".strip())
         else:
             formatted.append(p)
     
     result = ", ".join(formatted)
     
-    # Limit to 20 authors for APA (use "et al." after 20)
-    author_count = result.count(",") + 1
-    if author_count > 20:
+    if len(parts) > 20:
         result = result.split(",")[0] + " et al."
     
-    return result
+    return result if result else "Author Unknown"
 
 
 # =========================================
-# 4. FORMATTERS
+# 5. FORMATTERS
 # =========================================
 def format_apa7(p):
     authors = clean_authors(p["authors"])
-    if not authors:
-        authors = "Author Unknown"
-    
     year = f"({p['year']})." if p["year"] else "(n.d.)."
     
-    # Title sentence case
-    title = p["title"]
+    title = p["title"] if p["title"] else "No title"
     if title and not title[0].isupper():
         title = title[0].upper() + title[1:]
     
-    ref = f"{authors} {year} {title}. {p['source']}"
+    source = p["source"] if p["source"] else "Unknown source"
+    
+    ref = f"{authors} {year} {title}. {source}"
     
     if p["volume"]:
         ref += f", {p['volume']}"
@@ -431,12 +409,12 @@ def format_apa7(p):
 
 def format_apa6(p):
     authors = clean_authors(p["authors"])
-    if not authors:
-        authors = "Author Unknown"
-    
     year = f"({p['year']})." if p["year"] else "(n.d.)."
     
-    ref = f"{authors} {year} {p['title']}. {p['source']}"
+    title = p["title"] if p["title"] else "No title"
+    source = p["source"] if p["source"] else "Unknown source"
+    
+    ref = f"{authors} {year} {title}. {source}"
     
     if p["volume"]:
         ref += f", {p['volume']}"
@@ -457,14 +435,16 @@ def format_apa6(p):
 
 
 def format_harvard(p):
-    year = p["year"] or "n.d."
+    year = p["year"] if p["year"] else "n.d."
     
-    # Harvard author-date format
-    authors = p["authors"]
+    authors = p["authors"] if p["authors"] else "Unknown"
     if authors and "et al" not in authors.lower() and "," in authors:
-        authors = authors.split(",")[0]  # First author only for in-text style
+        authors = authors.split(",")[0]
     
-    ref = f"{authors} ({year}) '{p['title']}', {p['source']}"
+    title = p["title"] if p["title"] else "No title"
+    source = p["source"] if p["source"] else "Unknown source"
+    
+    ref = f"{authors} ({year}) '{title}', {source}"
     
     if p["volume"]:
         ref += f", {p['volume']}"
@@ -485,16 +465,16 @@ def format_harvard(p):
 
 
 def format_vancouver(p):
-    """Vancouver style (numbered, minimal punctuation)"""
-    authors = p["authors"]
-    if authors:
-        # Vancouver: Last name + initials without spaces
+    authors = p["authors"] if p["authors"] else "Anonymous"
+    
+    if authors and authors != "Anonymous" and authors != "Author Unknown":
         author_parts = []
-        for a in authors.split(",")[:6]:  # Max 6 authors
-            names = a.strip().split()
+        for a in authors.split(",")[:6]:
+            a = a.strip()
+            names = a.split()
             if len(names) >= 2:
                 last = names[-1]
-                initials = "".join([n[0] for n in names[:-1]])
+                initials = "".join([n[0] for n in names[:-1] if n and n[0].isalpha()])
                 author_parts.append(f"{last} {initials}")
             else:
                 author_parts.append(a)
@@ -502,10 +482,11 @@ def format_vancouver(p):
         authors = ", ".join(author_parts)
         if len(authors.split(",")) > 6:
             authors += ", et al"
-    else:
-        authors = "Anonymous"
     
-    ref = f"{authors}. {p['title']}. {p['source']}"
+    title = p["title"] if p["title"] else "No title"
+    source = p["source"] if p["source"] else "Unknown source"
+    
+    ref = f"{authors}. {title}. {source}"
     
     if p["year"]:
         ref += f". {p['year']}"
@@ -536,105 +517,91 @@ def format_reference(parsed, style):
     elif style == "vancouver":
         return format_vancouver(parsed)
     
-    raise ValueError(f"Invalid style: {style}. Use 'apa7', 'apa6', 'harvard', or 'vancouver'")
+    return format_apa7(parsed)
 
 
 # =========================================
-# 5. REPAIR ENGINE (ENHANCED)
+# 6. REPAIR ENGINE
 # =========================================
 def compute_repair_score(p):
-    """Compute confidence score for parsed reference completeness"""
     score = 100
     
-    if not p["authors"]:
+    if not p["authors"] or p["authors"] == "Author Unknown":
         score -= 20
     if not p["year"]:
         score -= 20
-    if not p["title"]:
+    if not p["title"] or p["title"] == "No title":
         score -= 25
-    if not p["source"]:
+    if not p["source"] or p["source"] == "Unknown source":
         score -= 15
     if not p["doi"] and not p["url"]:
         score -= 10
-    if not p["volume"] and not p["pages"]:
-        score -= 5  # Minor penalty
     
     return max(score, 0)
 
 
 def get_repair_issues(p):
-    """Return list of issues found in reference"""
     issues = []
     
-    if not p["authors"]:
+    if not p["authors"] or p["authors"] == "Author Unknown":
         issues.append("Missing author(s)")
-    elif len(p["authors"]) < 3:
+    elif len(p["authors"]) < 5 and "," not in p["authors"]:
         issues.append("Author name seems incomplete")
     
     if not p["year"]:
         issues.append("Missing publication year")
-    elif not re.match(r"19|20", p["year"]):
-        issues.append("Unusual year format")
     
-    if not p["title"]:
+    if not p["title"] or p["title"] == "No title":
         issues.append("Missing title")
-    elif len(p["title"]) < 5:
-        issues.append("Title seems too short")
     
-    if not p["source"]:
+    if not p["source"] or p["source"] == "Unknown source":
         issues.append("Missing journal/book title")
     
     if not p["doi"] and not p["url"]:
         issues.append("No DOI or URL")
-    elif not p["doi"] and p["url"]:
-        issues.append("Has URL but no DOI (preferred)")
     
     return issues
 
 
 def repair_reference(raw, style, source_type, auto_enhance=True, auto_find_doi=True):
-    """Enhanced repair with DOI finding and ranking"""
-    
     parsed = parse_reference(raw, source_type)
     log = []
     alternative_dois = []
     
-    # Step 1: Auto-correct common issues
+    # Auto-correct
     parsed = auto_correct_parsed(parsed)
     if parsed != parse_reference(raw, source_type):
         log.append("Applied auto-corrections")
     
-    # Step 2: Fetch from DOI if present
+    # Fetch from DOI
     if auto_enhance and parsed.get("doi"):
-        doi_data = fetch_from_doi(parsed["doi"])
-        for k, v in doi_data.items():
-            if v and not parsed.get(k):
-                parsed[k] = v
-                log.append(f"Filled {k} from DOI ({doi_data.get('source_api', 'Crossref')})")
+        doi_data = fetch_from_doi(parsed["doi"], prefer_openalex=True)
+        if doi_data and doi_data.get("title"):
+            for k, v in doi_data.items():
+                if v and not parsed.get(k):
+                    parsed[k] = v
+                    log.append(f"Filled {k} from DOI")
     
-    # Step 3: Try to find DOI if missing
-    if auto_find_doi and not parsed.get("doi") and parsed.get("title"):
-        log.append("Searching for DOI...")
+    # Find DOI if missing
+    if auto_find_doi and not parsed.get("doi") and parsed.get("title") and parsed["title"] != "No title":
+        log.append("Searching for DOI via OpenAlex...")
         matches = find_doi_for_reference(parsed)
         
         if matches:
             ranked = rank_doi_matches(matches, parsed)
             alternative_dois = ranked
             
-            # Auto-select best match if confidence > 85%
             if ranked and ranked[0]["final_confidence"] > 85:
                 best_match = ranked[0]
                 parsed["doi"] = best_match["doi"]
-                log.append(f"Auto-assigned DOI: {best_match['doi']} (confidence: {best_match['final_confidence']:.0f}%)")
+                log.append(f"Auto-assigned DOI: {best_match['doi']}")
                 
-                # Fetch full metadata for the found DOI
                 doi_data = fetch_from_doi(parsed["doi"], prefer_openalex=True)
-                for k, v in doi_data.items():
-                    if v and not parsed.get(k):
-                        parsed[k] = v
-                        log.append(f"Filled {k} from found DOI")
+                if doi_data and doi_data.get("title"):
+                    for k, v in doi_data.items():
+                        if v and not parsed.get(k):
+                            parsed[k] = v
     
-    # Step 4: Format
     formatted = format_reference(parsed, style)
     score = compute_repair_score(parsed)
     issues = get_repair_issues(parsed)
@@ -646,79 +613,13 @@ def repair_reference(raw, style, source_type, auto_enhance=True, auto_find_doi=T
         "repair_log": log,
         "confidence": score,
         "issues": issues,
-        "alternative_dois": alternative_dois,
+        "alternative_dois": alternative_dois[:3],
         "has_doi": bool(parsed.get("doi")),
         "needs_review": score < 70 or len(issues) > 2
     }
 
 
-# =========================================
-# 6. BULK FUNCTIONS
-# =========================================
-def process_references(raw_text, style, variant=None, source_type="journal", auto_enhance=True):
-    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
-    
-    formatted = []
-    warnings = []
-    repair_results = []
-    
-    for i, line in enumerate(lines, 1):
-        result = repair_reference(line, style, source_type, auto_enhance)
-        formatted.append(result["formatted"])
-        repair_results.append(result)
-        
-        if result["issues"]:
-            warnings.append(f"Reference {i}: {', '.join(result['issues'])}")
-        if result.get("needs_review"):
-            warnings.append(f"Reference {i}: Low confidence ({result['confidence']}%) - needs review")
-    
-    return {
-        "formatted": "\n\n".join(formatted),
-        "warnings": warnings,
-        "repair_results": repair_results,
-        "total_references": len(lines),
-        "average_confidence": sum(r["confidence"] for r in repair_results) / len(repair_results) if repair_results else 0
-    }
-
-
-def repair_references_bulk(raw_text, style, source_type="journal", auto_enhance=True, auto_find_doi=True):
-    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
-    
-    return [
-        repair_reference(line, style, source_type, auto_enhance, auto_find_doi)
-        for line in lines
-    ]
-
-
-def get_repair_summary(repair_results):
-    """Generate summary statistics for batch repair"""
-    
-    total = len(repair_results)
-    with_doi = sum(1 for r in repair_results if r["has_doi"])
-    needs_review = sum(1 for r in repair_results if r.get("needs_review", False))
-    avg_confidence = sum(r["confidence"] for r in repair_results) / total if total else 0
-    
-    # Count issues
-    issue_counts = {}
-    for result in repair_results:
-        for issue in result.get("issues", []):
-            issue_counts[issue] = issue_counts.get(issue, 0) + 1
-    
-    return {
-        "total_references": total,
-        "references_with_doi": with_doi,
-        "doi_coverage": (with_doi / total * 100) if total else 0,
-        "needs_review": needs_review,
-        "average_confidence": avg_confidence,
-        "issue_frequencies": issue_counts
-    }
-
-
-# =========================================
-# 7. EXPORT FUNCTIONS
-# =========================================
 def export_to_dict(repair_results):
-    """Export repair results as dict (JSON-ready)"""
     return [
         {
             "original": r["original"],
@@ -726,6 +627,7 @@ def export_to_dict(repair_results):
             "confidence": r["confidence"],
             "issues": r["issues"],
             "has_doi": r["has_doi"],
+            "needs_review": r.get("needs_review", False),
             "repair_log": r["repair_log"],
             "parsed": r["parsed"]
         }
@@ -733,21 +635,220 @@ def export_to_dict(repair_results):
     ]
 
 
-def export_to_csv_rows(repair_results):
-    """Export to CSV-compatible rows"""
-    rows = []
-    for r in repair_results:
-        rows.append({
-            "Original Reference": r["original"],
-            "Formatted Reference": r["formatted"],
-            "Confidence (%)": r["confidence"],
-            "Issues": "; ".join(r["issues"]),
-            "Has DOI": r["has_doi"],
-            "Repair Actions": "; ".join(r["repair_log"]),
-            "DOI": r["parsed"].get("doi", ""),
-            "Year": r["parsed"].get("year", ""),
-            "Authors": r["parsed"].get("authors", ""),
-            "Title": r["parsed"].get("title", ""),
-            "Source": r["parsed"].get("source", "")
-        })
-    return rows
+# =========================================
+# 7. FLASK ROUTES
+# =========================================
+
+@app.route('/')
+def index():
+    """Serve the main application page"""
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>CiteIntegrity Pro</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f5f7fb; }
+            .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; }
+            h1 { color: #1f2937; }
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+            textarea { width: 100%; height: 300px; padding: 10px; border: 1px solid #ddd; border-radius: 8px; }
+            button { background: #19b36b; color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; }
+            select, .controls { margin: 10px 0; padding: 8px; }
+            .output { background: #f9fafb; border: 1px solid #e5e7eb; padding: 15px; border-radius: 8px; min-height: 300px; white-space: pre-wrap; }
+            .warnings { background: #fff7ed; border-left: 4px solid #f59e0b; padding: 10px; margin-top: 15px; }
+            .hidden { display: none; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🔧 CiteIntegrity Pro</h1>
+            <p>Smart reference repair with OpenAlex integration, DOI auto-discovery, and multi-format export</p>
+            
+            <div class="grid">
+                <div>
+                    <h3>📝 References to Format/Repair</h3>
+                    <textarea id="raw_reference" placeholder="Paste one or more references (one per line)...&#10;&#10;Example:&#10;Adam, M, A. (2020). Financial literacy and behaviour: Journal of Finance, 12(2), 45-60."></textarea>
+                    
+                    <div class="controls">
+                        <select id="style">
+                            <option value="apa7">APA 7th Edition</option>
+                            <option value="apa6">APA 6th Edition</option>
+                            <option value="harvard">Harvard</option>
+                            <option value="vancouver">Vancouver</option>
+                        </select>
+                        <select id="source_type">
+                            <option value="journal">Journal Article</option>
+                            <option value="book">Book</option>
+                            <option value="webpage">Website</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label><input type="checkbox" id="auto_enhance" checked> Auto-enhance from DOI</label>
+                        <label><input type="checkbox" id="auto_find_doi" checked> Auto-find missing DOIs (OpenAlex)</label>
+                    </div>
+                    
+                    <button id="formatBtn">🚀 Format & Repair References</button>
+                </div>
+                
+                <div>
+                    <h3>✅ Formatted & Repaired Output</h3>
+                    <div id="formattedOutput" class="output">Your formatted references will appear here...</div>
+                    <button id="copyBtn">📋 Copy to Clipboard</button>
+                    <div id="warningsBox" class="warnings hidden">
+                        <strong>⚠️ Warnings:</strong>
+                        <ul id="warningsList"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            const formatBtn = document.getElementById('formatBtn');
+            const rawReference = document.getElementById('raw_reference');
+            const formattedOutput = document.getElementById('formattedOutput');
+            const copyBtn = document.getElementById('copyBtn');
+            const warningsBox = document.getElementById('warningsBox');
+            const warningsList = document.getElementById('warningsList');
+            const style = document.getElementById('style');
+            const sourceType = document.getElementById('source_type');
+            const autoEnhance = document.getElementById('auto_enhance');
+            const autoFindDoi = document.getElementById('auto_find_doi');
+            
+            formatBtn.addEventListener('click', async function() {
+                const rawText = rawReference.value.trim();
+                if (!rawText) {
+                    formattedOutput.textContent = 'Please paste at least one reference.';
+                    return;
+                }
+                
+                formattedOutput.textContent = 'Processing with OpenAlex...';
+                formatBtn.disabled = true;
+                
+                const formData = new FormData();
+                formData.append('raw_reference', rawText);
+                formData.append('style', style.value);
+                formData.append('source_type', sourceType.value);
+                formData.append('auto_enhance', autoEnhance.checked);
+                formData.append('auto_find_doi', autoFindDoi.checked);
+                
+                try {
+                    const response = await fetch('/api/format-reference', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!data.success) {
+                        formattedOutput.textContent = data.message || 'Formatting failed.';
+                        return;
+                    }
+                    
+                    formattedOutput.textContent = data.formatted || 'No output returned.';
+                    
+                    if (data.warnings && data.warnings.length > 0) {
+                        warningsList.innerHTML = data.warnings.map(w => `<li>${w}</li>`).join('');
+                        warningsBox.classList.remove('hidden');
+                    } else {
+                        warningsBox.classList.add('hidden');
+                    }
+                } catch (error) {
+                    formattedOutput.textContent = 'Error: ' + error.message;
+                } finally {
+                    formatBtn.disabled = false;
+                }
+            });
+            
+            copyBtn.addEventListener('click', async function() {
+                const text = formattedOutput.textContent;
+                if (text && text !== 'Your formatted references will appear here...') {
+                    await navigator.clipboard.writeText(text);
+                    copyBtn.textContent = '✓ Copied!';
+                    setTimeout(() => copyBtn.textContent = '📋 Copy to Clipboard', 2000);
+                }
+            });
+        </script>
+    </body>
+    </html>
+    '''
+
+
+@app.route('/api/format-reference', methods=['POST'])
+def format_reference_api():
+    """Format and repair references with OpenAlex integration"""
+    try:
+        if request.is_json:
+            data = request.get_json()
+            raw_text = data.get('raw_reference') or data.get('raw_text', '')
+            style = data.get('style', 'apa7')
+            source_type = data.get('source_type', 'journal')
+            auto_enhance = data.get('auto_enhance', True)
+            auto_find_doi = data.get('auto_find_doi', True)
+        else:
+            raw_text = request.form.get('raw_reference', '')
+            style = request.form.get('style', 'apa7')
+            source_type = request.form.get('source_type', 'journal')
+            auto_enhance = request.form.get('auto_enhance', 'true').lower() == 'true'
+            auto_find_doi = request.form.get('auto_find_doi', 'true').lower() == 'true'
+        
+        if not raw_text or not raw_text.strip():
+            return jsonify({'success': False, 'message': 'Please provide at least one reference.'}), 400
+        
+        references = [line.strip() for line in raw_text.strip().split('\n') if line.strip()]
+        
+        repair_results = []
+        formatted_refs = []
+        all_warnings = []
+        
+        for idx, ref in enumerate(references, 1):
+            result = repair_reference(ref, style, source_type, auto_enhance, auto_find_doi)
+            repair_results.append(result)
+            formatted_refs.append(result['formatted'])
+            for w in result.get('issues', []):
+                all_warnings.append(f"Ref {idx}: {w}")
+        
+        response_data = {
+            'success': True,
+            'formatted': '\n\n'.join(formatted_refs),
+            'warnings': all_warnings[:30],
+            'repair_results': export_to_dict(repair_results),
+            'total_references': len(references),
+            'references_with_doi': sum(1 for r in repair_results if r['has_doi']),
+            'average_confidence': round(sum(r['confidence'] for r in repair_results) / len(repair_results), 1) if repair_results else 0,
+            'needs_review': sum(1 for r in repair_results if r.get('needs_review', False)),
+        }
+        
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        print(f"Error: {traceback.format_exc()}")
+        return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'version': '2.0.0',
+        'features': ['OpenAlex', 'DOI auto-discovery', 'APA7', 'APA6', 'Harvard', 'Vancouver']
+    }), 200
+
+
+# =========================================
+# 8. RUN THE APP
+# =========================================
+
+if __name__ == '__main__':
+    print("=" * 60)
+    print("🔧 CiteIntegrity Pro - Running from formatter.py")
+    print("=" * 60)
+    print(f"✅ OpenAlex Integration: ENABLED")
+    print(f"✅ DOI Auto-discovery: ENABLED")
+    print(f"✅ All Citation Styles: ENABLED")
+    print("=" * 60)
+    print("\n📱 Access the application at: http://localhost:5000")
+    print("⚠️  Press Ctrl+C to stop the server\n")
+    
+    app.run(debug=True, host='0.0.0.0', port=5000)
