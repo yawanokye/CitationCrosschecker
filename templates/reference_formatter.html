@@ -115,6 +115,12 @@
         color: #19b36b;
         font-weight: 600;
     }
+
+    .hint {
+        font-size: 12px;
+        color: #6b7280;
+        margin-top: 6px;
+    }
 </style>
 </head>
 
@@ -135,35 +141,50 @@
 
         <!-- INPUT -->
         <div>
-            <label>Paste Reference(s)</label>
-            <textarea id="raw_reference" placeholder="Paste multiple references here..."></textarea>
+            <form id="formatterForm">
 
-            <div class="controls">
-                <select id="style">
-                    <option value="apa7">APA 7</option>
-                    <option value="apa6">APA 6</option>
-                    <option value="harvard">Harvard</option>
-                </select>
+                <label>Paste Reference(s)</label>
+                <textarea name="raw_reference" id="raw_reference"
+                    placeholder="Paste multiple references here..."></textarea>
 
-                <select id="source_type">
-                    <option value="journal">Journal</option>
-                    <option value="book">Book</option>
-                    <option value="webpage">Web</option>
-                    <option value="report">Report</option>
-                </select>
+                <div class="hint">
+                    Tip: Paste multiple references, one per line for bulk formatting.
+                </div>
 
-                <button onclick="submitFormat()">Format</button>
-            </div>
+                <div class="controls">
+                    <select name="style" id="style">
+                        <option value="apa7">APA 7</option>
+                        <option value="apa6">APA 6</option>
+                        <option value="harvard">Harvard</option>
+                    </select>
+
+                    <select name="source_type" id="source_type">
+                        <option value="journal">Journal</option>
+                        <option value="book">Book</option>
+                        <option value="webpage">Web</option>
+                        <option value="report">Report</option>
+                    </select>
+
+                    <!-- 🔥 FIXED -->
+                    <button type="submit">Format</button>
+                </div>
+
+            </form>
         </div>
 
         <!-- OUTPUT -->
         <div>
             <label>Formatted Output</label>
-            <div id="output" class="output"></div>
+            <div id="formattedOutput" class="output">
+                Your formatted references will appear here.
+            </div>
 
-            <button class="copy-btn" onclick="copyOutput()">Copy</button>
+            <button class="copy-btn" id="copyBtn">Copy</button>
 
-            <div id="warnings" class="warnings hidden"></div>
+            <!-- 🔥 FIXED -->
+            <div id="warningsBox" class="warnings hidden">
+                <ul id="warningsList"></ul>
+            </div>
         </div>
 
     </div>
