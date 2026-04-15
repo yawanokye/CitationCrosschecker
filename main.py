@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
+from formatter import process_references
 
 from engine import run_crosscheck, run_crosscheck_with_autofix
 from verify import (
@@ -532,6 +533,45 @@ if not os.path.exists(static_dir):
     os.makedirs(static_dir)
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.get("/reference-formatter", response_class=HTMLResponse)
+async def reference_formatter_page(request: Request):
+    return templates.TemplateResponse(
+        "reference_formatter.html",
+        {"request": request}
+    )
+
+
+@app.post("/api/format-reference")
+async def format_reference_api(
+    raw_reference: str = Form(...),
+    style: str = Form(...),
+    variant: str = Form("generic"),
+    source_type: str = Form("journal")
+):
+    try:
+        result = process_references(
+            raw_reference=raw_reference,
+            style=style,
+            variant=variant,
+            source_type=source_type
+        )
+
+        return {
+            "success": True,
+            "formatted": result["formatted"],
+            "warnings": result["warnings"]
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "message": str(e)
+            }
+        )
 
 _store: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
