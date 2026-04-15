@@ -3,18 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Reference Formatter | CiteIntegrity</title>
+<title>CiteIntegrity Pro | Reference Formatter + Repair Engine</title>
 
 <style>
+    * {
+        box-sizing: border-box;
+    }
+
     body {
-        font-family: 'Segoe UI', Tahoma, sans-serif;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         background: #f5f7fb;
         margin: 0;
+        padding: 20px;
     }
 
     .container {
-        max-width: 1000px;
-        margin: 40px auto;
+        max-width: 1400px;
+        margin: 0 auto;
         background: white;
         padding: 30px;
         border-radius: 12px;
@@ -24,11 +29,25 @@
     h1 {
         margin-top: 0;
         color: #1f2937;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .badge {
+        background: #19b36b;
+        color: white;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: normal;
     }
 
     .subtitle {
         color: #6b7280;
         margin-bottom: 25px;
+        padding-bottom: 15px;
+        border-bottom: 2px solid #e5e7eb;
     }
 
     .grid {
@@ -41,30 +60,53 @@
         font-weight: 600;
         display: block;
         margin-bottom: 6px;
+        color: #374151;
     }
 
     textarea {
         width: 100%;
-        height: 220px;
+        height: 250px;
         padding: 12px;
         border-radius: 8px;
-        border: 1px solid #ddd;
+        border: 1px solid #d1d5db;
         resize: vertical;
-        font-size: 14px;
+        font-size: 13px;
+        font-family: 'Courier New', monospace;
         box-sizing: border-box;
+        background: #fafafa;
+    }
+
+    textarea:focus {
+        outline: none;
+        border-color: #19b36b;
+        box-shadow: 0 0 0 3px rgba(25, 179, 107, 0.1);
     }
 
     select, button {
-        padding: 10px;
+        padding: 10px 12px;
         border-radius: 8px;
-        border: 1px solid #ddd;
+        border: 1px solid #d1d5db;
         font-size: 14px;
-        box-sizing: border-box;
+        background: white;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    select:hover {
+        border-color: #19b36b;
     }
 
     .controls {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-top: 15px;
+        margin-bottom: 10px;
+    }
+
+    .action-buttons {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
         gap: 10px;
         margin-top: 10px;
     }
@@ -73,12 +115,26 @@
         background: #19b36b;
         color: white;
         border: none;
-        cursor: pointer;
         font-weight: 600;
     }
 
-    button:hover {
-        opacity: 0.9;
+    button:hover:not(:disabled) {
+        background: #158f57;
+        transform: translateY(-1px);
+    }
+
+    button:disabled {
+        background: #9ca3af;
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+
+    .secondary-btn {
+        background: #6b7280;
+    }
+
+    .secondary-btn:hover {
+        background: #4b5563;
     }
 
     .output {
@@ -86,22 +142,80 @@
         border: 1px solid #e5e7eb;
         padding: 15px;
         border-radius: 8px;
-        min-height: 220px;
+        min-height: 250px;
+        max-height: 500px;
+        overflow-y: auto;
         white-space: pre-wrap;
+        font-family: 'Segoe UI', Tahoma, sans-serif;
+        font-size: 13px;
+        line-height: 1.5;
     }
 
     .copy-btn {
         margin-top: 10px;
         background: #111827;
+        width: 100%;
+    }
+
+    .copy-btn:hover {
+        background: #1f2937;
+    }
+
+    .stats {
+        margin-top: 15px;
+        padding: 12px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 8px;
+        color: white;
+        display: flex;
+        justify-content: space-around;
+        text-align: center;
+    }
+
+    .stat-item {
+        flex: 1;
+    }
+
+    .stat-value {
+        font-size: 24px;
+        font-weight: bold;
+    }
+
+    .stat-label {
+        font-size: 12px;
+        opacity: 0.9;
+        margin-top: 5px;
     }
 
     .warnings {
         margin-top: 15px;
         background: #fff7ed;
-        border: 1px solid #fed7aa;
-        padding: 10px;
+        border-left: 4px solid #f59e0b;
+        padding: 12px;
         border-radius: 8px;
         font-size: 13px;
+    }
+
+    .warnings ul {
+        margin: 0;
+        padding-left: 20px;
+    }
+
+    .warnings li {
+        margin: 5px 0;
+    }
+
+    .info-box {
+        margin-top: 15px;
+        background: #e0f2fe;
+        border-left: 4px solid #0284c7;
+        padding: 12px;
+        border-radius: 8px;
+        font-size: 13px;
+    }
+
+    .info-box strong {
+        color: #0284c7;
     }
 
     .hidden {
@@ -109,13 +223,17 @@
     }
 
     .top-link {
-        margin-bottom: 15px;
+        margin-bottom: 20px;
     }
 
     .top-link a {
         text-decoration: none;
         color: #19b36b;
         font-weight: 600;
+    }
+
+    .top-link a:hover {
+        text-decoration: underline;
     }
 
     .hint {
@@ -125,16 +243,50 @@
     }
 
     .loading {
-        opacity: 0.7;
+        opacity: 0.6;
+        pointer-events: none;
     }
 
-    @media (max-width: 800px) {
+    .progress-bar {
+        width: 100%;
+        height: 4px;
+        background: #e5e7eb;
+        border-radius: 2px;
+        overflow: hidden;
+        margin-top: 10px;
+    }
+
+    .progress-fill {
+        height: 100%;
+        background: #19b36b;
+        transition: width 0.3s;
+        width: 0%;
+    }
+
+    .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: normal;
+        cursor: pointer;
+    }
+
+    .checkbox-label input {
+        cursor: pointer;
+    }
+
+    @media (max-width: 900px) {
         .grid {
             grid-template-columns: 1fr;
         }
-
-        .controls {
-            grid-template-columns: 1fr;
+        
+        .stats {
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .container {
+            padding: 20px;
         }
     }
 </style>
@@ -143,65 +295,407 @@
 <body>
 
 <div class="container">
-
     <div class="top-link">
         <a href="/">← Back to Home</a>
     </div>
 
-    <h1>Reference Formatter</h1>
+    <h1>
+        🔧 CiteIntegrity Pro
+        <span class="badge">OpenAlex Enhanced</span>
+    </h1>
     <div class="subtitle">
-        Paste one or multiple references, one per line. Format into APA 7, APA 6, or Harvard.
+        Smart reference repair with DOI auto-discovery, OpenAlex integration, and multi-format export
     </div>
 
     <div class="grid">
-
+        <!-- Input Panel -->
         <div>
-            <form id="formatterForm">
-                <label for="raw_reference">Paste Reference(s)</label>
-                <textarea
-                    name="raw_reference"
-                    id="raw_reference"
-                    placeholder="Paste multiple references here..."
-                    required
-                ></textarea>
+            <label for="raw_reference">📝 References to Format/Repair</label>
+            <textarea
+                id="raw_reference"
+                placeholder="Paste one or more references (one per line)...
+                
+Examples:
+Smith, J. (2020). Understanding AI. Journal of Technology, 15(2), 45-67.
+Johnson, M. (2019). Machine learning basics. https://doi.org/10.1234/example.2020.001
+Brown, R. (2021). Data science trends. Data Mining Review, 8(1), 112-128."
+                rows="12"
+            ></textarea>
 
-                <div class="hint">
-                    Tip: Paste multiple references, one per line for bulk formatting.
-                </div>
+            <div class="hint">
+                💡 Tip: One reference per line. DOIs will be auto-detected and enhanced with OpenAlex/Crossref metadata.
+            </div>
 
-                <div class="controls">
-                    <select name="style" id="style">
-                        <option value="apa7">APA 7</option>
-                        <option value="apa6">APA 6</option>
-                        <option value="harvard">Harvard</option>
-                    </select>
+            <div class="controls">
+                <select id="style">
+                    <option value="apa7">APA 7th Edition</option>
+                    <option value="apa6">APA 6th Edition</option>
+                    <option value="harvard">Harvard (Author-Date)</option>
+                    <option value="vancouver">Vancouver (Medical)</option>
+                </select>
 
-                    <select name="source_type" id="source_type">
-                        <option value="journal">Journal</option>
-                        <option value="book">Book</option>
-                        <option value="webpage">Web</option>
-                        <option value="report">Report</option>
-                    </select>
+                <select id="source_type">
+                    <option value="journal">Journal Article</option>
+                    <option value="book">Book</option>
+                    <option value="webpage">Website</option>
+                    <option value="report">Report / Grey Literature</option>
+                </select>
+            </div>
 
-                    <button type="submit" id="formatBtn">Format</button>
-                </div>
-            </form>
-        </div>
+            <div class="action-buttons">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="auto_enhance" checked>
+                    🔍 Auto-enhance from DOI
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="auto_find_doi" checked>
+                    🌐 Auto-find missing DOIs (OpenAlex)
+                </label>
+            </div>
 
-        <div>
-            <label>Formatted Output</label>
-            <div id="formattedOutput" class="output">Your formatted references will appear here.</div>
+            <button id="formatBtn" style="width: 100%; margin-top: 15px;">
+                🚀 Format & Repair References
+            </button>
 
-            <button class="copy-btn" id="copyBtn" type="button">Copy</button>
-
-            <div id="warningsBox" class="warnings hidden">
-                <ul id="warningsList"></ul>
+            <div id="progressBar" class="progress-bar hidden">
+                <div class="progress-fill"></div>
             </div>
         </div>
 
+        <!-- Output Panel -->
+        <div>
+            <label>✅ Formatted & Repaired Output</label>
+            <div id="formattedOutput" class="output">
+                <span style="color: #9ca3af;">Your formatted references will appear here after processing...</span>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                <button id="copyBtn" class="copy-btn" style="flex: 1;">📋 Copy to Clipboard</button>
+                <button id="downloadTxtBtn" class="secondary-btn" style="flex: 1;">💾 Download TXT</button>
+            </div>
+            
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                <button id="downloadCsvBtn" class="secondary-btn" style="flex: 1;">📊 Download CSV Report</button>
+                <button id="downloadJsonBtn" class="secondary-btn" style="flex: 1;">📋 Download JSON</button>
+            </div>
+
+            <!-- Statistics Panel -->
+            <div id="statsPanel" class="stats hidden">
+                <div class="stat-item">
+                    <div class="stat-value" id="totalRefs">0</div>
+                    <div class="stat-label">Total References</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="doiCount">0</div>
+                    <div class="stat-label">With DOI</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="avgConfidence">0%</div>
+                    <div class="stat-label">Avg. Confidence</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="needsReview">0</div>
+                    <div class="stat-label">Need Review</div>
+                </div>
+            </div>
+
+            <!-- Warnings Panel -->
+            <div id="warningsBox" class="warnings hidden">
+                <strong>⚠️ Warnings & Issues</strong>
+                <ul id="warningsList"></ul>
+            </div>
+
+            <!-- Info Panel -->
+            <div id="infoBox" class="info-box hidden">
+                <strong>🔧 Repair Log</strong>
+                <div id="repairSummary"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Side-by-Side Repair Modal (for individual reference editing) -->
+    <div id="repairModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; overflow: auto; padding: 40px;">
+        <div style="max-width: 1200px; margin: 0 auto; background: white; border-radius: 12px; padding: 30px;">
+            <h2>🔧 Side-by-Side Reference Repair</h2>
+            <div id="modalContent"></div>
+            <div style="margin-top: 20px; text-align: right;">
+                <button id="closeModalBtn" style="background: #6b7280;">Close</button>
+            </div>
+        </div>
     </div>
 </div>
 
-<script src="/static/reference_formatter.js"></script>
+<script>
+// Main application logic
+const API_BASE = '';  // Empty for same-origin, adjust if needed
+
+// DOM Elements
+const rawReference = document.getElementById('raw_reference');
+const styleSelect = document.getElementById('style');
+const sourceTypeSelect = document.getElementById('source_type');
+const formatBtn = document.getElementById('formatBtn');
+const formattedOutput = document.getElementById('formattedOutput');
+const copyBtn = document.getElementById('copyBtn');
+const downloadTxtBtn = document.getElementById('downloadTxtBtn');
+const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+const downloadJsonBtn = document.getElementById('downloadJsonBtn');
+const warningsBox = document.getElementById('warningsBox');
+const warningsList = document.getElementById('warningsList');
+const statsPanel = document.getElementById('statsPanel');
+const infoBox = document.getElementById('infoBox');
+const repairSummary = document.getElementById('repairSummary');
+const totalRefs = document.getElementById('totalRefs');
+const doiCount = document.getElementById('doiCount');
+const avgConfidence = document.getElementById('avgConfidence');
+const needsReview = document.getElementById('needsReview');
+const progressBar = document.getElementById('progressBar');
+const progressFill = document.querySelector('.progress-fill');
+const autoEnhance = document.getElementById('auto_enhance');
+const autoFindDoi = document.getElementById('auto_find_doi');
+
+// State
+let currentRepairResults = null;
+let currentFormattedText = '';
+
+// Helper: Show/hide loading
+function setLoading(loading) {
+    if (loading) {
+        formatBtn.disabled = true;
+        formatBtn.textContent = '⏳ Processing...';
+        progressBar.classList.remove('hidden');
+    } else {
+        formatBtn.disabled = false;
+        formatBtn.textContent = '🚀 Format & Repair References';
+        progressBar.classList.add('hidden');
+        progressFill.style.width = '0%';
+    }
+}
+
+// Update progress
+function updateProgress(percent) {
+    progressFill.style.width = `${percent}%`;
+}
+
+// Main formatting function
+async function formatReferences() {
+    const rawText = rawReference.value.trim();
+    
+    if (!rawText) {
+        formattedOutput.innerHTML = '<span style="color: #ef4444;">⚠️ Please paste at least one reference.</span>';
+        return;
+    }
+    
+    setLoading(true);
+    
+    try {
+        // Simulate progress steps
+        updateProgress(20);
+        
+        const response = await fetch(`${API_BASE}/api/format`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                raw_text: rawText,
+                style: styleSelect.value,
+                source_type: sourceTypeSelect.value,
+                auto_enhance: autoEnhance.checked,
+                auto_find_doi: autoFindDoi.checked
+            })
+        });
+        
+        updateProgress(80);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        updateProgress(100);
+        
+        // Store results
+        currentRepairResults = data.repair_results;
+        currentFormattedText = data.formatted;
+        
+        // Display formatted output
+        formattedOutput.innerHTML = data.formatted.replace(/\n/g, '<br>');
+        
+        // Update statistics
+        if (data.total_references) {
+            statsPanel.classList.remove('hidden');
+            totalRefs.textContent = data.total_references;
+            doiCount.textContent = data.references_with_doi || 0;
+            avgConfidence.textContent = `${Math.round(data.average_confidence || 0)}%`;
+            needsReview.textContent = data.needs_review || 0;
+        }
+        
+        // Display warnings
+        if (data.warnings && data.warnings.length > 0) {
+            warningsBox.classList.remove('hidden');
+            warningsList.innerHTML = data.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
+        } else {
+            warningsBox.classList.add('hidden');
+        }
+        
+        // Display repair summary
+        if (data.repair_results && data.repair_results.length > 0) {
+            infoBox.classList.remove('hidden');
+            const totalActions = data.repair_results.reduce((sum, r) => sum + (r.repair_log?.length || 0), 0);
+            const doiFound = data.repair_results.filter(r => r.has_doi && !r.original.includes('10.')).length;
+            
+            let summaryHtml = `<p>✅ Processed ${data.total_references} references</p>`;
+            if (totalActions > 0) {
+                summaryHtml += `<p>🔧 Applied ${totalActions} automatic repairs</p>`;
+            }
+            if (doiFound > 0) {
+                summaryHtml += `<p>🌐 Found ${doiFound} new DOIs via OpenAlex/Crossref</p>`;
+            }
+            repairSummary.innerHTML = summaryHtml;
+        }
+        
+    } catch (error) {
+        console.error('Format error:', error);
+        formattedOutput.innerHTML = `<span style="color: #ef4444;">❌ Error: ${escapeHtml(error.message)}</span>`;
+    } finally {
+        setLoading(false);
+    }
+}
+
+// Copy to clipboard
+function copyToClipboard() {
+    if (currentFormattedText) {
+        navigator.clipboard.writeText(currentFormattedText).then(() => {
+            const originalText = copyBtn.textContent;
+            copyBtn.textContent = '✓ Copied!';
+            setTimeout(() => {
+                copyBtn.textContent = originalText;
+            }, 2000);
+        }).catch(() => {
+            alert('Failed to copy. Please select manually.');
+        });
+    } else {
+        alert('No formatted content to copy.');
+    }
+}
+
+// Download TXT
+function downloadTxt() {
+    if (currentFormattedText) {
+        const blob = new Blob([currentFormattedText], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `references_${styleSelect.value}_${new Date().toISOString().slice(0,19)}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } else {
+        alert('No formatted content to download.');
+    }
+}
+
+// Download CSV
+function downloadCsv() {
+    if (currentRepairResults && currentRepairResults.length > 0) {
+        const headers = ['Original Reference', 'Formatted Reference', 'Confidence (%)', 'Issues', 'Has DOI', 'Repair Actions', 'DOI', 'Year', 'Authors', 'Title', 'Source'];
+        const rows = currentRepairResults.map(r => [
+            escapeCsv(r.original),
+            escapeCsv(r.formatted),
+            r.confidence,
+            escapeCsv((r.issues || []).join('; ')),
+            r.has_doi,
+            escapeCsv((r.repair_log || []).join('; ')),
+            escapeCsv(r.parsed?.doi || ''),
+            escapeCsv(r.parsed?.year || ''),
+            escapeCsv(r.parsed?.authors || ''),
+            escapeCsv(r.parsed?.title || ''),
+            escapeCsv(r.parsed?.source || '')
+        ]);
+        
+        const csvContent = [headers, ...rows].map(row => row.join(',')).join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `reference_report_${new Date().toISOString().slice(0,19)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } else {
+        alert('No repair results available. Please format references first.');
+    }
+}
+
+// Download JSON
+function downloadJson() {
+    if (currentRepairResults && currentRepairResults.length > 0) {
+        const exportData = {
+            timestamp: new Date().toISOString(),
+            style: styleSelect.value,
+            source_type: sourceTypeSelect.value,
+            total_references: currentRepairResults.length,
+            references: currentRepairResults
+        };
+        
+        const jsonContent = JSON.stringify(exportData, null, 2);
+        const blob = new Blob([jsonContent], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `reference_export_${new Date().toISOString().slice(0,19)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } else {
+        alert('No repair results available. Please format references first.');
+    }
+}
+
+// Helper: Escape HTML
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>]/g, function(m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        return m;
+    });
+}
+
+// Helper: Escape CSV
+function escapeCsv(str) {
+    if (!str) return '';
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+}
+
+// Event Listeners
+formatBtn.addEventListener('click', formatReferences);
+copyBtn.addEventListener('click', copyToClipboard);
+downloadTxtBtn.addEventListener('click', downloadTxt);
+downloadCsvBtn.addEventListener('click', downloadCsv);
+downloadJsonBtn.addEventListener('click', downloadJson);
+
+// Allow Ctrl+Enter to format
+rawReference.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        formatReferences();
+    }
+});
+
+// Load example on first visit (optional)
+if (rawReference.value === '') {
+    rawReference.placeholder = 'Paste one or more references (one per line)...\n\nExample:\nSmith, J. (2020). Understanding AI. Journal of Technology, 15(2), 45-67.\nJohnson, M. (2019). Machine learning basics. https://doi.org/10.1234/example.2020.001';
+}
+</script>
+
 </body>
 </html>
