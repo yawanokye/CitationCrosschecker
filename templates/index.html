@@ -800,12 +800,22 @@
                 <button class="btn btn-primary" id="btnCheck">📊 Analyze Document</button>
                 <button class="btn btn-secondary" id="btnVerify" disabled>🌐 Verify References</button>
                 <button class="btn btn-success" id="btnApplyAutofix" disabled style="display: none;">✨ Auto-Fix & Download</button>
+                <a href="/reference-formatter"
+                   class="btn btn-outline"
+                   style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center;">
+                   📚 Reference Formatter
+                </a>
             </div>
 
             <div class="status-bar">
                 <div class="status" id="status">System ready. Upload your manuscript to begin.</div>
             </div>
-
+            <div style="margin-top: 12px; font-size: 12px; color: #64748b; text-align: center;">
+                Need to clean or fix a reference first? Use the 
+                <a href="/reference-formatter" style="color:#19b36b; font-weight:600; text-decoration:none;">
+                    Reference Formatter
+                </a>.
+            </div>
             <div id="verifyProgress" style="display: none; margin-top: 12px;">
                 <div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
                 <div id="progressText" style="font-size: 11px; margin-top: 6px;"></div>
