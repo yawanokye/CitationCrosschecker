@@ -1,26 +1,30 @@
 const form = document.getElementById("formatterForm");
 const styleSelect = document.getElementById("style");
-const variantWrap = document.getElementById("variantWrap");
 const formattedOutput = document.getElementById("formattedOutput");
 const copyBtn = document.getElementById("copyBtn");
 const warningsBox = document.getElementById("warningsBox");
 const warningsList = document.getElementById("warningsList");
+const formatBtn = document.getElementById("formatBtn");
 
-function toggleVariant() {
-    if (styleSelect.value === "harvard") {
-        variantWrap.classList.remove("hidden");
-    } else {
-        variantWrap.classList.add("hidden");
-    }
+if (!form) {
+    console.error("formatterForm not found");
 }
-
-toggleVariant();
-styleSelect.addEventListener("change", toggleVariant);
 
 form.addEventListener("submit", async function (e) {
     e.preventDefault();
 
+    const rawReference = document.getElementById("raw_reference").value.trim();
+
+    if (!rawReference) {
+        formattedOutput.textContent = "Please paste at least one reference.";
+        warningsList.innerHTML = "";
+        warningsBox.classList.add("hidden");
+        return;
+    }
+
     formattedOutput.textContent = "Formatting...";
+    formattedOutput.classList.add("loading");
+    formatBtn.disabled = true;
     warningsList.innerHTML = "";
     warningsBox.classList.add("hidden");
 
@@ -34,12 +38,12 @@ form.addEventListener("submit", async function (e) {
 
         const data = await response.json();
 
-        if (!data.success) {
+        if (!response.ok || !data.success) {
             formattedOutput.textContent = data.message || "Formatting failed.";
             return;
         }
 
-        formattedOutput.textContent = data.formatted || "";
+        formattedOutput.textContent = data.formatted || "No output returned.";
 
         if (data.warnings && data.warnings.length > 0) {
             warningsList.innerHTML = "";
@@ -51,14 +55,18 @@ form.addEventListener("submit", async function (e) {
             warningsBox.classList.remove("hidden");
         }
     } catch (error) {
+        console.error(error);
         formattedOutput.textContent = "An error occurred while formatting the reference(s).";
+    } finally {
+        formattedOutput.classList.remove("loading");
+        formatBtn.disabled = false;
     }
 });
 
 copyBtn.addEventListener("click", async function () {
     const text = formattedOutput.textContent.trim();
 
-    if (!text || text === "Your formatted reference(s) will appear here.") {
+    if (!text || text === "Your formatted references will appear here.") {
         return;
     }
 
@@ -66,12 +74,13 @@ copyBtn.addEventListener("click", async function () {
         await navigator.clipboard.writeText(text);
         copyBtn.textContent = "Copied";
         setTimeout(() => {
-            copyBtn.textContent = "Copy Output";
+            copyBtn.textContent = "Copy";
         }, 1200);
     } catch (error) {
+        console.error(error);
         copyBtn.textContent = "Copy failed";
         setTimeout(() => {
-            copyBtn.textContent = "Copy Output";
+            copyBtn.textContent = "Copy";
         }, 1200);
     }
 });
