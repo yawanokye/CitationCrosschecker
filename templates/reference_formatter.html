@@ -1,56 +1,174 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reference Formatter | CiteIntegrity</title>
-    <link rel="stylesheet" href="/static/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reference Formatter | CiteIntegrity</title>
+
+<style>
+    body {
+        font-family: 'Segoe UI', Tahoma, sans-serif;
+        background: #f5f7fb;
+        margin: 0;
+    }
+
+    .container {
+        max-width: 1000px;
+        margin: 40px auto;
+        background: white;
+        padding: 30px;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }
+
+    h1 {
+        margin-top: 0;
+        color: #1f2937;
+    }
+
+    .subtitle {
+        color: #6b7280;
+        margin-bottom: 25px;
+    }
+
+    .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 25px;
+    }
+
+    label {
+        font-weight: 600;
+        display: block;
+        margin-bottom: 6px;
+    }
+
+    textarea {
+        width: 100%;
+        height: 220px;
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid #ddd;
+        resize: vertical;
+        font-size: 14px;
+    }
+
+    select, button {
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #ddd;
+        font-size: 14px;
+    }
+
+    .controls {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-top: 10px;
+    }
+
+    button {
+        background: #19b36b;
+        color: white;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+    }
+
+    button:hover {
+        opacity: 0.9;
+    }
+
+    .output {
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        padding: 15px;
+        border-radius: 8px;
+        min-height: 220px;
+        white-space: pre-wrap;
+    }
+
+    .copy-btn {
+        margin-top: 10px;
+        background: #111827;
+    }
+
+    .warnings {
+        margin-top: 15px;
+        background: #fff7ed;
+        border: 1px solid #fed7aa;
+        padding: 10px;
+        border-radius: 8px;
+        font-size: 13px;
+    }
+
+    .hidden {
+        display: none;
+    }
+
+    .top-link {
+        margin-bottom: 15px;
+    }
+
+    .top-link a {
+        text-decoration: none;
+        color: #19b36b;
+        font-weight: 600;
+    }
+</style>
 </head>
+
 <body>
-    <div class="container">
-        <h1>Reference Formatter</h1>
-        <p>Paste a reference and format it into APA 7 or Harvard.</p>
 
-        <form id="formatterForm">
-            <label for="raw_reference">Paste reference</label>
-            <textarea id="raw_reference" name="raw_reference" rows="8" required></textarea>
+<div class="container">
 
-            <label for="style">Style</label>
-            <select id="style" name="style">
-                <option value="apa">APA 7</option>
-                <option value="apa6">APA 6</option>
-                <option value="harvard">Harvard</option>
-            </select>
-
-            <div id="variantWrap" style="display:none;">
-                <label for="variant">Harvard variant</label>
-                <select id="variant" name="variant">
-                    <option value="generic">Harvard Generic</option>
-                    <option value="ucc">Harvard UCC</option>
-                    <option value="ctr">Harvard Cite Them Right-like</option>
-                </select>
-            </div>
-
-            <label for="source_type">Source type</label>
-            <select id="source_type" name="source_type">
-                <option value="journal">Journal Article</option>
-                <option value="book">Book</option>
-                <option value="webpage">Web Page</option>
-            </select>
-
-            <button type="submit">Format Reference</button>
-        </form>
-
-        <div id="resultBox">
-            <h2>Formatted Output</h2>
-            <pre id="formattedOutput"></pre>
-            <button id="copyBtn" type="button">Copy</button>
-
-            <h3>Warnings</h3>
-            <ul id="warnings"></ul>
-        </div>
+    <div class="top-link">
+        <a href="/">← Back to Home</a>
     </div>
 
-    <script src="/static/reference_formatter.js"></script>
+    <h1>Reference Formatter</h1>
+    <div class="subtitle">
+        Paste one or multiple references (one per line). Format into APA 7, APA 6, or Harvard.
+    </div>
+
+    <div class="grid">
+
+        <!-- INPUT -->
+        <div>
+            <label>Paste Reference(s)</label>
+            <textarea id="raw_reference" placeholder="Paste multiple references here..."></textarea>
+
+            <div class="controls">
+                <select id="style">
+                    <option value="apa7">APA 7</option>
+                    <option value="apa6">APA 6</option>
+                    <option value="harvard">Harvard</option>
+                </select>
+
+                <select id="source_type">
+                    <option value="journal">Journal</option>
+                    <option value="book">Book</option>
+                    <option value="webpage">Web</option>
+                    <option value="report">Report</option>
+                </select>
+
+                <button onclick="submitFormat()">Format</button>
+            </div>
+        </div>
+
+        <!-- OUTPUT -->
+        <div>
+            <label>Formatted Output</label>
+            <div id="output" class="output"></div>
+
+            <button class="copy-btn" onclick="copyOutput()">Copy</button>
+
+            <div id="warnings" class="warnings hidden"></div>
+        </div>
+
+    </div>
+</div>
+
+<script src="/static/reference_formatter.js"></script>
 </body>
 </html>
