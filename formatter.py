@@ -1,6 +1,14 @@
+# =========================================
+# formatter.py — CiteIntegrity Core Formatter + Repair Engine
+# =========================================
+
 import re
+import requests
 
 
+# =========================================
+# 1. PARSE REFERENCE
+# =========================================
 def parse_reference(raw_reference: str, source_type: str) -> dict:
     raw = " ".join(raw_reference.strip().split())
 
@@ -15,273 +23,255 @@ def parse_reference(raw_reference: str, source_type: str) -> dict:
         "publisher": "",
         "doi": "",
         "url": "",
-        "access_date": ""
     }
 
+    # Year
     year_match = re.search(r"\b(19|20)\d{2}[a-z]?\b", raw)
     if year_match:
         parsed["year"] = year_match.group(0)
 
+    # DOI
     doi_match = re.search(r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", raw, re.I)
     if doi_match:
         parsed["doi"] = doi_match.group(1).rstrip(".,;")
 
+    # URL
     url_match = re.search(r"(https?://\S+)", raw, re.I)
     if url_match:
         parsed["url"] = url_match.group(1).rstrip(".,;")
 
-    volume_issue_pages = re.search(r"(\d+)\s*\((\d+)\)\s*,\s*([\d\-–]+)", raw)
-    if volume_issue_pages:
-        parsed["volume"] = volume_issue_pages.group(1)
-        parsed["issue"] = volume_issue_pages.group(2)
-        parsed["pages"] = volume_issue_pages.group(3)
-    else:
-        volume_pages = re.search(r"(\d+)\s*,\s*([\d\-–]+)", raw)
-        if volume_pages:
-            parsed["volume"] = volume_pages.group(1)
-            parsed["pages"] = volume_pages.group(2)
+    # Volume, issue, pages
+    vip = re.search(r"(\d+)\s*\((\d+)\)\s*,\s*([\d\-–]+)", raw)
+    if vip:
+        parsed["volume"] = vip.group(1)
+        parsed["issue"] = vip.group(2)
+        parsed["pages"] = vip.group(3)
 
+    # Split using year
     if parsed["year"]:
-        split_pattern = re.split(rf"\(?{re.escape(parsed['year'])}\)?", raw, maxsplit=1)
-        if len(split_pattern) >= 2:
-            parsed["authors"] = split_pattern[0].strip(" .,()")
-            remainder = split_pattern[1].strip(" .,()")
+        parts = re.split(rf"\(?{parsed['year']}\)?", raw, maxsplit=1)
+
+        if len(parts) >= 2:
+            parsed["authors"] = parts[0].strip(" .,()")
+            remainder = parts[1].strip(" .,()")
 
             title_split = re.split(r"\.\s+", remainder, maxsplit=1)
+
             if len(title_split) >= 1:
-                parsed["title"] = title_split[0].strip(" .")
+                parsed["title"] = title_split[0]
 
             if len(title_split) == 2:
-                parsed["source"] = title_split[1].strip(" .")
-    else:
-        first_period = raw.find(".")
-        if first_period != -1:
-            parsed["authors"] = raw[:first_period].strip()
-            rest = raw[first_period + 1:].strip()
-            second_period = rest.find(".")
-            if second_period != -1:
-                parsed["title"] = rest[:second_period].strip()
-                parsed["source"] = rest[second_period + 1:].strip()
-            else:
-                parsed["title"] = rest
-
-    if source_type in {"book", "report"} and not parsed["publisher"]:
-        if parsed["source"]:
-            parsed["publisher"] = parsed["source"]
+                parsed["source"] = title_split[1]
 
     return parsed
 
 
-def format_reference(parsed: dict, style: str, variant: str, source_type: str) -> str:
-    style = style.lower().strip()
+# =========================================
+# 2. DOI FETCH
+# =========================================
+def fetch_from_doi(doi: str) -> dict:
+    try:
+        url = f"https://api.crossref.org/works/{doi}"
+        res = requests.get(url, timeout=5)
+
+        if res.status_code != 200:
+            return {}
+
+        data = res.json()["message"]
+
+        return {
+            "authors": ", ".join(
+                [f"{a.get('family','')} {a.get('given','')}" for a in data.get("author", [])]
+            ),
+            "year": str(data.get("issued", {}).get("date-parts", [[None]])[0][0]),
+            "title": data.get("title", [""])[0],
+            "source": data.get("container-title", [""])[0],
+            "volume": data.get("volume", ""),
+            "issue": data.get("issue", ""),
+            "pages": data.get("page", ""),
+            "publisher": data.get("publisher", ""),
+            "doi": doi,
+            "url": data.get("URL", "")
+        }
+
+    except Exception:
+        return {}
+
+
+# =========================================
+# 3. AUTHOR CLEANING
+# =========================================
+def clean_authors(authors: str) -> str:
+    parts = [a.strip() for a in authors.split(",") if a.strip()]
+    formatted = []
+
+    for p in parts:
+        names = p.split()
+        if len(names) >= 2:
+            last = names[-1]
+            initials = " ".join([n[0] + "." for n in names[:-1]])
+            formatted.append(f"{last}, {initials}")
+        else:
+            formatted.append(p)
+
+    return ", ".join(formatted)
+
+
+# =========================================
+# 4. FORMATTERS
+# =========================================
+def format_apa7(p):
+    authors = clean_authors(p["authors"])
+    year = f"({p['year']})." if p["year"] else "(n.d.)."
+
+    ref = f"{authors} {year} {p['title']}. {p['source']}"
+    if p["volume"]:
+        ref += f", {p['volume']}"
+    if p["issue"]:
+        ref += f"({p['issue']})"
+    if p["pages"]:
+        ref += f", {p['pages']}"
+    ref += "."
+
+    if p["doi"]:
+        ref += f" https://doi.org/{p['doi']}"
+    elif p["url"]:
+        ref += f" {p['url']}"
+
+    return " ".join(ref.split())
+
+
+def format_apa6(p):
+    authors = clean_authors(p["authors"])
+    year = f"({p['year']})." if p["year"] else "(n.d.)."
+
+    ref = f"{authors} {year} {p['title']}. {p['source']}"
+    if p["volume"]:
+        ref += f", {p['volume']}"
+    if p["issue"]:
+        ref += f"({p['issue']})"
+    if p["pages"]:
+        ref += f", {p['pages']}"
+    ref += "."
+
+    if p["doi"]:
+        ref += f" doi:{p['doi']}"
+    elif p["url"]:
+        ref += f" Retrieved from {p['url']}"
+
+    return " ".join(ref.split())
+
+
+def format_harvard(p):
+    year = p["year"] or "n.d."
+
+    ref = f"{p['authors']} ({year}) '{p['title']}', {p['source']}"
+    if p["volume"]:
+        ref += f", {p['volume']}"
+    if p["issue"]:
+        ref += f"({p['issue']})"
+    if p["pages"]:
+        ref += f", pp. {p['pages']}"
+
+    if p["doi"]:
+        ref += f", doi: {p['doi']}."
+    elif p["url"]:
+        ref += f". Available at: {p['url']}."
+    else:
+        ref += "."
+
+    return " ".join(ref.split())
+
+
+def format_reference(parsed, style):
+    style = style.lower()
 
     if style == "apa7":
-        return format_apa7(parsed, source_type)
+        return format_apa7(parsed)
+    elif style == "apa6":
+        return format_apa6(parsed)
+    elif style == "harvard":
+        return format_harvard(parsed)
 
-    if style == "apa6":
-        return format_apa6(parsed, source_type)
-
-    if style == "harvard":
-        return format_harvard(parsed, source_type, variant)
-
-    raise ValueError("Unsupported style selected.")
+    raise ValueError("Invalid style")
 
 
-def format_apa7(parsed: dict, source_type: str) -> str:
-    authors = parsed["authors"].strip()
-    year = f"({parsed['year']})." if parsed["year"] else "(n.d.)."
-    title = parsed["title"].strip()
-    source = parsed["source"].strip()
+# =========================================
+# 5. REPAIR ENGINE
+# =========================================
+def compute_repair_score(p):
+    score = 100
 
-    if source_type == "journal":
-        ref = f"{authors} {year} {title}. {source}"
-        if parsed["volume"]:
-            ref += f", {parsed['volume']}"
-        if parsed["issue"]:
-            ref += f"({parsed['issue']})"
-        if parsed["pages"]:
-            ref += f", {parsed['pages']}"
-        ref += "."
-        if parsed["doi"]:
-            ref += f" https://doi.org/{parsed['doi']}"
-        elif parsed["url"]:
-            ref += f" {parsed['url']}"
-        return " ".join(ref.split())
+    if not p["authors"]:
+        score -= 20
+    if not p["year"]:
+        score -= 20
+    if not p["title"]:
+        score -= 20
+    if not p["source"]:
+        score -= 15
+    if not p["doi"] and not p["url"]:
+        score -= 10
 
-    if source_type == "book":
-        ref = f"{authors} {year} {title}."
-        if parsed["publisher"]:
-            ref += f" {parsed['publisher']}."
-        elif source:
-            ref += f" {source}."
-        if parsed["doi"]:
-            ref += f" https://doi.org/{parsed['doi']}"
-        return " ".join(ref.split())
-
-    if source_type == "webpage":
-        ref = f"{authors} {year} {title}."
-        if source:
-            ref += f" {source}."
-        if parsed["url"]:
-            ref += f" {parsed['url']}"
-        return " ".join(ref.split())
-
-    if source_type == "report":
-        ref = f"{authors} {year} {title}."
-        if parsed["publisher"]:
-            ref += f" {parsed['publisher']}."
-        elif source:
-            ref += f" {source}."
-        if parsed["url"]:
-            ref += f" {parsed['url']}"
-        return " ".join(ref.split())
-
-    return f"{authors} {year} {title}. {source}".strip()
+    return max(score, 0)
 
 
-def format_apa6(parsed: dict, source_type: str) -> str:
-    authors = parsed["authors"].strip()
-    year = f"({parsed['year']})." if parsed["year"] else "(n.d.)."
-    title = parsed["title"].strip()
-    source = parsed["source"].strip()
+def repair_reference(raw, style, source_type, auto_enhance=True):
+    parsed = parse_reference(raw, source_type)
+    log = []
 
-    if source_type == "journal":
-        ref = f"{authors} {year} {title}. {source}"
-        if parsed["volume"]:
-            ref += f", {parsed['volume']}"
-        if parsed["issue"]:
-            ref += f"({parsed['issue']})"
-        if parsed["pages"]:
-            ref += f", {parsed['pages']}"
-        ref += "."
-        if parsed["doi"]:
-            ref += f" doi:{parsed['doi']}"
-        elif parsed["url"]:
-            ref += f" Retrieved from {parsed['url']}"
-        return " ".join(ref.split())
+    if auto_enhance and parsed.get("doi"):
+        doi_data = fetch_from_doi(parsed["doi"])
+        for k, v in doi_data.items():
+            if v and not parsed.get(k):
+                parsed[k] = v
+                log.append(f"Filled {k} from DOI")
 
-    if source_type == "book":
-        ref = f"{authors} {year} {title}."
-        if parsed["publisher"]:
-            ref += f" {parsed['publisher']}."
-        elif source:
-            ref += f" {source}."
-        if parsed["url"] and not parsed["doi"]:
-            ref += f" Retrieved from {parsed['url']}"
-        return " ".join(ref.split())
-
-    if source_type == "webpage":
-        ref = f"{authors} {year} {title}."
-        if source:
-            ref += f" {source}."
-        if parsed["url"]:
-            ref += f" Retrieved from {parsed['url']}"
-        return " ".join(ref.split())
-
-    if source_type == "report":
-        ref = f"{authors} {year} {title}."
-        if parsed["publisher"]:
-            ref += f" {parsed['publisher']}."
-        elif source:
-            ref += f" {source}."
-        if parsed["url"]:
-            ref += f" Retrieved from {parsed['url']}"
-        return " ".join(ref.split())
-
-    return f"{authors} {year} {title}. {source}".strip()
-
-
-def format_harvard(parsed: dict, source_type: str, variant: str = "generic") -> str:
-    authors = parsed["authors"].strip()
-    year = parsed["year"] if parsed["year"] else "n.d."
-    title = parsed["title"].strip()
-    source = parsed["source"].strip()
-
-    if source_type == "journal":
-        ref = f"{authors} ({year}) '{title}', {source}"
-        if parsed["volume"]:
-            ref += f", {parsed['volume']}"
-        if parsed["issue"]:
-            ref += f"({parsed['issue']})"
-        if parsed["pages"]:
-            ref += f", pp. {parsed['pages']}"
-        if parsed["doi"]:
-            ref += f", doi: {parsed['doi']}."
-        elif parsed["url"]:
-            ref += f". Available at: {parsed['url']}."
-        else:
-            ref += "."
-        return " ".join(ref.split())
-
-    if source_type == "book":
-        publisher = parsed["publisher"] or source
-        ref = f"{authors} ({year}) {title}."
-        if publisher:
-            ref += f" {publisher}."
-        return " ".join(ref.split())
-
-    if source_type == "webpage":
-        ref = f"{authors} ({year}) {title}."
-        if source:
-            ref += f" {source}."
-        if parsed["url"]:
-            ref += f" Available at: {parsed['url']}."
-        return " ".join(ref.split())
-
-    if source_type == "report":
-        publisher = parsed["publisher"] or source
-        ref = f"{authors} ({year}) {title}."
-        if publisher:
-            ref += f" {publisher}."
-        if parsed["url"]:
-            ref += f" Available at: {parsed['url']}."
-        return " ".join(ref.split())
-
-    return f"{authors} ({year}) {title}. {source}".strip()
-
-
-def build_warnings(parsed: dict, source_type: str) -> list:
-    warnings = []
-
-    if not parsed["authors"]:
-        warnings.append("Author not clearly detected.")
-    if not parsed["year"]:
-        warnings.append("Year not clearly detected.")
-    if not parsed["title"]:
-        warnings.append("Title not clearly detected.")
-
-    if source_type == "journal" and not parsed["source"]:
-        warnings.append("Journal name not clearly detected.")
-
-    if source_type in {"book", "report"} and not (parsed["publisher"] or parsed["source"]):
-        warnings.append("Publisher or organisation not clearly detected.")
-
-    return warnings
-
-
-def process_references(raw_reference: str, style: str, variant: str, source_type: str) -> dict:
-    lines = [line.strip() for line in raw_reference.splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("Please paste at least one reference.")
-
-    formatted_refs = []
-    warnings = []
-
-    for i, line in enumerate(lines, start=1):
-        parsed = parse_reference(line, source_type)
-        formatted = format_reference(
-            parsed=parsed,
-            style=style,
-            variant=variant,
-            source_type=source_type
-        )
-        formatted_refs.append(formatted)
-
-        row_warnings = build_warnings(parsed, source_type)
-        for warning in row_warnings:
-            warnings.append(f"Reference {i}: {warning}")
+    formatted = format_reference(parsed, style)
+    score = compute_repair_score(parsed)
 
     return {
-        "formatted": "\n\n".join(formatted_refs),
+        "original": raw,
+        "formatted": formatted,
+        "parsed": parsed,
+        "repair_log": log,
+        "confidence": score
+    }
+
+
+# =========================================
+# 6. BULK FUNCTIONS
+# =========================================
+def process_references(raw_text, style, variant=None, source_type="journal", auto_enhance=True):
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+
+    formatted = []
+    warnings = []
+
+    for i, line in enumerate(lines, 1):
+        parsed = parse_reference(line, source_type)
+
+        if auto_enhance and parsed.get("doi"):
+            doi_data = fetch_from_doi(parsed["doi"])
+            for k, v in doi_data.items():
+                if v and not parsed.get(k):
+                    parsed[k] = v
+
+        formatted.append(format_reference(parsed, style))
+
+        if not parsed["title"]:
+            warnings.append(f"Reference {i}: Missing title")
+
+    return {
+        "formatted": "\n\n".join(formatted),
         "warnings": warnings
     }
+
+
+def repair_references_bulk(raw_text, style, source_type="journal", auto_enhance=True):
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+
+    return [
+        repair_reference(line, style, source_type, auto_enhance)
+        for line in lines
+    ]
