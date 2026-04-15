@@ -51,6 +51,7 @@
         border: 1px solid #ddd;
         resize: vertical;
         font-size: 14px;
+        box-sizing: border-box;
     }
 
     select, button {
@@ -58,6 +59,7 @@
         border-radius: 8px;
         border: 1px solid #ddd;
         font-size: 14px;
+        box-sizing: border-box;
     }
 
     .controls {
@@ -121,6 +123,20 @@
         color: #6b7280;
         margin-top: 6px;
     }
+
+    .loading {
+        opacity: 0.7;
+    }
+
+    @media (max-width: 800px) {
+        .grid {
+            grid-template-columns: 1fr;
+        }
+
+        .controls {
+            grid-template-columns: 1fr;
+        }
+    }
 </style>
 </head>
 
@@ -134,18 +150,20 @@
 
     <h1>Reference Formatter</h1>
     <div class="subtitle">
-        Paste one or multiple references (one per line). Format into APA 7, APA 6, or Harvard.
+        Paste one or multiple references, one per line. Format into APA 7, APA 6, or Harvard.
     </div>
 
     <div class="grid">
 
-        <!-- INPUT -->
         <div>
             <form id="formatterForm">
-
-                <label>Paste Reference(s)</label>
-                <textarea name="raw_reference" id="raw_reference"
-                    placeholder="Paste multiple references here..."></textarea>
+                <label for="raw_reference">Paste Reference(s)</label>
+                <textarea
+                    name="raw_reference"
+                    id="raw_reference"
+                    placeholder="Paste multiple references here..."
+                    required
+                ></textarea>
 
                 <div class="hint">
                     Tip: Paste multiple references, one per line for bulk formatting.
@@ -165,23 +183,17 @@
                         <option value="report">Report</option>
                     </select>
 
-                    <!-- 🔥 FIXED -->
-                    <button type="submit">Format</button>
+                    <button type="submit" id="formatBtn">Format</button>
                 </div>
-
             </form>
         </div>
 
-        <!-- OUTPUT -->
         <div>
             <label>Formatted Output</label>
-            <div id="formattedOutput" class="output">
-                Your formatted references will appear here.
-            </div>
+            <div id="formattedOutput" class="output">Your formatted references will appear here.</div>
 
-            <button class="copy-btn" id="copyBtn">Copy</button>
+            <button class="copy-btn" id="copyBtn" type="button">Copy</button>
 
-            <!-- 🔥 FIXED -->
             <div id="warningsBox" class="warnings hidden">
                 <ul id="warningsList"></ul>
             </div>
