@@ -1,24 +1,24 @@
 # =========================================
-# formatter.py — CiteIntegrity Pro Complete
-# Integrated Formatting Engine + Web Server
+# formatter.py — CiteIntegrity Pro Core Engine
+# Can be imported or run as API server
 # =========================================
 
-from flask import Flask, render_template, request, jsonify
-from flask_cors import CORS
 import re
 import json
 from typing import Dict, List, Optional
-import traceback
 from datetime import datetime
-import requests
 from difflib import SequenceMatcher
 
-# =========================================
-# FLASK APP INITIALIZATION
-# =========================================
-app = Flask(__name__)
-app.secret_key = 'citeintegrity-secret-key-2024'
-CORS(app)
+# Try to import Flask (optional - for API mode)
+try:
+    from flask import Flask, request, jsonify
+    from flask_cors import CORS
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+    print("Warning: Flask not installed. Running in library mode only.")
+
+import requests
 
 # =========================================
 # CONFIGURATION
@@ -116,14 +116,13 @@ def auto_correct_parsed(parsed: dict) -> dict:
                 initials = ''.join([p.strip() for p in parts[1:]])
                 parsed["authors"] = f"{last}, {initials}."
     
-    # Fix title case issues (first letter capital)
+    # Fix title case issues
     if parsed["title"]:
         if parsed["title"][0].islower():
             parsed["title"] = parsed["title"][0].upper() + parsed["title"][1:]
     
-    # Remove duplicate volume/issue info in source
+    # Remove duplicate patterns in source
     if parsed["source"]:
-        # Remove duplicate patterns like "12(2), 45-60, 12(2), 45-60"
         parts = re.split(r',\s*(?=\d+\()', parsed["source"])
         if len(parts) > 1:
             parsed["source"] = parts[0]
@@ -149,14 +148,13 @@ def fetch_from_crossref(doi: str) -> dict:
     
     try:
         url = f"https://api.crossref.org/works/{doi}"
-        res = requests.get(url, timeout=CROSSREF_TIMEOUT)
+        res = requests.get(url, timeout=5)
         
         if res.status_code != 200:
             return {}
         
         data = res.json()["message"]
         
-        # Handle author parsing safely
         authors = []
         for a in data.get("author", []):
             family = a.get("family", "")
@@ -190,7 +188,7 @@ def fetch_from_openalex(doi: str) -> dict:
     """Fetch metadata from OpenAlex"""
     try:
         url = f"https://api.openalex.org/works/https://doi.org/{doi}"
-        res = requests.get(url, timeout=OPENALEX_TIMEOUT)
+        res = requests.get(url, timeout=5)
         
         if res.status_code != 200:
             return {}
@@ -267,7 +265,7 @@ def search_openalex_by_metadata(title: str, author: str = None, year: str = None
     query += f"&per-page={OPENALEX_MAX_RESULTS}"
     
     try:
-        response = requests.get(query, timeout=OPENALEX_TIMEOUT)
+        response = requests.get(query, timeout=5)
         if response.status_code != 200:
             return []
         
@@ -619,6 +617,31 @@ def repair_reference(raw, style, source_type, auto_enhance=True, auto_find_doi=T
     }
 
 
+def process_references(raw_text, style, source_type="journal", auto_enhance=True, auto_find_doi=True):
+    """Process multiple references"""
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+    
+    formatted = []
+    warnings = []
+    repair_results = []
+    
+    for i, line in enumerate(lines, 1):
+        result = repair_reference(line, style, source_type, auto_enhance, auto_find_doi)
+        formatted.append(result["formatted"])
+        repair_results.append(result)
+        
+        if result["issues"]:
+            warnings.append(f"Reference {i}: {', '.join(result['issues'])}")
+    
+    return {
+        "formatted": "\n\n".join(formatted),
+        "warnings": warnings,
+        "repair_results": repair_results,
+        "total_references": len(lines),
+        "average_confidence": sum(r["confidence"] for r in repair_results) / len(repair_results) if repair_results else 0
+    }
+
+
 def export_to_dict(repair_results):
     return [
         {
@@ -636,219 +659,223 @@ def export_to_dict(repair_results):
 
 
 # =========================================
-# 7. FLASK ROUTES
+# 7. FLASK SERVER (OPTIONAL)
 # =========================================
 
-@app.route('/')
-def index():
-    """Serve the main application page"""
-    return '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>CiteIntegrity Pro</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; background: #f5f7fb; }
-            .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; }
-            h1 { color: #1f2937; }
-            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-            textarea { width: 100%; height: 300px; padding: 10px; border: 1px solid #ddd; border-radius: 8px; }
-            button { background: #19b36b; color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; }
-            select, .controls { margin: 10px 0; padding: 8px; }
-            .output { background: #f9fafb; border: 1px solid #e5e7eb; padding: 15px; border-radius: 8px; min-height: 300px; white-space: pre-wrap; }
-            .warnings { background: #fff7ed; border-left: 4px solid #f59e0b; padding: 10px; margin-top: 15px; }
-            .hidden { display: none; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🔧 CiteIntegrity Pro</h1>
-            <p>Smart reference repair with OpenAlex integration, DOI auto-discovery, and multi-format export</p>
-            
-            <div class="grid">
-                <div>
-                    <h3>📝 References to Format/Repair</h3>
-                    <textarea id="raw_reference" placeholder="Paste one or more references (one per line)...&#10;&#10;Example:&#10;Adam, M, A. (2020). Financial literacy and behaviour: Journal of Finance, 12(2), 45-60."></textarea>
-                    
-                    <div class="controls">
-                        <select id="style">
-                            <option value="apa7">APA 7th Edition</option>
-                            <option value="apa6">APA 6th Edition</option>
-                            <option value="harvard">Harvard</option>
-                            <option value="vancouver">Vancouver</option>
-                        </select>
-                        <select id="source_type">
-                            <option value="journal">Journal Article</option>
-                            <option value="book">Book</option>
-                            <option value="webpage">Website</option>
-                        </select>
+if FLASK_AVAILABLE:
+    app = Flask(__name__)
+    CORS(app)
+    
+    @app.route('/')
+    def index():
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>CiteIntegrity Pro</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; background: #f5f7fb; }
+                .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; }
+                h1 { color: #1f2937; }
+                .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+                textarea { width: 100%; height: 300px; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-family: monospace; }
+                button { background: #19b36b; color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+                select, .controls { margin: 10px 0; padding: 8px; }
+                .output { background: #f9fafb; border: 1px solid #e5e7eb; padding: 15px; border-radius: 8px; min-height: 300px; white-space: pre-wrap; font-family: monospace; font-size: 13px; }
+                .warnings { background: #fff7ed; border-left: 4px solid #f59e0b; padding: 10px; margin-top: 15px; }
+                .hidden { display: none; }
+                .checkbox-group { margin: 10px 0; }
+                .checkbox-group label { margin-right: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🔧 CiteIntegrity Pro</h1>
+                <p>Smart reference repair with OpenAlex integration, DOI auto-discovery, and multi-format export</p>
+                
+                <div class="grid">
+                    <div>
+                        <h3>📝 References to Format/Repair</h3>
+                        <textarea id="raw_reference" placeholder="Paste one or more references (one per line)...&#10;&#10;Example:&#10;Adam, M, A. (2020). Financial literacy and behaviour: Journal of Finance, 12(2), 45-60."></textarea>
+                        
+                        <div class="controls">
+                            <select id="style">
+                                <option value="apa7">APA 7th Edition</option>
+                                <option value="apa6">APA 6th Edition</option>
+                                <option value="harvard">Harvard</option>
+                                <option value="vancouver">Vancouver</option>
+                            </select>
+                            <select id="source_type">
+                                <option value="journal">Journal Article</option>
+                                <option value="book">Book</option>
+                                <option value="webpage">Website</option>
+                            </select>
+                        </div>
+                        
+                        <div class="checkbox-group">
+                            <label><input type="checkbox" id="auto_enhance" checked> 🔍 Auto-enhance from DOI</label>
+                            <label><input type="checkbox" id="auto_find_doi" checked> 🌐 Auto-find missing DOIs (OpenAlex)</label>
+                        </div>
+                        
+                        <button id="formatBtn">🚀 Format & Repair References</button>
                     </div>
                     
                     <div>
-                        <label><input type="checkbox" id="auto_enhance" checked> Auto-enhance from DOI</label>
-                        <label><input type="checkbox" id="auto_find_doi" checked> Auto-find missing DOIs (OpenAlex)</label>
-                    </div>
-                    
-                    <button id="formatBtn">🚀 Format & Repair References</button>
-                </div>
-                
-                <div>
-                    <h3>✅ Formatted & Repaired Output</h3>
-                    <div id="formattedOutput" class="output">Your formatted references will appear here...</div>
-                    <button id="copyBtn">📋 Copy to Clipboard</button>
-                    <div id="warningsBox" class="warnings hidden">
-                        <strong>⚠️ Warnings:</strong>
-                        <ul id="warningsList"></ul>
+                        <h3>✅ Formatted & Repaired Output</h3>
+                        <div id="formattedOutput" class="output">Your formatted references will appear here...</div>
+                        <button id="copyBtn" style="margin-top: 10px;">📋 Copy to Clipboard</button>
+                        <div id="warningsBox" class="warnings hidden">
+                            <strong>⚠️ Warnings:</strong>
+                            <ul id="warningsList"></ul>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-        
-        <script>
-            const formatBtn = document.getElementById('formatBtn');
-            const rawReference = document.getElementById('raw_reference');
-            const formattedOutput = document.getElementById('formattedOutput');
-            const copyBtn = document.getElementById('copyBtn');
-            const warningsBox = document.getElementById('warningsBox');
-            const warningsList = document.getElementById('warningsList');
-            const style = document.getElementById('style');
-            const sourceType = document.getElementById('source_type');
-            const autoEnhance = document.getElementById('auto_enhance');
-            const autoFindDoi = document.getElementById('auto_find_doi');
             
-            formatBtn.addEventListener('click', async function() {
-                const rawText = rawReference.value.trim();
-                if (!rawText) {
-                    formattedOutput.textContent = 'Please paste at least one reference.';
-                    return;
-                }
+            <script>
+                const formatBtn = document.getElementById('formatBtn');
+                const rawReference = document.getElementById('raw_reference');
+                const formattedOutput = document.getElementById('formattedOutput');
+                const copyBtn = document.getElementById('copyBtn');
+                const warningsBox = document.getElementById('warningsBox');
+                const warningsList = document.getElementById('warningsList');
+                const style = document.getElementById('style');
+                const sourceType = document.getElementById('source_type');
+                const autoEnhance = document.getElementById('auto_enhance');
+                const autoFindDoi = document.getElementById('auto_find_doi');
                 
-                formattedOutput.textContent = 'Processing with OpenAlex...';
-                formatBtn.disabled = true;
-                
-                const formData = new FormData();
-                formData.append('raw_reference', rawText);
-                formData.append('style', style.value);
-                formData.append('source_type', sourceType.value);
-                formData.append('auto_enhance', autoEnhance.checked);
-                formData.append('auto_find_doi', autoFindDoi.checked);
-                
-                try {
-                    const response = await fetch('/api/format-reference', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (!data.success) {
-                        formattedOutput.textContent = data.message || 'Formatting failed.';
+                formatBtn.addEventListener('click', async function() {
+                    const rawText = rawReference.value.trim();
+                    if (!rawText) {
+                        formattedOutput.textContent = 'Please paste at least one reference.';
                         return;
                     }
                     
-                    formattedOutput.textContent = data.formatted || 'No output returned.';
+                    formattedOutput.textContent = '🔄 Processing with OpenAlex...';
+                    formatBtn.disabled = true;
                     
-                    if (data.warnings && data.warnings.length > 0) {
-                        warningsList.innerHTML = data.warnings.map(w => `<li>${w}</li>`).join('');
-                        warningsBox.classList.remove('hidden');
-                    } else {
-                        warningsBox.classList.add('hidden');
+                    const formData = new FormData();
+                    formData.append('raw_reference', rawText);
+                    formData.append('style', style.value);
+                    formData.append('source_type', sourceType.value);
+                    formData.append('auto_enhance', autoEnhance.checked);
+                    formData.append('auto_find_doi', autoFindDoi.checked);
+                    
+                    try {
+                        const response = await fetch('/api/format-reference', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (!data.success) {
+                            formattedOutput.textContent = data.message || 'Formatting failed.';
+                            return;
+                        }
+                        
+                        formattedOutput.textContent = data.formatted || 'No output returned.';
+                        
+                        if (data.warnings && data.warnings.length > 0) {
+                            warningsList.innerHTML = data.warnings.map(w => `<li>${w}</li>`).join('');
+                            warningsBox.classList.remove('hidden');
+                        } else {
+                            warningsBox.classList.add('hidden');
+                        }
+                    } catch (error) {
+                        formattedOutput.textContent = 'Error: ' + error.message;
+                    } finally {
+                        formatBtn.disabled = false;
                     }
-                } catch (error) {
-                    formattedOutput.textContent = 'Error: ' + error.message;
-                } finally {
-                    formatBtn.disabled = false;
-                }
-            });
-            
-            copyBtn.addEventListener('click', async function() {
-                const text = formattedOutput.textContent;
-                if (text && text !== 'Your formatted references will appear here...') {
-                    await navigator.clipboard.writeText(text);
-                    copyBtn.textContent = '✓ Copied!';
-                    setTimeout(() => copyBtn.textContent = '📋 Copy to Clipboard', 2000);
-                }
-            });
-        </script>
-    </body>
-    </html>
-    '''
-
-
-@app.route('/api/format-reference', methods=['POST'])
-def format_reference_api():
-    """Format and repair references with OpenAlex integration"""
-    try:
-        if request.is_json:
-            data = request.get_json()
-            raw_text = data.get('raw_reference') or data.get('raw_text', '')
-            style = data.get('style', 'apa7')
-            source_type = data.get('source_type', 'journal')
-            auto_enhance = data.get('auto_enhance', True)
-            auto_find_doi = data.get('auto_find_doi', True)
-        else:
-            raw_text = request.form.get('raw_reference', '')
-            style = request.form.get('style', 'apa7')
-            source_type = request.form.get('source_type', 'journal')
-            auto_enhance = request.form.get('auto_enhance', 'true').lower() == 'true'
-            auto_find_doi = request.form.get('auto_find_doi', 'true').lower() == 'true'
-        
-        if not raw_text or not raw_text.strip():
-            return jsonify({'success': False, 'message': 'Please provide at least one reference.'}), 400
-        
-        references = [line.strip() for line in raw_text.strip().split('\n') if line.strip()]
-        
-        repair_results = []
-        formatted_refs = []
-        all_warnings = []
-        
-        for idx, ref in enumerate(references, 1):
-            result = repair_reference(ref, style, source_type, auto_enhance, auto_find_doi)
-            repair_results.append(result)
-            formatted_refs.append(result['formatted'])
-            for w in result.get('issues', []):
-                all_warnings.append(f"Ref {idx}: {w}")
-        
-        response_data = {
-            'success': True,
-            'formatted': '\n\n'.join(formatted_refs),
-            'warnings': all_warnings[:30],
-            'repair_results': export_to_dict(repair_results),
-            'total_references': len(references),
-            'references_with_doi': sum(1 for r in repair_results if r['has_doi']),
-            'average_confidence': round(sum(r['confidence'] for r in repair_results) / len(repair_results), 1) if repair_results else 0,
-            'needs_review': sum(1 for r in repair_results if r.get('needs_review', False)),
-        }
-        
-        return jsonify(response_data), 200
-        
-    except Exception as e:
-        print(f"Error: {traceback.format_exc()}")
-        return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
-
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'version': '2.0.0',
-        'features': ['OpenAlex', 'DOI auto-discovery', 'APA7', 'APA6', 'Harvard', 'Vancouver']
-    }), 200
-
-
-# =========================================
-# 8. RUN THE APP
-# =========================================
-
-if __name__ == '__main__':
-    print("=" * 60)
-    print("🔧 CiteIntegrity Pro - Running from formatter.py")
-    print("=" * 60)
-    print(f"✅ OpenAlex Integration: ENABLED")
-    print(f"✅ DOI Auto-discovery: ENABLED")
-    print(f"✅ All Citation Styles: ENABLED")
-    print("=" * 60)
-    print("\n📱 Access the application at: http://localhost:5000")
-    print("⚠️  Press Ctrl+C to stop the server\n")
+                });
+                
+                copyBtn.addEventListener('click', async function() {
+                    const text = formattedOutput.textContent;
+                    if (text && text !== 'Your formatted references will appear here...' && !text.includes('Processing')) {
+                        await navigator.clipboard.writeText(text);
+                        copyBtn.textContent = '✓ Copied!';
+                        setTimeout(() => copyBtn.textContent = '📋 Copy to Clipboard', 2000);
+                    }
+                });
+            </script>
+        </body>
+        </html>
+        '''
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    @app.route('/api/format-reference', methods=['POST'])
+    def format_reference_api():
+        try:
+            if request.is_json:
+                data = request.get_json()
+                raw_text = data.get('raw_reference') or data.get('raw_text', '')
+                style = data.get('style', 'apa7')
+                source_type = data.get('source_type', 'journal')
+                auto_enhance = data.get('auto_enhance', True)
+                auto_find_doi = data.get('auto_find_doi', True)
+            else:
+                raw_text = request.form.get('raw_reference', '')
+                style = request.form.get('style', 'apa7')
+                source_type = request.form.get('source_type', 'journal')
+                auto_enhance = request.form.get('auto_enhance', 'true').lower() == 'true'
+                auto_find_doi = request.form.get('auto_find_doi', 'true').lower() == 'true'
+            
+            if not raw_text or not raw_text.strip():
+                return jsonify({'success': False, 'message': 'Please provide at least one reference.'}), 400
+            
+            result = process_references(raw_text, style, source_type, auto_enhance, auto_find_doi)
+            
+            response_data = {
+                'success': True,
+                'formatted': result['formatted'],
+                'warnings': result['warnings'],
+                'repair_results': export_to_dict(result['repair_results']),
+                'total_references': result['total_references'],
+                'average_confidence': round(result['average_confidence'], 1),
+            }
+            
+            return jsonify(response_data), 200
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            return jsonify({'success': False, 'message': f'Server error: {str(e)}'}), 500
+    
+    @app.route('/api/health', methods=['GET'])
+    def health_check():
+        return jsonify({
+            'status': 'healthy',
+            'version': '2.0.0',
+            'features': ['OpenAlex', 'DOI auto-discovery', 'APA7', 'APA6', 'Harvard', 'Vancouver']
+        }), 200
+    
+    if __name__ == '__main__':
+        print("=" * 60)
+        print("🔧 CiteIntegrity Pro - Running from formatter.py")
+        print("=" * 60)
+        print(f"✅ OpenAlex Integration: ENABLED")
+        print(f"✅ DOI Auto-discovery: ENABLED")
+        print(f"✅ All Citation Styles: ENABLED")
+        print("=" * 60)
+        print("\n📱 Access the application at: http://localhost:5000")
+        print("⚠️  Press Ctrl+C to stop the server\n")
+        app.run(debug=True, host='0.0.0.0', port=5000)
+
+else:
+    # Library mode - no Flask
+    print("=" * 60)
+    print("CiteIntegrity Pro Core Engine")
+    print("=" * 60)
+    print("Running in library mode. To start the web server, install Flask:")
+    print("  pip install Flask flask-cors")
+    print("=" * 60)
+    
+    # Example usage when run directly
+    if __name__ == '__main__':
+        test_ref = "Adam, M, A. (2020). Financial literacy and behaviour: Journal of Finance, 12(2), 45-60."
+        print("\nTesting repair_reference function:")
+        print("-" * 40)
+        result = repair_reference(test_ref, "apa7", "journal", True, True)
+        print(f"Original: {result['original']}")
+        print(f"Formatted: {result['formatted']}")
+        print(f"Confidence: {result['confidence']}%")
+        print(f"Issues: {result['issues']}")
+        print(f"Has DOI: {result['has_doi']}")
