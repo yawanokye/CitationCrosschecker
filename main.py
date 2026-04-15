@@ -552,7 +552,7 @@ async def format_reference_api(
 ):
     try:
         result = process_references(
-            raw_reference=raw_reference,
+            raw_text=raw_reference,
             style=style,
             variant=variant,
             source_type=source_type
