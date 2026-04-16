@@ -56,27 +56,50 @@ executor = ThreadPoolExecutor(max_workers=4)
 # JOB SYSTEM (ADD HERE)
 # =========================
 
-job_store = {}
+async def run_job(job_id, input_data, style):
+    async with semaphore:
+        try:
+            from pipeline import run_pipeline
+            import time
+            
+            cleanup_old_jobs()
+            
+            job_store[job_id] = {
+                "status": "processing",
+                "progress": 10,
+                "timestamp": time.time()
+            }
 
-def run_job(job_id, raw_reference, style):
-    try:
-        from pipeline import run_pipeline
+            result = await run_in_threadpool(run_pipeline, input_data, style)
 
-        job_store[job_id] = {"status": "processing", "progress": 10}
+            job_store[job_id] = {
+                "status": "completed",
+                "progress": 100,
+                "result": result,
+                "timestamp": time.time()
+            }
 
-        result = run_pipeline(raw_reference, style)
+        except Exception as e:
+            job_store[job_id] = {
+                "status": "error",
+                "error": str(e),
+                "timestamp": time.time()
+            }
 
-        job_store[job_id] = {
-            "status": "completed",
-            "progress": 100,
-            "result": result
-        }
+def cleanup_old_jobs(max_age_seconds: int = 600):
+    import time
+    now = time.time()
 
-    except Exception as e:
-        job_store[job_id] = {
-            "status": "error",
-            "error": str(e)
-        }
+    stale_ids = []
+    for job_id, job in job_store.items():
+        ts = job.get("timestamp")
+        if ts is None:
+            continue
+        if now - ts > max_age_seconds:
+            stale_ids.append(job_id)
+
+    for job_id in stale_ids:
+        del job_store[job_id]
 # ===============================
 # DATABASE SETUP - SQLite
 # ===============================
