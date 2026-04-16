@@ -773,6 +773,8 @@
         <!-- Upload Panel -->
         <div class="upload-card">
             <div class="file-area" id="fileArea">
+            <input type="file" id="file">
+            <div id="fileName"></div>
                 <div class="file-icon">📑</div>
                 <div class="file-message">Upload your thesis, dissertation, or manuscript to begin (.docx recommended)</div>
                 <div class="file-message" style="font-size: 12px; margin-top: 6px;">DOCX is recommended for accurate citation analysis. Ideal for theses, dissertations, project reports, and journal manuscripts</div>
@@ -1144,71 +1146,70 @@ function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
     const fileInput = document.getElementById("file");
     const fileNameSpan = document.getElementById("fileName");
-    
+
     if (!fileArea || !fileInput) {
         console.error("[Debug] File area or input not found");
         return;
     }
-    
-    const clickHandler = function(e) {
-        if (e.target === fileNameSpan || (e.target.classList && e.target.classList.contains("file-name"))) {
-            return;
-        }
+
+    // ✅ SIMPLE & RELIABLE CLICK
+    fileArea.onclick = function () {
         console.log("[Debug] File area clicked");
         fileInput.click();
     };
-    
-    fileArea.onclick = function(e) {
-        if (e.target === fileNameSpan || (e.target.classList && e.target.classList.contains("file-name"))) {
-            return;
-        }
-        fileInput.click();
-    };
-    
-    fileArea.addEventListener("dragover", function(e) {
+
+    // ✅ DRAG OVER
+    fileArea.ondragover = function (e) {
         e.preventDefault();
         fileArea.classList.add("drag-over");
-    });
-    
-    fileArea.addEventListener("dragleave", function(e) {
+    };
+
+    // ✅ DRAG LEAVE
+    fileArea.ondragleave = function (e) {
         e.preventDefault();
         fileArea.classList.remove("drag-over");
-    });
-    
-    fileArea.addEventListener("drop", function(e) {
+    };
+
+    // ✅ DROP
+    fileArea.ondrop = function (e) {
         e.preventDefault();
         fileArea.classList.remove("drag-over");
+
         const files = e.dataTransfer.files;
         if (files.length > 0) {
             fileInput.files = files;
-            const changeEvent = new Event('change', { bubbles: true });
-            fileInput.dispatchEvent(changeEvent);
+            fileInput.dispatchEvent(new Event("change"));
         }
-    });
-    
-    fileInput.addEventListener('change', function() {
+    };
+
+    // ✅ FILE SELECTED
+    fileInput.onchange = function () {
         const file = fileInput.files[0];
-        if (file) {
-            if (file.name.toLowerCase().endsWith('.docx')) {
-                if (fileNameSpan) {
-                    fileNameSpan.textContent = `✅ ${file.name}`;
-                }
-                setStatus("DOCX file selected. Ready to run check.", "good");
-                const btnCheck = document.getElementById("btnCheck");
-                if (btnCheck) btnCheck.disabled = false;
-            } else {
-                if (fileNameSpan) {
-                    fileNameSpan.textContent = `❌ Please select a DOCX file`;
-                }
-                setStatus("Only DOCX files are accepted.", "warn");
-                fileInput.value = '';
-                const btnCheck = document.getElementById("btnCheck");
-                if (btnCheck) btnCheck.disabled = true;
-            }
+
+        if (!file) return;
+
+        if (file.name.toLowerCase().endsWith(".docx")) {
+            if (fileNameSpan) fileNameSpan.textContent = `✅ ${file.name}`;
+
+            setStatus("DOCX file selected. Ready to run check.", "good");
+
+            const btnCheck = document.getElementById("btnCheck");
+            if (btnCheck) btnCheck.disabled = false;
+
+        } else {
+            if (fileNameSpan) fileNameSpan.textContent = `❌ Please select a DOCX file`;
+
+            setStatus("Only DOCX files are accepted.", "warn");
+
+            fileInput.value = "";
+
+            const btnCheck = document.getElementById("btnCheck");
+            if (btnCheck) btnCheck.disabled = true;
         }
-    });
-    
+    };
+
     fileArea.style.cursor = "pointer";
+
     console.log("[Debug] File area setup complete");
 }
 
