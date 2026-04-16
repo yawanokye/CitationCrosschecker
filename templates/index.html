@@ -1929,7 +1929,57 @@ function displaySuggestions(data) {
 // BUTTON EVENT LISTENERS (AT THE BOTTOM - CRITICAL!)
 // ============================================
 setupFileArea();
+// ============================================
+// ✅ CONNECT "ANALYZE DOCUMENT" BUTTON
+// ============================================
 
+const btnCheck = document.getElementById("btnCheck");
+
+if (btnCheck) {
+    btnCheck.addEventListener("click", async () => {
+
+        const fileInput = document.getElementById("file");
+
+        if (!fileInput || !fileInput.files.length) {
+            alert("Please upload a file first");
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", fileInput.files[0]);
+        formData.append("style", "apa7");
+
+        setStatus("Submitting document...", "warn");
+
+        try {
+            const res = await fetch("/api/submit-document-job", {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                setStatus("Submission failed", "bad");
+                console.error(data);
+                return;
+            }
+
+            LAST_JOB_ID = data.job_id;
+
+            console.log("Job ID:", LAST_JOB_ID);
+
+            setStatus("Processing started...", "warn");
+
+            startPolling();
+
+        } catch (err) {
+            console.error(err);
+            setStatus("Submission error", "bad");
+        }
+
+    });
+}
 const btnCheck = document.getElementById("btnCheck");
 if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
 
