@@ -685,6 +685,58 @@ async def submit_job(
     background_tasks.add_task(run_job, job_id, raw_reference, style)
 
     return {"job_id": job_id}
+# ============================================================
+# 🔵 FULL DOCUMENT ASYNC SUBMIT (NEW)
+# ============================================================
+
+@app.post("/api/submit-document-job")
+async def submit_document_job(
+    file: UploadFile = File(...),
+    style: str = Form("apa7"),
+    background_tasks: BackgroundTasks = None
+):
+    # -----------------------------
+    # 🔒 VALIDATION
+    # -----------------------------
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    filename = file.filename.lower()
+
+    if not (filename.endswith(".docx") or filename.endswith(".pdf")):
+        raise HTTPException(
+            status_code=400,
+            detail="Only DOCX or PDF files are supported"
+        )
+
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    if len(content) > 10_000_000:  # 10MB limit
+        raise HTTPException(status_code=400, detail="File too large")
+
+    # -----------------------------
+    # 🆔 CREATE JOB
+    # -----------------------------
+    job_id = str(uuid.uuid4())
+
+    job_store[job_id] = {
+        "status": "queued",
+        "progress": 0,
+        "type": "document"
+    }
+
+    # -----------------------------
+    # 🚀 BACKGROUND PROCESSING
+    # -----------------------------
+    background_tasks.add_task(run_job, job_id, content, style)
+
+    return {
+        "job_id": job_id,
+        "type": "document"
+    }
 
 @app.get("/api/job-status/{job_id}")
 async def job_status(job_id: str):
