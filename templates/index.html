@@ -1150,27 +1150,85 @@ function setupFileArea() {
     const fileName = document.getElementById("fileName");
     const btnCheck = document.getElementById("btnCheck");
 
+    console.log("🚀 Upload module initialized");
+
     if (!fileArea || !fileInput) {
-        console.error("Upload elements not found");
+        console.error("❌ Upload elements not found");
         return;
     }
 
-    // ✅ FIX: Makes the file area clickable to trigger file upload
-    fileArea.onclick = () => fileInput.click();
+    // 🔥 ENSURE CLICK ALWAYS WORKS
+    fileArea.style.pointerEvents = "auto";
+    fileArea.style.cursor = "pointer";
 
-    fileInput.onchange = function () {
+    // 🔥 FORCE CLICK HANDLER (STRONG)
+    fileArea.addEventListener("click", function (e) {
+        e.preventDefault();
+        console.log("📂 Upload area clicked");
+        fileInput.click();
+    });
+
+    // 🔥 DRAG OVER
+    fileArea.addEventListener("dragover", function (e) {
+        e.preventDefault();
+        fileArea.classList.add("drag-over");
+    });
+
+    // 🔥 DRAG LEAVE
+    fileArea.addEventListener("dragleave", function () {
+        fileArea.classList.remove("drag-over");
+    });
+
+    // 🔥 DROP SUPPORT
+    fileArea.addEventListener("drop", function (e) {
+        e.preventDefault();
+        fileArea.classList.remove("drag-over");
+
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            fileInput.files = files;
+
+            // 🔥 FORCE CHANGE EVENT
+            const event = new Event("change", { bubbles: true });
+            fileInput.dispatchEvent(event);
+        }
+    });
+
+    // 🔥 FILE SELECTION
+    fileInput.addEventListener("change", function () {
+
+        console.log("📄 File selection triggered");
+
         const file = fileInput.files[0];
-        if (!file) return;
+
+        if (!file) {
+            console.warn("⚠️ No file selected");
+            return;
+        }
+
+        console.log("📄 Selected:", file.name);
 
         if (file.name.toLowerCase().endsWith(".docx")) {
-            fileName.textContent = "✅ " + file.name;
+
+            if (fileName) fileName.textContent = "✅ " + file.name;
+
             if (btnCheck) btnCheck.disabled = false;
+
+            setStatus("File ready. Click Analyze.", "good");
+
         } else {
-            fileName.textContent = "❌ Only DOCX allowed";
+
+            if (fileName) fileName.textContent = "❌ Only DOCX allowed";
+
             fileInput.value = "";
+
             if (btnCheck) btnCheck.disabled = true;
+
+            setStatus("Upload a DOCX file only.", "warn");
         }
-    };
+    });
+
+    console.log("✅ Upload fully activated");
 }
 // Progress Bar
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
