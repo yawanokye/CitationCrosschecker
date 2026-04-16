@@ -554,14 +554,24 @@ async def format_reference_api(
         result = process_references(
             raw_text=raw_reference,
             style=style,
-            variant=variant,
             source_type=source_type
         )
 
+        repair_results = result.get("repair_results", [])
+
         return {
             "success": True,
-            "formatted": result["formatted"],
-            "warnings": result["warnings"]
+            "formatted": "\n".join(result.get("formatted", [])) if isinstance(result.get("formatted"), list) else result.get("formatted", ""),
+            "warnings": result.get("warnings", []),
+        
+            # 🔥 REQUIRED FOR YOUR UI
+            "repair_results": repair_results,
+            "total_references": len(repair_results),
+            "references_with_doi": sum(1 for r in repair_results if r.get("has_doi")),
+            "average_confidence": (
+                sum(r.get("confidence", 0) for r in repair_results) / max(len(repair_results), 1)
+            ),
+            "needs_review": sum(1 for r in repair_results if r.get("needs_review"))
         }
 
     except Exception as e:
