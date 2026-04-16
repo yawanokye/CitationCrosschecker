@@ -1158,8 +1158,12 @@ function setupFileArea() {
         fileInput.click();
     };
     
-    fileArea.removeEventListener("click", clickHandler);
-    fileArea.addEventListener("click", clickHandler);
+    fileArea.onclick = function(e) {
+        if (e.target === fileNameSpan || (e.target.classList && e.target.classList.contains("file-name"))) {
+            return;
+        }
+        fileInput.click();
+    };
     
     fileArea.addEventListener("dragover", function(e) {
         e.preventDefault();
@@ -1934,7 +1938,7 @@ function displaySuggestions(data) {
 // BUTTON EVENT LISTENERS
 // ============================================
 setupFileArea();
-
+updateQueueStatus();
 const btnCheck = document.getElementById("btnCheck");
 
 if (btnCheck) {
