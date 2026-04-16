@@ -574,9 +574,8 @@ def export_to_dict(repair_results):
 # 6. FLASK WEB SERVER
 # =========================================
 
-# HTML Template
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
+# HTML Template (simplified - but you can use the full one from your HTML file)
+HTML_TEMPLATE = '''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -761,7 +760,7 @@ HTML_TEMPLATE = '''
     <div class="grid">
         <div>
             <label for="raw_reference">📝 References to Format/Repair</label>
-            <textarea id="raw_reference" placeholder="Paste one or more references (one per line)...&#10;&#10;Example:&#10;Eklemet, I., MacCarthy, J., & Gyamfaa, E. (2024). Moderating Role of Risk Management between Risk Exposure and Bank Performance: Application of GMM Model. Theoretical Economics Letters, 14(2), 363-389."></textarea>
+            <textarea id="raw_reference" placeholder="Paste one or more references (one per line)...&#10;&#10;Example:&#10;Eklemet, I., MacCarthy, J., & Gyamfaa, E. (2024). Moderating Role of Risk Management between Risk Exposure and Bank Performance: Application of GMM Model. Theoretical Economics Letters, 14(2), 363-389;"></textarea>
 
             <div class="controls">
                 <select id="style">
@@ -840,16 +839,18 @@ HTML_TEMPLATE = '''
         formattedOutput.textContent = '🔄 Processing references with OpenAlex integration...';
         formatBtn.disabled = true;
         
-        const formData = new FormData();
+        const formData = new URLSearchParams();
         formData.append('raw_reference', rawText);
         formData.append('style', style.value);
+        formData.append('variant', 'generic');
         formData.append('source_type', sourceType.value);
-        formData.append('auto_enhance', autoEnhance.checked);
-        formData.append('auto_find_doi', autoFindDoi.checked);
         
         try {
             const response = await fetch('/api/format-reference', {
                 method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
                 body: formData
             });
             
@@ -860,7 +861,7 @@ HTML_TEMPLATE = '''
                 return;
             }
             
-            formattedOutput.textContent = data.formatted || 'No output returned.';
+            formattedOutput.innerHTML = (data.formatted || 'No output returned.').replace(/\\n/g, '<br>');
             
             // Update stats
             if (data.total_references) {
@@ -920,7 +921,7 @@ HTML_TEMPLATE = '''
 
 if FLASK_AVAILABLE:
     app = Flask(__name__)
-    CORS(app)
+    CORS(app, origins=['*'], allow_headers=['Content-Type'], methods=['GET', 'POST', 'OPTIONS'])
     
     @app.route('/')
     def index():
@@ -932,12 +933,20 @@ if FLASK_AVAILABLE:
             return jsonify({}), 200
             
         try:
-            # Get form data
-            raw_text = request.form.get('raw_reference', '')
-            style = request.form.get('style', 'apa7')
-            source_type = request.form.get('source_type', 'journal')
-            auto_enhance = request.form.get('auto_enhance', 'true').lower() == 'true'
-            auto_find_doi = request.form.get('auto_find_doi', 'true').lower() == 'true'
+            # Get form data - accept both FormData and URLSearchParams
+            if request.content_type and 'application/json' in request.content_type:
+                data = request.get_json()
+                raw_text = data.get('raw_reference', '')
+                style = data.get('style', 'apa7')
+                source_type = data.get('source_type', 'journal')
+                auto_enhance = data.get('auto_enhance', True)
+                auto_find_doi = data.get('auto_find_doi', True)
+            else:
+                raw_text = request.form.get('raw_reference', '')
+                style = request.form.get('style', 'apa7')
+                source_type = request.form.get('source_type', 'journal')
+                auto_enhance = request.form.get('auto_enhance', 'true').lower() == 'true'
+                auto_find_doi = request.form.get('auto_find_doi', 'true').lower() == 'true'
             
             print(f"Processing: style={style}, source_type={source_type}, auto_enhance={auto_enhance}")
             print(f"Raw text length: {len(raw_text)}")
@@ -955,7 +964,8 @@ if FLASK_AVAILABLE:
                 'repair_results': export_to_dict(result['repair_results']),
                 'total_references': result['total_references'],
                 'average_confidence': round(result['average_confidence'], 1),
-                'references_with_doi': result['references_with_doi']
+                'references_with_doi': result['references_with_doi'],
+                'needs_review': sum(1 for r in result['repair_results'] if r.get('needs_review'))
             }
             
             print(f"Success: {result['total_references']} references processed")
