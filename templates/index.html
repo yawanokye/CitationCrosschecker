@@ -1155,10 +1155,8 @@ function setupFileArea() {
         return;
     }
 
-    // 🔥 PUT IT RIGHT HERE
+    // ✅ FIX: Makes the file area clickable to trigger file upload
     fileArea.onclick = () => fileInput.click();
-
-    // (keep the rest of your logic below)
 
     fileInput.onchange = function () {
         const file = fileInput.files[0];
