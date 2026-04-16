@@ -41,7 +41,8 @@ if (!form) {
 // =========================================
 // 1. MAIN FORM SUBMIT HANDLER
 // =========================================
-form.addEventListener("submit", async function (e) {
+if (form) {
+    form.addEventListener("submit", async function (e) {
     e.preventDefault();
 
     const rawText = rawReference.value.trim();
