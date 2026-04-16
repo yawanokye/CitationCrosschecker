@@ -382,48 +382,52 @@ app = FastAPI(
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
 
-BLOCKED_PATHS = [
-    # Existing (keep)
+BLOCKED_PATHS = {
     "/wp-admin",
     "/wordpress",
     "/wp-login",
     "/xmlrpc.php",
 
-    # 🔥 ADD THESE (CRITICAL)
+    # protected endpoints
     "/docs",
     "/redoc",
     "/openapi.json",
     "/debug",
     "/private-stats"
-]
+}
 
 BAD_AGENTS = [
-    "bot", "crawler", "scanner", "spider",
-       "httpclient", "scrapy", "libwww"
+    "crawler", "scanner", "spider",   # 🔥 removed "bot"
+    "httpclient", "scrapy", "libwww"
 ]
 
-# =========================
-# SECURITY MIDDLEWARE (1st)
-# =========================
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
-    path = request.url.path.lower()
+    path = request.url.path.lower().rstrip("/")
     ua = request.headers.get("user-agent", "").lower()
 
-   
-    # 🔒 Block sensitive endpoints (with exceptions)
-    for blocked in BLOCKED_PATHS:
-        if path.startswith(blocked):
-    
-            # ✅ Allow private-stats for your frontend
-            if path.startswith("/private-stats"):
-                return await call_next(request)
-    
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
+    # =========================
+    # 🔒 BLOCK ONLY EXACT PATHS
+    # =========================
+    if path in BLOCKED_PATHS:
+        # allow internal stats endpoint if needed
+        if path == "/private-stats":
+            return await call_next(request)
 
-    # 🤖 Block bots
-    if any(b in ua for b in BAD_AGENTS):
-        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Not Found"}
+        )
+
+    # =========================
+    # 🤖 BOT FILTER (SAFE VERSION)
+    # =========================
+    if ua:
+        if any(bad in ua for bad in BAD_AGENTS):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Forbidden"}
+            )
 
     return await call_next(request)
 
