@@ -43,6 +43,40 @@ from reference_formatter import (
     DOCX_AVAILABLE
 )
 
+from asyncio import Semaphore
+from concurrent.futures import ThreadPoolExecutor
+
+MAX_CONCURRENT_JOBS = 3
+semaphore = Semaphore(MAX_CONCURRENT_JOBS)
+
+job_store = {}
+executor = ThreadPoolExecutor(max_workers=4)
+
+# =========================
+# JOB SYSTEM (ADD HERE)
+# =========================
+
+job_store = {}
+
+def run_job(job_id, file_bytes, style):
+    try:
+        job_store[job_id] = {"status": "processing", "progress": 5}
+
+        from pipeline import run_pipeline   # import here to avoid circular issues
+
+        result = run_pipeline(file_bytes, style)
+
+        job_store[job_id] = {
+            "status": "completed",
+            "progress": 100,
+            "result": result
+        }
+
+    except Exception as e:
+        job_store[job_id] = {
+            "status": "error",
+            "error": str(e)
+        }
 # ===============================
 # DATABASE SETUP - SQLite
 # ===============================
@@ -605,7 +639,30 @@ async def format_reference_api(
 
 _store: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
+@app.post("/api/submit-job")
+async def submit_job(
+    file: UploadFile = File(...),
+    style: str = Form("apa7"),
+    background_tasks: BackgroundTasks = None
+):
+    content = await file.read()
 
+    # 🔥 HARD LIMIT (important)
+    if len(content) > 5_000_000:
+        raise HTTPException(400, "File too large")
+
+    job_id = str(uuid.uuid4())
+
+    job_store[job_id] = {"status": "queued", "progress": 0}
+
+    background_tasks.add_task(run_job, job_id, content, style)
+
+    return {"job_id": job_id}
+
+@app.get("/api/job-status/{job_id}")
+async def job_status(job_id: str):
+    return job_store.get(job_id, {"status": "not_found"})
+    
 # --------------------------------------------------
 # Utility Functions
 # --------------------------------------------------
