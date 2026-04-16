@@ -1,14 +1,16 @@
 # =========================================
 # formatter.py — CiteIntegrity Pro Complete
-# Integrated Formatting Engine + Web Server
+# Smart Reference Detection + DOI Auto-discovery
 # =========================================
 
 import re
 import json
-from typing import Dict, List, Optional
+import time
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from difflib import SequenceMatcher
 import traceback
+import hashlib
 
 # Try to import Flask
 try:
@@ -25,16 +27,71 @@ import requests
 # CONFIGURATION
 # =========================================
 CACHE_DOI_LOOKUPS = {}
+CACHE_SEARCH_RESULTS = {}
 OPENALEX_MAX_RESULTS = 5
 CROSSREF_TIMEOUT = 10
 OPENALEX_TIMEOUT = 10
+MAX_RETRIES = 2
 
 # =========================================
-# 1. PARSE REFERENCE
+# 1. ENHANCED REFERENCE DETECTION
 # =========================================
-def parse_reference(raw_reference: str, source_type: str) -> dict:
+
+def detect_messy_reference(text: str) -> Dict:
+    """Detect if a reference is messy and identify its type"""
+    text_lower = text.lower()
+    
+    # Calculate messiness score (0 = clean, 100 = very messy)
+    messiness_score = 0
+    
+    # Check for missing punctuation
+    if not any(p in text for p in ['.', ',', ';', ':']):
+        messiness_score += 30
+    
+    # Check for excessive spaces
+    if re.search(r'\s{3,}', text):
+        messiness_score += 20
+    
+    # Check for missing author format
+    if not re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', text) and not re.search(r'[A-Z][a-z]+\s+[A-Z]\.', text):
+        messiness_score += 15
+    
+    # Check for missing year
+    if not re.search(r'\b(19|20)\d{2}\b', text):
+        messiness_score += 20
+    
+    # Check for missing title capitalization
+    if text.isupper():
+        messiness_score += 15
+    
+    # Detect reference type
+    ref_type = "journal"  # default
+    if "book" in text_lower or "press" in text_lower or "university" in text_lower:
+        ref_type = "book"
+    elif "www." in text_lower or "http" in text_lower:
+        ref_type = "webpage"
+    elif "report" in text_lower or "working paper" in text_lower:
+        ref_type = "report"
+    elif "conference" in text_lower or "proceedings" in text_lower:
+        ref_type = "conference"
+    
+    return {
+        "is_messy": messiness_score > 30,
+        "messiness_score": messiness_score,
+        "ref_type": ref_type,
+        "suggested_fixes": []
+    }
+
+def smart_parse_reference(raw_reference: str, source_type: str = "auto") -> dict:
+    """Intelligently parse any reference format"""
     raw = " ".join(raw_reference.strip().split())
-
+    
+    # First, detect if it's messy
+    detection = detect_messy_reference(raw)
+    
+    # Try to normalize the text first
+    normalized = normalize_messy_text(raw)
+    
     parsed = {
         "authors": "",
         "year": "",
@@ -47,121 +104,360 @@ def parse_reference(raw_reference: str, source_type: str) -> dict:
         "doi": "",
         "url": "",
         "original_text": raw_reference,
+        "is_messy": detection["is_messy"],
+        "messiness_score": detection["messiness_score"],
+        "ref_type": detection["ref_type"] if source_type == "auto" else source_type
     }
-
-    # Year
-    year_match = re.search(r"\b(19|20)\d{2}[a-z]?\b", raw)
-    if year_match:
-        parsed["year"] = year_match.group(0)
-
-    # DOI
-    doi_match = re.search(r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", raw, re.I)
+    
+    # Auto-detect source type if not specified
+    if source_type == "auto":
+        source_type = detection["ref_type"]
+    
+    # Extract DOI first (most reliable)
+    doi_match = re.search(r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", normalized, re.I)
     if doi_match:
         parsed["doi"] = doi_match.group(1).rstrip(".,;")
-
-    # URL
-    url_match = re.search(r"(https?://\S+)", raw, re.I)
+    
+    # Extract URL
+    url_match = re.search(r"(https?://\S+)", normalized, re.I)
     if url_match:
         parsed["url"] = url_match.group(1).rstrip(".,;")
+    
+    # Extract year
+    year_match = re.search(r"\b(19|20)\d{2}[a-z]?\b", normalized)
+    if year_match:
+        parsed["year"] = year_match.group(0)
+    
+    # Smart author extraction
+    parsed["authors"] = smart_extract_authors(normalized, parsed["year"])
+    
+    # Smart title extraction
+    parsed["title"] = smart_extract_title(normalized, parsed["year"], parsed["authors"])
+    
+    # Extract source (journal/book title)
+    parsed["source"] = smart_extract_source(normalized, parsed["title"], parsed["year"])
+    
+    # Extract volume, issue, pages
+    vip_patterns = [
+        r"(\d+)\s*\((\d+)\)\s*[,:]\s*([\d\-–]+)",  # 14(2), 363-389
+        r"(\d+)\s*[,:]\s*([\d\-–]+)",               # 14, 363-389
+        r"vol\.?\s*(\d+)[,;\s]+(?:no\.?|iss\.?)\s*(\d+)[,;\s]+pp?\.?\s*([\d\-–]+)",  # vol.14, no.2, pp.363-389
+        r"(\d+)[\s\-]+([\d\-–]+)$"                  # 14 363-389 at end
+    ]
+    
+    for pattern in vip_patterns:
+        match = re.search(pattern, normalized, re.I)
+        if match:
+            groups = match.groups()
+            if len(groups) >= 2:
+                parsed["volume"] = groups[0]
+                if len(groups) >= 3:
+                    parsed["issue"] = groups[1]
+                    parsed["pages"] = groups[2]
+                else:
+                    parsed["pages"] = groups[1]
+            break
+    
+    # If no pages found, try simple page pattern
+    if not parsed["pages"]:
+        pages_match = re.search(r"pp?\.?\s*([\d\-–]+)", normalized, re.I)
+        if pages_match:
+            parsed["pages"] = pages_match.group(1)
+    
+    # Clean up all fields
+    parsed = clean_parsed_fields(parsed)
+    
+    return parsed
 
-    # Volume, issue, pages
-    vip = re.search(r"(\d+)\s*\((\d+)\)\s*,\s*([\d\-–]+)", raw)
-    if vip:
-        parsed["volume"] = vip.group(1)
-        parsed["issue"] = vip.group(2)
-        parsed["pages"] = vip.group(3)
+def normalize_messy_text(text: str) -> str:
+    """Normalize messy reference text"""
+    # Remove excessive whitespace
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Fix common OCR errors
+    replacements = {
+        r'ﬁ': 'fi',
+        r'ﬂ': 'fl',
+        r'ﬀ': 'ff',
+        r'’': "'",
+        r'“': '"',
+        r'”': '"',
+        r'–': '-',
+        r'—': '-',
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Fix spacing around punctuation
+    text = re.sub(r'\s+([.,;:!?])', r'\1', text)
+    text = re.sub(r'([.,;:!?])\s+', r'\1 ', text)
+    
+    # Fix common patterns
+    text = re.sub(r'\.([A-Z])', r'. \1', text)  # Add space after period before capital
+    
+    return text.strip()
 
-    # Alternative page pattern (without issue)
-    pages_only = re.search(r"pp?\.?\s*([\d\-–]+)", raw, re.I)
-    if not parsed["pages"] and pages_only:
-        parsed["pages"] = pages_only.group(1)
-
-    # Extract authors and title using year
-    if parsed["year"]:
-        # Split by year
-        parts = re.split(rf"\(?{parsed['year']}\)?", raw, maxsplit=1)
+def smart_extract_authors(text: str, year: str) -> str:
+    """Intelligently extract authors from messy text"""
+    if not year:
+        # Try to find author pattern at beginning
+        author_match = re.match(r'^([A-Z][a-z]+(?:[,;]\s*[A-Z][a-z]+)*)', text)
+        if author_match:
+            authors = author_match.group(1)
+            return clean_authors(authors)
+        return ""
+    
+    # Split by year
+    parts = re.split(rf'\(?{re.escape(year)}\)?', text, maxsplit=1)
+    if len(parts) >= 2:
+        author_part = parts[0].strip(" .,;:()")
         
-        if len(parts) >= 2:
-            # Authors are before the year
-            author_part = parts[0].strip(" .,()")
-            # Clean up authors - remove trailing punctuation
-            author_part = re.sub(r'[,.]$', '', author_part)
-            parsed["authors"] = author_part
-            
-            # Remainder after year
-            remainder = parts[1].strip(" .,()")
-            
-            # Split title and source by period
-            if '.' in remainder:
-                title_source = remainder.split('.', 1)
-                if len(title_source) >= 1:
-                    parsed["title"] = title_source[0].strip()
-                if len(title_source) >= 2:
-                    parsed["source"] = title_source[1].strip()
-            else:
-                parsed["title"] = remainder
+        # Remove common non-author patterns
+        author_part = re.sub(r'^(In|In:|In\s+)?', '', author_part)
+        author_part = re.sub(r'\s+(and|&)\s+', ' & ', author_part)
+        
+        # Clean up
+        author_part = re.sub(r'[,;]\s*$', '', author_part)
+        
+        return clean_authors(author_part)
+    
+    return ""
 
-    # Auto-correct common issues
-    parsed = auto_correct_parsed(parsed)
+def smart_extract_title(text: str, year: str, authors: str) -> str:
+    """Intelligently extract title from messy text"""
+    if not year:
+        return ""
+    
+    # Remove authors and year
+    remaining = text
+    if authors and authors in remaining:
+        remaining = remaining.replace(authors, "", 1)
+    
+    # Split by year
+    parts = re.split(rf'\(?{re.escape(year)}\)?', remaining, maxsplit=1)
+    if len(parts) >= 2:
+        title_part = parts[1].strip(" .,;:()")
+        
+        # Title usually ends before source or volume
+        # Look for patterns that indicate end of title
+        end_patterns = [
+            r'\.\s+[A-Z][a-z]+',  # period followed by capital word (source)
+            r'\.\s+\d+',           # period followed by number (volume)
+            r'\.\s+In\s+',         # period followed by "In"
+            r'\.\s+https?://',     # period followed by URL
+        ]
+        
+        for pattern in end_patterns:
+            match = re.search(pattern, title_part)
+            if match:
+                title_part = title_part[:match.start()]
+                break
+        
+        # Clean up title
+        title_part = re.sub(r'["\'\[\]{}]', '', title_part)
+        title_part = title_part.strip(" .,;:")
+        
+        # Capitalize first letter of title
+        if title_part and title_part[0].islower():
+            title_part = title_part[0].upper() + title_part[1:]
+        
+        return title_part
+    
+    return ""
+
+def smart_extract_source(text: str, title: str, year: str) -> str:
+    """Intelligently extract source (journal/book title)"""
+    if not title or not year:
+        return ""
+    
+    # Remove authors, year, and title
+    remaining = text
+    if title in remaining:
+        remaining = remaining.replace(title, "", 1)
+    
+    # Split by year
+    parts = re.split(rf'\(?{re.escape(year)}\)?', remaining, maxsplit=1)
+    if len(parts) >= 2:
+        source_part = parts[1].strip(" .,;:()")
+        
+        # Source is usually before volume/pages
+        # Remove volume, issue, pages
+        source_part = re.sub(r'\d+\s*\(?\d*\)?\s*[,:]\s*[\d\-–]+.*$', '', source_part)
+        source_part = re.sub(r'vol\.?\s*\d+.*$', '', source_part, re.I)
+        
+        # Clean up
+        source_part = re.sub(r'^\.\s+', '', source_part)
+        source_part = source_part.strip(" .,;:")
+        
+        return source_part
+    
+    return ""
+
+def clean_parsed_fields(parsed: dict) -> dict:
+    """Clean all parsed fields"""
+    for key in parsed:
+        if isinstance(parsed[key], str):
+            # Remove extra spaces
+            parsed[key] = re.sub(r'\s+', ' ', parsed[key]).strip()
+            # Remove trailing punctuation
+            parsed[key] = re.sub(r'[,;:.]$', '', parsed[key])
     
     return parsed
 
-
-def auto_correct_parsed(parsed: dict) -> dict:
-    """Auto-correct common reference errors"""
-    
-    # Fix author formatting
-    if parsed["authors"]:
-        # Remove excessive spaces
-        parsed["authors"] = re.sub(r'\s+', ' ', parsed["authors"]).strip()
-        # Fix "et. al" -> "et al"
-        parsed["authors"] = re.sub(r'et\.\s+al', 'et al', parsed["authors"], re.I)
-        # Fix multiple commas
-        parsed["authors"] = re.sub(r',,+', ',', parsed["authors"])
-        # Fix "&" formatting
-        parsed["authors"] = re.sub(r'\s+&\s+', ' & ', parsed["authors"])
-    
-    # Fix title case issues
-    if parsed["title"]:
-        if parsed["title"] and parsed["title"][0].islower():
-            parsed["title"] = parsed["title"][0].upper() + parsed["title"][1:]
-    
-    # Remove duplicate patterns in source
-    if parsed["source"]:
-        # Fix duplicate volume/issue/page info
-        parts = re.split(r',\s*(?=\d+\()', parsed["source"])
-        if len(parts) > 1:
-            parsed["source"] = parts[0]
-    
-    return parsed
-
-
 # =========================================
-# 2. DOI FETCH (Crossref + OpenAlex)
+# 2. ENHANCED DOI DISCOVERY (Crossref + OpenAlex)
 # =========================================
 
-def fetch_from_crossref(doi: str) -> dict:
-    """Fetch metadata from Crossref"""
+def search_doi_by_metadata(title: str, authors: str = "", year: str = "") -> Optional[str]:
+    """Search for DOI using metadata (title, authors, year)"""
+    if not title:
+        return None
+    
+    # Create cache key
+    cache_key = f"{title}_{authors}_{year}"
+    if cache_key in CACHE_SEARCH_RESULTS:
+        return CACHE_SEARCH_RESULTS[cache_key]
+    
+    # Try Crossref search first
+    doi = search_crossref_by_metadata(title, authors, year)
+    if doi:
+        CACHE_SEARCH_RESULTS[cache_key] = doi
+        return doi
+    
+    # Try OpenAlex search
+    doi = search_openalex_by_metadata(title, authors, year)
+    if doi:
+        CACHE_SEARCH_RESULTS[cache_key] = doi
+        return doi
+    
+    CACHE_SEARCH_RESULTS[cache_key] = None
+    return None
+
+def search_crossref_by_metadata(title: str, authors: str = "", year: str = "") -> Optional[str]:
+    """Search Crossref API for DOI by metadata"""
+    try:
+        # Build query
+        query = title
+        if authors:
+            # Extract last name of first author
+            first_author = authors.split('&')[0].strip()
+            if ',' in first_author:
+                author_last = first_author.split(',')[0].strip()
+                query += f" author:{author_last}"
+        
+        url = f"https://api.crossref.org/works?query.bibliographic={requests.utils.quote(query)}&rows=5"
+        
+        if year:
+            url += f"&filter=from-pub-date:{year}"
+        
+        response = requests.get(url, timeout=CROSSREF_TIMEOUT)
+        
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("message", {}).get("items", [])
+            
+            for item in items:
+                # Check title similarity
+                item_title = item.get("title", [""])[0] if item.get("title") else ""
+                if item_title and similar_text(title, item_title) > 0.6:
+                    doi = item.get("DOI")
+                    if doi:
+                        return doi
+            
+            # Return first result if any
+            if items:
+                doi = items[0].get("DOI")
+                if doi:
+                    return doi
+        
+        return None
+        
+    except Exception as e:
+        print(f"Crossref search error: {e}")
+        return None
+
+def search_openalex_by_metadata(title: str, authors: str = "", year: str = "") -> Optional[str]:
+    """Search OpenAlex API for DOI by metadata"""
+    try:
+        # Build search query
+        query = title
+        
+        url = f"https://api.openalex.org/works?search={requests.utils.quote(query)}&per-page=5"
+        
+        if year:
+            url += f"&filter=publication_year:{year}"
+        
+        response = requests.get(url, timeout=OPENALEX_TIMEOUT)
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("results", [])
+            
+            for result in results:
+                result_title = result.get("title", "")
+                if result_title and similar_text(title, result_title) > 0.5:
+                    doi = result.get("doi", "")
+                    if doi:
+                        # Extract DOI from URL if needed
+                        doi_match = re.search(r'10\.\d{4,9}/[-._;()/:A-Z0-9]+', doi, re.I)
+                        if doi_match:
+                            return doi_match.group(0)
+        
+        return None
+        
+    except Exception as e:
+        print(f"OpenAlex search error: {e}")
+        return None
+
+def fetch_full_metadata_by_doi(doi: str, prefer_openalex: bool = True) -> dict:
+    """Fetch complete metadata for a DOI from Crossref or OpenAlex"""
     if doi in CACHE_DOI_LOOKUPS:
         return CACHE_DOI_LOOKUPS[doi]
     
+    result = {}
+    
+    # Try OpenAlex first if preferred
+    if prefer_openalex:
+        result = fetch_from_openalex_full(doi)
+        if result and result.get("title"):
+            CACHE_DOI_LOOKUPS[doi] = result
+            return result
+    
+    # Try Crossref
+    result = fetch_from_crossref_full(doi)
+    if result and result.get("title"):
+        CACHE_DOI_LOOKUPS[doi] = result
+        return result
+    
+    # Try OpenAlex as fallback
+    if not prefer_openalex:
+        result = fetch_from_openalex_full(doi)
+        if result and result.get("title"):
+            CACHE_DOI_LOOKUPS[doi] = result
+            return result
+    
+    CACHE_DOI_LOOKUPS[doi] = {}
+    return {}
+
+def fetch_from_crossref_full(doi: str) -> dict:
+    """Fetch full metadata from Crossref"""
     try:
         url = f"https://api.crossref.org/works/{doi}"
-        res = requests.get(url, timeout=CROSSREF_TIMEOUT)
+        response = requests.get(url, timeout=CROSSREF_TIMEOUT)
         
-        if res.status_code != 200:
+        if response.status_code != 200:
             return {}
         
-        data = res.json()["message"]
+        data = response.json().get("message", {})
         
         authors = []
         for a in data.get("author", [])[:10]:
             family = a.get("family", "")
             given = a.get("given", "")
             if family:
-                authors.append(f"{family} {given}".strip())
+                authors.append(f"{family}, {given}".strip() if given else family)
         
-        result = {
+        return {
             "authors": ", ".join(authors) if authors else "",
             "year": str(data.get("issued", {}).get("date-parts", [[None]])[0][0]) if data.get("issued") else "",
             "title": data.get("title", [""])[0] if data.get("title") else "",
@@ -175,24 +471,20 @@ def fetch_from_crossref(doi: str) -> dict:
             "source_api": "Crossref"
         }
         
-        CACHE_DOI_LOOKUPS[doi] = result
-        return result
-        
     except Exception as e:
-        print(f"Crossref error for {doi}: {e}")
+        print(f"Crossref fetch error: {e}")
         return {}
 
-
-def fetch_from_openalex(doi: str) -> dict:
-    """Fetch metadata from OpenAlex"""
+def fetch_from_openalex_full(doi: str) -> dict:
+    """Fetch full metadata from OpenAlex"""
     try:
         url = f"https://api.openalex.org/works/https://doi.org/{doi}"
-        res = requests.get(url, timeout=OPENALEX_TIMEOUT)
+        response = requests.get(url, timeout=OPENALEX_TIMEOUT)
         
-        if res.status_code != 200:
+        if response.status_code != 200:
             return {}
         
-        data = res.json()
+        data = response.json()
         
         authors = []
         for authorship in data.get("authorships", [])[:10]:
@@ -206,198 +498,198 @@ def fetch_from_openalex(doi: str) -> dict:
         elif data.get("primary_location", {}).get("source"):
             source_name = data.get("primary_location", {}).get("source", {}).get("display_name", "")
         
-        result = {
+        biblio = data.get("biblio", {})
+        pages = ""
+        if biblio.get("first_page") or biblio.get("last_page"):
+            pages = f"{biblio.get('first_page', '')}-{biblio.get('last_page', '')}".strip("-")
+        
+        return {
             "authors": ", ".join(authors),
             "year": str(data.get("publication_year", "")),
             "title": data.get("title", ""),
             "source": source_name,
-            "volume": data.get("biblio", {}).get("volume", ""),
-            "issue": data.get("biblio", {}).get("issue", ""),
-            "pages": f"{data.get('biblio', {}).get('first_page', '')}-{data.get('biblio', {}).get('last_page', '')}".strip("-"),
+            "volume": biblio.get("volume", ""),
+            "issue": biblio.get("issue", ""),
+            "pages": pages,
             "publisher": data.get("host_venue", {}).get("publisher", ""),
             "doi": doi,
             "url": data.get("doi", ""),
             "source_api": "OpenAlex"
         }
         
-        return result
-        
     except Exception as e:
-        print(f"OpenAlex error for {doi}: {e}")
+        print(f"OpenAlex fetch error: {e}")
         return {}
 
-
-def fetch_from_doi(doi: str, prefer_openalex: bool = True) -> dict:
-    """Fetch DOI metadata with fallback"""
-    if prefer_openalex:
-        result = fetch_from_openalex(doi)
-        if result and result.get("title"):
-            return result
-        return fetch_from_crossref(doi)
-    else:
-        result = fetch_from_crossref(doi)
-        if result and result.get("title"):
-            return result
-        return fetch_from_openalex(doi)
-
+def similar_text(text1: str, text2: str) -> float:
+    """Calculate similarity between two strings"""
+    if not text1 or not text2:
+        return 0.0
+    return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
 
 # =========================================
 # 3. AUTHOR CLEANING
 # =========================================
+
 def clean_authors(authors: str) -> str:
     if not authors:
         return ""
     
-    if "et al" in authors.lower():
-        return authors.strip()
+    # Remove excessive spaces
+    authors = re.sub(r'\s+', ' ', authors).strip()
     
-    # Handle multiple authors with "&"
-    parts = re.split(r'\s+&\s+', authors)
+    # Fix "et. al" -> "et al"
+    authors = re.sub(r'et\.\s+al\.?', 'et al.', authors, re.I)
+    
+    # Fix multiple commas
+    authors = re.sub(r',,+', ',', authors)
+    
+    # Fix "&" formatting
+    authors = re.sub(r'\s+&\s+', ' & ', authors)
+    
+    # Handle "and" -> "&"
+    authors = re.sub(r'\s+and\s+', ' & ', authors, re.I)
+    
+    # Remove trailing punctuation
+    authors = re.sub(r'[,;:]$', '', authors)
+    
+    # Capitalize names properly
+    parts = authors.split(' & ')
     formatted_parts = []
     
     for part in parts:
         part = part.strip()
-        # Check if it's "Last, First" format
         if ',' in part:
+            # Already in "Last, First" format
             formatted_parts.append(part)
         else:
             # Try to parse "First Last" format
             names = part.split()
             if len(names) >= 2:
                 last = names[-1]
-                initials = ' '.join([f"{n[0]}." for n in names[:-1] if n])
+                initials = ' '.join([f"{n[0]}." for n in names[:-1] if n and n[0].isalpha()])
                 formatted_parts.append(f"{last}, {initials}".strip())
             else:
                 formatted_parts.append(part)
     
-    result = ', '.join(formatted_parts)
-    
-    # Replace last comma with & for multiple authors
-    if ',' in result and result.count(',') >= 1:
-        parts_list = result.split(', ')
-        if len(parts_list) > 1:
-            result = ', '.join(parts_list[:-1]) + ' & ' + parts_list[-1]
+    result = ' & '.join(formatted_parts)
     
     return result
 
+# =========================================
+# 4. FORMATTERS (APA7, APA6, Harvard, Vancouver)
+# =========================================
 
-# =========================================
-# 4. FORMATTERS
-# =========================================
 def format_apa7(p):
-    authors = clean_authors(p["authors"])
+    authors = clean_authors(p.get("authors", ""))
     if not authors:
         authors = "Author Unknown"
     
-    year = f"({p['year']})." if p["year"] else "(n.d.)."
+    year = f"({p.get('year', '')})." if p.get("year") else "(n.d.)."
     
-    title = p["title"] if p["title"] else "No title"
-    if title and not title[0].isupper():
+    title = p.get("title", "No title")
+    if title and title != "No title" and not title[0].isupper():
         title = title[0].upper() + title[1:]
     
-    source = p["source"] if p["source"] else ""
+    source = p.get("source", "")
     
     ref = f"{authors} {year} {title}"
     
     if source:
         ref += f". {source}"
     
-    if p["volume"]:
+    if p.get("volume"):
         ref += f", {p['volume']}"
-        if p["issue"]:
+        if p.get("issue"):
             ref += f"({p['issue']})"
     
-    if p["pages"]:
+    if p.get("pages"):
         ref += f", {p['pages']}"
     
     ref += "."
     
-    if p["doi"]:
+    if p.get("doi"):
         ref += f" https://doi.org/{p['doi']}"
-    elif p["url"]:
+    elif p.get("url"):
         ref += f" {p['url']}"
     
     return " ".join(ref.split())
 
-
 def format_apa6(p):
-    authors = clean_authors(p["authors"])
+    authors = clean_authors(p.get("authors", ""))
     if not authors:
         authors = "Author Unknown"
     
-    year = f"({p['year']})." if p["year"] else "(n.d.)."
+    year = f"({p.get('year', '')})." if p.get("year") else "(n.d.)."
     
-    title = p["title"] if p["title"] else "No title"
-    source = p["source"] if p["source"] else ""
+    title = p.get("title", "No title")
+    source = p.get("source", "")
     
     ref = f"{authors} {year} {title}"
     
     if source:
         ref += f". {source}"
     
-    if p["volume"]:
+    if p.get("volume"):
         ref += f", {p['volume']}"
-        if p["issue"]:
+        if p.get("issue"):
             ref += f"({p['issue']})"
     
-    if p["pages"]:
+    if p.get("pages"):
         ref += f", {p['pages']}"
     
     ref += "."
     
-    if p["doi"]:
+    if p.get("doi"):
         ref += f" doi:{p['doi']}"
-    elif p["url"]:
+    elif p.get("url"):
         ref += f" Retrieved from {p['url']}"
     
     return " ".join(ref.split())
 
-
 def format_harvard(p):
-    year = p["year"] if p["year"] else "n.d."
+    year = p.get("year", "n.d.")
     
-    authors = p["authors"] if p["authors"] else "Unknown"
+    authors = p.get("authors", "Unknown")
     if authors and "et al" not in authors.lower() and "&" in authors:
         authors = authors.split("&")[0].strip()
     
-    title = p["title"] if p["title"] else "No title"
-    if title and not title[0].isupper():
+    title = p.get("title", "No title")
+    if title and title != "No title" and not title[0].isupper():
         title = title[0].upper() + title[1:]
     
-    source = p["source"] if p["source"] else ""
+    source = p.get("source", "")
     
     ref = f"{authors} ({year}) '{title}'"
     
     if source:
         ref += f", {source}"
     
-    if p["volume"]:
+    if p.get("volume"):
         ref += f", {p['volume']}"
-        if p["issue"]:
+        if p.get("issue"):
             ref += f"({p['issue']})"
     
-    if p["pages"]:
+    if p.get("pages"):
         ref += f", pp. {p['pages']}"
     
-    if p["doi"]:
+    if p.get("doi"):
         ref += f", doi: {p['doi']}."
-    elif p["url"]:
+    elif p.get("url"):
         ref += f". Available at: {p['url']}."
     else:
         ref += "."
     
     return " ".join(ref.split())
 
-
 def format_vancouver(p):
-    authors = p["authors"] if p["authors"] else "Anonymous"
+    authors = p.get("authors", "Anonymous")
     
     if authors and authors != "Anonymous" and authors != "Author Unknown":
         author_parts = []
         for a in authors.split("&")[:6]:
             a = a.strip()
             if ',' in a:
-                # Already in "Last, First" format
                 last = a.split(',')[0].strip()
                 initials = a.split(',')[1].strip() if len(a.split(',')) > 1 else ""
                 author_parts.append(f"{last} {initials}")
@@ -414,104 +706,129 @@ def format_vancouver(p):
         if len(author_parts) > 6:
             authors += ", et al"
     
-    title = p["title"] if p["title"] else "No title"
-    source = p["source"] if p["source"] else ""
+    title = p.get("title", "No title")
+    source = p.get("source", "")
     
     ref = f"{authors}. {title}"
     
     if source:
         ref += f". {source}"
     
-    if p["year"]:
+    if p.get("year"):
         ref += f". {p['year']}"
     
-    if p["volume"]:
+    if p.get("volume"):
         ref += f";{p['volume']}"
-        if p["issue"]:
+        if p.get("issue"):
             ref += f"({p['issue']})"
     
-    if p["pages"]:
+    if p.get("pages"):
         ref += f":{p['pages']}"
     
-    if p["doi"]:
+    if p.get("doi"):
         ref += f". doi: {p['doi']}"
     
     return ref + "."
 
-
 def format_reference(parsed, style):
     style = style.lower()
     
-    if style == "apa7":
-        return format_apa7(parsed)
-    elif style == "apa6":
-        return format_apa6(parsed)
-    elif style == "harvard":
-        return format_harvard(parsed)
-    elif style == "vancouver":
-        return format_vancouver(parsed)
+    formatters = {
+        "apa7": format_apa7,
+        "apa6": format_apa6,
+        "harvard": format_harvard,
+        "vancouver": format_vancouver
+    }
     
-    return format_apa7(parsed)
-
+    return formatters.get(style, format_apa7)(parsed)
 
 # =========================================
-# 5. REPAIR ENGINE
+# 5. COMPLETE REPAIR ENGINE
 # =========================================
+
 def compute_repair_score(p):
     score = 100
     
-    if not p["authors"]:
+    if not p.get("authors"):
         score -= 20
-    if not p["year"]:
+    if not p.get("year"):
         score -= 20
-    if not p["title"]:
+    if not p.get("title"):
         score -= 25
-    if not p["source"]:
+    if not p.get("source"):
         score -= 15
-    if not p["doi"] and not p["url"]:
+    if not p.get("doi") and not p.get("url"):
         score -= 10
     
+    # Bonus for clean formatting
+    if p.get("is_messy"):
+        score -= p.get("messiness_score", 0) // 10
+    
     return max(score, 0)
-
 
 def get_repair_issues(p):
     issues = []
     
-    if not p["authors"]:
+    if not p.get("authors"):
         issues.append("Missing author(s)")
     
-    if not p["year"]:
+    if not p.get("year"):
         issues.append("Missing publication year")
     
-    if not p["title"]:
+    if not p.get("title"):
         issues.append("Missing title")
     
-    if not p["source"]:
+    if not p.get("source"):
         issues.append("Missing journal/book title")
     
-    if not p["doi"] and not p["url"]:
+    if not p.get("doi") and not p.get("url"):
         issues.append("No DOI or URL")
+    
+    if p.get("is_messy"):
+        issues.append(f"Messy formatting (score: {p.get('messiness_score', 0)})")
     
     return issues
 
-
-def repair_reference(raw, style, source_type, auto_enhance=True, auto_find_doi=True):
-    parsed = parse_reference(raw, source_type)
+def repair_reference(raw, style, source_type="auto", auto_enhance=True, auto_find_doi=True):
+    """Complete reference repair with DOI discovery"""
+    parsed = smart_parse_reference(raw, source_type)
     log = []
     
-    # Auto-correct
-    parsed = auto_correct_parsed(parsed)
+    # Step 1: Try to find DOI if missing
+    doi_found = False
+    if auto_find_doi and not parsed.get("doi"):
+        # Search by title and authors
+        found_doi = search_doi_by_metadata(
+            parsed.get("title", ""),
+            parsed.get("authors", ""),
+            parsed.get("year", "")
+        )
+        
+        if found_doi:
+            parsed["doi"] = found_doi
+            log.append(f"Found DOI via search: {found_doi}")
+            doi_found = True
     
-    # Fetch from DOI
+    # Step 2: If we have a DOI (either original or found), fetch full metadata
     if auto_enhance and parsed.get("doi"):
-        doi_data = fetch_from_doi(parsed["doi"], prefer_openalex=True)
-        if doi_data and doi_data.get("title"):
-            for k, v in doi_data.items():
-                if v and not parsed.get(k):
-                    parsed[k] = v
-                    log.append(f"Filled {k} from DOI")
+        metadata = fetch_full_metadata_by_doi(parsed["doi"], prefer_openalex=True)
+        
+        if metadata and metadata.get("title"):
+            # Update parsed with fetched metadata
+            for key in ["authors", "year", "title", "source", "volume", "issue", "pages", "publisher"]:
+                if metadata.get(key) and not parsed.get(key):
+                    parsed[key] = metadata[key]
+                    log.append(f"Enhanced {key} from {metadata.get('source_api', 'DOI')}")
+            
+            # Also update if fetched data is better quality
+            if metadata.get("title") and len(metadata["title"]) > len(parsed.get("title", "")):
+                parsed["title"] = metadata["title"]
+                log.append("Updated title with higher quality version")
     
+    # Step 3: Format the reference
     formatted = format_reference(parsed, style)
+    
+    # Step 4: Calculate metrics
     score = compute_repair_score(parsed)
     issues = get_repair_issues(parsed)
     
@@ -523,11 +840,11 @@ def repair_reference(raw, style, source_type, auto_enhance=True, auto_find_doi=T
         "confidence": score,
         "issues": issues,
         "has_doi": bool(parsed.get("doi")),
-        "needs_review": score < 70 or len(issues) > 2
+        "needs_review": score < 70 or len(issues) > 2,
+        "doi_source": "found" if doi_found else ("original" if parsed.get("doi") else "missing")
     }
 
-
-def process_references(raw_text, style, source_type="journal", auto_enhance=True, auto_find_doi=True):
+def process_references(raw_text, style, source_type="auto", auto_enhance=True, auto_find_doi=True):
     """Process multiple references"""
     lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
     
@@ -543,6 +860,10 @@ def process_references(raw_text, style, source_type="journal", auto_enhance=True
         if result["issues"]:
             for issue in result["issues"]:
                 warnings.append(f"Ref {i}: {issue}")
+        
+        # Log DOI discovery
+        if result.get("doi_source") == "found":
+            warnings.append(f"Ref {i}: DOI auto-discovered via Crossref/OpenAlex")
     
     return {
         "formatted": "\n\n".join(formatted),
@@ -550,9 +871,9 @@ def process_references(raw_text, style, source_type="journal", auto_enhance=True
         "repair_results": repair_results,
         "total_references": len(lines),
         "average_confidence": sum(r["confidence"] for r in repair_results) / len(repair_results) if repair_results else 0,
-        "references_with_doi": sum(1 for r in repair_results if r["has_doi"])
+        "references_with_doi": sum(1 for r in repair_results if r["has_doi"]),
+        "dois_found": sum(1 for r in repair_results if r.get("doi_source") == "found")
     }
-
 
 def export_to_dict(repair_results):
     return [
@@ -564,23 +885,22 @@ def export_to_dict(repair_results):
             "has_doi": r["has_doi"],
             "needs_review": r.get("needs_review", False),
             "repair_log": r["repair_log"],
-            "parsed": r["parsed"]
+            "parsed": r["parsed"],
+            "doi_source": r.get("doi_source", "missing")
         }
         for r in repair_results
     ]
-
 
 # =========================================
 # 6. FLASK WEB SERVER
 # =========================================
 
-# HTML Template (simplified - but you can use the full one from your HTML file)
 HTML_TEMPLATE = '''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CiteIntegrity Pro | Reference Formatter</title>
+    <title>CiteIntegrity Pro | Smart Reference Formatter</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -741,6 +1061,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             font-weight: normal;
             cursor: pointer;
         }
+        .doi-found {
+            color: #19b36b;
+            font-weight: bold;
+        }
         @media (max-width: 900px) {
             .grid { grid-template-columns: 1fr; }
             .stats { flex-direction: column; gap: 10px; }
@@ -751,16 +1075,16 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 <div class="container">
     <h1>
         🔧 CiteIntegrity Pro
-        <span class="badge">OpenAlex Enhanced</span>
+        <span class="badge">Smart DOI Discovery</span>
     </h1>
     <div class="subtitle">
-        Smart reference repair with DOI auto-discovery, OpenAlex integration, and multi-format export
+        Automatically detects messy references, formats them, and finds missing DOIs via Crossref/OpenAlex
     </div>
 
     <div class="grid">
         <div>
             <label for="raw_reference">📝 References to Format/Repair</label>
-            <textarea id="raw_reference" placeholder="Paste one or more references (one per line)...&#10;&#10;Example:&#10;Eklemet, I., MacCarthy, J., & Gyamfaa, E. (2024). Moderating Role of Risk Management between Risk Exposure and Bank Performance: Application of GMM Model. Theoretical Economics Letters, 14(2), 363-389;"></textarea>
+            <textarea id="raw_reference" placeholder="Paste messy or clean references (one per line)...&#10;&#10;Examples:&#10;Eklemet I MacCarthy J Gyamfaa E 2024 Moderating Role of Risk Management between Risk Exposure and Bank Performance Theoretical Economics Letters 14 2 363-389&#10;&#10;Smith J 2020 Understanding AI Journal of Technology 15 2 45-67"></textarea>
 
             <div class="controls">
                 <select id="style">
@@ -770,15 +1094,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     <option value="vancouver">Vancouver (Medical)</option>
                 </select>
                 <select id="source_type">
+                    <option value="auto">Auto-detect</option>
                     <option value="journal">Journal Article</option>
                     <option value="book">Book</option>
                     <option value="webpage">Website</option>
+                    <option value="report">Report</option>
                 </select>
             </div>
 
             <div class="checkbox-group">
                 <label><input type="checkbox" id="auto_enhance" checked> 🔍 Auto-enhance from DOI</label>
-                <label><input type="checkbox" id="auto_find_doi" checked> 🌐 Auto-find missing DOIs</label>
+                <label><input type="checkbox" id="auto_find_doi" checked> 🌐 Auto-find missing DOIs (Crossref/OpenAlex)</label>
             </div>
 
             <button id="formatBtn" style="width: 100%;">🚀 Format & Repair References</button>
@@ -797,6 +1123,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 <div class="stat-item">
                     <div class="stat-value" id="doiCount">0</div>
                     <div class="stat-label">With DOI</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="doiFound">0</div>
+                    <div class="stat-label">DOIs Found</div>
                 </div>
                 <div class="stat-item">
                     <div class="stat-value" id="avgConfidence">0%</div>
@@ -826,6 +1156,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     const statsPanel = document.getElementById('statsPanel');
     const totalRefs = document.getElementById('totalRefs');
     const doiCount = document.getElementById('doiCount');
+    const doiFound = document.getElementById('doiFound');
     const avgConfidence = document.getElementById('avgConfidence');
 
     formatBtn.addEventListener('click', async function() {
@@ -836,14 +1167,15 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             return;
         }
         
-        formattedOutput.textContent = '🔄 Processing references with OpenAlex integration...';
+        formattedOutput.textContent = '🔄 Processing references with smart DOI discovery...';
         formatBtn.disabled = true;
         
         const formData = new URLSearchParams();
         formData.append('raw_reference', rawText);
         formData.append('style', style.value);
-        formData.append('variant', 'generic');
         formData.append('source_type', sourceType.value);
+        formData.append('auto_enhance', autoEnhance.checked);
+        formData.append('auto_find_doi', autoFindDoi.checked);
         
         try {
             const response = await fetch('/api/format-reference', {
@@ -868,6 +1200,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 statsPanel.classList.remove('hidden');
                 totalRefs.textContent = data.total_references;
                 doiCount.textContent = data.references_with_doi || 0;
+                doiFound.textContent = data.dois_found || 0;
                 avgConfidence.textContent = Math.round(data.average_confidence || 0) + '%';
             }
             
@@ -918,7 +1251,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 </html>
 '''
 
-
 if FLASK_AVAILABLE:
     app = Flask(__name__)
     CORS(app, origins=['*'], allow_headers=['Content-Type'], methods=['GET', 'POST', 'OPTIONS'])
@@ -933,22 +1265,14 @@ if FLASK_AVAILABLE:
             return jsonify({}), 200
             
         try:
-            # Get form data - accept both FormData and URLSearchParams
-            if request.content_type and 'application/json' in request.content_type:
-                data = request.get_json()
-                raw_text = data.get('raw_reference', '')
-                style = data.get('style', 'apa7')
-                source_type = data.get('source_type', 'journal')
-                auto_enhance = data.get('auto_enhance', True)
-                auto_find_doi = data.get('auto_find_doi', True)
-            else:
-                raw_text = request.form.get('raw_reference', '')
-                style = request.form.get('style', 'apa7')
-                source_type = request.form.get('source_type', 'journal')
-                auto_enhance = request.form.get('auto_enhance', 'true').lower() == 'true'
-                auto_find_doi = request.form.get('auto_find_doi', 'true').lower() == 'true'
+            # Get form data
+            raw_text = request.form.get('raw_reference', '')
+            style = request.form.get('style', 'apa7')
+            source_type = request.form.get('source_type', 'auto')
+            auto_enhance = request.form.get('auto_enhance', 'true').lower() == 'true'
+            auto_find_doi = request.form.get('auto_find_doi', 'true').lower() == 'true'
             
-            print(f"Processing: style={style}, source_type={source_type}, auto_enhance={auto_enhance}")
+            print(f"Processing: style={style}, source_type={source_type}, auto_enhance={auto_enhance}, auto_find_doi={auto_find_doi}")
             print(f"Raw text length: {len(raw_text)}")
             
             if not raw_text or not raw_text.strip():
@@ -965,10 +1289,11 @@ if FLASK_AVAILABLE:
                 'total_references': result['total_references'],
                 'average_confidence': round(result['average_confidence'], 1),
                 'references_with_doi': result['references_with_doi'],
+                'dois_found': result.get('dois_found', 0),
                 'needs_review': sum(1 for r in result['repair_results'] if r.get('needs_review'))
             }
             
-            print(f"Success: {result['total_references']} references processed")
+            print(f"Success: {result['total_references']} references processed, {result.get('dois_found', 0)} DOIs found")
             return jsonify(response_data), 200
             
         except Exception as e:
@@ -979,40 +1304,61 @@ if FLASK_AVAILABLE:
     def health_check():
         return jsonify({
             'status': 'healthy',
-            'version': '2.0.0',
-            'features': ['OpenAlex', 'DOI auto-discovery', 'APA7', 'APA6', 'Harvard', 'Vancouver']
+            'version': '3.0.0',
+            'features': [
+                'Smart messy reference detection',
+                'DOI auto-discovery (Crossref/OpenAlex)',
+                'APA7, APA6, Harvard, Vancouver',
+                'Auto-source type detection'
+            ]
         }), 200
     
     if __name__ == '__main__':
         print("=" * 60)
-        print("🔧 CiteIntegrity Pro - Server Starting...")
+        print("🔧 CiteIntegrity Pro - Smart Reference Formatter")
         print("=" * 60)
-        print(f"✅ OpenAlex Integration: ENABLED")
-        print(f"✅ DOI Auto-discovery: ENABLED")
+        print(f"✅ Messy Reference Detection: ENABLED")
+        print(f"✅ DOI Auto-discovery (Crossref/OpenAlex): ENABLED")
+        print(f"✅ Auto-source type detection: ENABLED")
         print(f"✅ All Citation Styles: ENABLED")
         print("=" * 60)
         print("\n📱 Access the application at: http://localhost:5000")
         print("📋 API endpoint: POST /api/format-reference")
+        print("\n💡 Features:")
+        print("   - Detects messy/unformatted references")
+        print("   - Finds missing DOIs from Crossref/OpenAlex")
+        print("   - Auto-detects source type (journal/book/webpage)")
+        print("   - Formats in APA7, APA6, Harvard, Vancouver")
         print("\n⚠️  Press Ctrl+C to stop the server\n")
         app.run(debug=True, host='0.0.0.0', port=5000)
 
 else:
     print("=" * 60)
-    print("CiteIntegrity Pro Core Engine")
+    print("CiteIntegrity Pro - Smart Reference Formatter")
     print("=" * 60)
     print("Flask not installed. To run the web server:")
     print("  pip install Flask flask-cors requests")
     print("  python formatter.py")
     print("=" * 60)
     
-    # Test the reference you provided
+    # Test functionality
     if __name__ == '__main__':
-        test_ref = "Eklemet, I., MacCarthy, J., & Gyamfaa, E. (2024). Moderating Role of Risk Management between Risk Exposure and Bank Performance: Application of GMM Model. Theoretical Economics Letters, 14(2), 363-389."
-        print("\n📝 Testing repair_reference function:")
+        test_refs = [
+            "Eklemet I MacCarthy J Gyamfaa E 2024 Moderating Role of Risk Management between Risk Exposure and Bank Performance Theoretical Economics Letters 14 2 363-389",
+            "Smith J 2020 Understanding AI Journal of Technology 15 2 45-67"
+        ]
+        
+        print("\n📝 Testing smart reference repair:")
         print("-" * 50)
-        result = repair_reference(test_ref, "apa7", "journal", True, True)
-        print(f"Original: {result['original']}")
-        print(f"Formatted: {result['formatted']}")
-        print(f"Confidence: {result['confidence']}%")
-        print(f"Issues: {result['issues']}")
-        print(f"Has DOI: {result['has_doi']}")
+        
+        for ref in test_refs:
+            detection = detect_messy_reference(ref)
+            print(f"\nOriginal: {ref}")
+            print(f"Messy detection: {detection['is_messy']} (score: {detection['messiness_score']})")
+            
+            result = repair_reference(ref, "apa7", "auto", True, True)
+            print(f"Formatted: {result['formatted']}")
+            print(f"Confidence: {result['confidence']}%")
+            print(f"Has DOI: {result['has_doi']}")
+            if result.get('doi_source') == 'found':
+                print(f"DOI Source: AUTO-DISCOVERED")
