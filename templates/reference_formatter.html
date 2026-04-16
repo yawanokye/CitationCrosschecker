@@ -307,12 +307,16 @@
         Smart reference repair with DOI auto-discovery, OpenAlex integration, and multi-format export
     </div>
 
+    <!-- ✅ CHANGE 2: Added form wrapper -->
+    <form id="formatterForm">
     <div class="grid">
         <!-- Input Panel -->
         <div>
             <label for="raw_reference">📝 References to Format/Repair</label>
+            <!-- ✅ CHANGE 1: Added name attribute -->
             <textarea
                 id="raw_reference"
+                name="raw_reference"
                 placeholder="Paste one or more references (one per line)...
                 
 Examples:
@@ -327,14 +331,14 @@ Brown, R. (2021). Data science trends. Data Mining Review, 8(1), 112-128."
             </div>
 
             <div class="controls">
-                <select id="style">
+                <select id="style" name="style">
                     <option value="apa7">APA 7th Edition</option>
                     <option value="apa6">APA 6th Edition</option>
                     <option value="harvard">Harvard (Author-Date)</option>
                     <option value="vancouver">Vancouver (Medical)</option>
                 </select>
 
-                <select id="source_type">
+                <select id="source_type" name="source_type">
                     <option value="journal">Journal Article</option>
                     <option value="book">Book</option>
                     <option value="webpage">Website</option>
@@ -353,7 +357,8 @@ Brown, R. (2021). Data science trends. Data Mining Review, 8(1), 112-128."
                 </label>
             </div>
 
-            <button id="formatBtn" style="width: 100%; margin-top: 15px;">
+            <!-- ✅ CHANGE 3: Added type="submit" -->
+            <button id="formatBtn" type="submit" style="width: 100%; margin-top: 15px;">
                 🚀 Format & Repair References
             </button>
 
@@ -412,17 +417,7 @@ Brown, R. (2021). Data science trends. Data Mining Review, 8(1), 112-128."
             </div>
         </div>
     </div>
-
-    <!-- Side-by-Side Repair Modal (for individual reference editing) -->
-    <div id="repairModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; overflow: auto; padding: 40px;">
-        <div style="max-width: 1200px; margin: 0 auto; background: white; border-radius: 12px; padding: 30px;">
-            <h2>🔧 Side-by-Side Reference Repair</h2>
-            <div id="modalContent"></div>
-            <div style="margin-top: 20px; text-align: right;">
-                <button id="closeModalBtn" style="background: #6b7280;">Close</button>
-            </div>
-        </div>
-    </div>
+    </form> <!-- ✅ CHANGE 2: Closing form tag -->
 </div>
 
 <script>
@@ -430,6 +425,7 @@ Brown, R. (2021). Data science trends. Data Mining Review, 8(1), 112-128."
 const API_BASE = '';  // Empty for same-origin, adjust if needed
 
 // DOM Elements
+const form = document.getElementById('formatterForm');
 const rawReference = document.getElementById('raw_reference');
 const styleSelect = document.getElementById('style');
 const sourceTypeSelect = document.getElementById('source_type');
@@ -477,7 +473,12 @@ function updateProgress(percent) {
 }
 
 // Main formatting function
-async function formatReferences() {
+async function formatReferences(event) {
+    // ✅ Prevent default form submission
+    if (event) {
+        event.preventDefault();
+    }
+    
     const rawText = rawReference.value.trim();
     
     if (!rawText) {
@@ -485,33 +486,45 @@ async function formatReferences() {
         return;
     }
     
+    // ✅ DEBUG LOG
+    console.log("Submitting request...");
+    
     setLoading(true);
     
     try {
         // Simulate progress steps
         updateProgress(20);
         
+        // ✅ Build request body with correct field names
+        const requestBody = {
+            raw_reference: rawText,  // ✅ Matches backend expected field name
+            style: styleSelect.value,
+            source_type: sourceTypeSelect.value,
+            auto_enhance: autoEnhance.checked,
+            auto_find_doi: autoFindDoi.checked
+        };
+        
+        console.log("Request payload:", requestBody);
+        
         const response = await fetch(`${API_BASE}/api/format`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({
-                raw_text: rawText,
-                style: styleSelect.value,
-                source_type: sourceTypeSelect.value,
-                auto_enhance: autoEnhance.checked,
-                auto_find_doi: autoFindDoi.checked
-            })
+            body: JSON.stringify(requestBody)
         });
         
         updateProgress(80);
         
         if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            const errorText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
         }
         
         const data = await response.json();
+        
+        // ✅ DEBUG LOG
+        console.log("Response:", data);
         
         updateProgress(100);
         
@@ -520,12 +533,16 @@ async function formatReferences() {
         currentFormattedText = data.formatted;
         
         // Display formatted output
-        formattedOutput.innerHTML = data.formatted.replace(/\n/g, '<br>');
+        if (data.formatted) {
+            formattedOutput.innerHTML = data.formatted.replace(/\n/g, '<br>');
+        } else {
+            formattedOutput.innerHTML = '<span style="color: #ef4444;">❌ No formatted output received.</span>';
+        }
         
         // Update statistics
-        if (data.total_references) {
+        if (data.total_references !== undefined) {
             statsPanel.classList.remove('hidden');
-            totalRefs.textContent = data.total_references;
+            totalRefs.textContent = data.total_references || 0;
             doiCount.textContent = data.references_with_doi || 0;
             avgConfidence.textContent = `${Math.round(data.average_confidence || 0)}%`;
             needsReview.textContent = data.needs_review || 0;
@@ -543,9 +560,9 @@ async function formatReferences() {
         if (data.repair_results && data.repair_results.length > 0) {
             infoBox.classList.remove('hidden');
             const totalActions = data.repair_results.reduce((sum, r) => sum + (r.repair_log?.length || 0), 0);
-            const doiFound = data.repair_results.filter(r => r.has_doi && !r.original.includes('10.')).length;
+            const doiFound = data.repair_results.filter(r => r.has_doi && r.original && !r.original.includes('10.')).length;
             
-            let summaryHtml = `<p>✅ Processed ${data.total_references} references</p>`;
+            let summaryHtml = `<p>✅ Processed ${data.total_references || data.repair_results.length} references</p>`;
             if (totalActions > 0) {
                 summaryHtml += `<p>🔧 Applied ${totalActions} automatic repairs</p>`;
             }
@@ -553,6 +570,9 @@ async function formatReferences() {
                 summaryHtml += `<p>🌐 Found ${doiFound} new DOIs via OpenAlex/Crossref</p>`;
             }
             repairSummary.innerHTML = summaryHtml;
+        } else if (data.repair_results && data.repair_results.length === 0) {
+            infoBox.classList.remove('hidden');
+            repairSummary.innerHTML = '<p>ℹ️ No references to process.</p>';
         }
         
     } catch (error) {
@@ -602,11 +622,11 @@ function downloadCsv() {
     if (currentRepairResults && currentRepairResults.length > 0) {
         const headers = ['Original Reference', 'Formatted Reference', 'Confidence (%)', 'Issues', 'Has DOI', 'Repair Actions', 'DOI', 'Year', 'Authors', 'Title', 'Source'];
         const rows = currentRepairResults.map(r => [
-            escapeCsv(r.original),
-            escapeCsv(r.formatted),
-            r.confidence,
+            escapeCsv(r.original || ''),
+            escapeCsv(r.formatted || ''),
+            r.confidence || 0,
             escapeCsv((r.issues || []).join('; ')),
-            r.has_doi,
+            r.has_doi || false,
             escapeCsv((r.repair_log || []).join('; ')),
             escapeCsv(r.parsed?.doi || ''),
             escapeCsv(r.parsed?.year || ''),
@@ -676,8 +696,27 @@ function escapeCsv(str) {
     return str;
 }
 
-// Event Listeners
-formatBtn.addEventListener('click', formatReferences);
+// ✅ CHANGE 6: Ensure form exists before binding with safe check
+if (form) {
+    form.addEventListener("submit", formatReferences);
+} else {
+    console.error("Form element 'formatterForm' not found!");
+    // Fallback: bind to button click if form not found
+    if (formatBtn) {
+        formatBtn.addEventListener('click', formatReferences);
+    }
+}
+
+// Keep button click as fallback (won't double-fire if form submit is prevented)
+if (formatBtn) {
+    formatBtn.addEventListener('click', (e) => {
+        // Prevent double submission if form also triggers
+        if (!form) {
+            formatReferences(e);
+        }
+    });
+}
+
 copyBtn.addEventListener('click', copyToClipboard);
 downloadTxtBtn.addEventListener('click', downloadTxt);
 downloadCsvBtn.addEventListener('click', downloadCsv);
@@ -687,7 +726,7 @@ downloadJsonBtn.addEventListener('click', downloadJson);
 rawReference.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        formatReferences();
+        formatReferences(e);
     }
 });
 
