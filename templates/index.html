@@ -774,7 +774,7 @@
         <div class="upload-card">
             <div class="file-area" id="fileArea">
                 <div class="file-name" id="fileName"></div>
-                <input type="file" id="file">
+                <input type="file" id="file" accept=".docx" style="display:none;">
                 <div class="file-icon">📑</div>
                 <div class="file-message">Upload your thesis, dissertation, or manuscript to begin (.docx recommended)</div>
                 <div class="file-message" style="font-size: 12px; margin-top: 6px;">DOCX is recommended for accurate citation analysis. Ideal for theses, dissertations, project reports, and journal manuscripts</div>
@@ -1143,76 +1143,42 @@ function resetProcessFeedback() {
 function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
     const fileInput = document.getElementById("file");
-    const fileNameSpan = document.getElementById("fileName");
+    const fileName = document.getElementById("fileName");
     const btnCheck = document.getElementById("btnCheck");
 
+    console.log("INIT:", fileArea, fileInput); // 🔍 debug
+
     if (!fileArea || !fileInput) {
-        console.error("[Fix] File elements missing");
+        alert("Upload elements not found");
         return;
     }
 
-    // 🔥 CRITICAL FIX: ensure input is usable
-    fileInput.style.display = "none"; // hide properly (not opacity trick)
-
-    // ✅ CLICK FIX (reliable trigger)
-    fileArea.addEventListener("click", function (e) {
-        e.preventDefault();
+    // 🔥 FORCE CLICK
+    fileArea.addEventListener("click", () => {
+        console.log("CLICKED AREA"); // 🔍 debug
         fileInput.click();
     });
 
-    // ✅ DRAG EVENTS
-    fileArea.addEventListener("dragover", function (e) {
-        e.preventDefault();
-        fileArea.classList.add("drag-over");
-    });
+    // 🔥 FILE CHANGE
+    fileInput.addEventListener("change", () => {
+        console.log("FILE CHANGE TRIGGERED"); // 🔍 debug
 
-    fileArea.addEventListener("dragleave", function (e) {
-        e.preventDefault();
-        fileArea.classList.remove("drag-over");
-    });
-
-    fileArea.addEventListener("drop", function (e) {
-        e.preventDefault();
-        fileArea.classList.remove("drag-over");
-
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            fileInput.files = files;
-            handleFile(files[0]);
-        }
-    });
-
-    // ✅ FILE SELECT
-    fileInput.addEventListener("change", function () {
         const file = fileInput.files[0];
-        if (file) handleFile(file);
-    });
-
-    function handleFile(file) {
         if (!file) return;
 
-        const isDocx = file.name.toLowerCase().endsWith(".docx");
-
-        if (isDocx) {
-            fileNameSpan.textContent = `✅ ${file.name}`;
-            setStatus("File ready. Click Analyze.", "good");
+        if (file.name.toLowerCase().endsWith(".docx")) {
+            fileName.textContent = "✅ " + file.name;
 
             if (btnCheck) btnCheck.disabled = false;
 
+            setStatus("File ready", "good");
         } else {
-            fileNameSpan.textContent = "❌ Only DOCX allowed";
-            setStatus("Upload a DOCX file only.", "warn");
-
+            fileName.textContent = "❌ Only DOCX allowed";
             fileInput.value = "";
             if (btnCheck) btnCheck.disabled = true;
         }
-    }
-
-    fileArea.style.cursor = "pointer";
-
-    console.log("[Fix] Upload fully activated");
+    });
 }
-
 // Progress Bar
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
     const progressBar = $("progressBar");
