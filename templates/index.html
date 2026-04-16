@@ -188,7 +188,10 @@
         input[type="file"] {
             display: none;
         }
-
+        .file-area {
+            position: relative;
+            z-index: 10;
+        }
         .options-row {
             display: flex;
             gap: 20px;
@@ -1141,43 +1144,35 @@ function resetProcessFeedback() {
 
 // File Area Setup
 function setupFileArea() {
+
     const fileArea = document.getElementById("fileArea");
     const fileInput = document.getElementById("file");
     const fileName = document.getElementById("fileName");
     const btnCheck = document.getElementById("btnCheck");
 
-    console.log("INIT:", fileArea, fileInput); // 🔍 debug
-
     if (!fileArea || !fileInput) {
-        alert("Upload elements not found");
+        console.error("Upload elements not found");
         return;
     }
 
-    // 🔥 FORCE CLICK
-    fileArea.addEventListener("click", () => {
-        console.log("CLICKED AREA"); // 🔍 debug
-        fileInput.click();
-    });
+    // 🔥 PUT IT RIGHT HERE
+    fileArea.onclick = () => fileInput.click();
 
-    // 🔥 FILE CHANGE
-    fileInput.addEventListener("change", () => {
-        console.log("FILE CHANGE TRIGGERED"); // 🔍 debug
+    // (keep the rest of your logic below)
 
+    fileInput.onchange = function () {
         const file = fileInput.files[0];
         if (!file) return;
 
         if (file.name.toLowerCase().endsWith(".docx")) {
             fileName.textContent = "✅ " + file.name;
-
             if (btnCheck) btnCheck.disabled = false;
-
-            setStatus("File ready", "good");
         } else {
             fileName.textContent = "❌ Only DOCX allowed";
             fileInput.value = "";
             if (btnCheck) btnCheck.disabled = true;
         }
-    });
+    };
 }
 // Progress Bar
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
