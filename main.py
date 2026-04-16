@@ -374,32 +374,49 @@ async def lifespan(app_instance: FastAPI):
     yield
     print("👋 Shutting down...")
 
+# ============================================================
+# APP SETUP (FIXED)
+# ============================================================
+
 app = FastAPI(
     docs_url=None,
     redoc_url=None,
-    openapi_url=None
+    openapi_url="/openapi.json",   # ✅ KEEP THIS (critical for API to work)
+    lifespan=lifespan              # ✅ attach lifespan (you defined it earlier)
 )
+
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
+
+# ============================================================
+# SAFE BLOCKED PATHS (FIXED)
+# ============================================================
 
 BLOCKED_PATHS = {
     "/wp-admin",
     "/wordpress",
     "/wp-login",
     "/xmlrpc.php",
-
-    # protected endpoints
-    "/docs",
-    "/redoc",
-    "/openapi.json",
     "/debug",
     "/private-stats"
 }
 
+# ============================================================
+# SAFE BOT FILTER (FIXED)
+# ============================================================
+
 BAD_AGENTS = [
-    "crawler", "scanner", "spider",   # 🔥 removed "bot"
-    "httpclient", "scrapy", "libwww"
+    "crawler",
+    "scanner",
+    "spider",
+    "httpclient",
+    "scrapy",
+    "libwww"
 ]
+
+# ============================================================
+# SECURITY MIDDLEWARE (FIXED)
+# ============================================================
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
@@ -420,14 +437,13 @@ async def security_middleware(request: Request, call_next):
         )
 
     # =========================
-    # 🤖 BOT FILTER (SAFE VERSION)
+    # 🤖 BOT FILTER (SAFE)
     # =========================
-    if ua:
-        if any(bad in ua for bad in BAD_AGENTS):
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Forbidden"}
-            )
+    if ua and any(bad in ua for bad in BAD_AGENTS):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Forbidden"}
+        )
 
     return await call_next(request)
 
