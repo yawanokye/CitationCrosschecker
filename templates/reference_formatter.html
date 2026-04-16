@@ -732,14 +732,13 @@ if (form) {
 
             updateProgress(50);
 
-            const response = await fetch("/api/format-reference", {
+            const response = await fetch("/api/submit-job", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json"
-                },
-                body: payload
+                body: payload   // FormData (IMPORTANT: no headers)
             });
+            
+            const data = await response.json();
+            const job_id = data.job_id;
 
             console.log("Formatter response status:", response.status);
 
