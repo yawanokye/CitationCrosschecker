@@ -58,13 +58,13 @@ executor = ThreadPoolExecutor(max_workers=4)
 
 job_store = {}
 
-def run_job(job_id, file_bytes, style):
+def run_job(job_id, raw_reference, style):
     try:
-        job_store[job_id] = {"status": "processing", "progress": 5}
+        from pipeline import run_pipeline
 
-        from pipeline import run_pipeline   # import here to avoid circular issues
+        job_store[job_id] = {"status": "processing", "progress": 10}
 
-        result = run_pipeline(file_bytes, style)
+        result = run_pipeline(raw_reference, style)
 
         job_store[job_id] = {
             "status": "completed",
@@ -641,21 +641,25 @@ _store: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
 @app.post("/api/submit-job")
 async def submit_job(
-    file: UploadFile = File(...),
+    raw_reference: str = Form(...),
     style: str = Form("apa7"),
     background_tasks: BackgroundTasks = None
 ):
-    content = await file.read()
+    # 🔒 basic validation
+    if not raw_reference.strip():
+        raise HTTPException(400, "No references provided")
 
-    # 🔥 HARD LIMIT (important)
-    if len(content) > 5_000_000:
-        raise HTTPException(400, "File too large")
+    if len(raw_reference) > 10000:
+        raise HTTPException(400, "Too many references")
 
     job_id = str(uuid.uuid4())
 
-    job_store[job_id] = {"status": "queued", "progress": 0}
+    job_store[job_id] = {
+        "status": "queued",
+        "progress": 0
+    }
 
-    background_tasks.add_task(run_job, job_id, content, style)
+    background_tasks.add_task(run_job, job_id, raw_reference, style)
 
     return {"job_id": job_id}
 
