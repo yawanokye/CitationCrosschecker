@@ -73,20 +73,18 @@ if (form) {
 
         try {
             // ✅ FIX: Use FormData to match main.py's Form(...) parameters
-            const formData = new URLSearchParams();
-            formData.append("raw_reference", rawText);
-            formData.append("style", styleSelect ? styleSelect.value : "apa7");
-            formData.append("variant", "generic");  // Required by main.py
-            formData.append("source_type", sourceTypeSelect ? sourceTypeSelect.value : "journal");
-
-            console.log("Submitting request with form data:", Object.fromEntries(formData));
-
             const response = await fetch("/api/format-reference", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json"
                 },
-                body: formData
+                body: new URLSearchParams({
+                    raw_reference: rawText,
+                    style: styleSelect ? styleSelect.value : "apa7",
+                    variant: "generic",
+                    source_type: sourceTypeSelect ? sourceTypeSelect.value : "journal"
+                })
             });
 
             const data = await response.json();
