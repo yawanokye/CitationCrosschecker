@@ -185,10 +185,14 @@
             font-size: 13px;
         }
 
-        input[type="file"] {
-            opacity: 0;
+        /* FIX: Make file input visible but hidden in a way that still works */
+        #file {
             position: absolute;
-            pointer-events: none;
+            width: 0.1px;
+            height: 0.1px;
+            opacity: 0;
+            overflow: hidden;
+            z-index: -1;
         }
 
         .options-row {
@@ -776,7 +780,7 @@
         <div class="upload-card">
             <div class="file-area" id="fileArea">
                 <div class="file-name" id="fileName"></div>
-                <input type="file" id="file" accept=".docx">
+                <input type="file" id="fileInput" accept=".docx">
                 <div class="file-icon">📑</div>
                 <div class="file-message">Upload your thesis, dissertation, or manuscript to begin (.docx recommended)</div>
                 <div class="file-message" style="font-size: 12px; margin-top: 6px;">DOCX is recommended for accurate citation analysis. Ideal for theses, dissertations, project reports, and journal manuscripts</div>
@@ -805,7 +809,7 @@
             </div>
 
             <div class="status-bar">
-                <div class="status" id="status">System ready. Upload your manuscript to begin.</div>
+                <div class="status" id="status">System ready. Click or drag a DOCX file to upload.</div>
             </div>
             <div style="margin-top: 12px; font-size: 12px; color: #64748b; text-align: center;">
                 Need to clean or fix a reference first? Use the 
@@ -857,7 +861,7 @@
         <span>📊 Loading queue status...</span>
     </div>
 
-    <!-- Results Section -->
+    <!-- Results Section (kept intact) -->
     <section id="resultsCard" class="card" style="display:none;">
         <div class="results-header">
             <h3>📊 Analysis Results</h3>
@@ -877,170 +881,15 @@
         </div>
 
         <div class="tabPanes">
-            <!-- SUMMARY PANE -->
-            <div id="summaryPane" class="tabPane active">
-                <div class="tableWrap">
-                    <table class="tbl" style="min-width:400px;">
-                        <thead><tr><th style="width:220px;">Item</th><th>Value</th></tr></thead>
-                        <tbody id="summaryTable"></tbody>
-                    </table>
-                </div>
-
-                <!-- ACII Components Card -->
-                <div id="aciiCard" class="card" style="margin-top:16px; display:none;">
-                    <h3>📊 ACII Components</h3>
-                    <div class="tableWrap">
-                        <table class="tbl">
-                            <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
-                            <tbody>
-                                <tr><td style="width:200px;">Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
-                                <tr><td style="width:200px;">Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
-                                <tr><td style="width:200px;">Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
-                                <tr><td style="width:200px;">Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="export-section">
-                    <button class="btn btn-small btn-outline" id="btnExportCsvTop">📊 CSV Report</button>
-                    <button class="btn btn-small btn-outline" id="btnExportWordTop">📄 Word Report</button>
-                    <button class="btn btn-small btn-outline" id="btnExportVerify" disabled>🔍 Verification Report</button>
-                </div>
-            </div>
-
-            <!-- MISSING PANE -->
-            <div id="missingPane" class="tabPane">
-                <h3>❌ Citations in text missing from references</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th style="width:50px;">No.</th><th>Citation in Text</th><th style="width:80px;">Count</th></tr></thead>
-                        <tbody id="missingBody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- UNCITED PANE -->
-            <div id="uncitedPane" class="tabPane">
-                <h3>📖 References not cited in text</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th style="width:50px;">No.</th><th>Reference</th></tr></thead>
-                        <tbody id="uncitedBody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- C2R PANE -->
-            <div id="c2rPane" class="tabPane">
-                <h3>🔗 In-text → Reference mapping</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th>No.</th><th>Status</th><th>In-text</th><th>Count</th><th>Matched reference</th><th>Flags</th></tr></thead>
-                        <tbody id="c2rBody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- R2C PANE -->
-            <div id="r2cPane" class="tabPane">
-                <h3>📚 Reference → In-text mapping</h3>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead><tr><th>No.</th><th>Times cited</th><th>Reference</th><th>Cited by</th></tr></thead>
-                        <tbody id="r2cBody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- VERIFY PANE -->
-            <div id="verifyPane" class="tabPane">
-                <div class="verify-top" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
-                    <h3 style="margin: 0;">✅ Online verification</h3>
-                    <div style="display: flex; gap: 8px;">
-                        <select id="exportStyleSelect" style="padding: 6px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 12px; background: white;">
-                            <option value="apa7">APA 7th Edition</option>
-                            <option value="apa6">APA 6th Edition</option>
-                            <option value="harvard">Harvard Style</option>
-                        </select>
-                        <button id="exportReferencesBtn" class="btn-small" style="background: #19b36b; color: white; border: none; padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 12px;">📄 Export DOCX</button>
-                        <button id="exportReferencesHtmlBtn" class="btn-small btn-outline" style="padding: 6px 16px;">🌐 Export HTML</button>
-                    </div>
-                </div>
-                <div class="kpi-dashboard" id="verifyDash"></div>
-                <div class="tableWrap">
-                    <table class="tbl">
-                        <thead>
-                            <tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched title</th></tr>
-                        </thead>
-                        <tbody id="verifyBody"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- RECOVERY PANE -->
-            <div id="recoveryPane" class="tabPane">
-                <div class="card">
-                    <h3>🛠 Recovery</h3>
-
-                    <h4 style="margin-bottom: 12px;">Missing Citation Recovery</h4>
-                    <div class="tableWrap" style="margin-bottom: 24px;">
-                        <table class="tbl">
-                            <thead>
-                                <tr>
-                                    <th style="width:50px;">No.</th>
-                                    <th>Citation in Text</th>
-                                    <th style="width:80px;">Count</th>
-                                    <th style="width:320px;">Suggestions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="recoveryMissingBody"></tbody>
-                        </table>
-                    </div>
-
-                    <h4 style="margin-bottom: 12px;">Needs Review / Not Found Recovery</h4>
-                    <div class="tableWrap">
-                        <table class="tbl">
-                            <thead>
-                                <tr>
-                                    <th style="width:50px;">No.</th>
-                                    <th style="width:120px;">Status</th>
-                                    <th>Reference</th>
-                                    <th style="width:320px;">Context Suggestions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="recoveryVerifyBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-            <div id="claimSupportPane" class="tabPane">
-                <div class="card">
-                    <h3>🧠 Claim-to-Source Check</h3>
-                    <div class="tableWrap">
-                        <table class="tbl">
-                            <thead>
-                                <tr>
-                                    <th style="width:50px;">No.</th>
-                                    <th style="width:180px;">Citation</th>
-                                    <th>Claim Extracted</th>
-                                    <th>Matched Source</th>
-                                    <th style="width:150px;">Support Status</th>
-                                    <th style="width:80px;">Score</th>
-                                </tr>
-                            </thead>
-                            <tbody id="claimSupportBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-            <!-- SUGGESTIONS PANE -->
-            <div id="suggestionsPane" class="tabPane">
-                <div id="suggestionsPanel" class="card" style="display: none;">
-                    <h3>💡 Citation & Reference Suggestions</h3>
-                    <div id="suggestionsContent"></div>
-                </div>
-            </div>
+            <div id="summaryPane" class="tabPane active"><div class="tableWrap"><table class="tbl"><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody id="summaryTable"></tbody></table></div><div id="aciiCard" class="card" style="display:none;"><h3>📊 ACII Components</h3><div class="tableWrap"><table><thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead><tbody><tr><td>Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr><tr><td>Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr><tr><td>Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr><tr><td>Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr></tbody></table></div></div><div class="export-section"><button class="btn-small btn-outline" id="btnExportCsvTop">📊 CSV Report</button><button class="btn-small btn-outline" id="btnExportWordTop">📄 Word Report</button><button class="btn-small btn-outline" id="btnExportVerify" disabled>🔍 Verification Report</button></div></div>
+            <div id="missingPane" class="tabPane"><h3>❌ Citations in text missing from references</h3><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Citation in Text</th><th>Count</th></tr></thead><tbody id="missingBody"></tbody></table></div></div>
+            <div id="uncitedPane" class="tabPane"><h3>📖 References not cited in text</h3><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Reference</th></tr></thead><tbody id="uncitedBody"></tbody></table></div></div>
+            <div id="c2rPane" class="tabPane"><h3>🔗 In-text → Reference mapping</h3><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Status</th><th>In-text</th><th>Count</th><th>Matched reference</th><th>Flags</th></tr></thead><tbody id="c2rBody"></tbody></table></div></div>
+            <div id="r2cPane" class="tabPane"><h3>📚 Reference → In-text mapping</h3><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Times cited</th><th>Reference</th><th>Cited by</th></tr></thead><tbody id="r2cBody"></tbody></table></div></div>
+            <div id="verifyPane" class="tabPane"><div class="verify-top" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:16px;"><h3 style="margin:0;">✅ Online verification</h3><div style="display:flex; gap:8px;"><select id="exportStyleSelect"><option value="apa7">APA 7th</option><option value="apa6">APA 6th</option><option value="harvard">Harvard</option></select><button id="exportReferencesBtn" class="btn-small" style="background:#19b36b; color:white;">📄 Export DOCX</button><button id="exportReferencesHtmlBtn" class="btn-small btn-outline">🌐 Export HTML</button></div></div><div class="kpi-dashboard" id="verifyDash"></div><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Title</th></tr></thead><tbody id="verifyBody"></tbody></table></div></div>
+            <div id="recoveryPane" class="tabPane"><div class="card"><h3>🛠 Recovery</h3><h4>Missing Citation Recovery</h4><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Citation</th><th>Count</th><th>Suggestions</th></tr></thead><tbody id="recoveryMissingBody"></tbody></table></div><h4>Needs Review / Not Found</h4><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Status</th><th>Reference</th><th>Suggestions</th></tr></thead><tbody id="recoveryVerifyBody"></tbody></table></div></div></div>
+            <div id="claimSupportPane" class="tabPane"><div class="card"><h3>🧠 Claim-to-Source Check</h3><div class="tableWrap"><table class="tbl"><thead><tr><th>No.</th><th>Citation</th><th>Claim</th><th>Source</th><th>Support Status</th><th>Score</th></tr></thead><tbody id="claimSupportBody"></tbody></table></div></div></div>
+            <div id="suggestionsPane" class="tabPane"><div id="suggestionsPanel" class="card" style="display:none;"><h3>💡 Citation & Reference Suggestions</h3><div id="suggestionsContent"></div></div></div>
         </div>
     </section>
 
@@ -1055,246 +904,148 @@
 </footer>
 
 <script>
-document.addEventListener("DOMContentLoaded", function () {
-
-"use strict";
-
-// 🔥 CRITICAL FIX
-setupFileArea();
-
-    // DOM Elements
-    const $ = (id) => document.getElementById(id);
-    const fileInput = document.getElementById("file");
-    const fileArea = document.getElementById("fileArea");
-    const fileNameSpan = document.getElementById("fileName");
-    const btnCheck = document.getElementById("btnCheck");
-    const statusEl = document.getElementById("status");
-    const stepUpload = document.getElementById("stepUpload");
-    const stepExtract = document.getElementById("stepExtract");
-    const stepMatch = document.getElementById("stepMatch");
-    const stepACII = document.getElementById("stepACII");
-    const statUploads = document.getElementById("statUploads");
-    const resultsCard = document.getElementById("resultsCard");
-    const aciiCenterpiece = document.getElementById("aciiCenterpiece");
-    const aciiCard = document.getElementById("aciiCard");
-
-    // Helper functions (minimal but essential for UI)
-    function setStatus(msg, tone = "muted") {
-        if (statusEl) {
-            statusEl.className = `status ${tone}`;
-            statusEl.textContent = msg || "";
-        }
-        console.log(`[Status] ${msg}`);
-    }
-
-    function updateProcessFeedback(step, status) {
-        const stepEl = $(`step${step}`);
-        if (stepEl) {
-            stepEl.className = `feedback-step ${status}`;
-            if (status === "completed") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "✓");
-            else if (status === "active") stepEl.innerHTML = stepEl.innerHTML.replace("⏳", "🔄");
-        }
-    }
-
-    function resetProcessFeedback() {
-        ["Upload", "Extract", "Match", "ACII"].forEach(step => {
-            const stepEl = $(`step${step}`);
-            if (stepEl) {
-                stepEl.className = "feedback-step";
-                stepEl.innerHTML = stepEl.innerHTML.replace("✓", "⏳").replace("🔄", "⏳");
+    (function() {
+        "use strict";
+        
+        // Get elements
+        const fileArea = document.getElementById('fileArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileNameSpan = document.getElementById('fileName');
+        const btnCheck = document.getElementById('btnCheck');
+        const statusDiv = document.getElementById('status');
+        
+        // Helper to update status
+        function setStatus(msg, type) {
+            if (statusDiv) {
+                statusDiv.textContent = msg;
+                statusDiv.className = 'status ' + (type || 'muted');
             }
-        });
-    }
-
-    // ✅ FIXED: Reliable file area click + drag & drop + change handler
-    function setupFileArea() {
-        if (!fileArea || !fileInput) {
-            console.error("[Debug] File area or input not found");
-            return;
+            console.log('[Status]', msg);
         }
-
-        // Force click to trigger file dialog
-        fileArea.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            fileInput.click();
-        });
-
-        // Drag over styling
-        fileArea.addEventListener("dragover", function (e) {
-            e.preventDefault();
-            fileArea.classList.add("drag-over");
-        });
-
-        fileArea.addEventListener("dragleave", function (e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-        });
-
-        // Drop handler
-        fileArea.addEventListener("drop", function (e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                fileInput.files = files;
-                fileInput.dispatchEvent(new Event("change"));
+        
+        // CRITICAL FIX: Direct click handler on fileArea
+        if (fileArea && fileInput) {
+            // Remove any existing listeners to avoid conflicts (simple approach)
+            const newFileArea = fileArea.cloneNode(true);
+            fileArea.parentNode.replaceChild(newFileArea, fileArea);
+            
+            // Re-fetch references after replacement
+            const freshFileArea = document.getElementById('fileArea');
+            const freshFileInput = document.getElementById('fileInput');
+            const freshFileNameSpan = document.getElementById('fileName');
+            const freshBtnCheck = document.getElementById('btnCheck');
+            const freshStatus = document.getElementById('status');
+            
+            // Function to update status with fresh reference
+            const updateStatus = (msg, type) => {
+                if (freshStatus) {
+                    freshStatus.textContent = msg;
+                    freshStatus.className = 'status ' + (type || 'muted');
+                }
+            };
+            
+            // Click handler for file area
+            freshFileArea.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('File area clicked - opening file dialog');
+                freshFileInput.click();
+            });
+            
+            // Drag and drop handlers
+            freshFileArea.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                freshFileArea.classList.add('drag-over');
+            });
+            
+            freshFileArea.addEventListener('dragleave', function(e) {
+                e.preventDefault();
+                freshFileArea.classList.remove('drag-over');
+            });
+            
+            freshFileArea.addEventListener('drop', function(e) {
+                e.preventDefault();
+                freshFileArea.classList.remove('drag-over');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    freshFileInput.files = files;
+                    // Trigger change event manually
+                    const changeEvent = new Event('change', { bubbles: true });
+                    freshFileInput.dispatchEvent(changeEvent);
+                }
+            });
+            
+            // File selection handler
+            freshFileInput.addEventListener('change', function(e) {
+                const file = freshFileInput.files[0];
+                if (!file) return;
+                
+                console.log('File selected:', file.name);
+                
+                if (file.name.toLowerCase().endsWith('.docx')) {
+                    if (freshFileNameSpan) freshFileNameSpan.textContent = '✅ ' + file.name;
+                    updateStatus('DOCX file selected. Ready to analyze.', 'good');
+                    if (freshBtnCheck) freshBtnCheck.disabled = false;
+                } else {
+                    if (freshFileNameSpan) freshFileNameSpan.textContent = '❌ Please select a DOCX file';
+                    updateStatus('Invalid file type. Only DOCX files are accepted.', 'warn');
+                    freshFileInput.value = '';
+                    if (freshBtnCheck) freshBtnCheck.disabled = true;
+                }
+            });
+            
+            // Set initial cursor style
+            freshFileArea.style.cursor = 'pointer';
+            
+            // Simple analyze handler
+            if (freshBtnCheck) {
+                freshBtnCheck.addEventListener('click', function() {
+                    if (!freshFileInput.files[0]) {
+                        updateStatus('Please select a file first', 'warn');
+                        return;
+                    }
+                    updateStatus('Analysis started (demo mode).', 'info');
+                    // Show results card for demo
+                    const resultsCard = document.getElementById('resultsCard');
+                    if (resultsCard) resultsCard.style.display = 'block';
+                    const aciiCenter = document.getElementById('aciiCenterpiece');
+                    if (aciiCenter) aciiCenter.style.display = 'block';
+                    if (document.getElementById('aciiCard')) document.getElementById('aciiCard').style.display = 'block';
+                    if (document.getElementById('summaryTable')) {
+                        document.getElementById('summaryTable').innerHTML = `<tr><td>Citations</td><td>42</td></tr><tr><td>References</td><td>38</td></tr><tr><td>Missing</td><td>4</td></tr><tr><td>Uncited</td><td>3</td></tr><tr><td>Match Rate</td><td>89%</td></tr>`;
+                    }
+                    if (document.getElementById('aciiScoreLarge')) document.getElementById('aciiScoreLarge').textContent = '78';
+                    if (document.getElementById('aciiRatingBadge')) {
+                        document.getElementById('aciiRatingBadge').textContent = 'Good';
+                        document.getElementById('aciiRatingBadge').className = 'acii-rating good';
+                    }
+                    updateStatus('Analysis complete (demo).', 'good');
+                    let statUploads = document.getElementById('statUploads');
+                    if (statUploads) {
+                        let val = parseInt(statUploads.textContent) || 0;
+                        statUploads.textContent = val + 1;
+                    }
+                });
             }
-        });
-
-        // File selection handler
-        fileInput.addEventListener("change", function () {
-            const file = fileInput.files[0];
-            if (!file) return;
-
-            if (file.name.toLowerCase().endsWith(".docx")) {
-                if (fileNameSpan) fileNameSpan.textContent = `✅ ${file.name}`;
-                setStatus("DOCX file selected. Ready to run check.", "good");
-                if (btnCheck) btnCheck.disabled = false;
-            } else {
-                if (fileNameSpan) fileNameSpan.textContent = `❌ Please select a DOCX file`;
-                setStatus("Only DOCX files are accepted.", "warn");
-                fileInput.value = "";
-                if (btnCheck) btnCheck.disabled = true;
+            
+            // Enable verify button for demo
+            const verifyBtn = document.getElementById('btnVerify');
+            if (verifyBtn) {
+                verifyBtn.disabled = false;
+                verifyBtn.addEventListener('click', () => {
+                    updateStatus('Verification demo - connect backend for real results.', 'info');
+                });
             }
-        });
-
-        // Make it visually obvious
-        fileArea.style.cursor = "pointer";
-        console.log("[Debug] File area fully activated");
-    }
-
-    // Placeholder for analysis simulation (preserves structure)
-    async function runInitialCheck() {
-        const file = fileInput?.files?.[0];
-        if (!file) {
-            setStatus("Please choose a file first", "warn");
-            return;
+            
+            // Queue status placeholder
+            const queueDiv = document.getElementById('queueStatus');
+            if (queueDiv) queueDiv.innerHTML = `<span>📊 Queue: 0</span><span>⏳ Pending: 0</span><span>⚙️ Processing: 0</span><span>📈 Total Jobs: 0</span>`;
+            
+            updateStatus('Ready — click the upload area to select a .docx file', 'good');
+        } else {
+            console.error('Could not find fileArea or fileInput elements');
         }
-        if (!file.name.toLowerCase().endsWith('.docx')) {
-            setStatus("Only DOCX files are accepted.", "warn");
-            return;
-        }
-
-        resetProcessFeedback();
-        updateProcessFeedback("Upload", "active");
-        setStatus("Analyzing document (simulated)...");
-
-        // Simulate async processing for UI feedback
-        await new Promise(resolve => setTimeout(resolve, 800));
-        updateProcessFeedback("Upload", "completed");
-        updateProcessFeedback("Extract", "active");
-        await new Promise(resolve => setTimeout(resolve, 600));
-        updateProcessFeedback("Extract", "completed");
-        updateProcessFeedback("Match", "active");
-        await new Promise(resolve => setTimeout(resolve, 700));
-        updateProcessFeedback("Match", "completed");
-        updateProcessFeedback("ACII", "active");
-        await new Promise(resolve => setTimeout(resolve, 500));
-        updateProcessFeedback("ACII", "completed");
-
-        setStatus("Analysis complete (demo mode). Connect backend for full verification.", "good");
-        if (resultsCard) resultsCard.style.display = "block";
-        if (aciiCenterpiece) aciiCenterpiece.style.display = "block";
-        if (aciiCard) aciiCard.style.display = "block";
-        if (statUploads) {
-            let curr = parseInt(statUploads.textContent) || 0;
-            statUploads.textContent = curr + 1;
-        }
-
-        // Fill some placeholder data to match UI expectations
-        const summaryTable = document.getElementById("summaryTable");
-        if (summaryTable) {
-            summaryTable.innerHTML = `
-                <tr><td>In-text citations (occurrences)</td><td><strong>42</strong></td></tr>
-                <tr><td>References</td><td>38</td></tr>
-                <tr><td>Missing (unique)</td><td><strong style="color:#e74c3c;">4</strong></td></tr>
-                <tr><td>Uncited</td><td><strong style="color:#e67e22;">3</strong></td></tr>
-                <tr><td>Match rate</td><td><strong>89.5%</strong></td></tr>
-            `;
-        }
-        const aciiScoreLarge = document.getElementById("aciiScoreLarge");
-        if (aciiScoreLarge) aciiScoreLarge.textContent = "78";
-        const ratingBadge = document.getElementById("aciiRatingBadge");
-        if (ratingBadge) {
-            ratingBadge.textContent = "Good";
-            ratingBadge.className = "acii-rating good";
-        }
-        const recText = document.getElementById("aciiRecommendationText");
-        if (recText) recText.innerHTML = `<div>📅 Add more recent sources to improve recency.</div><div class="priority">🎯 Priority: Run online verification.</div>`;
-    }
-
-    // Placeholder for online verification
-    async function runOnlineVerification() {
-        setStatus("Verification simulation (connect backend for real results)", "info");
-        const verifyBody = document.getElementById("verifyBody");
-        if (verifyBody) {
-            verifyBody.innerHTML = `<tr><td colspan="8">Demo: Verification would connect to CrossRef/DOI APIs. Please integrate backend.</td></tr>`;
-        }
-        const verifyDash = document.getElementById("verifyDash");
-        if (verifyDash) {
-            verifyDash.innerHTML = `<div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">✅ Verified</div></div>
-                <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">🔍 Likely</div></div>
-                <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">⚠️ Needs Review</div></div>
-                <div class="kpi"><div class="kpi-value">0</div><div class="kpi-label">❌ Not Found</div></div>`;
-        }
-    }
-
-    // Export dummy functions for buttons
-    function exportCSV() { alert("CSV export demo. Connect backend for full report."); }
-    function exportWordFile() { alert("Word export demo. Connect backend for full report."); }
-    function exportVerificationCSV() { alert("Verification CSV demo."); }
-    async function exportReferences(format) { alert(`Export references as ${format.toUpperCase()} (demo).`); }
-
-    // Tab navigation (keep original behavior)
-    document.querySelectorAll(".tab").forEach(tab => {
-        tab.addEventListener("click", () => {
-            const target = tab.dataset.tab;
-            document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-            document.querySelectorAll(".tabPane").forEach(p => p.classList.remove("active"));
-            tab.classList.add("active");
-            const pane = document.getElementById(target);
-            if (pane) pane.classList.add("active");
-        });
-    });
-
-    // Attach event listeners
-    setupFileArea();
-
-    if (btnCheck) {
-        btnCheck.addEventListener("click", runInitialCheck);
-    }
-
-    const btnVerify = document.getElementById("btnVerify");
-    if (btnVerify) {
-        btnVerify.disabled = false; // Enable for demo
-        btnVerify.addEventListener("click", runOnlineVerification);
-    }
-
-    const exportCsv = document.getElementById("btnExportCsvTop");
-    const exportWord = document.getElementById("btnExportWordTop");
-    const exportVerify = document.getElementById("btnExportVerify");
-    const exportRefBtn = document.getElementById("exportReferencesBtn");
-    const exportHtmlBtn = document.getElementById("exportReferencesHtmlBtn");
-
-    if (exportCsv) exportCsv.addEventListener("click", exportCSV);
-    if (exportWord) exportWord.addEventListener("click", exportWordFile);
-    if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
-    if (exportRefBtn) exportRefBtn.addEventListener("click", () => exportReferences('docx'));
-    if (exportHtmlBtn) exportHtmlBtn.addEventListener("click", () => exportReferences('html'));
-
-    // Simulate queue status update
-    const queueStatus = document.getElementById("queueStatus");
-    if (queueStatus) {
-        queueStatus.innerHTML = `<span>📊 Queue: 0</span>
-            <span>⏳ Pending: 0</span>
-            <span>⚙️ Processing: 0</span>
-            <span>📈 Total Jobs: 12</span>`;
-    }
-
-    setStatus("Ready — click the upload area to select a .docx file", "good");
-    console.log("[CiteIntegrity] Upload fixed and ready.");
-});
+    })();
 </script>
 </body>
 </html>
