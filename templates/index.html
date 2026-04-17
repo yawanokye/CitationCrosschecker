@@ -1316,6 +1316,7 @@ async function fetchStatus() {
         console.error("Polling error:", err);
     }
 }
+
 function startPolling() {
     if (POLL_TIMER) clearInterval(POLL_TIMER);
     POLL_ATTEMPT_COUNT = 0;
@@ -1798,7 +1799,20 @@ function exportVerificationCSV() {
     link.click();
     URL.revokeObjectURL(link.href);
 }
-
+async function debugJobStore() {
+    try {
+        // Try to get all jobs (you might need to add this endpoint)
+        const res = await fetch('/debug/all-jobs');
+        if (res.ok) {
+            const data = await res.json();
+            console.log("All jobs in store:", data);
+        } else {
+            console.log("Debug endpoint not available");
+        }
+    } catch (err) {
+        console.error("Debug error:", err);
+    }
+}
 // Export References Function
 async function exportReferences(format = 'docx') {
     if (!LAST_JOB_ID) {
