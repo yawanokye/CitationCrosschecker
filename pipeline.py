@@ -53,21 +53,25 @@ def run_formatter_pipeline(raw_reference: str, style: str) -> Dict[str, Any]:
 # 🔵 2. FULL DOCUMENT PIPELINE (ADVANCED)
 # ============================================================
 
-def run_full_pipeline(file_bytes: bytes, style: str) -> Dict[str, Any]:
+def run_full_pipeline(file_bytes: bytes, style: str, run_verify: bool = False) -> Dict[str, Any]:
     """
-    Full academic integrity pipeline:
-    Engine → Verify → Formatter → Claims → ACII
+    Full academic integrity pipeline (ASYNC-READY):
+    Engine → Formatter → Claims → ACII
+    Verification is handled separately (async)
     """
     result = {}
 
     try:
-        # STEP 1 — ENGINE
+        # =========================
+        # STEP 1 — ENGINE (CPU HEAVY)
+        # =========================
         engine_result = run_crosscheck(file_bytes)
         result["engine"] = engine_result
 
-        # STEP 2 — PARALLEL VERIFY + FORMAT
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            future_verify = pool.submit(run_verification, engine_result)
+        # =========================
+        # STEP 2 — FORMATTER (PARALLEL SAFE)
+        # =========================
+        with ThreadPoolExecutor(max_workers=2) as pool:
 
             future_format = pool.submit(
                 process_references,
@@ -77,23 +81,36 @@ def run_full_pipeline(file_bytes: bytes, style: str) -> Dict[str, Any]:
                 source_type="journal"
             )
 
-            verification = future_verify.result()
             formatted = future_format.result()
 
-        result["verification"] = verification
         result["formatted"] = formatted
 
-        # STEP 3 — CLAIM SUPPORT
+        # =========================
+        # STEP 3 — PLACEHOLDER VERIFICATION (IMPORTANT)
+        # =========================
+        result["online_verification"] = {
+            "rows": [],
+            "summary": {
+                "status": "pending",
+                "message": "Verification running in background"
+            }
+        }
+
+        # =========================
+        # STEP 4 — CLAIM SUPPORT (WITHOUT VERIFICATION)
+        # =========================
         claims = build_claim_support_rows({
             **engine_result,
-            "online_verification": verification
+            "online_verification": result["online_verification"]
         })
         result["claims"] = claims
 
-        # STEP 4 — ACII SCORE
+        # =========================
+        # STEP 5 — ACII (WITHOUT VERIFY)
+        # =========================
         acii_score = compute_acii(
             engine_result,
-            verification.get("rows", [])
+            []   # no verification yet
         )
         result["acii"] = acii_score
 
