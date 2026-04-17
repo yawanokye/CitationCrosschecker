@@ -963,7 +963,6 @@ def start_progress_sync(job_id: str, verification_job_id: str):
         
         last_progress = -1
         no_progress_count = 0
-        max_no_progress = 500
         
         while True:
             try:
@@ -979,30 +978,6 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                         no_progress_count = 0
                         last_progress = current_progress
                     
-                    # Stall detection
-                    if no_progress_count > 30:
-                        print(f"[DEBUG] Stalled verification detected for job {job_id}")
-                        try:
-                            partial_results = get_verification_results(verification_job_id)
-                            with _lock:
-                                if job_id in _store:
-                                    if partial_results:
-                                        print(f"[DEBUG] Saving partial results: {len(partial_results)}")
-                                        _store[job_id]["result"]["online_verification"] = {
-                                            "rows": partial_results,
-                                            "summary": _compute_verification_summary(partial_results)
-                                        }
-                                        _store[job_id]["verification"]["state"] = "completed"
-                                        _store[job_id]["verification"]["message"] = "Completed with partial results"
-                                    else:
-                                        _store[job_id]["verification"]["state"] = "error"
-                                        _store[job_id]["verification"]["message"] = "Verification stalled (no results)"
-                        except Exception as e:
-                            print(f"[ERROR] Failed to recover results: {e}")
-                        time.sleep(3)
-                        no_progress_count = 0
-                        continue
-                    
                     # Normal progress update
                     with _lock:
                         if job_id in _store:
@@ -1012,6 +987,8 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                             _store[job_id]["verification"]["total"] = total
                             
                             if status.get("status") == "completed":
+                                print(f"[DEBUG] Verification completed for job {job_id}, fetching results...")
+                                
                                 verification_results = None
                                 max_attempts = 20
                                 for attempt in range(max_attempts):
@@ -1023,7 +1000,9 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                 
                                 if verification_results:
                                     summary = _compute_verification_summary(verification_results)
+                                    print(f"[DEBUG] Verification summary: {summary}")
                                     
+                                    # Store online verification results
                                     _store[job_id]["result"]["online_verification"] = {
                                         "rows": verification_results,
                                         "summary": summary
@@ -1035,40 +1014,126 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                             _store[job_id]["result"], 
                                             verification_results
                                         )
+                                        print(f"[DEBUG] ACII recomputed successfully")
                                     except Exception as e:
                                         print(f"[DEBUG] ACII computation error: {e}")
                                     
                                     # Rebuild reference mapping
                                     try:
                                         _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
+                                        print(f"[DEBUG] Reference mapping rebuilt")
                                     except Exception as e:
                                         print(f"[DEBUG] Error rebuilding reference mapping: {e}")
                                     
                                     # ============================================
-                                    # IMPORTANT: Generate recovery and claim_support
+                                    # CRITICAL: Generate recovery data
                                     # ============================================
                                     try:
-                                        # Build context-specific recovery payload
-                                        _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
-                                        print(f"[DEBUG] Generated recovery data")
+                                        from citation_suggester import extract_context, suggest_from_context
+                                        
+                                        recovery_payload = {
+                                            "missing_recovery": [],
+                                            "verification_recovery": []
+                                        }
+                                        
+                                        full_text = _store[job_id]["result"].get("main_text", "") or _store[job_id]["result"].get("full_text", "")
+                                        print(f"[DEBUG] Full text length for recovery: {len(full_text)}")
+                                        
+                                        # Missing citation recovery
+                                        missing_items = _store[job_id]["result"].get("missing_in_references", []) or []
+                                        missing_suggestions = _store[job_id]["result"].get("missing_citation_suggestions", {}) or {}
+                                        print(f"[DEBUG] Missing items: {len(missing_items)}")
+                                        
+                                        for item in missing_items:
+                                            if isinstance(item, dict):
+                                                citation_text = item.get("citation_in_text", "") or item.get("citation", "")
+                                                count = item.get("count", 1)
+                                            else:
+                                                citation_text = str(item)
+                                                count = 1
+                                            
+                                            suggestions = missing_suggestions.get(citation_text, [])
+                                            
+                                            if citation_text:
+                                                recovery_payload["missing_recovery"].append({
+                                                    "citation": citation_text,
+                                                    "count": count,
+                                                    "suggestions": suggestions,
+                                                    "message": "" if suggestions else "No evidence found."
+                                                })
+                                        
+                                        # Verification recovery
+                                        c2r_rows = _store[job_id]["result"].get("reconciliation_intext_to_reference", []) or []
+                                        print(f"[DEBUG] C2R rows: {len(c2r_rows)}")
+                                        
+                                        ref_to_citation = {}
+                                        for r in c2r_rows:
+                                            matched_ref = r.get("matched_reference", "") or ""
+                                            in_text = r.get("in_text", "") or r.get("citation", "") or r.get("citation_in_text", "") or ""
+                                            if matched_ref and in_text and matched_ref not in ref_to_citation:
+                                                ref_to_citation[matched_ref] = in_text
+                                        
+                                        for row in verification_results:
+                                            status_val = row.get("status", "")
+                                            if status_val not in {"needs_review", "not_found"}:
+                                                continue
+                                            
+                                            original_ref = row.get("reference", "") or ""
+                                            matched_title = row.get("matched_title", "") or ""
+                                            citation_text = ref_to_citation.get(original_ref, "") or ref_to_citation.get(matched_title, "")
+                                            
+                                            suggestions = []
+                                            if citation_text and full_text:
+                                                context = extract_context(full_text, citation_text, window=200)
+                                                if context:
+                                                    suggestions = suggest_from_context(
+                                                        context=context,
+                                                        citation=citation_text,
+                                                        top_k=3
+                                                    )
+                                            
+                                            recovery_payload["verification_recovery"].append({
+                                                "reference": original_ref,
+                                                "status": status_val,
+                                                "citation": citation_text,
+                                                "suggestions": suggestions,
+                                                "message": "" if suggestions else "No evidence found."
+                                            })
+                                        
+                                        _store[job_id]["result"]["recovery"] = recovery_payload
+                                        print(f"[DEBUG] Recovery data generated: missing_recovery={len(recovery_payload['missing_recovery'])}, verification_recovery={len(recovery_payload['verification_recovery'])}")
+                                        
                                     except Exception as e:
                                         print(f"[DEBUG] Error generating recovery: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                         _store[job_id]["result"]["recovery"] = {
                                             "missing_recovery": [],
                                             "verification_recovery": []
                                         }
                                     
+                                    # ============================================
+                                    # CRITICAL: Generate claim_support data
+                                    # ============================================
                                     try:
-                                        # Build claim support rows
+                                        from claim_checker import build_claim_support_rows
                                         _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
-                                        print(f"[DEBUG] Generated claim_support data with {len(_store[job_id]['result']['claim_support'])} rows")
+                                        print(f"[DEBUG] Claim support data generated: {len(_store[job_id]['result']['claim_support'])} rows")
                                     except Exception as e:
                                         print(f"[DEBUG] Error generating claim_support: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                         _store[job_id]["result"]["claim_support"] = []
                                     
                                     _store[job_id]["verification"]["results"] = verification_results
                                     _store[job_id]["verification"]["results_count"] = len(verification_results)
                                     _store[job_id]["verification"]["summary"] = summary
+                                    
+                                    # Also update job_store if it exists
+                                    if job_id in job_store:
+                                        job_store[job_id]["result"] = _store[job_id]["result"]
+                                        print(f"[DEBUG] Updated job_store with recovery and claim_support")
+                                    
                                 else:
                                     _store[job_id]["verification"]["state"] = "error"
                                     _store[job_id]["verification"]["message"] = "No results retrieved after completion"
