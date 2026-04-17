@@ -892,10 +892,10 @@
                         <table class="tbl">
                             <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
                             <tbody>
-                                <tr><td style="width:200px;">Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
-                                <tr><td style="width:200px;">Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
-                                <tr><td style="width:200px;">Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
-                                <tr><td style="width:200px;">Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
+                                <tr><td style="width:200px;">Verification Integrity</td><td id="aciiV">--</div><td id="aciiVcat">--</div><td id="aciiVremark">--</div></tr>
+                                <tr><td style="width:200px;">Citation Concentration</div><td id="aciiC">--</div><td id="aciiCcat">--</div><td id="aciiCremark">--</div></tr>
+                                <tr><td style="width:200px;">Author Diversity</div><td id="aciiA">--</div><td id="aciiAcat">--</div><td id="aciiAremark">--</div></tr>
+                                <tr><td style="width:200px;">Temporal Balance</div><td id="aciiT">--</div><td id="aciiTcat">--</div><td id="aciiTremark">--</div></tr>
                             </tbody>
                         </table>
                     </div>
@@ -1056,7 +1056,7 @@
 <script>
     
 // ============================================
-// COMPLETE APP.JS - WITH ROBUST POLLING FIXES
+// COMPLETE APP.JS - WITH CRITICAL FIXES
 // ============================================
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -1175,7 +1175,11 @@ function updateDocumentProgress(progress) {
 }
 
 function updateVerificationProgress(progress, total) {
-    updateProgress(progress, total, "processing", `Verifying: ${progress}/${total}`);
+    const percent = total > 0 ? Math.round((progress / total) * 100) : 0;
+    const bar = document.getElementById("progressBar");
+    if (bar) bar.style.width = percent + "%";
+    const text = document.getElementById("progressText");
+    if (text) text.textContent = `Verifying ${progress}/${total} (${percent}%)`;
 }
 
 // Queue Status
@@ -1260,13 +1264,21 @@ async function fetchStatus() {
                 renderAll(data.result);
             }
             
+            // ✅ FIX 5: Check for verification job_id correctly
             if (data.verification && data.verification.job_id) {
                 console.log("Starting async verification:", data.verification.job_id);
                 startVerificationPolling(data.verification.job_id);
             }
             
             const btnVerify = document.getElementById("btnVerify");
-            if (btnVerify) btnVerify.disabled = false;
+            if (btnVerify) {
+                // ✅ FIX 8: Enable verify button if references exist
+                const hasReferences = data.result?.result?.engine?.references?.length > 0 ||
+                                     data.result?.engine?.references?.length > 0;
+                if (hasReferences) {
+                    btnVerify.disabled = false;
+                }
+            }
             
             VERIFICATION_IN_PROGRESS = false;
             return;
@@ -1309,7 +1321,8 @@ function startVerificationPolling(jobId) {
         clearInterval(VERIFICATION_POLL_TIMER);
     }
 
-    const verifyProgress = $("verifyProgress");
+    // ✅ FIX 3: Show progress bar
+    const verifyProgress = document.getElementById("verifyProgress");
     if (verifyProgress) verifyProgress.style.display = "block";
 
     VERIFICATION_POLL_TIMER = setInterval(fetchVerificationStatus, 3000);
@@ -1332,6 +1345,7 @@ async function fetchVerificationStatus() {
         const data = await res.json();
         console.log("Verification status:", data);
 
+        // ✅ FIX 4: Use correct total for progress
         if (data.progress !== undefined && data.total !== undefined) {
             updateVerificationProgress(data.progress, data.total);
         }
@@ -1377,13 +1391,14 @@ async function fetchVerificationResults() {
     }
 }
 
-// Manual Verification Function
+// ✅ FIX 1: Correct reference path for manual verification
 async function startManualVerification() {
     if (!window.latestResults) {
         setStatus("Run analysis first", "warn");
         return;
     }
 
+    // FIXED: Use correct path - data.result.engine.references
     const refs =
         window.latestResults?.result?.engine?.references ||
         window.latestResults?.engine?.references ||
@@ -1391,10 +1406,15 @@ async function startManualVerification() {
 
     if (!refs.length) {
         setStatus("No references found", "warn");
+        console.log("Reference path check:", {
+            latestResults: window.latestResults,
+            path1: window.latestResults?.result?.engine?.references,
+            path2: window.latestResults?.engine?.references
+        });
         return;
     }
 
-    setStatus("Starting verification...", "warn");
+    setStatus(`Starting verification for ${refs.length} references...`, "warn");
 
     try {
         const res = await fetch("/api/start-verification", {
@@ -1405,8 +1425,12 @@ async function startManualVerification() {
 
         const data = await res.json();
 
+        // ✅ FIX 2: Check for verification.job_id not just job_id
         if (data.verification && data.verification.job_id) {
             startVerificationPolling(data.verification.job_id);
+            setStatus("Verification started", "good");
+        } else {
+            setStatus("Verification could not be started", "warn");
         }
     } catch (err) {
         setStatus("Error starting verification: " + err.message, "bad");
@@ -1839,7 +1863,9 @@ async function runInitialCheck() {
         setStatus("Analysis complete", "good");
         updateQueueStatus();
         const btnVerify = document.getElementById("btnVerify");
-        if (btnVerify) btnVerify.disabled = false;
+        if (btnVerify && js.data?.result?.engine?.references?.length > 0) {
+            btnVerify.disabled = false;
+        }
         
         // Start polling for job status
         startPolling();
@@ -2109,7 +2135,7 @@ if (exportVerify) exportVerify.addEventListener("click", exportVerificationCSV);
 setInterval(updateQueueStatus, 5000);
 updateQueueStatus();
 
-console.log("[CiteIntegrity] App initialized - Robust polling active ✅");
+console.log("[CiteIntegrity] App initialized - All critical fixes applied ✅");
 
 });
 </script>
