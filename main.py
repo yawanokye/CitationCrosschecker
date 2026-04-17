@@ -14,7 +14,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Body
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import time
@@ -27,11 +27,12 @@ from formatter import process_references
 from engine import run_crosscheck, run_crosscheck_with_autofix
 from verify import (
     submit_verification,
-    get_verification_status,
-    get_queue_status,
-    is_server_busy,
+    get_job_status as get_verification_status,
+    get_queue_stats as get_queue_status,
+    is_server_busy_check as is_server_busy,
     get_verification_results,
-    clear_verification_results
+    clear_verification_results,
+    get_verification_payload
 )
 from acii import compute_acii
 from citation_suggester import extract_context, suggest_from_context
@@ -69,18 +70,12 @@ async def run_job(job_id, input_data, style):
 
             result = await run_in_threadpool(run_pipeline, input_data, style)
 
-            # =========================
-            # 🔥 START ASYNC VERIFICATION
-            # =========================
-            references = result["result"]["engine"].get("references", [])
-
             verification_info = None
+            references = result.get("result", {}).get("engine", {}).get("references", [])
 
             if references:
                 print(f"[DEBUG] Starting verification: {len(references)} refs")
-
                 verification_job_id = submit_verification(references)
-
                 verification_info = {
                     "job_id": verification_job_id,
                     "state": "processing"
@@ -1366,10 +1361,27 @@ async def verification_status(job_id: str):
 
 @app.get("/api/verification-results/{job_id}")
 async def verification_results(job_id: str):
-    results = get_verification_results(job_id)
+    return get_verification_payload(job_id)
+
+# ============================================================
+# MANUAL VERIFICATION ENDPOINT
+# ============================================================
+
+@app.post("/api/start-verification")
+async def start_verification(data: dict = Body(...)):
+    refs = data.get("references", [])
+    if not refs:
+        raise HTTPException(status_code=400, detail="No references provided")
+
+    verification_job_id = submit_verification(refs)
+
     return {
-        "rows": results or []
+        "verification": {
+            "job_id": verification_job_id,
+            "state": "processing"
+        }
     }
+
 # ============================================================
 # INDEX
 # ============================================================
