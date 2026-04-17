@@ -1227,7 +1227,11 @@ document.querySelectorAll(".tab").forEach(tab => {
 
 // Enhanced polling with timeout protection
 async function fetchStatus() {
-    if (!LAST_JOB_ID) return;
+    if (!LAST_JOB_ID) {
+        console.log("No LAST_JOB_ID, skipping poll");
+        return;
+    }
+    
     POLL_ATTEMPT_COUNT++;
     
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
@@ -1240,11 +1244,19 @@ async function fetchStatus() {
     }
     
     try {
+        console.log("Polling job status for ID:", LAST_JOB_ID);
         const res = await fetch(`/api/job-status/${LAST_JOB_ID}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
         
-        console.log("Job status:", data);
+        if (!res.ok) {
+            console.error("Job status response not OK:", res.status);
+            if (res.status === 404) {
+                console.log("Job not found - this might be normal if job hasn't been created yet");
+            }
+            return;
+        }
+        
+        const data = await res.json();
+        console.log("Job status response:", data);
         
         if (data.progress !== undefined) {
             updateDocumentProgress(data.progress);
@@ -1257,27 +1269,36 @@ async function fetchStatus() {
         }
         
         if (data.status === "completed") {
+            console.log("Job completed!");
             stopPolling();
             setStatus("Processing complete", "good");
             
             if (data.result) {
                 renderAll(data.result);
+                window.latestResults = data.result;
             }
             
-            // ✅ FIX 5: Check for verification job_id correctly
+            // Check for verification job_id in the completed job
             if (data.verification && data.verification.job_id) {
-                console.log("Starting async verification:", data.verification.job_id);
+                console.log("Found verification job_id in completed job:", data.verification.job_id);
                 startVerificationPolling(data.verification.job_id);
+            } else {
+                console.log("No verification job_id found in completed job");
+                // Try to get references directly from the result and start verification
+                const refs = data.result?.result?.engine?.references || 
+                            data.result?.engine?.references || 
+                            [];
+                if (refs.length > 0) {
+                    console.log(`Found ${refs.length} references, starting manual verification`);
+                    startManualVerification();
+                }
             }
             
             const btnVerify = document.getElementById("btnVerify");
             if (btnVerify) {
-                // ✅ FIX 8: Enable verify button if references exist
                 const hasReferences = data.result?.result?.engine?.references?.length > 0 ||
                                      data.result?.engine?.references?.length > 0;
-                if (hasReferences) {
-                    btnVerify.disabled = false;
-                }
+                btnVerify.disabled = !hasReferences;
             }
             
             VERIFICATION_IN_PROGRESS = false;
@@ -1295,7 +1316,6 @@ async function fetchStatus() {
         console.error("Polling error:", err);
     }
 }
-
 function startPolling() {
     if (POLL_TIMER) clearInterval(POLL_TIMER);
     POLL_ATTEMPT_COUNT = 0;
@@ -1856,29 +1876,49 @@ async function runInitialCheck() {
             return;
         }
         const js = await res.json();
+        
+        console.log("=== VERIFY RESPONSE ===");
+        console.log("Job ID from /verify:", js.job_id);
+        console.log("Full response:", js);
+        
+        // IMPORTANT: The job_id from /verify is what we need to poll
         LAST_JOB_ID = js.job_id;
+        
+        console.log("Set LAST_JOB_ID to:", LAST_JOB_ID);
+        
         updateProcessFeedback("Extract", "completed");
         updateProcessFeedback("Match", "active");
+        
+        // Render the results immediately from the response
         renderAll(js);
         setStatus("Analysis complete", "good");
         updateQueueStatus();
+        
         const btnVerify = document.getElementById("btnVerify");
         if (btnVerify && js.data?.result?.engine?.references?.length > 0) {
             btnVerify.disabled = false;
         }
         
-        // Start polling for job status
+        // Start polling for job status - this will check for verification job_id
         startPolling();
         
-        // If auto-verification was enabled, start verification polling
+        // If auto-verification was enabled, the backend already started it
         if (enableOnlineVerify) {
-            setStatus("Auto-verification will start after analysis...", "info");
+            setStatus("Auto-verification started in background...", "info");
+            // The verification job_id will come through the poller when the job completes
         }
+        
+        // Debug: Check if there's already a verification job_id in the response
+        if (js.verification && js.verification.job_id) {
+            console.log("Verification already started with job_id:", js.verification.job_id);
+            startVerificationPolling(js.verification.job_id);
+        }
+        
     } catch (err) { 
+        console.error("Error in runInitialCheck:", err);
         setStatus("Error: " + err.message, "bad"); 
     }
 }
-
 // ACII Rating Function
 function getACIIRating(score) {
     score = Number(score);
