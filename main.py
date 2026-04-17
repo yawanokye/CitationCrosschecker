@@ -1349,36 +1349,170 @@ async def verify(
     enable_online_verification: bool = Form(False),
     request: Request = None
 ):
-    # ... [all the existing validation code stays the same] ...
+    if not file.filename:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No file provided", "message": "Please select a file to upload"}
+        )
+    
+    filename_lower = file.filename.lower()
+    is_docx = filename_lower.endswith('.docx')
+    is_pdf = filename_lower.endswith('.pdf')
+    
+    if is_pdf:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "PDF files are not supported",
+                "message": "Please convert PDF to DOCX first",
+                "instruction": "Open blank Word → File → Open → Select PDF → Click OK → Save as .docx"
+            }
+        )
+    
+    if not is_docx:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Invalid file format",
+                "message": "Only DOCX files are accepted",
+                "instruction": "Please upload a Word document."
+            }
+        )
+    
+    if is_server_busy():
+        queue_stats = get_queue_status()
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "Server is busy",
+                "message": "Please wait a moment and try again",
+                "queue_size": queue_stats["queue_size"],
+                "pending_jobs": queue_stats["pending_jobs"],
+                "retry_after": 30
+            }
+        )
+    
+    start_time = time.time()
+    data = await file.read()
+    file_size = len(data)
     
     try:
-        # ... [processing code stays the same] ...
+        def run():
+            if enable_autofix:
+                return run_crosscheck_with_autofix(
+                    file_bytes=data,
+                    filename=file.filename,
+                    style=style,
+                    verify_online=False,
+                    enable_autofix=True
+                )
+            else:
+                return run_crosscheck(
+                    file_bytes=data,
+                    filename=file.filename,
+                    style=style,
+                    verify_online=False
+                )
+
+        result = await run_in_threadpool(run)
+        
+        if "error" in result:
+            processing_time = time.time() - start_time
+            stats_tracker.add_upload(
+                filename=file.filename,
+                file_size=file_size,
+                references_count=0,
+                processing_time=processing_time,
+                success=False,
+                error=result.get("error"),
+                ip_address=request.client.host if request and request.client else None
+            )
+            return JSONResponse(
+                status_code=422,
+                content={"error": "Processing failed", "message": result.get("error"), "note": result.get("note", "")}
+            )
+
+        # Ensure main_text is stored
+        if "main_text" not in result and "data" in result:
+            result["main_text"] = result["data"].get("main_text", "")
+        
+        result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
+        
+        # ============================================================
+        # ADD MISSING CITATION RECOVERY SUGGESTIONS
+        # ============================================================
+        try:
+            missing_citation_suggestions = {}
+            full_text = result.get("main_text", "") or result.get("full_text", "")
+        
+            missing_items = result.get("missing_in_references", []) or []
+            for item in missing_items:
+                if isinstance(item, dict):
+                    citation_text = item.get("citation_in_text", "") or item.get("citation", "")
+                else:
+                    citation_text = str(item)
+        
+                if not citation_text:
+                    continue
+        
+                context = extract_context(full_text, citation_text, window=200)
+                missing_citation_suggestions[citation_text] = suggest_from_context(context=context, citation=citation_text, top_k=3)
+        
+            result["missing_citation_suggestions"] = missing_citation_suggestions
+        
+        except Exception as e:
+            print(f"[DEBUG] missing_citation_suggestions error: {e}")
+            result["missing_citation_suggestions"] = {}
+        
+        references_count = len(result.get("references_raw", []))
+        processing_time = time.time() - start_time
+        
+        client_ip = None
+        if request and hasattr(request, "client"):
+            client_ip = request.client.host if request.client else None
+        
+        stats_tracker.add_upload(
+            filename=file.filename,
+            file_size=file_size,
+            references_count=references_count,
+            processing_time=processing_time,
+            success=True,
+            ip_address=client_ip
+        )
+        
+        increment_counter()
         
         # Store result in _store (for verification system)
         job_id = store_result(result)
+        print(f"[DEBUG] Created job_id: {job_id}")
         
         references_count = len(result.get("references_raw", []))
+        print(f"[DEBUG] References count: {references_count}")
         
         # ALWAYS create a verification job ID if references exist
-        # This allows the frontend to start verification later
         verification_job_id = None
         
         if references_count > 0:
-            # Create a verification job but don't start it yet
-            # Just reserve the job ID so frontend can use it
-            from verify import submit_verification
-            verification_job_id = submit_verification(result.get("references_raw", []), style=style)
-            print(f"[DEBUG] Created verification job {verification_job_id} for {references_count} references")
-            
-            # Update verification status
-            update_verification_status(
-                job_id,
-                state="idle",  # Not started yet
-                total=references_count,
-                progress=0,
-                percentage=0,
-                verification_job_id=verification_job_id
-            )
+            try:
+                from verify import submit_verification
+                print(f"[DEBUG] Submitting verification for {references_count} references")
+                verification_job_id = submit_verification(result.get("references_raw", []), style=style)
+                print(f"[DEBUG] Created verification job {verification_job_id}")
+                
+                # Update verification status
+                update_verification_status(
+                    job_id,
+                    state="idle",
+                    total=references_count,
+                    progress=0,
+                    percentage=0,
+                    verification_job_id=verification_job_id
+                )
+            except Exception as e:
+                print(f"[DEBUG] Error creating verification job: {e}")
+                import traceback
+                traceback.print_exc()
+                verification_job_id = None
         
         # Store in job_store for polling
         job_store[job_id] = {
@@ -1391,6 +1525,8 @@ async def verify(
                 "state": "idle" if verification_job_id else "none"
             } if verification_job_id else None
         }
+        
+        print(f"[DEBUG] Stored in job_store with verification: {verification_job_id}")
         
         online_started = False
         
@@ -1405,7 +1541,8 @@ async def verify(
                 )
                 
                 # Update job_store
-                job_store[job_id]["verification"]["state"] = "processing"
+                if job_store[job_id].get("verification"):
+                    job_store[job_id]["verification"]["state"] = "processing"
                 
                 stats_tracker.add_verification(job_id, references_count, success=True)
                 start_progress_sync(job_id, verification_job_id)
@@ -1413,23 +1550,50 @@ async def verify(
                 print(f"[DEBUG] Auto-started verification for job {verification_job_id}")
             except Exception as e:
                 print(f"[DEBUG] Auto-start verification failed: {e}")
+                import traceback
+                traceback.print_exc()
                 online_started = False
 
-        return {
+        response_data = {
             "job_id": job_id,
             "data": result,
             "queue_status": get_queue_status(),
             "autofix_enabled": enable_autofix,
             "online_verification_started": online_started,
-            "verification": {
-                "job_id": verification_job_id,
-                "state": "processing" if online_started else "idle"
-            } if verification_job_id else None
         }
         
+        if verification_job_id:
+            response_data["verification"] = {
+                "job_id": verification_job_id,
+                "state": "processing" if online_started else "idle"
+            }
+        
+        print(f"[DEBUG] Returning response with job_id: {job_id}")
+        return response_data
+        
     except Exception as e:
-        # ... [error handling stays the same] ...
-        raise
+        print(f"[DEBUG] FATAL ERROR in verify endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        processing_time = time.time() - start_time
+        stats_tracker.add_upload(
+            filename=file.filename,
+            file_size=file_size,
+            references_count=0,
+            processing_time=processing_time,
+            success=False,
+            error=str(e),
+            ip_address=request.client.host if request and request.client else None
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "detail": str(e),
+                "timestamp": now()
+            }
+        )
 # ============================================================
 # QUEUE STATUS ENDPOINT
 # ============================================================
