@@ -842,18 +842,23 @@ def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
     
     return summary
 def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Build recovery suggestions for missing citations and verification failures"""
+    print("[DEBUG] Building context-specific recovery")
+    
     payload = {
         "missing_recovery": [],
         "verification_recovery": []
     }
 
     full_text = result.get("main_text", "") or result.get("full_text", "")
+    print(f"[DEBUG] Full text length: {len(full_text)}")
 
-    # -------------------------------------------------
-    # Top section: Missing citation recovery
-    # -------------------------------------------------
+    # Missing citation recovery
     missing_items = result.get("missing_in_references", []) or []
     missing_suggestions = result.get("missing_citation_suggestions", {}) or {}
+    
+    print(f"[DEBUG] Missing items count: {len(missing_items)}")
+    print(f"[DEBUG] Missing suggestions keys: {list(missing_suggestions.keys())}")
 
     for item in missing_items:
         if isinstance(item, dict):
@@ -873,11 +878,12 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
                 "message": "" if suggestions else "No evidence found."
             })
 
-    # -------------------------------------------------
-    # Bottom section: needs_review / not_found
-    # -------------------------------------------------
+    # Verification recovery for needs_review/not_found
     verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
+
+    print(f"[DEBUG] Verify rows count: {len(verify_rows)}")
+    print(f"[DEBUG] C2R rows count: {len(c2r_rows)}")
 
     # Build lookup: matched reference -> in-text citation
     ref_to_citation = {}
@@ -915,6 +921,7 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
             "message": "" if suggestions else "No evidence found."
         })
 
+    print(f"[DEBUG] Recovery payload: missing_recovery={len(payload['missing_recovery'])}, verification_recovery={len(payload['verification_recovery'])}")
     return payload
 
 def store_result(result):
@@ -972,43 +979,31 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                         no_progress_count = 0
                         last_progress = current_progress
                     
-                    # =========================
-                    # 🔥 STALL DETECTION
-                    
-                    # =========================
-                    if no_progress_count > 30:  # ~60–90 seconds depending on sleep
+                    # Stall detection
+                    if no_progress_count > 30:
                         print(f"[DEBUG] Stalled verification detected for job {job_id}")
-                    
                         try:
                             partial_results = get_verification_results(verification_job_id)
-                    
                             with _lock:
                                 if job_id in _store:
                                     if partial_results:
                                         print(f"[DEBUG] Saving partial results: {len(partial_results)}")
-                    
                                         _store[job_id]["result"]["online_verification"] = {
                                             "rows": partial_results,
                                             "summary": _compute_verification_summary(partial_results)
                                         }
-                    
                                         _store[job_id]["verification"]["state"] = "completed"
                                         _store[job_id]["verification"]["message"] = "Completed with partial results"
                                     else:
                                         _store[job_id]["verification"]["state"] = "error"
                                         _store[job_id]["verification"]["message"] = "Verification stalled (no results)"
-                    
                         except Exception as e:
                             print(f"[ERROR] Failed to recover results: {e}")
-                    
                         time.sleep(3)
                         no_progress_count = 0
                         continue
                     
-                    
-                    # =========================
-                    # 🔄 NORMAL PROGRESS UPDATE
-                    # =========================
+                    # Normal progress update
                     with _lock:
                         if job_id in _store:
                             _store[job_id]["verification"]["progress"] = current_progress
@@ -1034,6 +1029,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                         "summary": summary
                                     }
                                     
+                                    # Recompute ACII with verification results
                                     try:
                                         _store[job_id]["result"]["acii"] = compute_acii(
                                             _store[job_id]["result"], 
@@ -1042,13 +1038,34 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     except Exception as e:
                                         print(f"[DEBUG] ACII computation error: {e}")
                                     
+                                    # Rebuild reference mapping
                                     try:
                                         _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
                                     except Exception as e:
                                         print(f"[DEBUG] Error rebuilding reference mapping: {e}")
-                                    # Add context-specific recovery payload
-                                    _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
-                                    _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
+                                    
+                                    # ============================================
+                                    # IMPORTANT: Generate recovery and claim_support
+                                    # ============================================
+                                    try:
+                                        # Build context-specific recovery payload
+                                        _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
+                                        print(f"[DEBUG] Generated recovery data")
+                                    except Exception as e:
+                                        print(f"[DEBUG] Error generating recovery: {e}")
+                                        _store[job_id]["result"]["recovery"] = {
+                                            "missing_recovery": [],
+                                            "verification_recovery": []
+                                        }
+                                    
+                                    try:
+                                        # Build claim support rows
+                                        _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
+                                        print(f"[DEBUG] Generated claim_support data with {len(_store[job_id]['result']['claim_support'])} rows")
+                                    except Exception as e:
+                                        print(f"[DEBUG] Error generating claim_support: {e}")
+                                        _store[job_id]["result"]["claim_support"] = []
+                                    
                                     _store[job_id]["verification"]["results"] = verification_results
                                     _store[job_id]["verification"]["results_count"] = len(verification_results)
                                     _store[job_id]["verification"]["summary"] = summary
@@ -1071,6 +1088,8 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                 
             except Exception as e:
                 print(f"[DEBUG] Error in sync thread: {e}")
+                import traceback
+                traceback.print_exc()
             
             time.sleep(2)
         
