@@ -1142,6 +1142,75 @@ function resetProcessFeedback() {
     });
 }
 
+function startVerificationPolling(jobId) {
+
+    console.log("Starting verification polling:", jobId);
+
+    let interval = setInterval(async () => {
+
+        try {
+            const res = await fetch(`/api/verification-status/${jobId}`);
+            const data = await res.json();
+
+            console.log("Verification status:", data);
+
+            // 🔄 Update progress bar
+            if (data.progress !== undefined) {
+                updateProgress(data.progress, data.total);
+            }
+
+            // ⏳ Still processing
+            if (data.status === "processing") {
+                setStatus(`Verifying references (${data.progress}/${data.total})...`, "warn");
+                return;
+            }
+
+            // ✅ Completed
+            if (data.status === "completed") {
+
+                clearInterval(interval);
+
+                setStatus("Verification complete", "good");
+
+                // 🔥 FETCH FINAL RESULTS
+                const res2 = await fetch(`/api/verification-results/${jobId}`);
+                const final = await res2.json();
+
+                // 🔥 RENDER
+                renderVerify({
+                    online_verification: {
+                        rows: final.rows,
+                        summary: computeVerificationSummary(final.rows)
+                    }
+                });
+
+                return;
+            }
+
+        } catch (err) {
+            console.error("Verification polling error:", err);
+            clearInterval(interval);
+        }
+
+    }, 3000);
+}
+
+function computeVerificationSummary(rows) {
+    const summary = {
+        verified: 0,
+        likely: 0,
+        needs_review: 0,
+        not_found: 0
+    };
+
+    rows.forEach(r => {
+        if (r.status && summary.hasOwnProperty(r.status)) {
+            summary[r.status]++;
+        }
+    });
+
+    return summary;
+}
 // ✅ FIX: UPLOAD AREA FULLY ACTIVATED - CLICK & DRAG/DROP
 function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
@@ -1338,21 +1407,25 @@ async function fetchStatus() {
         if (data.status === "completed") {
             stopPolling();
             setStatus("Processing complete", "good");
+        
             if (data.result) {
                 renderAll(data.result);
-                
-                // Check if verification was auto-started
-                if (data.result.online_verification_started || data.result.online_verification) {
-                    // Start polling for verification status separately
-                    startVerificationPolling();
-                }
             }
+        
+            // 🔥 CORRECT PLACE (TOP-LEVEL, NOT INSIDE result)
+            if (data.verification && data.verification.job_id) {
+                console.log("Starting async verification:", data.verification.job_id);
+        
+                startVerificationPolling(data.verification.job_id);
+            }
+        
             const btnVerify = document.getElementById("btnVerify");
             if (btnVerify) btnVerify.disabled = false;
+        
             VERIFICATION_IN_PROGRESS = false;
+        
             return;
         }
-        
         if (data.status === "error") {
             stopPolling();
             setStatus(`Processing failed: ${data.error || "unknown error"}`, "bad");
