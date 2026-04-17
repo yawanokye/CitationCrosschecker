@@ -678,7 +678,7 @@ def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str
 
 
 # ============================================================================
-# Reference ion Functions
+# Reference Extraction Functions
 # ============================================================================
 
 def detect_reference_format(lines: List[str], start_idx: int) -> str:
