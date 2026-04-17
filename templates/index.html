@@ -1174,12 +1174,153 @@ function updateDocumentProgress(progress) {
     updateProgress(progress, 100, "processing", `Processing: ${progress}%`);
 }
 
+// ============================================
+// VERIFICATION FUNCTIONS - DEFINED EARLY
+// ============================================
+
+let VERIFICATION_POLL_TIMER = null;
+let VERIFICATION_JOB_ID = null;
+
 function updateVerificationProgress(progress, total) {
     const percent = total > 0 ? Math.round((progress / total) * 100) : 0;
     const bar = document.getElementById("progressBar");
     if (bar) bar.style.width = percent + "%";
     const text = document.getElementById("progressText");
     if (text) text.textContent = `Verifying ${progress}/${total} (${percent}%)`;
+}
+
+function stopVerificationPolling() {
+    if (VERIFICATION_POLL_TIMER) {
+        clearInterval(VERIFICATION_POLL_TIMER);
+        VERIFICATION_POLL_TIMER = null;
+    }
+}
+
+function computeVerificationSummary(rows) {
+    const summary = {
+        verified: 0,
+        likely: 0,
+        needs_review: 0,
+        not_found: 0,
+        offline: 0,
+        total: rows.length
+    };
+    
+    for (const row of rows) {
+        const status = row.status || "offline";
+        if (summary.hasOwnProperty(status)) {
+            summary[status]++;
+        } else {
+            summary.offline++;
+        }
+    }
+    return summary;
+}
+
+async function fetchVerificationResults() {
+    if (!VERIFICATION_JOB_ID) {
+        console.error("No verification job ID");
+        return;
+    }
+
+    try {
+        console.log("Fetching verification results for:", VERIFICATION_JOB_ID);
+
+        const res = await fetch(`/api/verification-results/${VERIFICATION_JOB_ID}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        let final = await res.json();
+        console.log("Raw verification response:", final);
+
+        if (final.data) {
+            final = final.data;
+        }
+
+        if (!final.online_verification && final.rows) {
+            final = {
+                online_verification: {
+                    rows: final.rows,
+                    summary: computeVerificationSummary(final.rows)
+                }
+            };
+        }
+
+        console.log("Normalized verification data:", final);
+        renderVerify(final);
+
+        if (window.latestResults) {
+            if (window.latestResults.result) {
+                window.latestResults.result.online_verification = final.online_verification;
+            } else {
+                window.latestResults.online_verification = final.online_verification;
+            }
+        }
+
+    } catch (err) {
+        console.error("Error fetching verification results:", err);
+    }
+}
+
+async function fetchVerificationStatus() {
+    if (!VERIFICATION_JOB_ID) {
+        console.log("No VERIFICATION_JOB_ID set");
+        return;
+    }
+
+    console.log("Fetching verification status for job:", VERIFICATION_JOB_ID);
+
+    try {
+        const res = await fetch(`/api/verification-status/${VERIFICATION_JOB_ID}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        console.log("Verification status:", data);
+
+        if (data.progress !== undefined && data.total !== undefined) {
+            updateVerificationProgress(data.progress, data.total);
+        }
+
+        if (data.status === "processing") {
+            setStatus(`Verifying ${data.progress}/${data.total}...`, "warn");
+            return;
+        }
+
+        if (data.status === "completed") {
+            console.log("Verification completed!");
+            stopVerificationPolling();
+            setStatus("Verification complete", "good");
+            await fetchVerificationResults();
+            return;
+        }
+
+        if (data.status === "error") {
+            console.error("Verification error:", data.error);
+            stopVerificationPolling();
+            setStatus(`Verification failed: ${data.error || "unknown error"}`, "bad");
+        }
+    } catch (err) {
+        console.error("Verification status error:", err);
+        stopVerificationPolling();
+    }
+}
+
+function startVerificationPolling(jobId) {
+    if (!jobId) {
+        console.error("Missing verification jobId");
+        return;
+    }
+
+    console.log("Starting verification polling for job:", jobId);
+    VERIFICATION_JOB_ID = jobId;
+
+    if (VERIFICATION_POLL_TIMER) {
+        clearInterval(VERIFICATION_POLL_TIMER);
+    }
+
+    const verifyProgress = document.getElementById("verifyProgress");
+    if (verifyProgress) verifyProgress.style.display = "block";
+
+    VERIFICATION_POLL_TIMER = setInterval(fetchVerificationStatus, 3000);
 }
 
 // Queue Status
@@ -1327,17 +1468,6 @@ function stopPolling() {
 }
 
 // Verification Polling Functions
-function startVerificationPolling(jobId) {
-    if (!jobId) {
-        console.error("Missing verification jobId");
-        return;
-    }
-
-    VERIFICATION_JOB_ID = jobId;
-
-    if (VERIFICATION_POLL_TIMER) {
-        clearInterval(VERIFICATION_POLL_TIMER);
-    }
 
     // ✅ FIX 3: Show progress bar
     const verifyProgress = document.getElementById("verifyProgress");
@@ -1397,73 +1527,8 @@ async function fetchVerificationResults() {
         console.error("Error fetching verification results:", err);
     }
 }
-// Add this helper function if not already defined
-function computeVerificationSummary(rows) {
-    const summary = {
-        verified: 0,
-        likely: 0,
-        needs_review: 0,
-        not_found: 0,
-        offline: 0,
-        total: rows.length
-    };
-    
-    for (const row of rows) {
-        const status = row.status || "offline";
-        if (summary.hasOwnProperty(status)) {
-            summary[status]++;
-        } else {
-            summary.offline++;
-        }
-    }
-    
-    return summary;
-}
 
-// Keep ONLY ONE version of fetchVerificationResults
-async function fetchVerificationResults() {
-    if (!VERIFICATION_JOB_ID) {
-        console.error("No verification job ID");
-        return;
-    }
 
-    try {
-        console.log("Fetching verification results for:", VERIFICATION_JOB_ID);
-
-        const res = await fetch(`/api/verification-results/${VERIFICATION_JOB_ID}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        let final = await res.json();
-
-        console.log("Raw verification response:", final);
-
-        // 🔥 NORMALIZE RESPONSE
-        if (final.data) {
-            final = final.data;
-        }
-
-        if (!final.online_verification && final.rows) {
-            final = {
-                online_verification: {
-                    rows: final.rows,
-                    summary: computeVerificationSummary(final.rows)
-                }
-            };
-        }
-
-        console.log("Normalized verification data:", final);
-
-        renderVerify(final);
-
-        // 🔥 Update latestResults safely
-        if (window.latestResults) {
-            window.latestResults.online_verification = final.online_verification;
-        }
-
-    } catch (err) {
-        console.error("Error fetching verification results:", err);
-    }
-}
 // ✅ FIX 1: Correct reference path for manual verification
 async function startManualVerification() {
     console.log("=== startManualVerification called ===");
