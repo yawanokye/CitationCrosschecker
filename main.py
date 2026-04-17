@@ -14,7 +14,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Body
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import time
@@ -22,17 +22,15 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
-from formatter import process_references
 
 from engine import run_crosscheck, run_crosscheck_with_autofix
 from verify import (
     submit_verification,
-    get_job_status as get_verification_status,
-    get_queue_stats as get_queue_status,
-    is_server_busy_check as is_server_busy,
+    get_verification_status,
+    get_queue_status,
+    is_server_busy,
     get_verification_results,
-    clear_verification_results,
-    get_verification_payload
+    clear_verification_results
 )
 from acii import compute_acii
 from citation_suggester import extract_context, suggest_from_context
@@ -44,72 +42,6 @@ from reference_formatter import (
     DOCX_AVAILABLE
 )
 
-from asyncio import Semaphore
-from concurrent.futures import ThreadPoolExecutor
-
-MAX_CONCURRENT_JOBS = 3
-semaphore = Semaphore(MAX_CONCURRENT_JOBS)
-
-job_store = {}
-executor = ThreadPoolExecutor(max_workers=4)
-
-# =========================
-# JOB SYSTEM (ADD HERE)
-# =========================
-
-async def run_job(job_id, input_data, style):
-    async with semaphore:
-        try:
-            from pipeline import run_pipeline
-
-            job_store[job_id] = {
-                "status": "processing",
-                "progress": 10,
-                "timestamp": time.time()
-            }
-
-            result = await run_in_threadpool(run_pipeline, input_data, style)
-
-            verification_info = None
-            references = result.get("result", {}).get("engine", {}).get("references", [])
-
-            if references:
-                print(f"[DEBUG] Starting verification: {len(references)} refs")
-                verification_job_id = submit_verification(references)
-                verification_info = {
-                    "job_id": verification_job_id,
-                    "state": "processing"
-                }
-
-            job_store[job_id] = {
-                "status": "completed",
-                "progress": 100,
-                "result": result,
-                "verification": verification_info,
-                "timestamp": time.time()
-            }
-
-        except Exception as e:
-            job_store[job_id] = {
-                "status": "error",
-                "error": str(e),
-                "timestamp": time.time()
-            }
-
-def cleanup_old_jobs(max_age_seconds: int = 600):
-    import time
-    now = time.time()
-
-    stale_ids = []
-    for job_id, job in job_store.items():
-        ts = job.get("timestamp")
-        if ts is None:
-            continue
-        if now - ts > max_age_seconds:
-            stale_ids.append(job_id)
-
-    for job_id in stale_ids:
-        del job_store[job_id]
 # ===============================
 # DATABASE SETUP - SQLite
 # ===============================
@@ -441,76 +373,51 @@ async def lifespan(app_instance: FastAPI):
     yield
     print("👋 Shutting down...")
 
-# ============================================================
-# APP SETUP (FIXED)
-# ============================================================
-
 app = FastAPI(
     docs_url=None,
     redoc_url=None,
-    openapi_url="/openapi.json",   # ✅ KEEP THIS (critical for API to work)
-    lifespan=lifespan              # ✅ attach lifespan (you defined it earlier)
+    openapi_url=None
 )
-
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
 
-# ============================================================
-# SAFE BLOCKED PATHS (FIXED)
-# ============================================================
-
-BLOCKED_PATHS = {
+BLOCKED_PATHS = [
+    # Existing (keep)
     "/wp-admin",
     "/wordpress",
     "/wp-login",
     "/xmlrpc.php",
+
+    # 🔥 ADD THESE (CRITICAL)
+    "/docs",
+    "/redoc",
+    "/openapi.json",
     "/debug",
     "/private-stats"
-}
-
-# ============================================================
-# SAFE BOT FILTER (FIXED)
-# ============================================================
-
-BAD_AGENTS = [
-    "crawler",
-    "scanner",
-    "spider",
-    "httpclient",
-    "scrapy",
-    "libwww"
 ]
 
-# ============================================================
-# SECURITY MIDDLEWARE (FIXED)
-# ============================================================
+BAD_AGENTS = [
+    "bot", "crawler", "scanner", "spider",
+    "curl", "wget", "python-requests",
+    "httpclient", "scrapy", "libwww"
+]
 
+# =========================
+# SECURITY MIDDLEWARE (1st)
+# =========================
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
-    path = request.url.path.lower().rstrip("/")
+    path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
 
-    # =========================
-    # 🔒 BLOCK ONLY EXACT PATHS
-    # =========================
-    if path in BLOCKED_PATHS:
-        # allow internal stats endpoint if needed
-        if path == "/private-stats":
-            return await call_next(request)
+    # 🔒 Block sensitive endpoints
+    for blocked in BLOCKED_PATHS:
+        if path.startswith(blocked):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
 
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "Not Found"}
-        )
-
-    # =========================
-    # 🤖 BOT FILTER (SAFE)
-    # =========================
-    if ua and any(bad in ua for bad in BAD_AGENTS):
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Forbidden"}
-        )
+    # 🤖 Block bots
+    if any(b in ua for b in BAD_AGENTS):
+        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
 
     return await call_next(request)
 
@@ -593,7 +500,7 @@ async def add_security_headers(request: Request, call_next):
         "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
         "font-src 'self' data:; "
-        "connect-src 'self' https://citeintegrity.org;"
+        "connect-src 'self'; "
         "frame-ancestors 'none';"
     )
 
@@ -621,138 +528,8 @@ if not os.path.exists(static_dir):
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-
-@app.get("/reference-formatter", response_class=HTMLResponse)
-async def reference_formatter_page(request: Request):
-    return templates.TemplateResponse(
-        "reference_formatter.html",
-        {"request": request}
-    )
-
-
-
-@app.post("/api/format-reference")
-async def format_reference_api(
-    raw_reference: str = Form(...),
-    style: str = Form(...),
-    variant: str = Form("generic"),
-    source_type: str = Form("journal")
-):
-    try:
-        result = process_references(
-            raw_text=raw_reference,
-            style=style,
-            source_type=source_type
-        )
-
-        repair_results = result.get("repair_results", [])
-
-        return {
-            "success": True,
-            "formatted": "\n".join(result.get("formatted", [])) if isinstance(result.get("formatted"), list) else result.get("formatted", ""),
-            "warnings": result.get("warnings", []),
-        
-            # 🔥 REQUIRED FOR YOUR UI
-            "repair_results": repair_results,
-            "total_references": len(repair_results),
-            "references_with_doi": sum(1 for r in repair_results if r.get("has_doi")),
-            "average_confidence": (
-                sum(r.get("confidence", 0) for r in repair_results) / max(len(repair_results), 1)
-            ),
-            "needs_review": sum(1 for r in repair_results if r.get("needs_review"))
-        }
-
-    except Exception as e:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "success": False,
-                "message": str(e)
-            }
-        )
-
 _store: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
-@app.post("/api/submit-job")
-async def submit_job(
-    raw_reference: str = Form(...),
-    style: str = Form("apa7"),
-    background_tasks: BackgroundTasks = None
-):
-    # 🔒 basic validation
-    if not raw_reference.strip():
-        raise HTTPException(400, "No references provided")
-
-    if len(raw_reference) > 10000:
-        raise HTTPException(400, "Too many references")
-
-    job_id = str(uuid.uuid4())
-
-    job_store[job_id] = {
-        "status": "queued",
-        "progress": 0
-    }
-
-    background_tasks.add_task(run_job, job_id, raw_reference, style)
-
-    return {"job_id": job_id}
-# ============================================================
-# 🔵 FULL DOCUMENT ASYNC SUBMIT (NEW)
-# ============================================================
-
-@app.post("/api/submit-document-job")
-async def submit_document_job(
-    file: UploadFile = File(...),
-    style: str = Form("apa7"),
-    background_tasks: BackgroundTasks = None
-):
-    # -----------------------------
-    # 🔒 VALIDATION
-    # -----------------------------
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file uploaded")
-
-    filename = file.filename.lower()
-
-    if not (filename.endswith(".docx") or filename.endswith(".pdf")):
-        raise HTTPException(
-            status_code=400,
-            detail="Only DOCX or PDF files are supported"
-        )
-
-    content = await file.read()
-
-    if not content:
-        raise HTTPException(status_code=400, detail="Empty file")
-
-    if len(content) > 10_000_000:  # 10MB limit
-        raise HTTPException(status_code=400, detail="File too large")
-
-    # -----------------------------
-    # 🆔 CREATE JOB
-    # -----------------------------
-    job_id = str(uuid.uuid4())
-
-    job_store[job_id] = {
-        "status": "queued",
-        "progress": 0,
-        "type": "document"
-    }
-
-    # -----------------------------
-    # 🚀 BACKGROUND PROCESSING
-    # -----------------------------
-    background_tasks.add_task(run_job, job_id, content, style)
-
-    return {
-        "job_id": job_id,
-        "type": "document"
-    }
-
-@app.get("/api/job-status/{job_id}")
-async def job_status(job_id: str):
-    return job_store.get(job_id, {"status": "not_found"})
-
 
 # --------------------------------------------------
 # Utility Functions
@@ -842,23 +619,18 @@ def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
     
     return summary
 def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
-    """Build recovery suggestions for missing citations and verification failures"""
-    print("[DEBUG] Building context-specific recovery")
-    
     payload = {
         "missing_recovery": [],
         "verification_recovery": []
     }
 
     full_text = result.get("main_text", "") or result.get("full_text", "")
-    print(f"[DEBUG] Full text length: {len(full_text)}")
 
-    # Missing citation recovery
+    # -------------------------------------------------
+    # Top section: Missing citation recovery
+    # -------------------------------------------------
     missing_items = result.get("missing_in_references", []) or []
     missing_suggestions = result.get("missing_citation_suggestions", {}) or {}
-    
-    print(f"[DEBUG] Missing items count: {len(missing_items)}")
-    print(f"[DEBUG] Missing suggestions keys: {list(missing_suggestions.keys())}")
 
     for item in missing_items:
         if isinstance(item, dict):
@@ -878,12 +650,11 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
                 "message": "" if suggestions else "No evidence found."
             })
 
-    # Verification recovery for needs_review/not_found
+    # -------------------------------------------------
+    # Bottom section: needs_review / not_found
+    # -------------------------------------------------
     verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
-
-    print(f"[DEBUG] Verify rows count: {len(verify_rows)}")
-    print(f"[DEBUG] C2R rows count: {len(c2r_rows)}")
 
     # Build lookup: matched reference -> in-text citation
     ref_to_citation = {}
@@ -921,7 +692,6 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
             "message": "" if suggestions else "No evidence found."
         })
 
-    print(f"[DEBUG] Recovery payload: missing_recovery={len(payload['missing_recovery'])}, verification_recovery={len(payload['verification_recovery'])}")
     return payload
 
 def store_result(result):
@@ -963,6 +733,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
         
         last_progress = -1
         no_progress_count = 0
+        max_no_progress = 300
         
         while True:
             try:
@@ -978,7 +749,6 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                         no_progress_count = 0
                         last_progress = current_progress
                     
-                    # Normal progress update
                     with _lock:
                         if job_id in _store:
                             _store[job_id]["verification"]["progress"] = current_progress
@@ -987,145 +757,62 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                             _store[job_id]["verification"]["total"] = total
                             
                             if status.get("status") == "completed":
-                                print(f"[DEBUG] ========================================")
-                                print(f"[DEBUG] Verification COMPLETED for job {job_id}")
-                                print(f"[DEBUG] ========================================")
-                                
                                 verification_results = None
-                                for attempt in range(20):
+                                max_attempts = 20
+                                for attempt in range(max_attempts):
                                     verification_results = get_verification_results(verification_job_id)
                                     if verification_results:
-                                        print(f"[DEBUG] Got {len(verification_results)} results on attempt {attempt+1}")
+                                        print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
                                         break
-                                    print(f"[DEBUG] Attempt {attempt+1}: No results yet, waiting...")
                                     time.sleep(2)
                                 
                                 if verification_results:
-                                    print(f"[DEBUG] Processing {len(verification_results)} verification results")
                                     summary = _compute_verification_summary(verification_results)
                                     
                                     _store[job_id]["result"]["online_verification"] = {
                                         "rows": verification_results,
                                         "summary": summary
                                     }
-                                    print(f"[DEBUG] Stored online_verification with {len(verification_results)} rows")
                                     
-                                    # Recompute ACII
                                     try:
                                         _store[job_id]["result"]["acii"] = compute_acii(
-                                            _store[job_id]["result"], verification_results
+                                            _store[job_id]["result"], 
+                                            verification_results
                                         )
-                                        print(f"[DEBUG] ACII recomputed successfully")
                                     except Exception as e:
-                                        print(f"[DEBUG] ACII error: {e}")
-                                        import traceback
-                                        traceback.print_exc()
+                                        print(f"[DEBUG] ACII computation error: {e}")
                                     
-                                    # ==========================================
-                                    # GENERATE RECOVERY DATA
-                                    # ==========================================
                                     try:
-                                        from citation_suggester import extract_context, suggest_from_context
-                                        
-                                        print(f"[DEBUG] Starting recovery data generation...")
-                                        recovery = {
-                                            "missing_recovery": [],
-                                            "verification_recovery": []
-                                        }
-                                        
-                                        full_text = _store[job_id]["result"].get("main_text", "")
-                                        print(f"[DEBUG] Full text length: {len(full_text)}")
-                                        
-                                        # Missing citations recovery
-                                        missing_items = _store[job_id]["result"].get("missing_in_references", [])
-                                        missing_suggestions = _store[job_id]["result"].get("missing_citation_suggestions", {})
-                                        print(f"[DEBUG] Missing items count: {len(missing_items)}")
-                                        print(f"[DEBUG] Missing suggestions keys: {list(missing_suggestions.keys())}")
-                                        
-                                        for item in missing_items:
-                                            citation = item if isinstance(item, str) else item.get("citation_in_text", "")
-                                            count = 1 if isinstance(item, str) else item.get("count", 1)
-                                            suggestions = missing_suggestions.get(citation, [])
-                                            if citation:
-                                                recovery["missing_recovery"].append({
-                                                    "citation": citation,
-                                                    "count": count,
-                                                    "suggestions": suggestions
-                                                })
-                                        print(f"[DEBUG] Missing recovery items: {len(recovery['missing_recovery'])}")
-                                        
-                                        # Verification recovery
-                                        c2r = _store[job_id]["result"].get("reconciliation_intext_to_reference", [])
-                                        ref_to_cite = {}
-                                        for r in c2r:
-                                            ref = r.get("matched_reference", "")
-                                            cite = r.get("in_text", "")
-                                            if ref and cite and ref not in ref_to_cite:
-                                                ref_to_cite[ref] = cite
-                                        print(f"[DEBUG] C2R rows: {len(c2r)}, Ref to cite mapping: {len(ref_to_cite)}")
-                                        
-                                        needs_review_count = 0
-                                        for row in verification_results:
-                                            if row.get("status") in ["needs_review", "not_found"]:
-                                                needs_review_count += 1
-                                                ref = row.get("reference", "")
-                                                cite = ref_to_cite.get(ref, "")
-                                                suggestions = []
-                                                if cite and full_text:
-                                                    context = extract_context(full_text, cite, 200)
-                                                    if context:
-                                                        suggestions = suggest_from_context(context, cite, 3)
-                                                
-                                                recovery["verification_recovery"].append({
-                                                    "reference": ref,
-                                                    "status": row.get("status"),
-                                                    "citation": cite,
-                                                    "suggestions": suggestions
-                                                })
-                                        print(f"[DEBUG] Needs review/not found rows: {needs_review_count}")
-                                        print(f"[DEBUG] Verification recovery items: {len(recovery['verification_recovery'])}")
-                                        
-                                        _store[job_id]["result"]["recovery"] = recovery
-                                        print(f"[DEBUG] ✅ Recovery generated: missing={len(recovery['missing_recovery'])}, verify={len(recovery['verification_recovery'])}")
+                                        _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
                                     except Exception as e:
-                                        print(f"[DEBUG] ❌ Recovery generation error: {e}")
-                                        import traceback
-                                        traceback.print_exc()
-                                        _store[job_id]["result"]["recovery"] = {"missing_recovery": [], "verification_recovery": []}
-                                    
-                                    # ==========================================
-                                    # GENERATE CLAIM SUPPORT
-                                    # ==========================================
-                                    try:
-                                        from claim_checker import build_claim_support_rows
-                                        print(f"[DEBUG] Starting claim support generation...")
-                                        _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
-                                        print(f"[DEBUG] ✅ Claim support generated: {len(_store[job_id]['result']['claim_support'])} rows")
-                                    except Exception as e:
-                                        print(f"[DEBUG] ❌ Claim support error: {e}")
-                                        import traceback
-                                        traceback.print_exc()
-                                        _store[job_id]["result"]["claim_support"] = []
-                                    
-                                    # Update job_store as well
-                                    if job_id in job_store:
-                                        job_store[job_id]["result"] = _store[job_id]["result"]
-                                        print(f"[DEBUG] Updated job_store with recovery and claim_support")
+                                        print(f"[DEBUG] Error rebuilding reference mapping: {e}")
+                                    # Add context-specific recovery payload
+                                    _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
+                                    _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
+                                    _store[job_id]["verification"]["results"] = verification_results
+                                    _store[job_id]["verification"]["results_count"] = len(verification_results)
+                                    _store[job_id]["verification"]["summary"] = summary
                                 else:
-                                    print(f"[DEBUG] ❌ No verification results retrieved after 20 attempts")
+                                    _store[job_id]["verification"]["state"] = "error"
+                                    _store[job_id]["verification"]["message"] = "No results retrieved after completion"
                                 
                                 _store[job_id]["verification"]["state"] = "completed"
                                 _store[job_id]["verification"]["completed_at"] = now()
-                                print(f"[DEBUG] Verification state set to completed")
                                 break
-                
-                time.sleep(2)
+                                
+                            elif status.get("status") == "error":
+                                with _lock:
+                                    if job_id in _store:
+                                        _store[job_id]["verification"]["state"] = "error"
+                                        _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
+                                break
+                else:
+                    print(f"[DEBUG] No status found for verification job {verification_job_id}, waiting...")
                 
             except Exception as e:
-                print(f"[DEBUG] Sync thread error: {e}")
-                import traceback
-                traceback.print_exc()
-                time.sleep(2)
+                print(f"[DEBUG] Error in sync thread: {e}")
+            
+            time.sleep(2)
         
         print(f"[DEBUG] Sync thread exiting for job {job_id}")
     
@@ -1394,259 +1081,7 @@ async def debug_verification_data(job_id: str):
         "raw_verification_sample": raw_sample,
         "full_first_row": rows[0] if rows else None
     }
-@app.post("/verify")
-async def verify(
-    file: UploadFile = File(...),
-    style: str = Form("apa"),
-    enable_autofix: bool = Form(False),
-    enable_online_verification: bool = Form(False),
-    request: Request = None
-):
-    if not file.filename:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "No file provided", "message": "Please select a file to upload"}
-        )
-    
-    filename_lower = file.filename.lower()
-    is_docx = filename_lower.endswith('.docx')
-    is_pdf = filename_lower.endswith('.pdf')
-    
-    if is_pdf:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "PDF files are not supported",
-                "message": "Please convert PDF to DOCX first",
-                "instruction": "Open blank Word → File → Open → Select PDF → Click OK → Save as .docx"
-            }
-        )
-    
-    if not is_docx:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Invalid file format",
-                "message": "Only DOCX files are accepted",
-                "instruction": "Please upload a Word document."
-            }
-        )
-    
-    if is_server_busy():
-        queue_stats = get_queue_status()
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": "Server is busy",
-                "message": "Please wait a moment and try again",
-                "queue_size": queue_stats["queue_size"],
-                "pending_jobs": queue_stats["pending_jobs"],
-                "retry_after": 30
-            }
-        )
-    
-    start_time = time.time()
-    data = await file.read()
-    file_size = len(data)
-    
-    try:
-        def run():
-            if enable_autofix:
-                return run_crosscheck_with_autofix(
-                    file_bytes=data,
-                    filename=file.filename,
-                    style=style,
-                    verify_online=False,
-                    enable_autofix=True
-                )
-            else:
-                return run_crosscheck(
-                    file_bytes=data,
-                    filename=file.filename,
-                    style=style,
-                    verify_online=False
-                )
 
-        result = await run_in_threadpool(run)
-        
-        if "error" in result:
-            processing_time = time.time() - start_time
-            stats_tracker.add_upload(
-                filename=file.filename,
-                file_size=file_size,
-                references_count=0,
-                processing_time=processing_time,
-                success=False,
-                error=result.get("error"),
-                ip_address=request.client.host if request and request.client else None
-            )
-            return JSONResponse(
-                status_code=422,
-                content={"error": "Processing failed", "message": result.get("error"), "note": result.get("note", "")}
-            )
-
-        # Ensure main_text is stored
-        if "main_text" not in result and "data" in result:
-            result["main_text"] = result["data"].get("main_text", "")
-        
-        result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
-        
-        # ============================================================
-        # ADD MISSING CITATION RECOVERY SUGGESTIONS
-        # ============================================================
-        try:
-            missing_citation_suggestions = {}
-            full_text = result.get("main_text", "") or result.get("full_text", "")
-        
-            missing_items = result.get("missing_in_references", []) or []
-            for item in missing_items:
-                if isinstance(item, dict):
-                    citation_text = item.get("citation_in_text", "") or item.get("citation", "")
-                else:
-                    citation_text = str(item)
-        
-                if not citation_text:
-                    continue
-        
-                context = extract_context(full_text, citation_text, window=200)
-                missing_citation_suggestions[citation_text] = suggest_from_context(context=context, citation=citation_text, top_k=3)
-        
-            result["missing_citation_suggestions"] = missing_citation_suggestions
-        
-        except Exception as e:
-            print(f"[DEBUG] missing_citation_suggestions error: {e}")
-            result["missing_citation_suggestions"] = {}
-        
-        references_count = len(result.get("references_raw", []))
-        processing_time = time.time() - start_time
-        
-        client_ip = None
-        if request and hasattr(request, "client"):
-            client_ip = request.client.host if request.client else None
-        
-        stats_tracker.add_upload(
-            filename=file.filename,
-            file_size=file_size,
-            references_count=references_count,
-            processing_time=processing_time,
-            success=True,
-            ip_address=client_ip
-        )
-        
-        increment_counter()
-        
-        # Store result in _store (for verification system)
-        job_id = store_result(result)
-        print(f"[DEBUG] Created job_id: {job_id}")
-        
-        references_count = len(result.get("references_raw", []))
-        print(f"[DEBUG] References count: {references_count}")
-        
-        # ALWAYS create a verification job ID if references exist
-        verification_job_id = None
-        
-        if references_count > 0:
-            try:
-                from verify import submit_verification
-                print(f"[DEBUG] Submitting verification for {references_count} references")
-                verification_job_id = submit_verification(result.get("references_raw", []), style=style)
-                print(f"[DEBUG] Created verification job {verification_job_id}")
-                
-                # Update verification status
-                update_verification_status(
-                    job_id,
-                    state="idle",
-                    total=references_count,
-                    progress=0,
-                    percentage=0,
-                    verification_job_id=verification_job_id
-                )
-            except Exception as e:
-                print(f"[DEBUG] Error creating verification job: {e}")
-                import traceback
-                traceback.print_exc()
-                verification_job_id = None
-        
-        # Store in job_store for polling
-        job_store[job_id] = {
-            "status": "completed",
-            "progress": 100,
-            "result": result,
-            "timestamp": time.time(),
-            "verification": {
-                "job_id": verification_job_id,
-                "state": "idle" if verification_job_id else "none"
-            } if verification_job_id else None
-        }
-        
-        print(f"[DEBUG] Stored in job_store with verification: {verification_job_id}")
-        
-        online_started = False
-        
-        # Only start actual verification if auto-verification is enabled
-        if enable_online_verification and references_count > 0 and verification_job_id:
-            try:
-                # Update status to running
-                update_verification_status(
-                    job_id,
-                    state="running",
-                    started_at=now()
-                )
-                
-                # Update job_store
-                if job_store[job_id].get("verification"):
-                    job_store[job_id]["verification"]["state"] = "processing"
-                
-                stats_tracker.add_verification(job_id, references_count, success=True)
-                start_progress_sync(job_id, verification_job_id)
-                online_started = True
-                print(f"[DEBUG] Auto-started verification for job {verification_job_id}")
-            except Exception as e:
-                print(f"[DEBUG] Auto-start verification failed: {e}")
-                import traceback
-                traceback.print_exc()
-                online_started = False
-
-        response_data = {
-            "job_id": job_id,
-            "data": result,
-            "queue_status": get_queue_status(),
-            "autofix_enabled": enable_autofix,
-            "online_verification_started": online_started,
-        }
-        
-        if verification_job_id:
-            response_data["verification"] = {
-                "job_id": verification_job_id,
-                "state": "processing" if online_started else "idle"
-            }
-        
-        print(f"[DEBUG] Returning response with job_id: {job_id}")
-        return response_data
-        
-    except Exception as e:
-        print(f"[DEBUG] FATAL ERROR in verify endpoint: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        processing_time = time.time() - start_time
-        stats_tracker.add_upload(
-            filename=file.filename,
-            file_size=file_size,
-            references_count=0,
-            processing_time=processing_time,
-            success=False,
-            error=str(e),
-            ip_address=request.client.host if request and request.client else None
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Internal server error",
-                "detail": str(e),
-                "timestamp": now()
-            }
-        )
 # ============================================================
 # QUEUE STATUS ENDPOINT
 # ============================================================
@@ -1657,36 +1092,6 @@ async def queue_status():
     status["server_busy"] = is_server_busy()
     status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
     return status
-
-@app.get("/api/verification-status/{job_id}")
-async def verification_status(job_id: str):
-    status = get_verification_status(job_id)
-    if not status:
-        raise HTTPException(404, "Job not found")
-    return status
-
-@app.get("/api/verification-results/{job_id}")
-async def verification_results(job_id: str):
-    return get_verification_payload(job_id)
-
-# ============================================================
-# MANUAL VERIFICATION ENDPOINT
-# ============================================================
-
-@app.post("/api/start-verification")
-async def start_verification(data: dict = Body(...)):
-    refs = data.get("references", [])
-    if not refs:
-        raise HTTPException(status_code=400, detail="No references provided")
-
-    verification_job_id = submit_verification(refs)
-
-    return {
-        "verification": {
-            "job_id": verification_job_id,
-            "state": "processing"
-        }
-    }
 
 # ============================================================
 # INDEX
@@ -1999,24 +1404,12 @@ async def get_fix_log(job_id: str):
 
 @app.post("/verify-online")
 async def verify_online(job_id: str = Form(...)):
-    """
-    Start online verification for a document's references.
-    
-    Args:
-        job_id: The job ID from the initial document upload
-        
-    Returns:
-        Status information about the verification start
-    """
-    # Validate job exists
     job = get_job(job_id)
+
     if not job:
         raise HTTPException(404, "Job not found")
-    
-    verification_state = job["verification"]["state"]
-    
-    # Handle already running verification
-    if verification_state == "running":
+
+    if job["verification"]["state"] == "running":
         return {
             "started": False,
             "message": "Verification already in progress",
@@ -2025,8 +1418,7 @@ async def verify_online(job_id: str = Form(...)):
             "total": job["verification"].get("total", 0)
         }
     
-    # Handle already completed verification
-    if verification_state == "completed":
+    if job["verification"]["state"] == "completed":
         return {
             "started": False,
             "message": "Verification already completed",
@@ -2034,10 +1426,8 @@ async def verify_online(job_id: str = Form(...)):
             "completed": True
         }
     
-    # Extract references from the job result
     refs = job["result"].get("references_raw", [])
     
-    # Handle case with no references
     if not refs:
         update_verification_status(job_id, state="completed", message="No references to verify")
         return {
@@ -2046,41 +1436,32 @@ async def verify_online(job_id: str = Form(...)):
             "job_id": job_id
         }
     
-    # Log and start verification
-    ref_count = len(refs)
-    print(f"[DEBUG] Starting verification for job {job_id} with {ref_count} references")
+    print(f"[DEBUG] Starting verification for job {job_id} with {len(refs)} references")
     
-    # Initialize verification status
     update_verification_status(
         job_id,
         state="running",
-        total=ref_count,
+        total=len(refs),
         progress=0,
         percentage=0,
         started_at=now()
     )
     
-    # Submit verification job
     verification_job_id = submit_verification(refs, style="apa")
     update_verification_status(job_id, verification_job_id=verification_job_id)
-    
-    # Track statistics and start sync thread
-    stats_tracker.add_verification(job_id, ref_count, success=True)
+    stats_tracker.add_verification(job_id, len(refs), success=True)
     start_progress_sync(job_id, verification_job_id)
-    
-    # Calculate estimated completion time
-    estimated_seconds = ref_count * 4
-    estimated_formatted = format_time(estimated_seconds)
     
     return {
         "started": True,
         "job_id": job_id,
         "verification_job_id": verification_job_id,
-        "total_references": ref_count,
-        "estimated_time_seconds": estimated_seconds,
-        "estimated_time_formatted": estimated_formatted,
+        "total_references": len(refs),
+        "estimated_time_seconds": len(refs) * 4,
+        "estimated_time_formatted": format_time(len(refs) * 4),
         "message": "Verification started. Check /online/status for progress."
     }
+
 # ============================================================
 # STATUS POLLING
 # ============================================================
