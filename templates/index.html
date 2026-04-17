@@ -1249,9 +1249,6 @@ async function fetchStatus() {
         
         if (!res.ok) {
             console.error("Job status response not OK:", res.status);
-            if (res.status === 404) {
-                console.log("Job not found - this might be normal if job hasn't been created yet");
-            }
             return;
         }
         
@@ -1276,22 +1273,20 @@ async function fetchStatus() {
             if (data.result) {
                 renderAll(data.result);
                 window.latestResults = data.result;
+                
+                // Store the verification info from the response
+                if (data.verification && data.verification.job_id) {
+                    window.latestResults.verification = data.verification;
+                    console.log("Stored verification info:", data.verification);
+                }
             }
             
             // Check for verification job_id in the completed job
             if (data.verification && data.verification.job_id) {
                 console.log("Found verification job_id in completed job:", data.verification.job_id);
-                startVerificationPolling(data.verification.job_id);
-            } else {
-                console.log("No verification job_id found in completed job");
-                // Try to get references directly from the result and start verification
-                const refs = data.result?.result?.engine?.references || 
-                            data.result?.engine?.references || 
-                            [];
-                if (refs.length > 0) {
-                    console.log(`Found ${refs.length} references, starting manual verification`);
-                    startManualVerification();
-                }
+                // Don't auto-start - let user click Verify button
+                // But store it so it's ready
+                VERIFICATION_JOB_ID = data.verification.job_id;
             }
             
             const btnVerify = document.getElementById("btnVerify");
@@ -1299,6 +1294,9 @@ async function fetchStatus() {
                 const hasReferences = data.result?.result?.engine?.references?.length > 0 ||
                                      data.result?.engine?.references?.length > 0;
                 btnVerify.disabled = !hasReferences;
+                if (hasReferences && data.verification && data.verification.job_id) {
+                    console.log("Verify button enabled with pre-created verification job");
+                }
             }
             
             VERIFICATION_IN_PROGRESS = false;
@@ -1316,7 +1314,6 @@ async function fetchStatus() {
         console.error("Polling error:", err);
     }
 }
-
 function startPolling() {
     if (POLL_TIMER) clearInterval(POLL_TIMER);
     POLL_ATTEMPT_COUNT = 0;
@@ -1414,24 +1411,50 @@ async function fetchVerificationResults() {
 
 // ✅ FIX 1: Correct reference path for manual verification
 async function startManualVerification() {
+    console.log("=== startManualVerification called ===");
+    
     if (!window.latestResults) {
         setStatus("Run analysis first", "warn");
         return;
     }
 
-    // FIXED: Use correct path - data.result.engine.references
-    const refs =
+    // First, check if there's already a verification job ID from the initial response
+    if (window.latestResults.verification && window.latestResults.verification.job_id) {
+        const existingJobId = window.latestResults.verification.job_id;
+        console.log("Found existing verification job ID:", existingJobId);
+        
+        // Check if it's already running or completed
+        try {
+            const statusRes = await fetch(`/api/verification-status/${existingJobId}`);
+            const statusData = await statusRes.json();
+            console.log("Existing verification status:", statusData);
+            
+            if (statusData.status === "processing") {
+                setStatus("Verification already in progress", "info");
+                startVerificationPolling(existingJobId);
+                return;
+            } else if (statusData.status === "completed") {
+                setStatus("Verification already completed", "good");
+                await fetchVerificationResults();
+                return;
+            }
+        } catch (err) {
+            console.log("Error checking existing verification:", err);
+        }
+    }
+
+    // If no existing job or it's not active, get references and start new
+    const refs = 
         window.latestResults?.result?.engine?.references ||
         window.latestResults?.engine?.references ||
+        window.latestResults?.references_raw ||
+        window.latestResults?.result?.references_raw ||
         [];
 
+    console.log("Found references:", refs.length);
+
     if (!refs.length) {
-        setStatus("No references found", "warn");
-        console.log("Reference path check:", {
-            latestResults: window.latestResults,
-            path1: window.latestResults?.result?.engine?.references,
-            path2: window.latestResults?.engine?.references
-        });
+        setStatus("No references found in the document", "warn");
         return;
     }
 
@@ -1445,19 +1468,21 @@ async function startManualVerification() {
         });
 
         const data = await res.json();
+        console.log("Start verification response:", data);
 
-        // ✅ FIX 2: Check for verification.job_id not just job_id
         if (data.verification && data.verification.job_id) {
+            console.log("Starting verification polling with job_id:", data.verification.job_id);
             startVerificationPolling(data.verification.job_id);
-            setStatus("Verification started", "good");
+            setStatus("Verification started successfully", "good");
         } else {
+            console.error("No verification job_id in response:", data);
             setStatus("Verification could not be started", "warn");
         }
     } catch (err) {
+        console.error("Error starting verification:", err);
         setStatus("Error starting verification: " + err.message, "bad");
     }
 }
-
 // Helper Functions
 function getUniqueCitationsWithCount(c2rRows) {
     const uniqueMap = new Map();
