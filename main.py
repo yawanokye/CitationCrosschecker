@@ -634,6 +634,16 @@ async def reference_formatter_page(request: Request):
         {"request": request}
     )
 
+@app.post("/api/start-verification")
+async def start_verification(data: dict):
+    refs = data.get("references", [])
+
+    if not refs:
+        raise HTTPException(400, "No references provided")
+
+    job_id = submit_verification(refs)
+
+    return {"job_id": job_id}
 
 @app.post("/api/format-reference")
 async def format_reference_api(
