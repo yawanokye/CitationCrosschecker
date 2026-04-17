@@ -60,10 +60,7 @@ async def run_job(job_id, input_data, style):
     async with semaphore:
         try:
             from pipeline import run_pipeline
-            import time
-            
-            cleanup_old_jobs()
-            
+
             job_store[job_id] = {
                 "status": "processing",
                 "progress": 10,
@@ -72,10 +69,28 @@ async def run_job(job_id, input_data, style):
 
             result = await run_in_threadpool(run_pipeline, input_data, style)
 
+            # =========================
+            # 🔥 START ASYNC VERIFICATION
+            # =========================
+            references = result["result"]["engine"].get("references", [])
+
+            verification_info = None
+
+            if references:
+                print(f"[DEBUG] Starting verification: {len(references)} refs")
+
+                verification_job_id = submit_verification(references)
+
+                verification_info = {
+                    "job_id": verification_job_id,
+                    "state": "processing"
+                }
+
             job_store[job_id] = {
                 "status": "completed",
                 "progress": 100,
                 "result": result,
+                "verification": verification_info,
                 "timestamp": time.time()
             }
 
@@ -1341,6 +1356,19 @@ async def queue_status():
     status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
     return status
 
+@app.get("/api/verification-status/{job_id}")
+async def verification_status(job_id: str):
+    status = get_verification_status(job_id)
+    if not status:
+        raise HTTPException(404, "Job not found")
+    return status
+
+@app.get("/api/verification-results/{job_id}")
+async def verification_results(job_id: str):
+    results = get_verification_results(job_id)
+    return {
+        "rows": results or []
+    }
 # ============================================================
 # INDEX
 # ============================================================
