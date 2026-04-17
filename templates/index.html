@@ -1649,13 +1649,34 @@ function renderVerify(data) {
 function renderRecovery(data) {
     const missingBody = $("recoveryMissingBody");
     const verifyBody = $("recoveryVerifyBody");
-    if (!missingBody || !verifyBody) return;
-    const rec = data?.recovery || {};
-    const missingRows = rec.missing_recovery || [];
-    const verifyRows = rec.verification_recovery || [];
+    
+    if (!missingBody || !verifyBody) {
+        console.error("recoveryMissingBody or recoveryVerifyBody elements not found");
+        return;
+    }
+    
+    // Try multiple possible paths for recovery data
+    let recovery = data?.recovery;
+    
+    // If not found, try other paths
+    if (!recovery) {
+        if (data?.result?.recovery) recovery = data.result.recovery;
+        else if (data?.data?.recovery) recovery = data.data.recovery;
+        else if (data?.recovery === undefined) {
+            console.warn("No recovery data found in:", Object.keys(data));
+            missingBody.innerHTML = `<tr><td colspan="4">No recovery data available. Run verification first.</div></tr>`;
+            verifyBody.innerHTML = `<tr><td colspan="4">No recovery data available. Run verification first.</div></tr>`;
+            return;
+        }
+    }
+    
+    const missingRows = recovery?.missing_recovery || [];
+    const verifyRows = recovery?.verification_recovery || [];
+    
+    console.log(`Rendering recovery: ${missingRows.length} missing rows, ${verifyRows.length} verification rows`);
 
     if (!missingRows.length) {
-        missingBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</div></tr>`;
+        missingBody.innerHTML = `<tr><td colspan="4">No missing citation recovery suggestions available.</td></tr>`;
     } else {
         missingBody.innerHTML = missingRows.map((row, i) => {
             const suggestions = row.suggestions || [];
@@ -1667,12 +1688,12 @@ function renderRecovery(data) {
                     </ul>
                 </div>
             ` : `<span class="badge no_evidence_found">No evidence found</span>`;
-            return `<tr><td style="width:50px;">${i + 1}</div><td>${esc(row.citation || "")}</div><td>${esc(String(row.count ?? 1))}</div><td>${suggestionHtml}</div></tr>`;
+            return `<tr><td style="width:50px;">${i + 1}</td><td>${esc(row.citation || "")}</td><td>${esc(String(row.count ?? 1))}</td><td>${suggestionHtml}</td></tr>`;
         }).join("");
     }
 
     if (!verifyRows.length) {
-        verifyBody.innerHTML = `<tr><td colspan="4">No recovery suggestions available.</div></tr>`;
+        verifyBody.innerHTML = `<tr><td colspan="4">No verification recovery suggestions available.</td></tr>`;
     } else {
         verifyBody.innerHTML = verifyRows.map((row, i) => {
             const suggestions = row.suggestions || [];
@@ -1685,19 +1706,38 @@ function renderRecovery(data) {
                     </ul>
                 </div>
             ` : `<span class="badge no_evidence_found">No evidence found</span>`;
-            return `<tr><td style="width:50px;">${i + 1}</div><td><span class="badge ${badgeClass}">${esc(row.status || "")}</span></div><td>${esc(row.reference || "")}</div><td>${suggestionHtml}</div></tr>`;
+            return `<tr><td style="width:50px;">${i + 1}</td><td><span class="badge ${badgeClass}">${esc(row.status || "")}</span></td><td>${esc(row.reference || "")}</td><td>${suggestionHtml}</td></tr>`;
         }).join("");
     }
 }
     
 function renderClaimSupport(data) {
     const body = $("claimSupportBody");
-    if (!body) return;
-    const rows = data?.claim_support || [];
-    if (!rows.length) {
-        body.innerHTML = `<tr><td colspan="6">No claim-to-source checks available yet.</div></tr>`;
+    if (!body) {
+        console.error("claimSupportBody element not found");
         return;
     }
+    
+    // Try multiple possible paths for claim_support data
+    let rows = data?.claim_support;
+    
+    if (!rows) {
+        if (data?.result?.claim_support) rows = data.result.claim_support;
+        else if (data?.data?.claim_support) rows = data.data.claim_support;
+        else if (data?.claim_support === undefined) {
+            console.warn("No claim_support data found in:", Object.keys(data));
+            body.innerHTML = `<tr><td colspan="6">No claim-to-source checks available. Run verification first.</td></tr>`;
+            return;
+        }
+    }
+    
+    console.log(`Rendering claim support: ${rows?.length || 0} rows`);
+    
+    if (!rows || !rows.length) {
+        body.innerHTML = `<tr><td colspan="6">No claim-to-source checks available yet.</td></tr>`;
+        return;
+    }
+    
     body.innerHTML = rows.map((r, i) => {
         const doiHtml = r.doi ? `<a href="https://doi.org/${esc(r.doi)}" target="_blank" class="doi-link">🔗 View</a>` : "—";
         let badgeClass = "offline";
@@ -1708,14 +1748,55 @@ function renderClaimSupport(data) {
         else if (r.support_status === "insufficient_evidence") badgeClass = "not_found";
         const claimText = r.claim && r.claim.trim() ? esc(r.claim) : `<span style="color:#7f8c8d;">No evidence found</span>`;
         const titleText = r.source_title && r.source_title.trim() ? `${esc((r.source_title || "").substring(0, 90))}${(r.source_title || "").length > 90 ? "…" : ""}` : `<span style="color:#7f8c8d;">No evidence found</span>`;
-        return `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.citation || "")}</div><td style="max-width:320px;">${claimText}</div><td style="max-width:280px;">${titleText}<div style="margin-top:4px;">${doiHtml}</div></div>
-        <td style="width:150px;"><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></div><td style="width:80px;">${esc(String(r.support_score ?? ""))}</div></tr>`;
+        return `<tr><td style="width:50px;">${i + 1}</td><td>${esc(r.citation || "")}</td><td style="max-width:320px;">${claimText}</td><td style="max-width:280px;">${titleText}<div style="margin-top:4px;">${doiHtml}</div></td>
+        <td style="width:150px;"><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></td><td style="width:80px;">${esc(String(r.support_score ?? ""))}</td></tr>`;
     }).join("");
 }
     
 function renderAll(data) {
-    if (!data) return;
-    const normalized = normalizeData(data);
+    if (!data) {
+        console.error("renderAll called with null/undefined data");
+        return;
+    }
+    
+    console.log("=== renderAll called with data ===");
+    console.log("Data keys:", Object.keys(data));
+    console.log("Has recovery:", !!data.recovery);
+    console.log("Has claim_support:", !!data.claim_support);
+    
+    // Normalize the data - handle different possible structures
+    let normalized = data;
+    
+    // If data is wrapped in a 'result' property
+    if (data.result && !data.recovery && !data.claim_support) {
+        console.log("Data has 'result' wrapper, extracting...");
+        normalized = data.result;
+    }
+    
+    // If data is wrapped in a 'data' property
+    if (data.data && !normalized.recovery && !normalized.claim_support) {
+        console.log("Data has 'data' wrapper, extracting...");
+        normalized = data.data;
+    }
+    
+    // Ensure we have the required properties
+    if (!normalized.recovery) {
+        console.warn("No recovery data found in normalized object");
+        // Try to create empty recovery structure
+        normalized.recovery = {
+            missing_recovery: [],
+            verification_recovery: []
+        };
+    }
+    
+    if (!normalized.claim_support) {
+        console.warn("No claim_support data found in normalized object");
+        normalized.claim_support = [];
+    }
+    
+    console.log("Normalized recovery:", normalized.recovery);
+    console.log("Normalized claim_support:", normalized.claim_support);
+    
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
     
@@ -1729,6 +1810,7 @@ function renderAll(data) {
     
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
+    
     renderSummaryTable(normalized);
     renderACII(normalized);
     renderMissing(normalized);
@@ -1736,17 +1818,25 @@ function renderAll(data) {
     renderC2R(normalized);
     renderR2C(normalized);
     renderVerify(normalized);
+    
+    // These are the ones not displaying - let's debug them
+    console.log("Calling renderRecovery with:", normalized.recovery);
     renderRecovery(normalized);
+    
+    console.log("Calling renderClaimSupport with:", normalized.claim_support);
     renderClaimSupport(normalized);
+    
     if (normalized.autofix && normalized.autofix.suggestions) {
         displaySuggestions(normalized.autofix);
     } else if (normalized.suggestions) {
         displaySuggestions({ suggestions: normalized.suggestions });
     }
+    
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
     updateProcessFeedback("Match", "completed");
     updateProcessFeedback("ACII", "completed");
+    
     const statUploads = $("statUploads");
     if (statUploads) {
         const current = parseInt(statUploads.textContent) || 0;
@@ -1837,6 +1927,60 @@ async function debugJobStore() {
     } catch (err) {
         console.error("Debug error:", err);
     }
+}
+// Add this function to check the data structure
+async function debugDataStructure() {
+    console.log("=== DATA STRUCTURE DEBUG ===");
+    console.log("window.latestResults:", window.latestResults);
+    
+    if (window.latestResults) {
+        console.log("recovery object:", window.latestResults.recovery);
+        console.log("claim_support object:", window.latestResults.claim_support);
+        console.log("claim_support rows:", window.latestResults.claim_support?.length);
+        
+        // Check all keys in latestResults
+        console.log("All keys:", Object.keys(window.latestResults));
+        
+        // Check if data is nested under 'result'
+        if (window.latestResults.result) {
+            console.log("result.recovery:", window.latestResults.result.recovery);
+            console.log("result.claim_support:", window.latestResults.result.claim_support);
+        }
+        
+        // Check if data is in the original response format
+        if (window.latestResults.data) {
+            console.log("data.recovery:", window.latestResults.data.recovery);
+            console.log("data.claim_support:", window.latestResults.data.claim_support);
+        }
+    }
+    
+    // Also check the job status endpoint
+    if (LAST_JOB_ID) {
+        try {
+            const res = await fetch(`/api/job-status/${LAST_JOB_ID}`);
+            const data = await res.json();
+            console.log("Job data from status endpoint:", data);
+            if (data.result) {
+                console.log("Job result.recovery:", data.result.recovery);
+                console.log("Job result.claim_support:", data.result.claim_support);
+            }
+        } catch (err) {
+            console.error("Error fetching job status:", err);
+        }
+    }
+    
+    console.log("=========================");
+}
+
+// Add a debug button to call this
+const debugDataBtn = document.createElement("button");
+debugDataBtn.textContent = "🔍 Debug Data";
+debugDataBtn.className = "btn btn-outline btn-small";
+debugDataBtn.style.marginTop = "10px";
+debugDataBtn.onclick = debugDataStructure;
+const actionCardButtons = document.querySelector(".action-card .button-group");
+if (actionCardButtons) {
+    actionCardButtons.appendChild(debugDataBtn);
 }
 // Export References Function
 async function exportReferences(format = 'docx') {
