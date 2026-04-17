@@ -894,10 +894,10 @@
                         <table class="tbl">
                             <thead><tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr></thead>
                             <tbody>
-                                <tr><td style="width:200px;">Verification Integrity</div><td id="aciiV">--</div><td id="aciiVcat">--</div><td id="aciiVremark">--</div></tr>
-                                <tr><td style="width:200px;">Citation Concentration</div><td id="aciiC">--</div><td id="aciiCcat">--</div><td id="aciiCremark">--</div></tr>
-                                <tr><td style="width:200px;">Author Diversity</div><td id="aciiA">--</div><td id="aciiAcat">--</div><td id="aciiAremark">--</div></tr>
-                                <tr><td style="width:200px;">Temporal Balance</div><td id="aciiT">--</div><td id="aciiTcat">--</div><td id="aciiTremark">--</div></tr>
+                                <tr><td style="width:200px;">Verification Integrity</td><td id="aciiV">--</td><td id="aciiVcat">--</td><td id="aciiVremark">--</td></tr>
+                                <tr><td style="width:200px;">Citation Concentration</td><td id="aciiC">--</td><td id="aciiCcat">--</td><td id="aciiCremark">--</td></tr>
+                                <tr><td style="width:200px;">Author Diversity</td><td id="aciiA">--</td><td id="aciiAcat">--</td><td id="aciiAremark">--</td></tr>
+                                <tr><td style="width:200px;">Temporal Balance</td><td id="aciiT">--</td><td id="aciiTcat">--</td><td id="aciiTremark">--</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -1142,94 +1142,70 @@ function resetProcessFeedback() {
     });
 }
 
-// File Area Setup
+// ✅ FIX: UPLOAD AREA FULLY ACTIVATED - CLICK & DRAG/DROP
 function setupFileArea() {
-
     const fileArea = document.getElementById("fileArea");
     const fileInput = document.getElementById("file");
     const fileName = document.getElementById("fileName");
     const btnCheck = document.getElementById("btnCheck");
 
-    console.log("🚀 Upload module initialized");
-
     if (!fileArea || !fileInput) {
-        console.error("❌ Upload elements not found");
+        console.error("Upload elements not found");
         return;
     }
 
-    // 🔥 ENSURE CLICK ALWAYS WORKS
-    fileArea.style.pointerEvents = "auto";
+    // Force click handler on the file area
     fileArea.style.cursor = "pointer";
-
-    // 🔥 FORCE CLICK HANDLER (STRONG)
-    fileArea.addEventListener("click", function (e) {
+    fileArea.style.pointerEvents = "auto";
+    
+    // Click to trigger file input
+    fileArea.addEventListener("click", (e) => {
         e.preventDefault();
-        console.log("📂 Upload area clicked");
+        e.stopPropagation();
         fileInput.click();
     });
 
-    // 🔥 DRAG OVER
-    fileArea.addEventListener("dragover", function (e) {
+    // Drag & drop support
+    fileArea.addEventListener("dragover", (e) => {
         e.preventDefault();
         fileArea.classList.add("drag-over");
     });
-
-    // 🔥 DRAG LEAVE
-    fileArea.addEventListener("dragleave", function () {
+    
+    fileArea.addEventListener("dragleave", () => {
         fileArea.classList.remove("drag-over");
     });
-
-    // 🔥 DROP SUPPORT
-    fileArea.addEventListener("drop", function (e) {
+    
+    fileArea.addEventListener("drop", (e) => {
         e.preventDefault();
         fileArea.classList.remove("drag-over");
-
         const files = e.dataTransfer.files;
         if (files && files.length > 0) {
             fileInput.files = files;
-
-            // 🔥 FORCE CHANGE EVENT
-            const event = new Event("change", { bubbles: true });
-            fileInput.dispatchEvent(event);
+            const changeEvent = new Event("change", { bubbles: true });
+            fileInput.dispatchEvent(changeEvent);
         }
     });
 
-    // 🔥 FILE SELECTION
+    // File selection handler
     fileInput.addEventListener("change", function () {
-
-        console.log("📄 File selection triggered");
-
         const file = fileInput.files[0];
-
-        if (!file) {
-            console.warn("⚠️ No file selected");
-            return;
-        }
-
-        console.log("📄 Selected:", file.name);
+        if (!file) return;
 
         if (file.name.toLowerCase().endsWith(".docx")) {
-
             if (fileName) fileName.textContent = "✅ " + file.name;
-
             if (btnCheck) btnCheck.disabled = false;
-
             setStatus("File ready. Click Analyze.", "good");
-
         } else {
-
             if (fileName) fileName.textContent = "❌ Only DOCX allowed";
-
             fileInput.value = "";
-
             if (btnCheck) btnCheck.disabled = true;
-
             setStatus("Upload a DOCX file only.", "warn");
         }
     });
-
-    console.log("✅ Upload fully activated");
+    
+    console.log("✅ Upload area fully activated");
 }
+
 // Progress Bar
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
     const progressBar = $("progressBar");
@@ -1301,12 +1277,11 @@ document.querySelectorAll(".tab").forEach(tab => {
     });
 });
 
-// ✅ FIX 2 & 3: Enhanced polling with timeout protection, safe result handling, dynamic status
+// Enhanced polling with timeout protection
 async function fetchStatus() {
     if (!LAST_JOB_ID) return;
     POLL_ATTEMPT_COUNT++;
     
-    // ✅ Timeout protection
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
         stopPolling();
         setStatus("Processing timeout. Please retry.", "bad");
@@ -1322,17 +1297,14 @@ async function fetchStatus() {
         const data = await res.json();
         console.log("Async status:", data);
         
-        // Dynamic progress update
         if (data.progress !== undefined) updateProgress(data.progress, 100);
         
-        // Still processing - show dynamic percentage
         if (data.status === "queued" || data.status === "processing") {
             const progressVal = data.progress || 0;
             setStatus(`Processing... ${progressVal}%`, "warn");
             return;
         }
         
-        // ✅ Completed - safe result handling
         if (data.status === "completed") {
             stopPolling();
             setStatus("Processing complete", "good");
@@ -1340,14 +1312,12 @@ async function fetchStatus() {
                 renderAll(data.result);
             } else {
                 setStatus("Completed but no result found", "warn");
-                console.warn("No result returned");
             }
             const btnVerify = $("btnVerify");
             if (btnVerify) btnVerify.disabled = false;
             return;
         }
         
-        // Error state
         if (data.status === "error") {
             stopPolling();
             setStatus(`Processing failed: ${data.error || "unknown error"}`, "bad");
@@ -1394,7 +1364,7 @@ function normalizeData(payload) {
     return data;
 }
 
-// Render Functions (condensed for brevity but fully functional)
+// Render Functions (condensed but fully functional)
 function renderSummaryTable(data) {
     const s = data?.summary || {};
     const summaryTable = $("summaryTable");
@@ -1467,7 +1437,7 @@ function renderUncited(data) {
     const rows = data?.uncited_references || [];
     const body = $("uncitedBody");
     if (!body) return;
-    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></td>`; return; }
+    if (!rows.length) { body.innerHTML = `<tr><td colspan="2">None</div></tr>`; return; }
     body.innerHTML = rows.map((r, i) => `<tr><td style="width:50px;">${i + 1}</div><td>${esc(r.reference || r)}</div></tr>`).join("");
 }
 
@@ -1743,7 +1713,6 @@ async function exportReferences(format = 'docx') {
     }
 }
     
-// ✅ FIX 3: Reset polling state when starting new job
 async function runInitialCheck() {
     const fileInput = document.getElementById("file");
     const file = fileInput?.files?.[0];
@@ -1755,7 +1724,6 @@ async function runInitialCheck() {
     resetProcessFeedback();
     updateProcessFeedback("Upload", "active");
     
-    // ✅ Reset all polling counters
     if (POLL_TIMER) clearInterval(POLL_TIMER);
     VERIFICATION_IN_PROGRESS = false;
     LAST_JOB_ID = null;
@@ -1792,7 +1760,6 @@ async function runInitialCheck() {
     } catch (err) { setStatus("Error: " + err.message, "bad"); }
 }
 
-// Run Online Verification
 async function runOnlineVerification() {
     if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
     if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
@@ -1957,53 +1924,6 @@ function displaySuggestions(data) {
 // ============================================
 setupFileArea();
 updateQueueStatus();
-const btnCheck = document.getElementById("btnCheck");
-
-if (btnCheck) {
-    btnCheck.addEventListener("click", async () => {
-
-        const fileInput = document.getElementById("file");
-
-        if (!fileInput || !fileInput.files.length) {
-            alert("Please upload a file first");
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append("file", fileInput.files[0]);
-        formData.append("style", "apa7");
-
-        setStatus("Submitting document...", "warn");
-
-        try {
-            const res = await fetch("/api/submit-document-job", {
-                method: "POST",
-                body: formData
-            });
-
-            const data = await res.json();
-
-            if (!res.ok) {
-                setStatus("Submission failed", "bad");
-                console.error(data);
-                return;
-            }
-
-            LAST_JOB_ID = data.job_id;
-
-            console.log("Job ID:", LAST_JOB_ID);
-
-            setStatus("Processing started...", "warn");
-
-            startPolling();
-
-        } catch (err) {
-            console.error(err);
-            setStatus("Submission error", "bad");
-        }
-
-    });
-}
 const btnCheck = document.getElementById("btnCheck");
 if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
 
