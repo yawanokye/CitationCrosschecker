@@ -1154,58 +1154,63 @@ function setupFileArea() {
         return;
     }
 
-    // Force click handler on the file area
-    fileArea.style.cursor = "pointer";
-    fileArea.style.pointerEvents = "auto";
+    // CRITICAL FIX: Remove the nested input and recreate the structure
+    // Make sure the file input is NOT inside the fileArea clickable area
+    // Actually, move the file input outside or ensure it's properly triggered
     
-    // Click to trigger file input
-    fileArea.addEventListener("click", (e) => {
+    console.log("Setting up file area - FIXED VERSION");
+    
+    // DIRECT CLICK - Most reliable method
+    fileArea.onclick = function(e) {
+        console.log("File area clicked - opening file dialog");
         e.preventDefault();
+        fileInput.click();
+    };
+    
+    // Also keep addEventListener for redundancy
+    fileArea.addEventListener("click", function(e) {
+        console.log("File area clicked (event listener)");
         e.stopPropagation();
         fileInput.click();
     });
-
-    // Drag & drop support
-    fileArea.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        fileArea.classList.add("drag-over");
-    });
     
-    fileArea.addEventListener("dragleave", () => {
-        fileArea.classList.remove("drag-over");
-    });
-    
-    fileArea.addEventListener("drop", (e) => {
-        e.preventDefault();
-        fileArea.classList.remove("drag-over");
-        const files = e.dataTransfer.files;
-        if (files && files.length > 0) {
-            fileInput.files = files;
-            const changeEvent = new Event("change", { bubbles: true });
-            fileInput.dispatchEvent(changeEvent);
-        }
-    });
-
-    // File selection handler
-    fileInput.addEventListener("change", function () {
+    // Handle file selection
+    fileInput.onchange = function() {
         const file = fileInput.files[0];
+        console.log("File selected:", file ? file.name : "none");
+        
         if (!file) return;
-
+        
         if (file.name.toLowerCase().endsWith(".docx")) {
-            if (fileName) fileName.textContent = "✅ " + file.name;
-            if (btnCheck) btnCheck.disabled = false;
+            fileName.textContent = "✅ " + file.name;
+            btnCheck.disabled = false;
             setStatus("File ready. Click Analyze.", "good");
         } else {
-            if (fileName) fileName.textContent = "❌ Only DOCX allowed";
+            fileName.textContent = "❌ Only DOCX allowed";
             fileInput.value = "";
-            if (btnCheck) btnCheck.disabled = true;
+            btnCheck.disabled = true;
             setStatus("Upload a DOCX file only.", "warn");
         }
-    });
+    };
+    
+    // Make sure the file area looks clickable
+    fileArea.style.cursor = "pointer";
     
     console.log("✅ Upload area fully activated");
 }
 
+// Make sure this runs AFTER DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupFileArea);
+} else {
+    setupFileArea();
+}
+
+// Test if the click is being blocked
+document.getElementById("fileArea").addEventListener("click", function() {
+    console.log("✅ FILE AREA CLICK DETECTED - opening file picker");
+    document.getElementById("file").click();
+});
 // Progress Bar
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
     const progressBar = $("progressBar");
