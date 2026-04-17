@@ -1154,25 +1154,42 @@ function setupFileArea() {
         return;
     }
 
-    // CRITICAL FIX: Remove the nested input and recreate the structure
-    // Make sure the file input is NOT inside the fileArea clickable area
-    // Actually, move the file input outside or ensure it's properly triggered
+    // CRITICAL: Remove all existing children click handlers by using a wrapper approach
+    // Force the file input to be triggered DIRECTLY
     
-    console.log("Setting up file area - FIXED VERSION");
+    // Method 1: Use a transparent overlay div that captures all clicks
+    let overlay = document.getElementById("uploadOverlay");
+    if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = "uploadOverlay";
+        overlay.style.position = "absolute";
+        overlay.style.top = "0";
+        overlay.style.left = "0";
+        overlay.style.width = "100%";
+        overlay.style.height = "100%";
+        overlay.style.zIndex = "999";
+        overlay.style.cursor = "pointer";
+        overlay.style.backgroundColor = "transparent";
+        fileArea.style.position = "relative";
+        fileArea.appendChild(overlay);
+        
+        overlay.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log("Overlay clicked - opening file picker");
+            fileInput.click();
+        };
+    }
     
-    // DIRECT CLICK - Most reliable method
+    // Method 2: Direct click on fileArea (backup)
     fileArea.onclick = function(e) {
-        console.log("File area clicked - opening file dialog");
-        e.preventDefault();
+        // Don't let clicks on the fileName div cause double triggers
+        if (e.target.classList && e.target.classList.contains("file-name")) {
+            return;
+        }
+        console.log("File area clicked directly");
         fileInput.click();
     };
-    
-    // Also keep addEventListener for redundancy
-    fileArea.addEventListener("click", function(e) {
-        console.log("File area clicked (event listener)");
-        e.stopPropagation();
-        fileInput.click();
-    });
     
     // Handle file selection
     fileInput.onchange = function() {
@@ -1182,35 +1199,40 @@ function setupFileArea() {
         if (!file) return;
         
         if (file.name.toLowerCase().endsWith(".docx")) {
-            fileName.textContent = "✅ " + file.name;
-            btnCheck.disabled = false;
+            if (fileName) fileName.textContent = "✅ " + file.name;
+            if (btnCheck) btnCheck.disabled = false;
             setStatus("File ready. Click Analyze.", "good");
         } else {
-            fileName.textContent = "❌ Only DOCX allowed";
+            if (fileName) fileName.textContent = "❌ Only DOCX allowed";
             fileInput.value = "";
-            btnCheck.disabled = true;
+            if (btnCheck) btnCheck.disabled = true;
             setStatus("Upload a DOCX file only.", "warn");
         }
     };
     
-    // Make sure the file area looks clickable
-    fileArea.style.cursor = "pointer";
+    // Drag and drop
+    fileArea.addEventListener("dragover", function(e) {
+        e.preventDefault();
+        fileArea.classList.add("drag-over");
+    });
     
-    console.log("✅ Upload area fully activated");
+    fileArea.addEventListener("dragleave", function() {
+        fileArea.classList.remove("drag-over");
+    });
+    
+    fileArea.addEventListener("drop", function(e) {
+        e.preventDefault();
+        fileArea.classList.remove("drag-over");
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            fileInput.files = files;
+            const changeEvent = new Event("change", { bubbles: true });
+            fileInput.dispatchEvent(changeEvent);
+        }
+    });
+    
+    console.log("✅ Upload area fully activated with overlay method");
 }
-
-// Make sure this runs AFTER DOM is ready
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupFileArea);
-} else {
-    setupFileArea();
-}
-
-// Test if the click is being blocked
-document.getElementById("fileArea").addEventListener("click", function() {
-    console.log("✅ FILE AREA CLICK DETECTED - opening file picker");
-    document.getElementById("file").click();
-});
 // Progress Bar
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
     const progressBar = $("progressBar");
