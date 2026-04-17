@@ -752,7 +752,25 @@ async def submit_document_job(
 @app.get("/api/job-status/{job_id}")
 async def job_status(job_id: str):
     return job_store.get(job_id, {"status": "not_found"})
+
+@app.post("/verify")
+async def verify(...):
+    # ... after processing ...
+    job_id = store_result(result)  # This stores in _store
     
+    # ALSO store in job_store for polling
+    job_store[job_id] = {
+        "status": "completed",
+        "progress": 100,
+        "result": result,
+        "timestamp": time.time()
+    }
+    
+    return {
+        "job_id": job_id,
+        "data": result,
+        ...
+    }
 # --------------------------------------------------
 # Utility Functions
 # --------------------------------------------------
