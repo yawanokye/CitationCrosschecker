@@ -139,56 +139,85 @@ FILE AREA SETUP
 
 function setupFileArea() {
     const fileArea = document.getElementById("fileArea");
-    const fileInput = el.file;
-    const fileNameSpan = document.getElementById("fileName");
-    
-    if (fileArea && fileInput) {
-        fileArea.addEventListener("click", function(e) {
-            if (e.target.classList && e.target.classList.contains("file-name")) return;
-            fileInput.click();
-        });
-        
-        fileArea.addEventListener("dragover", function(e) {
-            e.preventDefault();
-            fileArea.classList.add("drag-over");
-        });
-        
-        fileArea.addEventListener("dragleave", function(e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-        });
-        
-        fileArea.addEventListener("drop", function(e) {
-            e.preventDefault();
-            fileArea.classList.remove("drag-over");
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                fileInput.files = files;
-                const changeEvent = new Event('change', { bubbles: true });
-                fileInput.dispatchEvent(changeEvent);
-            }
-        });
-        
-        fileInput.addEventListener('change', function() {
-            const file = fileInput.files[0];
-            if (file) {
-                if (file.name.toLowerCase().endsWith('.docx')) {
-                    fileNameSpan.textContent = `📄 ${file.name}`;
-                    setStatus("DOCX file selected. Ready to run check.", "good");
-                    if (el.btnCheck) el.btnCheck.disabled = false;
-                } else {
-                    fileNameSpan.textContent = "";
-                    setStatus("Only DOCX files are accepted.", "warn");
-                    fileInput.value = '';
-                    if (el.btnCheck) el.btnCheck.disabled = true;
-                }
-            } else {
-                fileNameSpan.textContent = "";
-            }
-        });
-    }
-}
+    const fileInput = document.getElementById("file");
+    const fileName = document.getElementById("fileName");
+    const btnCheck = document.getElementById("btnCheck");
 
+    if (!fileArea || !fileInput) {
+        console.error("Upload elements not found");
+        return;
+    }
+
+    // Remove any existing listeners to prevent conflicts
+    const newFileArea = fileArea.cloneNode(true);
+    fileArea.parentNode.replaceChild(newFileArea, fileArea);
+    
+    // Get fresh references
+    const freshFileArea = document.getElementById("fileArea");
+    const freshFileInput = document.getElementById("file");
+    
+    // Force click handler
+    freshFileArea.style.cursor = "pointer";
+    freshFileArea.style.pointerEvents = "auto";
+    
+    // Direct onclick property (most reliable)
+    freshFileArea.onclick = function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log("File area clicked - opening file picker");
+        freshFileInput.click();
+    };
+    
+    // Also add event listener for redundancy
+    freshFileArea.addEventListener("click", function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log("File area clicked (event listener)");
+        freshFileInput.click();
+    });
+    
+    // File selection handler
+    freshFileInput.onchange = function() {
+        const file = freshFileInput.files[0];
+        console.log("File selected:", file ? file.name : "none");
+        
+        if (!file) return;
+        
+        if (file.name.toLowerCase().endsWith(".docx")) {
+            if (fileName) fileName.textContent = "✅ " + file.name;
+            if (btnCheck) btnCheck.disabled = false;
+            setStatus("File ready. Click Analyze.", "good");
+        } else {
+            if (fileName) fileName.textContent = "❌ Only DOCX allowed";
+            freshFileInput.value = "";
+            if (btnCheck) btnCheck.disabled = true;
+            setStatus("Upload a DOCX file only.", "warn");
+        }
+    };
+    
+    // Drag and drop
+    freshFileArea.addEventListener("dragover", function(e) {
+        e.preventDefault();
+        freshFileArea.classList.add("drag-over");
+    });
+    
+    freshFileArea.addEventListener("dragleave", function() {
+        freshFileArea.classList.remove("drag-over");
+    });
+    
+    freshFileArea.addEventListener("drop", function(e) {
+        e.preventDefault();
+        freshFileArea.classList.remove("drag-over");
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            freshFileInput.files = files;
+            const changeEvent = new Event("change", { bubbles: true });
+            freshFileInput.dispatchEvent(changeEvent);
+        }
+    });
+    
+    console.log("✅ Upload area fully activated - click anywhere to upload");
+}
 /* -------------------------------------------------------
 ACII RATING & RECOMMENDATIONS
 ------------------------------------------------------- */
