@@ -155,6 +155,7 @@
             transition: all 0.3s ease;
             cursor: pointer;
             background: #fafbfc;
+            position: relative;
         }
 
         .file-area:hover {
@@ -188,10 +189,7 @@
         input[type="file"] {
             display: none;
         }
-        .file-area {
-            position: relative;
-            z-index: 10;
-        }
+
         .options-row {
             display: flex;
             gap: 20px;
@@ -1083,6 +1081,8 @@ let RETRY_COUNT = 0;
 let POLL_ATTEMPT_COUNT = 0;
 let LAST_PROGRESS = 0;
 let LAST_PROGRESS_TIME = null;
+let VERIFICATION_POLL_TIMER = null;
+let VERIFICATION_JOB_ID = null;
 window.latestResults = null;
 
 // Utility Functions
@@ -1142,167 +1142,7 @@ function resetProcessFeedback() {
     });
 }
 
-function startVerificationPolling(jobId) {
-
-    console.log("Starting verification polling:", jobId);
-
-    let interval = setInterval(async () => {
-
-        try {
-            const res = await fetch(`/api/verification-status/${jobId}`);
-            const data = await res.json();
-
-            console.log("Verification status:", data);
-
-            // 🔄 Update progress bar
-            if (data.progress !== undefined) {
-                updateProgress(data.progress, data.total);
-            }
-
-            // ⏳ Still processing
-            if (data.status === "processing") {
-                setStatus(`Verifying references (${data.progress}/${data.total})...`, "warn");
-                return;
-            }
-
-            // ✅ Completed
-            if (data.status === "completed") {
-
-                clearInterval(interval);
-
-                setStatus("Verification complete", "good");
-
-                // 🔥 FETCH FINAL RESULTS
-                const res2 = await fetch(`/api/verification-results/${jobId}`);
-                const final = await res2.json();
-
-                // 🔥 RENDER
-                renderVerify({
-                    online_verification: {
-                        rows: final.rows,
-                        summary: computeVerificationSummary(final.rows)
-                    }
-                });
-
-                return;
-            }
-
-        } catch (err) {
-            console.error("Verification polling error:", err);
-            clearInterval(interval);
-        }
-
-    }, 3000);
-}
-
-function computeVerificationSummary(rows) {
-    const summary = {
-        verified: 0,
-        likely: 0,
-        needs_review: 0,
-        not_found: 0
-    };
-
-    rows.forEach(r => {
-        if (r.status && summary.hasOwnProperty(r.status)) {
-            summary[r.status]++;
-        }
-    });
-
-    return summary;
-}
-// ✅ FIX: UPLOAD AREA FULLY ACTIVATED - CLICK & DRAG/DROP
-function setupFileArea() {
-    const fileArea = document.getElementById("fileArea");
-    const fileInput = document.getElementById("file");
-    const fileName = document.getElementById("fileName");
-    const btnCheck = document.getElementById("btnCheck");
-
-    if (!fileArea || !fileInput) {
-        console.error("Upload elements not found");
-        return;
-    }
-
-    // CRITICAL: Remove all existing children click handlers by using a wrapper approach
-    // Force the file input to be triggered DIRECTLY
-    
-    // Method 1: Use a transparent overlay div that captures all clicks
-    let overlay = document.getElementById("uploadOverlay");
-    if (!overlay) {
-        overlay = document.createElement("div");
-        overlay.id = "uploadOverlay";
-        overlay.style.position = "absolute";
-        overlay.style.top = "0";
-        overlay.style.left = "0";
-        overlay.style.width = "100%";
-        overlay.style.height = "100%";
-        overlay.style.zIndex = "999";
-        overlay.style.cursor = "pointer";
-        overlay.style.backgroundColor = "transparent";
-        fileArea.style.position = "relative";
-        fileArea.appendChild(overlay);
-        
-        overlay.onclick = function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            console.log("Overlay clicked - opening file picker");
-            fileInput.click();
-        };
-    }
-    
-    // Method 2: Direct click on fileArea (backup)
-    fileArea.onclick = function(e) {
-        // Don't let clicks on the fileName div cause double triggers
-        if (e.target.classList && e.target.classList.contains("file-name")) {
-            return;
-        }
-        console.log("File area clicked directly");
-        fileInput.click();
-    };
-    
-    // Handle file selection
-    fileInput.onchange = function() {
-        const file = fileInput.files[0];
-        console.log("File selected:", file ? file.name : "none");
-        
-        if (!file) return;
-        
-        if (file.name.toLowerCase().endsWith(".docx")) {
-            if (fileName) fileName.textContent = "✅ " + file.name;
-            if (btnCheck) btnCheck.disabled = false;
-            setStatus("File ready. Click Analyze.", "good");
-        } else {
-            if (fileName) fileName.textContent = "❌ Only DOCX allowed";
-            fileInput.value = "";
-            if (btnCheck) btnCheck.disabled = true;
-            setStatus("Upload a DOCX file only.", "warn");
-        }
-    };
-    
-    // Drag and drop
-    fileArea.addEventListener("dragover", function(e) {
-        e.preventDefault();
-        fileArea.classList.add("drag-over");
-    });
-    
-    fileArea.addEventListener("dragleave", function() {
-        fileArea.classList.remove("drag-over");
-    });
-    
-    fileArea.addEventListener("drop", function(e) {
-        e.preventDefault();
-        fileArea.classList.remove("drag-over");
-        const files = e.dataTransfer.files;
-        if (files && files.length > 0) {
-            fileInput.files = files;
-            const changeEvent = new Event("change", { bubbles: true });
-            fileInput.dispatchEvent(changeEvent);
-        }
-    });
-    
-    console.log("✅ Upload area fully activated with overlay method");
-}
-// Progress Bar
+// Progress Bar Functions
 function updateProgress(progress, total, status = "processing", message = null, remainingSeconds = null) {
     const progressBar = $("progressBar");
     const progressText = $("progressText");
@@ -1330,6 +1170,14 @@ function updateProgress(progress, total, status = "processing", message = null, 
     }
 }
 
+function updateDocumentProgress(progress) {
+    updateProgress(progress, 100, "processing", `Processing: ${progress}%`);
+}
+
+function updateVerificationProgress(progress, total) {
+    updateProgress(progress, total, "processing", `Verifying: ${progress}/${total}`);
+}
+
 // Queue Status
 async function updateQueueStatus() {
     try {
@@ -1345,34 +1193,7 @@ async function updateQueueStatus() {
         return data;
     } catch (err) { return null; }
 }
-async function startManualVerification() {
 
-    if (!window.latestResults) {
-        setStatus("Run analysis first", "warn");
-        return;
-    }
-
-    const refs = window.latestResults?.engine?.references || [];
-
-    if (!refs.length) {
-        setStatus("No references found", "warn");
-        return;
-    }
-
-    setStatus("Starting verification...", "warn");
-
-    const res = await fetch("/api/start-verification", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ references: refs })
-    });
-
-    const data = await res.json();
-
-    if (data.job_id) {
-        startVerificationPolling(data.job_id);
-    }
-}
 // Reset UI
 function resetVerificationUI() {
     const verifyDash = $("verifyDash");
@@ -1387,44 +1208,7 @@ function resetVerificationUI() {
     if (verifyProgress) verifyProgress.style.display = "none";
     VERIFICATION_IN_PROGRESS = false;
 }
-async function fetchVerificationStatus() {
 
-    if (!window.VERIFICATION_JOB_ID) return;
-
-    try {
-        const res = await fetch(`/api/verification-status/${window.VERIFICATION_JOB_ID}`);
-        const data = await res.json();
-
-        console.log("Verification status:", data);
-
-        // 🔥 UPDATE PROGRESS
-        if (data.progress !== undefined && data.total !== undefined) {
-            updateProgress(data.progress, data.total);
-        }
-
-        // 🔄 Still running
-        if (data.status === "processing") {
-            setStatus(`Verifying ${data.progress}/${data.total}...`, "warn");
-            return;
-        }
-
-        // ✅ COMPLETED
-        if (data.status === "completed") {
-            stopVerificationPolling();
-
-            setStatus("Verification complete", "good");
-
-            // 🔥 NOW FETCH FINAL RESULTS
-            fetchVerificationResults();
-
-            return;
-        }
-
-    } catch (err) {
-        console.error("Verification status error:", err);
-        stopVerificationPolling();
-    }
-}
 // Tab Navigation
 document.querySelectorAll(".tab").forEach(tab => {
     tab.addEventListener("click", () => {
@@ -1444,7 +1228,7 @@ async function fetchStatus() {
     
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
         stopPolling();
-        setStatus("Verification timeout. Please try again.", "bad");
+        setStatus("Processing timeout. Please try again.", "bad");
         VERIFICATION_IN_PROGRESS = false;
         const btnVerify = document.getElementById("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
@@ -1455,11 +1239,11 @@ async function fetchStatus() {
         const res = await fetch(`/api/job-status/${LAST_JOB_ID}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        
         console.log("Job status:", data);
         
-        // Update progress if available
         if (data.progress !== undefined) {
-            updateProgress(data.progress, 100, "processing", `Processing: ${data.progress}%`);
+            updateDocumentProgress(data.progress);
         }
         
         if (data.status === "queued" || data.status === "processing") {
@@ -1471,25 +1255,23 @@ async function fetchStatus() {
         if (data.status === "completed") {
             stopPolling();
             setStatus("Processing complete", "good");
-        
+            
             if (data.result) {
                 renderAll(data.result);
             }
-        
-            // 🔥 CORRECT PLACE (TOP-LEVEL, NOT INSIDE result)
+            
             if (data.verification && data.verification.job_id) {
                 console.log("Starting async verification:", data.verification.job_id);
-        
                 startVerificationPolling(data.verification.job_id);
             }
-        
+            
             const btnVerify = document.getElementById("btnVerify");
             if (btnVerify) btnVerify.disabled = false;
-        
+            
             VERIFICATION_IN_PROGRESS = false;
-        
             return;
         }
+        
         if (data.status === "error") {
             stopPolling();
             setStatus(`Processing failed: ${data.error || "unknown error"}`, "bad");
@@ -1502,29 +1284,6 @@ async function fetchStatus() {
     }
 }
 
-let VERIFICATION_POLL_TIMER = null;
-
-function startVerificationPolling(jobId) {
-
-    if (!jobId) {
-        console.error("Missing verification jobId");
-        return;
-    }
-
-    // store globally
-    window.VERIFICATION_JOB_ID = jobId;
-
-    if (VERIFICATION_POLL_TIMER) clearInterval(VERIFICATION_POLL_TIMER);
-
-    VERIFICATION_POLL_TIMER = setInterval(fetchVerificationStatus, 3000);
-}
-
-function stopVerificationPolling() {
-    if (VERIFICATION_POLL_TIMER) {
-        clearInterval(VERIFICATION_POLL_TIMER);
-        VERIFICATION_POLL_TIMER = null;
-    }
-}
 function startPolling() {
     if (POLL_TIMER) clearInterval(POLL_TIMER);
     POLL_ATTEMPT_COUNT = 0;
@@ -1535,6 +1294,123 @@ function startPolling() {
 
 function stopPolling() {
     if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
+}
+
+// Verification Polling Functions
+function startVerificationPolling(jobId) {
+    if (!jobId) {
+        console.error("Missing verification jobId");
+        return;
+    }
+
+    VERIFICATION_JOB_ID = jobId;
+
+    if (VERIFICATION_POLL_TIMER) {
+        clearInterval(VERIFICATION_POLL_TIMER);
+    }
+
+    const verifyProgress = $("verifyProgress");
+    if (verifyProgress) verifyProgress.style.display = "block";
+
+    VERIFICATION_POLL_TIMER = setInterval(fetchVerificationStatus, 3000);
+}
+
+function stopVerificationPolling() {
+    if (VERIFICATION_POLL_TIMER) {
+        clearInterval(VERIFICATION_POLL_TIMER);
+        VERIFICATION_POLL_TIMER = null;
+    }
+}
+
+async function fetchVerificationStatus() {
+    if (!VERIFICATION_JOB_ID) return;
+
+    try {
+        const res = await fetch(`/api/verification-status/${VERIFICATION_JOB_ID}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        console.log("Verification status:", data);
+
+        if (data.progress !== undefined && data.total !== undefined) {
+            updateVerificationProgress(data.progress, data.total);
+        }
+
+        if (data.status === "processing") {
+            setStatus(`Verifying ${data.progress}/${data.total}...`, "warn");
+            return;
+        }
+
+        if (data.status === "completed") {
+            stopVerificationPolling();
+            setStatus("Verification complete", "good");
+            await fetchVerificationResults();
+            return;
+        }
+
+        if (data.status === "error") {
+            stopVerificationPolling();
+            setStatus(`Verification failed: ${data.error || "unknown error"}`, "bad");
+        }
+    } catch (err) {
+        console.error("Verification status error:", err);
+        stopVerificationPolling();
+    }
+}
+
+async function fetchVerificationResults() {
+    if (!VERIFICATION_JOB_ID) return;
+
+    try {
+        const res = await fetch(`/api/verification-results/${VERIFICATION_JOB_ID}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        
+        const final = await res.json();
+        renderVerify(final);
+        
+        // Update latestResults with verification data
+        if (window.latestResults) {
+            window.latestResults.online_verification = final.online_verification;
+        }
+    } catch (err) {
+        console.error("Error fetching verification results:", err);
+    }
+}
+
+// Manual Verification Function
+async function startManualVerification() {
+    if (!window.latestResults) {
+        setStatus("Run analysis first", "warn");
+        return;
+    }
+
+    const refs =
+        window.latestResults?.result?.engine?.references ||
+        window.latestResults?.engine?.references ||
+        [];
+
+    if (!refs.length) {
+        setStatus("No references found", "warn");
+        return;
+    }
+
+    setStatus("Starting verification...", "warn");
+
+    try {
+        const res = await fetch("/api/start-verification", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ references: refs })
+        });
+
+        const data = await res.json();
+
+        if (data.verification && data.verification.job_id) {
+            startVerificationPolling(data.verification.job_id);
+        }
+    } catch (err) {
+        setStatus("Error starting verification: " + err.message, "bad");
+    }
 }
 
 // Helper Functions
@@ -1562,7 +1438,7 @@ function normalizeData(payload) {
     return data;
 }
 
-// Render Functions (condensed but fully functional)
+// Render Functions
 function renderSummaryTable(data) {
     const s = data?.summary || {};
     const summaryTable = $("summaryTable");
@@ -1772,6 +1648,15 @@ function renderAll(data) {
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
+    
+    // Add provisional UI awareness
+    if (normalized?.result?.meta || normalized?.meta) {
+        const meta = normalized.result?.meta || normalized.meta;
+        if (meta.verification_pending) {
+            setStatus("Analysis complete. Verification pending in background.", "warn");
+        }
+    }
+    
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
     renderSummaryTable(normalized);
@@ -1956,120 +1841,18 @@ async function runInitialCheck() {
         const btnVerify = document.getElementById("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
         
-        // Start verification polling if auto-verification was enabled
+        // Start polling for job status
+        startPolling();
+        
+        // If auto-verification was enabled, start verification polling
         if (enableOnlineVerify) {
-            setStatus("Auto-verification started...", "info");
-            VERIFICATION_IN_PROGRESS = true;
-            if (btnVerify) btnVerify.disabled = true;
-            startVerificationPolling();
+            setStatus("Auto-verification will start after analysis...", "info");
         }
     } catch (err) { 
         setStatus("Error: " + err.message, "bad"); 
     }
 }
-async function runOnlineVerification() {
-    if (!LAST_JOB_ID) { 
-        setStatus("Run document check first", "warn"); 
-        return; 
-    }
-    if (VERIFICATION_IN_PROGRESS) { 
-        setStatus("Verification already in progress...", "warn"); 
-        return; 
-    }
-    
-    setStatus("Starting online verification...");
-    VERIFICATION_IN_PROGRESS = true;
-    updateProgress(0, 0, "processing", "Starting verification...");
-    const btnVerify = document.getElementById("btnVerify");
-    if (btnVerify) btnVerify.disabled = true;
-    
-    const fd = new FormData();
-    fd.append("job_id", LAST_JOB_ID);
-    
-    try {
-        const res = await fetch("/verify-online", { method: "POST", body: fd });
-        const js = await res.json();
-        
-        if (js.started) { 
-            setStatus("Verification in progress...", "info"); 
-            // Start polling for status
-            startPolling();
-        } else if (js.completed) { 
-            setStatus("Verification already completed", "good"); 
-            VERIFICATION_IN_PROGRESS = false; 
-            if (btnVerify) btnVerify.disabled = false; 
-            // Fetch the results immediately
-            await fetchVerificationResults();
-        } else { 
-            setStatus(js.message || "Verification could not start", "warn"); 
-            VERIFICATION_IN_PROGRESS = false; 
-            if (btnVerify) btnVerify.disabled = false; 
-        }
-    } catch (err) { 
-        setStatus("Error: " + err.message, "bad"); 
-        VERIFICATION_IN_PROGRESS = false; 
-        if (btnVerify) btnVerify.disabled = false; 
-    }
-}
-async function fetchVerificationResults() {
-    if (!LAST_JOB_ID) return;
-    
-    try {
-        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
-        const js = await res.json();
-        
-        console.log("Verification status:", js);
-        
-        if (js.online && js.online.state === "completed") {
-            // Update progress
-            if (js.online.total > 0) {
-                updateProgress(js.online.total, js.online.total, "completed", "Verification complete!");
-            }
-            
-            // If we have results in the response
-            if (js.result) {
-                // Merge verification results into current data
-                if (window.latestResults) {
-                    window.latestResults.online_verification = js.result.online_verification;
-                    window.latestResults.acii = js.result.acii;
-                    renderVerify(window.latestResults);
-                    renderACII(window.latestResults);
-                }
-                renderAll(js.result);
-            }
-            
-            // Also try to get fresh results from job endpoint
-            const jobRes = await fetch(`/api/job-status/${LAST_JOB_ID}`);
-            const jobData = await jobRes.json();
-            if (jobData.result && jobData.result.online_verification) {
-                if (window.latestResults) {
-                    window.latestResults.online_verification = jobData.result.online_verification;
-                    renderVerify(window.latestResults);
-                }
-            }
-            
-            setStatus("Verification complete", "good");
-            VERIFICATION_IN_PROGRESS = false;
-            const btnVerify = document.getElementById("btnVerify");
-            if (btnVerify) btnVerify.disabled = false;
-            stopPolling();
-        } else if (js.online && js.online.state === "running") {
-            // Update progress
-            const progress = js.online.progress || 0;
-            const total = js.online.total || 0;
-            const percentage = js.online.percentage || 0;
-            updateProgress(progress, total, "processing", `Verifying: ${progress}/${total} (${percentage}%)`);
-            setStatus(`Verifying references: ${progress}/${total}`, "info");
-        } else if (js.online && js.online.state === "error") {
-            setStatus("Verification failed: " + (js.online.message || "Unknown error"), "bad");
-            VERIFICATION_IN_PROGRESS = false;
-            if (btnVerify) btnVerify.disabled = false;
-            stopPolling();
-        }
-    } catch (err) {
-        console.error("Error fetching verification results:", err);
-    }
-}
+
 // ACII Rating Function
 function getACIIRating(score) {
     score = Number(score);
@@ -2210,6 +1993,91 @@ function displaySuggestions(data) {
     content.innerHTML = html;
 }
 
+// Setup File Area
+function setupFileArea() {
+    const fileArea = document.getElementById("fileArea");
+    const fileInput = document.getElementById("file");
+    const fileName = document.getElementById("fileName");
+    const btnCheck = document.getElementById("btnCheck");
+
+    if (!fileArea || !fileInput) {
+        console.error("Upload elements not found");
+        return;
+    }
+
+    // Overlay method
+    let overlay = document.getElementById("uploadOverlay");
+    if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = "uploadOverlay";
+        overlay.style.position = "absolute";
+        overlay.style.top = "0";
+        overlay.style.left = "0";
+        overlay.style.width = "100%";
+        overlay.style.height = "100%";
+        overlay.style.zIndex = "999";
+        overlay.style.cursor = "pointer";
+        overlay.style.backgroundColor = "transparent";
+        fileArea.style.position = "relative";
+        fileArea.appendChild(overlay);
+        
+        overlay.onclick = function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log("Overlay clicked - opening file picker");
+            fileInput.click();
+        };
+    }
+    
+    fileArea.onclick = function(e) {
+        if (e.target.classList && e.target.classList.contains("file-name")) {
+            return;
+        }
+        console.log("File area clicked directly");
+        fileInput.click();
+    };
+    
+    fileInput.onchange = function() {
+        const file = fileInput.files[0];
+        console.log("File selected:", file ? file.name : "none");
+        
+        if (!file) return;
+        
+        if (file.name.toLowerCase().endsWith(".docx")) {
+            if (fileName) fileName.textContent = "✅ " + file.name;
+            if (btnCheck) btnCheck.disabled = false;
+            setStatus("File ready. Click Analyze.", "good");
+        } else {
+            if (fileName) fileName.textContent = "❌ Only DOCX allowed";
+            fileInput.value = "";
+            if (btnCheck) btnCheck.disabled = true;
+            setStatus("Upload a DOCX file only.", "warn");
+        }
+    };
+    
+    fileArea.addEventListener("dragover", function(e) {
+        e.preventDefault();
+        fileArea.classList.add("drag-over");
+    });
+    
+    fileArea.addEventListener("dragleave", function() {
+        fileArea.classList.remove("drag-over");
+    });
+    
+    fileArea.addEventListener("drop", function(e) {
+        e.preventDefault();
+        fileArea.classList.remove("drag-over");
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            fileInput.files = files;
+            const changeEvent = new Event("change", { bubbles: true });
+            fileInput.dispatchEvent(changeEvent);
+        }
+    });
+    
+    console.log("✅ Upload area fully activated");
+}
+
 // ============================================
 // BUTTON EVENT LISTENERS
 // ============================================
@@ -2219,7 +2087,10 @@ const btnCheck = document.getElementById("btnCheck");
 if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
 
 const btnVerify = document.getElementById("btnVerify");
-if (btnVerify) { btnVerify.disabled = true; btnVerify.addEventListener("click", runOnlineVerification); }
+if (btnVerify) { 
+    btnVerify.disabled = true; 
+    btnVerify.addEventListener("click", startManualVerification);
+}
 
 // Export buttons
 const exportBtn = document.getElementById("exportReferencesBtn");
