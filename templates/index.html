@@ -1311,9 +1311,9 @@ async function fetchStatus() {
     
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
         stopPolling();
-        setStatus("Processing timeout. Please retry.", "bad");
+        setStatus("Verification timeout. Please try again.", "bad");
         VERIFICATION_IN_PROGRESS = false;
-        const btnVerify = $("btnVerify");
+        const btnVerify = document.getElementById("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
         return;
     }
@@ -1322,9 +1322,12 @@ async function fetchStatus() {
         const res = await fetch(`/api/job-status/${LAST_JOB_ID}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        console.log("Async status:", data);
+        console.log("Job status:", data);
         
-        if (data.progress !== undefined) updateProgress(data.progress, 100);
+        // Update progress if available
+        if (data.progress !== undefined) {
+            updateProgress(data.progress, 100, "processing", `Processing: ${data.progress}%`);
+        }
         
         if (data.status === "queued" || data.status === "processing") {
             const progressVal = data.progress || 0;
@@ -1337,23 +1340,44 @@ async function fetchStatus() {
             setStatus("Processing complete", "good");
             if (data.result) {
                 renderAll(data.result);
-            } else {
-                setStatus("Completed but no result found", "warn");
+                
+                // Check if verification was auto-started
+                if (data.result.online_verification_started || data.result.online_verification) {
+                    // Start polling for verification status separately
+                    startVerificationPolling();
+                }
             }
-            const btnVerify = $("btnVerify");
+            const btnVerify = document.getElementById("btnVerify");
             if (btnVerify) btnVerify.disabled = false;
+            VERIFICATION_IN_PROGRESS = false;
             return;
         }
         
         if (data.status === "error") {
             stopPolling();
             setStatus(`Processing failed: ${data.error || "unknown error"}`, "bad");
+            VERIFICATION_IN_PROGRESS = false;
+            const btnVerify = document.getElementById("btnVerify");
+            if (btnVerify) btnVerify.disabled = false;
         }
     } catch (err) {
         console.error("Polling error:", err);
     }
 }
 
+let VERIFICATION_POLL_TIMER = null;
+
+function startVerificationPolling() {
+    if (VERIFICATION_POLL_TIMER) clearInterval(VERIFICATION_POLL_TIMER);
+    VERIFICATION_POLL_TIMER = setInterval(fetchVerificationResults, 3000);
+}
+
+function stopVerificationPolling() {
+    if (VERIFICATION_POLL_TIMER) {
+        clearInterval(VERIFICATION_POLL_TIMER);
+        VERIFICATION_POLL_TIMER = null;
+    }
+}
 function startPolling() {
     if (POLL_TIMER) clearInterval(POLL_TIMER);
     POLL_ATTEMPT_COUNT = 0;
@@ -1752,11 +1776,10 @@ async function runInitialCheck() {
     updateProcessFeedback("Upload", "active");
     
     if (POLL_TIMER) clearInterval(POLL_TIMER);
+    if (VERIFICATION_POLL_TIMER) clearInterval(VERIFICATION_POLL_TIMER);
     VERIFICATION_IN_PROGRESS = false;
     LAST_JOB_ID = null;
     POLL_ATTEMPT_COUNT = 0;
-    LAST_PROGRESS = 0;
-    LAST_PROGRESS_TIME = Date.now();
     resetVerificationUI();
     setStatus("Analyzing document...");
     
@@ -1765,8 +1788,10 @@ async function runInitialCheck() {
     fd.append("style", "apa");
     const autofixCheck = document.getElementById("autofix");
     const onlineVerifyCheck = document.getElementById("onlineVerify");
+    const enableOnlineVerify = onlineVerifyCheck?.checked || false;
     fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
-    fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
+    fd.append("enable_online_verification", enableOnlineVerify.toString());
+    
     try {
         const res = await fetch("/verify", { method: "POST", body: fd });
         if (res.status === 503) {
@@ -1783,29 +1808,121 @@ async function runInitialCheck() {
         updateQueueStatus();
         const btnVerify = document.getElementById("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
-        if (js.online_verification_started) startPolling();
-    } catch (err) { setStatus("Error: " + err.message, "bad"); }
+        
+        // Start verification polling if auto-verification was enabled
+        if (enableOnlineVerify) {
+            setStatus("Auto-verification started...", "info");
+            VERIFICATION_IN_PROGRESS = true;
+            if (btnVerify) btnVerify.disabled = true;
+            startVerificationPolling();
+        }
+    } catch (err) { 
+        setStatus("Error: " + err.message, "bad"); 
+    }
 }
-
 async function runOnlineVerification() {
-    if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
-    if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
+    if (!LAST_JOB_ID) { 
+        setStatus("Run document check first", "warn"); 
+        return; 
+    }
+    if (VERIFICATION_IN_PROGRESS) { 
+        setStatus("Verification already in progress...", "warn"); 
+        return; 
+    }
+    
     setStatus("Starting online verification...");
     VERIFICATION_IN_PROGRESS = true;
     updateProgress(0, 0, "processing", "Starting verification...");
     const btnVerify = document.getElementById("btnVerify");
     if (btnVerify) btnVerify.disabled = true;
+    
     const fd = new FormData();
     fd.append("job_id", LAST_JOB_ID);
+    
     try {
         const res = await fetch("/verify-online", { method: "POST", body: fd });
         const js = await res.json();
-        if (js.started) { setStatus("Verification in progress...", "info"); startPolling(); }
-        else if (js.completed) { setStatus("Verification already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
-        else { setStatus(js.message || "Verification could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
-    } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+        
+        if (js.started) { 
+            setStatus("Verification in progress...", "info"); 
+            // Start polling for status
+            startPolling();
+        } else if (js.completed) { 
+            setStatus("Verification already completed", "good"); 
+            VERIFICATION_IN_PROGRESS = false; 
+            if (btnVerify) btnVerify.disabled = false; 
+            // Fetch the results immediately
+            await fetchVerificationResults();
+        } else { 
+            setStatus(js.message || "Verification could not start", "warn"); 
+            VERIFICATION_IN_PROGRESS = false; 
+            if (btnVerify) btnVerify.disabled = false; 
+        }
+    } catch (err) { 
+        setStatus("Error: " + err.message, "bad"); 
+        VERIFICATION_IN_PROGRESS = false; 
+        if (btnVerify) btnVerify.disabled = false; 
+    }
 }
-
+async function fetchVerificationResults() {
+    if (!LAST_JOB_ID) return;
+    
+    try {
+        const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
+        const js = await res.json();
+        
+        console.log("Verification status:", js);
+        
+        if (js.online && js.online.state === "completed") {
+            // Update progress
+            if (js.online.total > 0) {
+                updateProgress(js.online.total, js.online.total, "completed", "Verification complete!");
+            }
+            
+            // If we have results in the response
+            if (js.result) {
+                // Merge verification results into current data
+                if (window.latestResults) {
+                    window.latestResults.online_verification = js.result.online_verification;
+                    window.latestResults.acii = js.result.acii;
+                    renderVerify(window.latestResults);
+                    renderACII(window.latestResults);
+                }
+                renderAll(js.result);
+            }
+            
+            // Also try to get fresh results from job endpoint
+            const jobRes = await fetch(`/api/job-status/${LAST_JOB_ID}`);
+            const jobData = await jobRes.json();
+            if (jobData.result && jobData.result.online_verification) {
+                if (window.latestResults) {
+                    window.latestResults.online_verification = jobData.result.online_verification;
+                    renderVerify(window.latestResults);
+                }
+            }
+            
+            setStatus("Verification complete", "good");
+            VERIFICATION_IN_PROGRESS = false;
+            const btnVerify = document.getElementById("btnVerify");
+            if (btnVerify) btnVerify.disabled = false;
+            stopPolling();
+        } else if (js.online && js.online.state === "running") {
+            // Update progress
+            const progress = js.online.progress || 0;
+            const total = js.online.total || 0;
+            const percentage = js.online.percentage || 0;
+            updateProgress(progress, total, "processing", `Verifying: ${progress}/${total} (${percentage}%)`);
+            setStatus(`Verifying references: ${progress}/${total}`, "info");
+        } else if (js.online && js.online.state === "error") {
+            setStatus("Verification failed: " + (js.online.message || "Unknown error"), "bad");
+            VERIFICATION_IN_PROGRESS = false;
+            if (btnVerify) btnVerify.disabled = false;
+            stopPolling();
+        }
+    } catch (err) {
+        console.error("Error fetching verification results:", err);
+    }
+}
 // ACII Rating Function
 function getACIIRating(score) {
     score = Number(score);
