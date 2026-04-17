@@ -34,6 +34,10 @@ WORKER_THREADS = 2  # Reduce to 2 workers to avoid rate limiting
 RETRY_ATTEMPTS = 2  # Number of retries for failed API calls
 BATCH_DELAY = 0.5  # Delay between references to avoid rate limits
 GLOBAL_API_LIMIT = 3
+
+# Global API semaphore for rate limiting
+GLOBAL_API_SEMAPHORE = threading.Semaphore(GLOBAL_API_LIMIT)
+
 # ============================================================
 # PROGRESS TRACKING (Lightweight)
 # ============================================================
@@ -73,6 +77,32 @@ def clear_verification_results(job_id: str):
     with _verification_results_lock:
         if job_id in _verification_results:
             del _verification_results[job_id]
+
+def summarize_verification_rows(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Summarize verification results by status"""
+    summary = {
+        "verified": 0,
+        "likely": 0,
+        "needs_review": 0,
+        "not_found": 0,
+        "offline": 0,
+    }
+    for row in rows or []:
+        status = (row.get("status") or "").strip().lower()
+        if status in summary:
+            summary[status] += 1
+    return summary
+
+
+def get_verification_payload(job_id: str) -> Dict[str, Any]:
+    """Get complete verification payload for frontend consumption"""
+    rows = get_verification_results(job_id) or []
+    return {
+        "online_verification": {
+            "rows": rows,
+            "summary": summarize_verification_rows(rows)
+        }
+    }
 
 def create_verification_job(job_id: str, total: int) -> str:
     """Create a new verification job for tracking progress only"""
@@ -158,8 +188,9 @@ def fetch_full_crossref_metadata(doi: str) -> Optional[Dict[str, Any]]:
     params = {"mailto": MAILTO} if MAILTO else None
     
     try:
-        response = requests.get(url, params=params, timeout=API_TIMEOUT, 
-                                headers={"User-Agent": f"CitationVerifier/2.0 (mailto:{MAILTO})"})
+        with GLOBAL_API_SEMAPHORE:
+            response = requests.get(url, params=params, timeout=API_TIMEOUT, 
+                                    headers={"User-Agent": f"CitationVerifier/2.0 (mailto:{MAILTO})"})
         
         if response.status_code == 200:
             data = response.json()
@@ -487,7 +518,7 @@ def _norm_text(s: str) -> str:
 
 
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
-    """Get JSON from URL with configurable timeout"""
+    """Get JSON from URL with configurable timeout and global API rate limiting"""
     if timeout is None:
         timeout = API_TIMEOUT
     
@@ -496,7 +527,8 @@ def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None)
             "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
             "Accept": "application/json",
         }
-        r = requests.get(url, params=params, timeout=timeout, headers=headers)
+        with GLOBAL_API_SEMAPHORE:
+            r = requests.get(url, params=params, timeout=timeout, headers=headers)
         if r.status_code != 200:
             return None
         return r.json()
@@ -1457,6 +1489,8 @@ __all__ = [
     'get_verification_status',
     'get_verification_results',
     'clear_verification_results',
+    'get_verification_payload',
+    'summarize_verification_rows',
     'get_queue_status',
     'is_server_busy',
     'fetch_full_crossref_metadata',
