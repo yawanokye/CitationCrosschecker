@@ -1345,7 +1345,34 @@ async function updateQueueStatus() {
         return data;
     } catch (err) { return null; }
 }
+async function startManualVerification() {
 
+    if (!window.latestResults) {
+        setStatus("Run analysis first", "warn");
+        return;
+    }
+
+    const refs = window.latestResults?.engine?.references || [];
+
+    if (!refs.length) {
+        setStatus("No references found", "warn");
+        return;
+    }
+
+    setStatus("Starting verification...", "warn");
+
+    const res = await fetch("/api/start-verification", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ references: refs })
+    });
+
+    const data = await res.json();
+
+    if (data.job_id) {
+        startVerificationPolling(data.job_id);
+    }
+}
 // Reset UI
 function resetVerificationUI() {
     const verifyDash = $("verifyDash");
@@ -1360,7 +1387,44 @@ function resetVerificationUI() {
     if (verifyProgress) verifyProgress.style.display = "none";
     VERIFICATION_IN_PROGRESS = false;
 }
+async function fetchVerificationStatus() {
 
+    if (!window.VERIFICATION_JOB_ID) return;
+
+    try {
+        const res = await fetch(`/api/verification-status/${window.VERIFICATION_JOB_ID}`);
+        const data = await res.json();
+
+        console.log("Verification status:", data);
+
+        // 🔥 UPDATE PROGRESS
+        if (data.progress !== undefined && data.total !== undefined) {
+            updateProgress(data.progress, data.total);
+        }
+
+        // 🔄 Still running
+        if (data.status === "processing") {
+            setStatus(`Verifying ${data.progress}/${data.total}...`, "warn");
+            return;
+        }
+
+        // ✅ COMPLETED
+        if (data.status === "completed") {
+            stopVerificationPolling();
+
+            setStatus("Verification complete", "good");
+
+            // 🔥 NOW FETCH FINAL RESULTS
+            fetchVerificationResults();
+
+            return;
+        }
+
+    } catch (err) {
+        console.error("Verification status error:", err);
+        stopVerificationPolling();
+    }
+}
 // Tab Navigation
 document.querySelectorAll(".tab").forEach(tab => {
     tab.addEventListener("click", () => {
@@ -1440,9 +1504,19 @@ async function fetchStatus() {
 
 let VERIFICATION_POLL_TIMER = null;
 
-function startVerificationPolling() {
+function startVerificationPolling(jobId) {
+
+    if (!jobId) {
+        console.error("Missing verification jobId");
+        return;
+    }
+
+    // store globally
+    window.VERIFICATION_JOB_ID = jobId;
+
     if (VERIFICATION_POLL_TIMER) clearInterval(VERIFICATION_POLL_TIMER);
-    VERIFICATION_POLL_TIMER = setInterval(fetchVerificationResults, 3000);
+
+    VERIFICATION_POLL_TIMER = setInterval(fetchVerificationStatus, 3000);
 }
 
 function stopVerificationPolling() {
