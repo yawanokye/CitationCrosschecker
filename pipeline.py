@@ -34,8 +34,8 @@ def run_formatter_pipeline(raw_reference: str, style: str) -> Dict[str, Any]:
 
 def run_full_pipeline(file_bytes: bytes, style: str) -> Dict[str, Any]:
     """
-    Fast analysis only.
-    Verification runs separately in async background.
+    Fast document analysis only.
+    Online verification runs separately in the async verification system.
     """
     result = {}
 
