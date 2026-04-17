@@ -987,7 +987,9 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                             _store[job_id]["verification"]["total"] = total
                             
                             if status.get("status") == "completed":
-                                print(f"[DEBUG] Verification completed, fetching results...")
+                                print(f"[DEBUG] ========================================")
+                                print(f"[DEBUG] Verification COMPLETED for job {job_id}")
+                                print(f"[DEBUG] ========================================")
                                 
                                 verification_results = None
                                 for attempt in range(20):
@@ -995,23 +997,29 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     if verification_results:
                                         print(f"[DEBUG] Got {len(verification_results)} results on attempt {attempt+1}")
                                         break
+                                    print(f"[DEBUG] Attempt {attempt+1}: No results yet, waiting...")
                                     time.sleep(2)
                                 
                                 if verification_results:
+                                    print(f"[DEBUG] Processing {len(verification_results)} verification results")
                                     summary = _compute_verification_summary(verification_results)
                                     
                                     _store[job_id]["result"]["online_verification"] = {
                                         "rows": verification_results,
                                         "summary": summary
                                     }
+                                    print(f"[DEBUG] Stored online_verification with {len(verification_results)} rows")
                                     
                                     # Recompute ACII
                                     try:
                                         _store[job_id]["result"]["acii"] = compute_acii(
                                             _store[job_id]["result"], verification_results
                                         )
+                                        print(f"[DEBUG] ACII recomputed successfully")
                                     except Exception as e:
-                                        print(f"ACII error: {e}")
+                                        print(f"[DEBUG] ACII error: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                     
                                     # ==========================================
                                     # GENERATE RECOVERY DATA
@@ -1019,16 +1027,20 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     try:
                                         from citation_suggester import extract_context, suggest_from_context
                                         
+                                        print(f"[DEBUG] Starting recovery data generation...")
                                         recovery = {
                                             "missing_recovery": [],
                                             "verification_recovery": []
                                         }
                                         
                                         full_text = _store[job_id]["result"].get("main_text", "")
+                                        print(f"[DEBUG] Full text length: {len(full_text)}")
                                         
                                         # Missing citations recovery
                                         missing_items = _store[job_id]["result"].get("missing_in_references", [])
                                         missing_suggestions = _store[job_id]["result"].get("missing_citation_suggestions", {})
+                                        print(f"[DEBUG] Missing items count: {len(missing_items)}")
+                                        print(f"[DEBUG] Missing suggestions keys: {list(missing_suggestions.keys())}")
                                         
                                         for item in missing_items:
                                             citation = item if isinstance(item, str) else item.get("citation_in_text", "")
@@ -1040,6 +1052,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                                     "count": count,
                                                     "suggestions": suggestions
                                                 })
+                                        print(f"[DEBUG] Missing recovery items: {len(recovery['missing_recovery'])}")
                                         
                                         # Verification recovery
                                         c2r = _store[job_id]["result"].get("reconciliation_intext_to_reference", [])
@@ -1049,9 +1062,12 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                             cite = r.get("in_text", "")
                                             if ref and cite and ref not in ref_to_cite:
                                                 ref_to_cite[ref] = cite
+                                        print(f"[DEBUG] C2R rows: {len(c2r)}, Ref to cite mapping: {len(ref_to_cite)}")
                                         
+                                        needs_review_count = 0
                                         for row in verification_results:
                                             if row.get("status") in ["needs_review", "not_found"]:
+                                                needs_review_count += 1
                                                 ref = row.get("reference", "")
                                                 cite = ref_to_cite.get(ref, "")
                                                 suggestions = []
@@ -1066,11 +1082,15 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                                     "citation": cite,
                                                     "suggestions": suggestions
                                                 })
+                                        print(f"[DEBUG] Needs review/not found rows: {needs_review_count}")
+                                        print(f"[DEBUG] Verification recovery items: {len(recovery['verification_recovery'])}")
                                         
                                         _store[job_id]["result"]["recovery"] = recovery
-                                        print(f"[DEBUG] Recovery generated: missing={len(recovery['missing_recovery'])}, verify={len(recovery['verification_recovery'])}")
+                                        print(f"[DEBUG] ✅ Recovery generated: missing={len(recovery['missing_recovery'])}, verify={len(recovery['verification_recovery'])}")
                                     except Exception as e:
-                                        print(f"Recovery error: {e}")
+                                        print(f"[DEBUG] ❌ Recovery generation error: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                         _store[job_id]["result"]["recovery"] = {"missing_recovery": [], "verification_recovery": []}
                                     
                                     # ==========================================
@@ -1078,24 +1098,33 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     # ==========================================
                                     try:
                                         from claim_checker import build_claim_support_rows
+                                        print(f"[DEBUG] Starting claim support generation...")
                                         _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
-                                        print(f"[DEBUG] Claim support generated: {len(_store[job_id]['result']['claim_support'])} rows")
+                                        print(f"[DEBUG] ✅ Claim support generated: {len(_store[job_id]['result']['claim_support'])} rows")
                                     except Exception as e:
-                                        print(f"Claim support error: {e}")
+                                        print(f"[DEBUG] ❌ Claim support error: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                                         _store[job_id]["result"]["claim_support"] = []
                                     
                                     # Update job_store as well
                                     if job_id in job_store:
                                         job_store[job_id]["result"] = _store[job_id]["result"]
+                                        print(f"[DEBUG] Updated job_store with recovery and claim_support")
+                                else:
+                                    print(f"[DEBUG] ❌ No verification results retrieved after 20 attempts")
                                 
                                 _store[job_id]["verification"]["state"] = "completed"
                                 _store[job_id]["verification"]["completed_at"] = now()
+                                print(f"[DEBUG] Verification state set to completed")
                                 break
                 
                 time.sleep(2)
                 
             except Exception as e:
-                print(f"Sync thread error: {e}")
+                print(f"[DEBUG] Sync thread error: {e}")
+                import traceback
+                traceback.print_exc()
                 time.sleep(2)
         
         print(f"[DEBUG] Sync thread exiting for job {job_id}")
