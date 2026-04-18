@@ -392,8 +392,7 @@ BLOCKED_PATHS = [
     "/docs",
     "/redoc",
     "/openapi.json",
-    "/debug",
-    "/private-stats"
+    "/debug"
 ]
 
 BAD_AGENTS = [
