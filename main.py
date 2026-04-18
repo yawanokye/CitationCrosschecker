@@ -415,8 +415,8 @@ async def security_middleware(request: Request, call_next):
             return JSONResponse(status_code=404, content={"detail": "Not found"})
 
     # 🤖 Block bots
-    if any(b in ua for b in BAD_AGENTS):
-        return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+    #if any(b in ua for b in BAD_AGENTS):
+    #   return JSONResponse(status_code=403, content={"detail": "Forbidden"})
 
     return await call_next(request)
 
