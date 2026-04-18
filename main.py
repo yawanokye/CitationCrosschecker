@@ -17,7 +17,6 @@ from pathlib import Path
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-import time
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -376,19 +375,18 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(
     docs_url=None,
     redoc_url=None,
-    openapi_url=None
+    openapi_url=None,
+    lifespan=lifespan
 )
+
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
 
 BLOCKED_PATHS = [
-    # Existing (keep)
     "/wp-admin",
     "/wordpress",
     "/wp-login",
     "/xmlrpc.php",
-
-    # 🔥 ADD THESE (CRITICAL)
     "/docs",
     "/redoc",
     "/openapi.json",
@@ -408,18 +406,41 @@ BAD_AGENTS = [
 async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
-
+    
+    # ✅ ALLOW LIST - Critical endpoints that must work
+    ALLOWED_PATHS = [
+        "/",
+        "/verify",
+        "/online/status",
+        "/verify-online",
+        "/stats",
+        "/health",
+        "/privacy",
+        "/static",
+        "/export-fixed-document",
+        "/export-references",
+        "/autofix-suggestions",
+        "/fix-log",
+        "/apply-autofix",
+        "/queue/status",
+        "/private-stats"
+    ]
+    
+    # Check if path is allowed (exact match or starts with allowed path)
+    for allowed in ALLOWED_PATHS:
+        if path == allowed or path.startswith(allowed + "/"):
+            return await call_next(request)
+    
     # 🔒 Block sensitive endpoints
     for blocked in BLOCKED_PATHS:
         if path.startswith(blocked):
             return JSONResponse(status_code=404, content={"detail": "Not found"})
-
-    # 🤖 Block bots
-    #if any(b in ua for b in BAD_AGENTS):
-    #   return JSONResponse(status_code=403, content={"detail": "Forbidden"})
-
+    
+    # 🤖 Block bots (commented out but keeping structure)
+    # if any(b in ua for b in BAD_AGENTS):
+    #     return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+    
     return await call_next(request)
-
 
 # =========================
 # REDIRECT MIDDLEWARE (2nd)
@@ -427,7 +448,12 @@ async def security_middleware(request: Request, call_next):
 @app.middleware("http")
 async def redirect_with_message(request: Request, call_next):
     host = request.headers.get("host", "")
-
+    path = request.url.path
+    
+    # Skip redirect for API endpoints
+    if path.startswith("/online/") or path.startswith("/verify") or path.startswith("/private-stats"):
+        return await call_next(request)
+    
     if "citationcrosschecker.onrender.com" in host:
         return HTMLResponse(f"""
         <!DOCTYPE html>
@@ -466,9 +492,8 @@ async def redirect_with_message(request: Request, call_next):
         </body>
         </html>
         """, status_code=301)
-
+    
     return await call_next(request)
-
 
 # =========================
 # SECURITY HEADERS (3rd)
@@ -476,22 +501,22 @@ async def redirect_with_message(request: Request, call_next):
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
-
+    
     # 🔐 HSTS (force HTTPS)
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-
+    
     # 🛡️ Clickjacking protection
     response.headers["X-Frame-Options"] = "DENY"
-
+    
     # 🛡️ MIME sniffing protection
     response.headers["X-Content-Type-Options"] = "nosniff"
-
+    
     # 🛡️ XSS protection (legacy browsers)
     response.headers["X-XSS-Protection"] = "1; mode=block"
-
+    
     # 🛡️ Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-
+    
     # 🛡️ Content Security Policy (safe default)
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
@@ -502,17 +527,17 @@ async def add_security_headers(request: Request, call_next):
         "connect-src 'self'; "
         "frame-ancestors 'none';"
     )
-
+    
     # 🛡️ Permissions policy
     response.headers["Permissions-Policy"] = (
         "geolocation=(), microphone=(), camera=(), payment=()"
     )
-
+    
     # 🛡️ Prevent caching of sensitive responses
     response.headers["Cache-Control"] = "no-store"
-
-    return response
     
+    return response
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 templates_dir = os.path.join(BASE_DIR, "templates")
@@ -617,6 +642,7 @@ def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
                 summary["offline"] += 1
     
     return summary
+
 def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
     payload = {
         "missing_recovery": [],
@@ -625,9 +651,7 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
 
     full_text = result.get("main_text", "") or result.get("full_text", "")
 
-    # -------------------------------------------------
     # Top section: Missing citation recovery
-    # -------------------------------------------------
     missing_items = result.get("missing_in_references", []) or []
     missing_suggestions = result.get("missing_citation_suggestions", {}) or {}
 
@@ -649,9 +673,7 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
                 "message": "" if suggestions else "No evidence found."
             })
 
-    # -------------------------------------------------
     # Bottom section: needs_review / not_found
-    # -------------------------------------------------
     verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
@@ -785,7 +807,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                         _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
                                     except Exception as e:
                                         print(f"[DEBUG] Error rebuilding reference mapping: {e}")
-                                    # Add context-specific recovery payload
+                                    
                                     _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
                                     _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
                                     _store[job_id]["verification"]["results"] = verification_results
@@ -853,7 +875,6 @@ def generate_fixed_document_content(job_data: Dict, autofix_suggestions: Dict) -
     original_text = result.get("main_text", "")
     
     if not original_text:
-        # Try to get from data field
         original_text = result.get("data", {}).get("main_text", "")
     
     if not original_text:
@@ -1047,7 +1068,6 @@ async def debug_verification_data(job_id: str):
     online_verification = result.get("online_verification", {})
     rows = online_verification.get("rows", [])
     
-    # Check first few rows for suggested_references
     sample = []
     for i, row in enumerate(rows[:3]):
         sample.append({
@@ -1058,7 +1078,6 @@ async def debug_verification_data(job_id: str):
             "reference_preview": row.get("reference", "")[:100] if row.get("reference") else ""
         })
     
-    # Also check the raw verification job data if we have the verification_job_id
     verification_job_id = job.get("verification", {}).get("verification_job_id")
     raw_verification_results = None
     if verification_job_id:
@@ -1077,7 +1096,7 @@ async def debug_verification_data(job_id: str):
         "verification_job_id": verification_job_id,
         "total_rows": len(rows),
         "sample": sample,
-        "raw_verification_sample": raw_sample,
+        "raw_verification_sample": raw_sample if verification_job_id else None,
         "full_first_row": rows[0] if rows else None
     }
 
@@ -1203,15 +1222,11 @@ async def verify(
                 content={"error": "Processing failed", "message": result.get("error"), "note": result.get("note", "")}
             )
 
-        # Ensure main_text is stored
         if "main_text" not in result and "data" in result:
             result["main_text"] = result["data"].get("main_text", "")
         
         result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
         
-        # ============================================================
-        # ADD MISSING CITATION RECOVERY SUGGESTIONS
-        # ============================================================
         try:
             missing_citation_suggestions = {}
             full_text = result.get("main_text", "") or result.get("full_text", "")
@@ -1681,7 +1696,6 @@ async def export_references(
     if not verification_rows:
         raise HTTPException(400, "No verification results available. Run online verification first.")
     
-    # Format references
     formatted_refs = format_verified_reference_list(verification_rows, style)
     
     if not formatted_refs:
