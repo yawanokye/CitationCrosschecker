@@ -30,9 +30,9 @@ MAILTO = (
 # Timeout settings (in seconds)
 API_TIMEOUT = 30  # Increased from 45 to 60 seconds per API call
 VERIFICATION_TIMEOUT = None  # No timeout for the overall verification (None = infinite)
-WORKER_THREADS = 3  # Reduce to 2 workers to avoid rate limiting
-RETRY_ATTEMPTS = 4  # Number of retries for failed API calls
-BATCH_DELAY = 0.4  # Delay between references to avoid rate limits
+WORKER_THREADS = 5  # Reduce to 2 workers to avoid rate limiting
+RETRY_ATTEMPTS = 6  # Number of retries for failed API calls
+BATCH_DELAY = 0.5  #Delay between references to avoid rate limits
 
 # ============================================================
 # PROGRESS TRACKING (Lightweight)
