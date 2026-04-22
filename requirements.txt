@@ -17,3 +17,7 @@ psycopg2-binary==2.9.9
 Flask==2.3.3
 flask-cors==4.0.0
 
+# ========== ADD THESE TWO ==========
+redis==5.0.1           # ← Required for Redis connection
+rq==1.15.1             # ← Required for background queue
+# ===================================
