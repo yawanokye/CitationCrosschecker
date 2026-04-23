@@ -1535,7 +1535,9 @@ async def verify(
     enable_online_verification: bool = Form(False),
     request: Request = None
 ):
-    # Validation
+    # =========================
+    # 1. VALIDATION
+    # =========================
     if not file.filename:
         return JSONResponse(
             status_code=400,
@@ -1549,7 +1551,6 @@ async def verify(
         )
     
     if is_server_busy():
-        queue_stats = get_queue_status()
         return JSONResponse(
             status_code=503,
             content={
@@ -1558,86 +1559,106 @@ async def verify(
                 "retry_after": 30
             }
         )
-    
-    # Read file
+
+    # =========================
+    # 2. READ FILE
+    # =========================
     data = await file.read()
     file_size = len(data)
     file_size_mb = round(file_size / (1024 * 1024), 2)
-    
-    # Generate job ID
+
+    # =========================
+    # 3. GENERATE JOB ID
+    # =========================
     job_id = str(uuid.uuid4())
-    
-    # Store file in Redis (1 hour TTL)
-    if redis_conn:
-        redis_conn.setex(f"file:{job_id}", 3600, data)
-        print(f"✅ File stored in Redis for job {job_id}")
-    else:
-        print(f"⚠️ Redis not available - cannot queue job")
+
+    # =========================
+    # 4. STORE FILE IN REDIS
+    # =========================
+    if not redis_conn:
         return JSONResponse(
             status_code=500,
-            content={"error": "Queue system unavailable", "message": "Please try again later"}
+            content={"error": "Queue system unavailable", "message": "Redis not connected"}
         )
-    
-    # Store job in PostgreSQL
+
+    redis_conn.setex(f"file:{job_id}", 3600, data)
+    print(f"✅ File stored in Redis for job {job_id}")
+
+    # =========================
+    # 5. STORE JOB IN DATABASE
+    # =========================
     if DATABASE_URL:
         try:
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
+
             cursor.execute("""
                 INSERT INTO jobs (job_id, status, file_name, file_size_mb, created_at)
-                VALUES (%s, 'queued', %s, %s, NOW())
-            """, (job_id, file.filename, file_size_mb))
+                VALUES (%s, %s, %s, %s, NOW())
+            """, (job_id, "queued", file.filename, file_size_mb))
+
             conn.commit()
             cursor.close()
             conn.close()
+
             print(f"✅ Job {job_id} stored in PostgreSQL")
+
         except Exception as db_error:
             print(f"⚠️ Database error: {db_error}")
-    
-    # Queue the job for background processing
-    if task_queue:
-        try:
-            task_queue.enqueue(
-                "worker.process_document",
-                job_id=job_id,
-                file_content=data,
-                filename=file.filename,
-                style=style,
-                job_timeout=3600
-            )
-            print(f"✅ Job {job_id} queued for background processing")
-        except Exception as q_error:
-            print(f"❌ Failed to queue job: {q_error}")
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Failed to queue job", "message": str(q_error)}
-            )
-    else:
-        print(f"❌ Task queue not initialized")
+
+    # =========================
+    # 6. ENQUEUE JOB (🔥 FIXED)
+    # =========================
+    if not task_queue:
         return JSONResponse(
             status_code=500,
-            content={"error": "Queue system not initialized", "message": "Please try again later"}
+            content={"error": "Queue not initialized"}
         )
-    
-    # Record stats
-    stats_tracker.add_upload(
-        filename=file.filename,
-        file_size=file_size,
-        references_count=0,
-        processing_time=0,
-        success=True,
-        ip_address=request.client.host if request and request.client else None
-    )
-    
-    # Return immediately with job ID
+
+    try:
+        task_queue.enqueue(
+            "worker.process_document",   # 🔥 must match module.function
+            job_id,                      # 🔥 positional args ONLY
+            data,
+            file.filename,
+            style,
+            job_timeout=3600
+        )
+
+        print(f"🔥 Job {job_id} queued successfully")
+
+    except Exception as q_error:
+        print(f"❌ Queue error: {q_error}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to queue job", "message": str(q_error)}
+        )
+
+    # =========================
+    # 7. RECORD STATS
+    # =========================
+    try:
+        stats_tracker.add_upload(
+            filename=file.filename,
+            file_size=file_size,
+            references_count=0,
+            processing_time=0,
+            success=True,
+            ip_address=request.client.host if request and request.client else None
+        )
+    except Exception as stats_error:
+        print(f"⚠️ Stats error: {stats_error}")
+
+    # =========================
+    # 8. RETURN RESPONSE
+    # =========================
     return {
         "job_id": job_id,
         "status": "queued",
-        "message": "Document queued for processing. Check /result/{job_id} for status.",
+        "message": "Document queued. Poll /job/{job_id} for status.",
         "file_name": file.filename,
         "file_size_mb": file_size_mb
     }
-
 # ============================================================
 # RESULT CHECK ENDPOINT
 # ============================================================
@@ -1688,6 +1709,35 @@ async def get_result(job_id: str):
             return {"status": "error", "error": str(e)}
     
     return {"status": "pending", "message": "Job not found"}
+
+@app.get("/job/{job_id}")
+def get_job(job_id: str):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT status, result FROM jobs WHERE job_id = %s",
+            (job_id,)
+        )
+
+        row = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not row:
+            return {"status": "not_found"}
+
+        status, result = row
+
+        return {
+            "status": status,
+            "result": result if status == "completed" else None
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 # ============================================================
 # AUTO-FIX ENDPOINTS
 # ============================================================
