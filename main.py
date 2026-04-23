@@ -7,6 +7,7 @@ import uuid
 import threading
 import time
 import json
+import secrets
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -14,14 +15,19 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Database libraries
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+# FastAPI and web frameworks
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-import secrets
 
+# Your custom modules
 from engine import run_crosscheck, run_crosscheck_with_autofix
 from verify import (
     submit_verification,
@@ -41,18 +47,14 @@ from reference_formatter import (
     DOCX_AVAILABLE
 )
 
+
 # ===============================
 # DATABASE SETUP - PostgreSQL (with SQLite fallback)
 # ===============================
 
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta
-import threading
-
 # Get database URL from environment (Render sets this)
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
 
 class StatsTracker:
     """Stats tracker that works with PostgreSQL (preferred) or SQLite (fallback)"""
@@ -118,6 +120,28 @@ class StatsTracker:
                             processing_count INTEGER DEFAULT 0
                         )
                     """)
+                    
+                    # Create jobs table for queue
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS jobs (
+                            job_id TEXT PRIMARY KEY,
+                            status TEXT,
+                            queue_position INTEGER,
+                            worker_id TEXT,
+                            file_name TEXT,
+                            file_size_mb REAL,
+                            result JSONB,
+                            error TEXT,
+                            processing_time REAL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            started_at TIMESTAMP,
+                            completed_at TIMESTAMP
+                        )
+                    """)
+                    
+                    # Create indexes for jobs table
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
                     
                     # Insert initial stats if not exists
                     cursor.execute("""
@@ -185,6 +209,26 @@ class StatsTracker:
                         processing_count INTEGER DEFAULT 0
                     )
                 """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS jobs (
+                        job_id TEXT PRIMARY KEY,
+                        status TEXT,
+                        queue_position INTEGER,
+                        worker_id TEXT,
+                        file_name TEXT,
+                        file_size_mb REAL,
+                        result TEXT,
+                        error TEXT,
+                        processing_time REAL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        started_at TIMESTAMP,
+                        completed_at TIMESTAMP
+                    )
+                """)
+                
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
                 
                 cursor.execute("""
                     INSERT OR IGNORE INTO stats (id, total_uploads, total_processed, total_failed, total_references_checked)
@@ -264,7 +308,6 @@ class StatsTracker:
                         total = row['total_uploads'] if row else 0
                         print(f"📊 Recorded: {filename} - {references_count} refs (Total: {total})")
             else:
-                # SQLite version (keep your existing SQLite code here)
                 self._add_upload_sqlite(filename, file_size, references_count, 
                                          processing_time, success, ip_address, error)
             return True
@@ -274,7 +317,7 @@ class StatsTracker:
     
     def _add_upload_sqlite(self, filename, file_size, references_count, 
                            processing_time, success, ip_address, error):
-        """SQLite version of add_upload (keep your existing code)"""
+        """SQLite version of add_upload"""
         import sqlite3
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -325,13 +368,191 @@ class StatsTracker:
             
             conn.commit()
     
-    # Keep your existing methods (add_verification, get_stats, clear_stats) 
-    # but add PostgreSQL support similarly
-    # For brevity, I'm showing the pattern - you'll need to convert all methods
+    def add_verification(self, job_id: str, references_count: int, success: bool = True):
+        """Record a verification event"""
+        try:
+            if self.db_type == "postgresql":
+                with self._get_postgres_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            UPDATE stats 
+                            SET total_verifications = total_verifications + 1,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = 1
+                        """)
+                        conn.commit()
+            else:
+                import sqlite3
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE stats 
+                        SET total_verifications = total_verifications + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = 1
+                    """)
+                    conn.commit()
+            print(f"📊 Recorded verification for job {job_id}")
+            return True
+        except Exception as e:
+            print(f"❌ Database error in add_verification: {e}")
+            return False
+    
+    def get_stats(self, detailed: bool = False, days: int = 30):
+        """Get statistics from database"""
+        try:
+            if self.db_type == "postgresql":
+                with self._get_postgres_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT * FROM stats WHERE id = 1")
+                        row = cursor.fetchone()
+                        
+                        if row:
+                            total_uploads = row['total_uploads']
+                            total_processed = row['total_processed']
+                            total_failed = row['total_failed']
+                            total_verifications = row['total_verifications']
+                            total_references = row['total_references_checked']
+                            updated_at = row['updated_at']
+                        else:
+                            total_uploads = total_processed = total_failed = total_verifications = total_references = 0
+                            updated_at = datetime.now()
+                        
+                        success_rate = round((total_processed / max(total_uploads, 1)) * 100, 2)
+                        
+                        cursor.execute("""
+                            SELECT AVG(processing_time) 
+                            FROM uploads 
+                            WHERE success = 1 AND processing_time IS NOT NULL
+                        """)
+                        avg_row = cursor.fetchone()
+                        avg_processing_time = round(avg_row[0], 2) if avg_row and avg_row[0] else 0
+                        
+                        return {
+                            "total_stats": {
+                                "total_uploads": total_uploads,
+                                "total_processed": total_processed,
+                                "total_failed": total_failed,
+                                "success_rate": success_rate,
+                                "total_references_checked": total_references,
+                                "total_verifications": total_verifications,
+                                "average_processing_time": avg_processing_time,
+                                "start_date": datetime.now().isoformat(),
+                                "last_updated": str(updated_at)
+                            }
+                        }
+            else:
+                import sqlite3
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("SELECT * FROM stats WHERE id = 1")
+                    row = cursor.fetchone()
+                    
+                    if row:
+                        total_uploads = row[1]
+                        total_processed = row[2]
+                        total_failed = row[3]
+                        total_verifications = row[4]
+                        total_references = row[5]
+                        updated_at = row[6]
+                    else:
+                        total_uploads = total_processed = total_failed = total_verifications = total_references = 0
+                        updated_at = datetime.now()
+                    
+                    success_rate = round((total_processed / max(total_uploads, 1)) * 100, 2)
+                    
+                    cursor.execute("""
+                        SELECT AVG(processing_time) 
+                        FROM uploads 
+                        WHERE success = 1 AND processing_time IS NOT NULL
+                    """)
+                    avg_row = cursor.fetchone()
+                    avg_processing_time = round(avg_row[0], 2) if avg_row and avg_row[0] else 0
+                    
+                    return {
+                        "total_stats": {
+                            "total_uploads": total_uploads,
+                            "total_processed": total_processed,
+                            "total_failed": total_failed,
+                            "success_rate": success_rate,
+                            "total_references_checked": total_references,
+                            "total_verifications": total_verifications,
+                            "average_processing_time": avg_processing_time,
+                            "start_date": datetime.now().isoformat(),
+                            "last_updated": str(updated_at)
+                        }
+                    }
+                    
+        except Exception as e:
+            print(f"❌ Database error in get_stats: {e}")
+            return {
+                "total_stats": {
+                    "total_uploads": 0,
+                    "total_processed": 0,
+                    "total_failed": 0,
+                    "success_rate": 0,
+                    "total_references_checked": 0,
+                    "total_verifications": 0,
+                    "average_processing_time": 0,
+                    "start_date": datetime.now().isoformat(),
+                    "last_updated": datetime.now().isoformat()
+                }
+            }
+    
+    def clear_stats(self, keep_last_days: int = 30):
+        """Clear statistics older than keep_last_days"""
+        try:
+            if self.db_type == "postgresql":
+                with self._get_postgres_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cutoff_date = datetime.now().date() - timedelta(days=keep_last_days)
+                        
+                        cursor.execute("DELETE FROM uploads WHERE date(timestamp) < %s", (cutoff_date,))
+                        cursor.execute("DELETE FROM daily_stats WHERE date < %s", (cutoff_date,))
+                        
+                        cursor.execute("""
+                            UPDATE stats 
+                            SET total_uploads = (SELECT COUNT(*) FROM uploads),
+                                total_processed = (SELECT COUNT(*) FROM uploads WHERE success = 1),
+                                total_failed = (SELECT COUNT(*) FROM uploads WHERE success = 0),
+                                total_references_checked = (SELECT COALESCE(SUM(references_count), 0) FROM uploads),
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = 1
+                        """)
+                        
+                        conn.commit()
+                        print(f"✅ Cleared stats older than {keep_last_days} days")
+            else:
+                import sqlite3
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    cutoff_date = (datetime.now() - timedelta(days=keep_last_days)).strftime("%Y-%m-%d")
+                    
+                    cursor.execute("DELETE FROM uploads WHERE date(timestamp) < ?", (cutoff_date,))
+                    cursor.execute("DELETE FROM daily_stats WHERE date < ?", (cutoff_date,))
+                    
+                    cursor.execute("""
+                        UPDATE stats 
+                        SET total_uploads = (SELECT COUNT(*) FROM uploads),
+                            total_processed = (SELECT COUNT(*) FROM uploads WHERE success = 1),
+                            total_failed = (SELECT COUNT(*) FROM uploads WHERE success = 0),
+                            total_references_checked = (SELECT COALESCE(SUM(references_count), 0) FROM uploads),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = 1
+                    """)
+                    
+                    conn.commit()
+                    print(f"✅ Cleared stats older than {keep_last_days} days")
+        except Exception as e:
+            print(f"❌ Database error in clear_stats: {e}")
+
 
 # Create the stats tracker instance
 stats_tracker = StatsTracker()
 print(f"✅ Using {stats_tracker.db_type.upper()} database for persistent statistics")
+
 
 # ===============================
 # COUNTER SETUP
@@ -344,6 +565,7 @@ def increment_counter():
     except Exception as e:
         print(f"⚠️ Error getting counter: {e}")
         return 0
+
 
 # ===============================
 # AUTH SETUP
@@ -367,9 +589,10 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
 
 APP_TITLE = "CitationCrosschecker"
 
-# ============================================================
+
+# ===============================
 # LIFESPAN MANAGER
-# ============================================================
+# ===============================
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
@@ -385,6 +608,7 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan
 )
+
 
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
