@@ -17,6 +17,6 @@ pdf2docx==0.5.8
 lxml==5.2.1
 typing-extensions>=4.9.0
 
-psycopg[binary]==3.1.18   ✅
+psycopg2-binary==2.9.9  ✅
 redis==5.0.1
 rq==1.15.1
