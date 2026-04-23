@@ -1,4 +1,4 @@
-# main.py — Citation Crosschecker with Single Job ID System
+# main.py — Citation Crosschecker with Async Queue System
 
 import io
 import os
@@ -18,6 +18,10 @@ from pathlib import Path
 # Database libraries
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+# Queue libraries
+import redis
+from rq import Queue
 
 # FastAPI and web frameworks
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
@@ -54,6 +58,22 @@ from reference_formatter import (
 
 # Get database URL from environment (Render sets this)
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Get Redis URL from environment (Render sets this)
+REDIS_URL = os.environ.get("REDIS_URL")
+
+# Initialize Redis connection and task queue
+redis_conn = None
+task_queue = None
+if REDIS_URL:
+    try:
+        redis_conn = redis.from_url(REDIS_URL)
+        task_queue = Queue("document_processing", connection=redis_conn)
+        print("✅ Redis connected and task queue initialized")
+    except Exception as e:
+        print(f"⚠️ Failed to connect to Redis: {e}")
+else:
+    print("⚠️ REDIS_URL not set - queue disabled")
 
 
 class StatsTracker:
@@ -642,6 +662,7 @@ async def security_middleware(request: Request, call_next):
     ALLOWED_PATHS = [
         "/",
         "/verify",
+        "/result",
         "/online/status",
         "/verify-online",
         "/stats",
@@ -682,7 +703,7 @@ async def redirect_with_message(request: Request, call_next):
     path = request.url.path
     
     # Skip redirect for API endpoints
-    if path.startswith("/online/") or path.startswith("/verify") or path.startswith("/private-stats"):
+    if path.startswith("/online/") or path.startswith("/verify") or path.startswith("/private-stats") or path.startswith("/result"):
         return await call_next(request)
     
     if "citationcrosschecker.onrender.com" in host:
@@ -1162,12 +1183,39 @@ async def debug_job(job_id: str):
 
 @app.get("/debug/autofix-data/{job_id}")
 async def debug_autofix_data(job_id: str):
+    # First check PostgreSQL
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if row and row["result"]:
+                result = row["result"]
+                if isinstance(result, str):
+                    result = json.loads(result)
+                return {
+                    "source": "postgresql",
+                    "has_autofix": "autofix" in result,
+                    "autofix_keys": list(result.get("autofix", {}).keys()) if "autofix" in result else [],
+                    "has_main_text": "main_text" in result,
+                    "main_text_length": len(result.get("main_text", "")),
+                    "references_count": len(result.get("references_raw", []))
+                }
+        except Exception as e:
+            print(f"PostgreSQL lookup error: {e}")
+    
+    # Fallback to in-memory
     job = get_job(job_id)
     if not job:
         return {"error": "Job not found"}
     
     result = job.get("result", {})
     return {
+        "source": "memory",
         "has_autofix": "autofix" in result,
         "autofix_keys": list(result.get("autofix", {}).keys()) if "autofix" in result else [],
         "has_main_text": "main_text" in result,
@@ -1177,6 +1225,40 @@ async def debug_autofix_data(job_id: str):
 
 @app.get("/debug/job-progress/{job_id}")
 async def job_progress(job_id: str):
+    # First check PostgreSQL
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT status, created_at, started_at, completed_at, processing_time, error 
+                FROM jobs WHERE job_id = %s
+            """, (job_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if row:
+                elapsed_seconds = 0
+                if row["started_at"]:
+                    elapsed_seconds = (datetime.now() - row["started_at"]).total_seconds()
+                
+                return {
+                    "job_id": job_id,
+                    "source": "postgresql",
+                    "state": row["status"],
+                    "created_at": str(row["created_at"]) if row["created_at"] else None,
+                    "started_at": str(row["started_at"]) if row["started_at"] else None,
+                    "completed_at": str(row["completed_at"]) if row["completed_at"] else None,
+                    "elapsed_seconds": round(elapsed_seconds, 1),
+                    "elapsed_formatted": format_time(elapsed_seconds),
+                    "processing_time": row["processing_time"],
+                    "error": row["error"]
+                }
+        except Exception as e:
+            print(f"PostgreSQL lookup error: {e}")
+    
+    # Fallback to in-memory
     job = get_job(job_id)
     if not job:
         return {"error": "Job not found"}
@@ -1197,6 +1279,7 @@ async def job_progress(job_id: str):
     
     return {
         "job_id": job_id,
+        "source": "memory",
         "state": verification.get("state"),
         "progress": progress,
         "total": total,
@@ -1221,29 +1304,83 @@ async def debug_verify_status(verification_job_id: str):
         "verification_job_id": verification_job_id,
         "status": status,
         "results_count": len(results) if results else 0,
-        "has_results": results is not None
+        "has_results": results is not None,
+        "sample_result": results[0] if results and len(results) > 0 else None
     }
 
 @app.get("/debug/all-jobs")
 async def debug_all_jobs():
+    jobs_info = {}
+    
+    # Get jobs from PostgreSQL
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT job_id, status, file_name, created_at, completed_at FROM jobs ORDER BY created_at DESC LIMIT 50"
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            for row in rows:
+                jobs_info[row["job_id"]] = {
+                    "source": "postgresql",
+                    "status": row["status"],
+                    "file_name": row["file_name"],
+                    "created_at": str(row["created_at"]) if row["created_at"] else None,
+                    "completed_at": str(row["completed_at"]) if row["completed_at"] else None
+                }
+        except Exception as e:
+            print(f"PostgreSQL lookup error: {e}")
+    
+    # Also get in-memory jobs
     with _lock:
-        jobs = {}
         for job_id, job_data in _store.items():
-            jobs[job_id] = {
-                "verification_state": job_data.get("verification", {}).get("state"),
-                "verification_progress": job_data.get("verification", {}).get("progress"),
-                "has_results": bool(job_data.get("result")),
-                "autofix_applied": job_data.get("autofix_applied", False)
-            }
-        return {"total_jobs": len(jobs), "jobs": jobs}
+            if job_id not in jobs_info:
+                jobs_info[job_id] = {
+                    "source": "memory",
+                    "verification_state": job_data.get("verification", {}).get("state"),
+                    "verification_progress": job_data.get("verification", {}).get("progress"),
+                    "has_results": bool(job_data.get("result")),
+                    "autofix_applied": job_data.get("autofix_applied", False)
+                }
+    
+    return {
+        "total_jobs": len(jobs_info),
+        "jobs": jobs_info
+    }
 
 @app.post("/debug/retry-verification/{job_id}")
 async def debug_retry_verification(job_id: str):
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
+    refs = []
     
-    refs = job["result"].get("references_raw", [])
+    # Try to get references from PostgreSQL first
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if row and row["result"]:
+                result = row["result"]
+                if isinstance(result, str):
+                    result = json.loads(result)
+                refs = result.get("references_raw", [])
+        except Exception as e:
+            print(f"PostgreSQL lookup error: {e}")
+    
+    # Fallback to in-memory
+    if not refs:
+        job = get_job(job_id)
+        if not job:
+            return {"error": "Job not found"}
+        refs = job["result"].get("references_raw", [])
+    
     if not refs:
         return {"error": "No references to verify"}
     
@@ -1259,6 +1396,7 @@ async def debug_retry_verification(job_id: str):
         if final_results:
             summary = _compute_verification_summary(final_results)
             
+            # Update in-memory store
             with _lock:
                 if job_id in _store:
                     _store[job_id]["result"]["online_verification"] = {
@@ -1281,9 +1419,31 @@ async def debug_retry_verification(job_id: str):
                     _store[job_id]["verification"]["results_count"] = len(final_results)
                     _store[job_id]["verification"]["summary"] = summary
             
-            return {"success": True, "summary": summary, "results_count": len(final_results)}
+            # Also update PostgreSQL if possible
+            if DATABASE_URL:
+                try:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE jobs 
+                        SET result = result || jsonb_build_object('online_verification', %s::jsonb)
+                        WHERE job_id = %s
+                    """, (json.dumps({"rows": final_results, "summary": summary}), job_id))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                except Exception as db_error:
+                    print(f"PostgreSQL update error: {db_error}")
+            
+            return {
+                "success": True,
+                "job_id": job_id,
+                "summary": summary,
+                "results_count": len(final_results),
+                "message": f"Verification completed for {len(final_results)} references"
+            }
         else:
-            return {"error": "No results returned"}
+            return {"error": "No results returned from verification"}
         
     except Exception as e:
         return {"error": str(e)}
@@ -1340,6 +1500,11 @@ async def queue_status():
     status = get_queue_status()
     status["server_busy"] = is_server_busy()
     status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
+    # Add queue length from Redis if available
+    if task_queue:
+        status["redis_queue_length"] = len(task_queue)
+    else:
+        status["redis_queue_length"] = 0
     return status
 
 # ============================================================
@@ -1359,7 +1524,7 @@ def privacy(request: Request):
     return templates.TemplateResponse("privacy.html", {"request": request})
 
 # ============================================================
-# INITIAL DOCUMENT CHECK
+# ASYNC DOCUMENT CHECK (QUEUED)
 # ============================================================
 
 @app.post("/verify")
@@ -1370,34 +1535,17 @@ async def verify(
     enable_online_verification: bool = Form(False),
     request: Request = None
 ):
+    # Validation
     if not file.filename:
         return JSONResponse(
             status_code=400,
             content={"error": "No file provided", "message": "Please select a file to upload"}
         )
     
-    filename_lower = file.filename.lower()
-    is_docx = filename_lower.endswith('.docx')
-    is_pdf = filename_lower.endswith('.pdf')
-    
-    if is_pdf:
+    if not file.filename.lower().endswith('.docx'):
         return JSONResponse(
             status_code=400,
-            content={
-                "error": "PDF files are not supported",
-                "message": "Please convert PDF to DOCX first",
-                "instruction": "Open blank Word → File → Open → Select PDF → Click OK → Save as .docx"
-            }
-        )
-    
-    if not is_docx:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Invalid file format",
-                "message": "Only DOCX files are accepted",
-                "instruction": "Please upload a Word document."
-            }
+            content={"error": "Invalid file format", "message": "Only DOCX files are accepted"}
         )
     
     if is_server_busy():
@@ -1407,141 +1555,139 @@ async def verify(
             content={
                 "error": "Server is busy",
                 "message": "Please wait a moment and try again",
-                "queue_size": queue_stats["queue_size"],
-                "pending_jobs": queue_stats["pending_jobs"],
                 "retry_after": 30
             }
         )
     
-    start_time = time.time()
+    # Read file
     data = await file.read()
     file_size = len(data)
+    file_size_mb = round(file_size / (1024 * 1024), 2)
     
-    try:
-        def run():
-            if enable_autofix:
-                return run_crosscheck_with_autofix(
-                    file_bytes=data,
-                    filename=file.filename,
-                    style=style,
-                    verify_online=False,
-                    enable_autofix=True
-                )
-            else:
-                return run_crosscheck(
-                    file_bytes=data,
-                    filename=file.filename,
-                    style=style,
-                    verify_online=False
-                )
-
-        result = await run_in_threadpool(run)
-        
-        if "error" in result:
-            processing_time = time.time() - start_time
-            stats_tracker.add_upload(
-                filename=file.filename,
-                file_size=file_size,
-                references_count=0,
-                processing_time=processing_time,
-                success=False,
-                error=result.get("error"),
-                ip_address=request.client.host if request and request.client else None
-            )
-            return JSONResponse(
-                status_code=422,
-                content={"error": "Processing failed", "message": result.get("error"), "note": result.get("note", "")}
-            )
-
-        if "main_text" not in result and "data" in result:
-            result["main_text"] = result["data"].get("main_text", "")
-        
-        result["reconciliation_reference_to_intext"] = build_reference_to_intext(result)
-        
+    # Generate job ID
+    job_id = str(uuid.uuid4())
+    
+    # Store file in Redis (1 hour TTL)
+    if redis_conn:
+        redis_conn.setex(f"file:{job_id}", 3600, data)
+        print(f"✅ File stored in Redis for job {job_id}")
+    else:
+        print(f"⚠️ Redis not available - cannot queue job")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Queue system unavailable", "message": "Please try again later"}
+        )
+    
+    # Store job in PostgreSQL
+    if DATABASE_URL:
         try:
-            missing_citation_suggestions = {}
-            full_text = result.get("main_text", "") or result.get("full_text", "")
-        
-            missing_items = result.get("missing_in_references", []) or []
-            for item in missing_items:
-                if isinstance(item, dict):
-                    citation_text = item.get("citation_in_text", "") or item.get("citation", "")
-                else:
-                    citation_text = str(item)
-        
-                if not citation_text:
-                    continue
-        
-                context = extract_context(full_text, citation_text, window=200)
-                missing_citation_suggestions[citation_text] = suggest_from_context(context=context, citation=citation_text, top_k=3)
-        
-            result["missing_citation_suggestions"] = missing_citation_suggestions
-        
-        except Exception as e:
-            print(f"[DEBUG] missing_citation_suggestions error: {e}")
-            result["missing_citation_suggestions"] = {}
-        
-        references_count = len(result.get("references_raw", []))
-        processing_time = time.time() - start_time
-        
-        client_ip = None
-        if request and hasattr(request, "client"):
-            client_ip = request.client.host if request.client else None
-        
-        stats_tracker.add_upload(
-            filename=file.filename,
-            file_size=file_size,
-            references_count=references_count,
-            processing_time=processing_time,
-            success=True,
-            ip_address=client_ip
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO jobs (job_id, status, file_name, file_size_mb, created_at)
+                VALUES (%s, 'queued', %s, %s, NOW())
+            """, (job_id, file.filename, file_size_mb))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print(f"✅ Job {job_id} stored in PostgreSQL")
+        except Exception as db_error:
+            print(f"⚠️ Database error: {db_error}")
+    
+    # Queue the job for background processing
+    if task_queue:
+        try:
+            task_queue.enqueue(
+                "worker.process_document",
+                job_id=job_id,
+                file_content=data,
+                filename=file.filename,
+                style=style,
+                job_timeout=3600
+            )
+            print(f"✅ Job {job_id} queued for background processing")
+        except Exception as q_error:
+            print(f"❌ Failed to queue job: {q_error}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Failed to queue job", "message": str(q_error)}
+            )
+    else:
+        print(f"❌ Task queue not initialized")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Queue system not initialized", "message": "Please try again later"}
         )
-        
-        increment_counter()
-        job_id = store_result(result)
-        
-        online_started = False
-        if enable_online_verification and references_count > 0:
+    
+    # Record stats
+    stats_tracker.add_upload(
+        filename=file.filename,
+        file_size=file_size,
+        references_count=0,
+        processing_time=0,
+        success=True,
+        ip_address=request.client.host if request and request.client else None
+    )
+    
+    # Return immediately with job ID
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Document queued for processing. Check /result/{job_id} for status.",
+        "file_name": file.filename,
+        "file_size_mb": file_size_mb
+    }
+
+# ============================================================
+# RESULT CHECK ENDPOINT
+# ============================================================
+
+@app.get("/result/{job_id}")
+async def get_result(job_id: str):
+    """Get job status and result"""
+    
+    # Check Redis cache first
+    if redis_conn:
+        cached = redis_conn.get(f"result:{job_id}")
+        if cached:
             try:
-                update_verification_status(
-                    job_id,
-                    state="running",
-                    total=references_count,
-                    progress=0,
-                    percentage=0,
-                    started_at=now()
-                )
-                
-                verification_job_id = submit_verification(result.get("references_raw", []), style=style)
-                update_verification_status(job_id, verification_job_id=verification_job_id)
-                stats_tracker.add_verification(job_id, references_count, success=True)
-                start_progress_sync(job_id, verification_job_id)
-                online_started = True
-            except Exception as e:
-                print(f"[DEBUG] Auto-start verification failed: {e}")
-                online_started = False
-
-        return {
-            "job_id": job_id,
-            "data": result,
-            "queue_status": get_queue_status(),
-            "autofix_enabled": enable_autofix,
-            "online_verification_started": online_started
-        }
-        
-    except Exception as e:
-        processing_time = time.time() - start_time
-        stats_tracker.add_upload(
-            filename=file.filename,
-            file_size=file_size,
-            references_count=0,
-            processing_time=processing_time,
-            success=False,
-            error=str(e),
-            ip_address=request.client.host if request and request.client else None
-        )
-        raise
-
+                return {"status": "completed", "data": json.loads(cached)}
+            except:
+                pass
+    
+    # Check PostgreSQL
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT status, result, error FROM jobs WHERE job_id = %s",
+                (job_id,)
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if not row:
+                return {"status": "not_found", "error": "Job not found"}
+            
+            if row["status"] == "completed":
+                result = row["result"]
+                if isinstance(result, str):
+                    result = json.loads(result)
+                return {"status": "completed", "data": result}
+            elif row["status"] == "processing":
+                return {"status": "processing", "message": "Processing in background"}
+            elif row["status"] == "queued":
+                return {"status": "queued", "message": "Waiting in queue"}
+            elif row["status"] == "failed":
+                return {"status": "failed", "error": row["error"]}
+            
+        except Exception as e:
+            print(f"Database error: {e}")
+            return {"status": "error", "error": str(e)}
+    
+    return {"status": "pending", "message": "Job not found"}
 # ============================================================
 # AUTO-FIX ENDPOINTS
 # ============================================================
@@ -1973,9 +2119,9 @@ def debug_stats_info(credentials: HTTPBasicCredentials = Depends(security)):
     stats = stats_tracker.get_stats(detailed=True)
     return {
         "storage": "sqlite",
-        "database_path": DB_PATH,
-        "database_exists": os.path.exists(DB_PATH),
-        "database_size": os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
+        "database_path": '/tmp/citation_stats.db',
+        "database_exists": os.path.exists('/tmp/citation_stats.db'),
+        "database_size": os.path.getsize('/tmp/citation_stats.db') if os.path.exists('/tmp/citation_stats.db') else 0,
         "stats": stats
     }
 
@@ -1990,7 +2136,9 @@ def health():
         "status": "healthy" if not queue_stats.get("is_busy", False) else "degraded",
         "timestamp": now(),
         "queue": queue_stats,
-        "server_busy": queue_stats.get("is_busy", False)
+        "server_busy": queue_stats.get("is_busy", False),
+        "redis_connected": redis_conn is not None,
+        "postgresql_connected": DATABASE_URL is not None
     }
 
 # ============================================================
