@@ -32,7 +32,9 @@ def process_document(job_id, filename, style="apa"):
 
     # 🔥 LOAD FILE FROM REDIS (THIS IS THE FIX)
     file_content = redis_conn.get(f"file:{job_id}")
-
+    
+    print(f"📦 File size from Redis: {len(file_content) if file_content else 0}")
+    
     if not file_content:
         raise Exception(f"❌ File not found in Redis for job {job_id}")
 
@@ -55,6 +57,9 @@ def process_document(job_id, filename, style="apa"):
             style=style,
             verify_online=False
         )
+        
+        # 👇 ADD THIS LINE HERE
+        print("🔍 RESULT KEYS:", result.keys() if result else "NO RESULT")
         
         # Store result
         cursor.execute(
