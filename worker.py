@@ -91,4 +91,4 @@ if __name__ == "__main__":
         queue = Queue("document_processing", connection=redis_conn)
         worker = Worker(["document_processing"])
         print("✅ Worker ready, waiting for jobs...")
-        worker.work()
+        worker.work(burst=False)
