@@ -1619,7 +1619,6 @@ async def verify(
         task_queue.enqueue(
             "worker.process_document",   # 🔥 must match module.function
             job_id,                      # 🔥 positional args ONLY
-            data,
             file.filename,
             style,
             job_timeout=3600
