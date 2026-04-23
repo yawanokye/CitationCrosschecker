@@ -26,10 +26,16 @@ except ImportError as e:
     print(f"ERROR: Cannot import engine - {e}")
     sys.exit(1)
 
-def process_document(job_id: str, file_content: bytes, filename: str, style: str = "apa"):
+def process_document(job_id, filename, style="apa"):
     """Process a document - runs in background"""
-    print(f"Processing job {job_id}: {filename}")
-    
+    print(f"🔥 Processing job {job_id}: {filename}")
+
+    # 🔥 LOAD FILE FROM REDIS (THIS IS THE FIX)
+    file_content = redis_conn.get(f"file:{job_id}")
+
+    if not file_content:
+        raise Exception(f"❌ File not found in Redis for job {job_id}")
+
     try:
         # Connect to PostgreSQL
         conn = psycopg2.connect(DATABASE_URL)
@@ -69,7 +75,6 @@ def process_document(job_id: str, file_content: bytes, filename: str, style: str
         
     except Exception as e:
         print(f"❌ Failed job {job_id}: {e}")
-        # Update status to failed
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         cursor.execute(
