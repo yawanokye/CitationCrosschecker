@@ -1955,6 +1955,7 @@ async function runOnlineVerification() {
 
         // ✅ MATCH BACKEND FORMAT
         if (js.started === true) {
+            updateProgress(0, js.total_references || 0, "processing", `Verification started: 0/${js.total_references || 0}`);
             setStatus("Verification in progress...", "info");
             startPolling();
         }
