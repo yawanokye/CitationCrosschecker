@@ -1639,6 +1639,24 @@ async def test_verification(job_id: str):
         "has_verification_results": bool(get_verification_results(verification_job_id)) if verification_job_id else False,
         "references_count": len(result.get("references_raw", []))
     }
+@app.get("/debug/jobs")
+async def debug_jobs():
+    """List all jobs in _store"""
+    with _lock:
+        jobs_info = {}
+        for job_id, job_data in _store.items():
+            verification = job_data.get("verification", {})
+            jobs_info[job_id] = {
+                "verification_state": verification.get("state"),
+                "verification_progress": verification.get("progress"),
+                "verification_total": verification.get("total"),
+                "verification_job_id": verification.get("verification_job_id"),
+                "has_result": bool(job_data.get("result"))
+            }
+    return {
+        "total_jobs": len(jobs_info),
+        "jobs": jobs_info
+    }
 # ============================================================
 # QUEUE STATUS ENDPOINT
 # ============================================================
@@ -2100,18 +2118,64 @@ async def verify_online(job_id: str = Form(...)):
 
 @app.get("/online/status")
 def online_status(job_id: str):
+    print(f"[DEBUG] /online/status called with job_id: {job_id}")
+    
+    # First, try to get the job from the main store
     job = get_job(job_id)
-
+    
+    print(f"[DEBUG] get_job returned: {job is not None}")
+    
     if not job:
+        print(f"[DEBUG] Job {job_id} not found in _store")
+        # Check if it might be in PostgreSQL
+        if DATABASE_URL:
+            try:
+                conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT status, result, error FROM jobs WHERE job_id = %s",
+                    (job_id,)
+                )
+                row = cursor.fetchone()
+                cursor.close()
+                conn.close()
+                if row:
+                    print(f"[DEBUG] Job {job_id} found in PostgreSQL but not in _store")
+                else:
+                    print(f"[DEBUG] Job {job_id} not found in PostgreSQL either")
+            except Exception as e:
+                print(f"[DEBUG] DB lookup error: {e}")
         raise HTTPException(404, "Job not found")
     
-    verification = job["verification"]
+    verification = job.get("verification", {})
     result = job.get("result", {})
+    
+    print(f"[DEBUG] Job found. Verification state: {verification.get('state')}, verification_job_id: {verification.get('verification_job_id')}")
+    
+    # 🔥 CRITICAL: Get the actual verification job ID from the store
+    verification_job_id = verification.get("verification_job_id")
+    
+    if verification_job_id:
+        # Get status from verify.py using the correct verification job ID
+        from verify import get_verification_status
+        verify_status = get_verification_status(verification_job_id)
+        
+        print(f"[DEBUG] verify_status from get_verification_status: {verify_status}")
+        
+        if verify_status:
+            # Update the verification dict with the real progress
+            verification["state"] = verify_status.get("status", "processing")
+            verification["progress"] = verify_status.get("progress", 0)
+            verification["total"] = verify_status.get("total", 0)
+            verification["percentage"] = verify_status.get("percentage", 0)
+            print(f"[DEBUG] Updated verification: progress={verification['progress']}/{verification['total']}, state={verification['state']}")
+    else:
+        print(f"[DEBUG] No verification_job_id found for job {job_id}")
     
     elapsed_seconds = 0
     remaining_seconds = None
     
-    if verification.get("started_at") and verification["state"] == "running":
+    if verification.get("started_at") and verification.get("state") == "running":
         started = datetime.fromisoformat(verification["started_at"])
         elapsed_seconds = (datetime.utcnow() - started).total_seconds()
         
@@ -2123,37 +2187,38 @@ def online_status(job_id: str):
     
     response = {
         "online": {
-            "state": verification["state"],
-            "progress": verification["progress"],
-            "total": verification["total"],
-            "percentage": verification["percentage"],
-            "started_at": verification["started_at"],
-            "completed_at": verification["completed_at"],
+            "state": verification.get("state", "idle"),
+            "progress": verification.get("progress", 0),
+            "total": verification.get("total", 0),
+            "percentage": verification.get("percentage", 0),
+            "started_at": verification.get("started_at"),
+            "completed_at": verification.get("completed_at"),
             "summary": verification.get("summary", {}),
             "results_count": verification.get("results_count", 0),
             "elapsed_seconds": round(elapsed_seconds, 1),
             "elapsed_formatted": format_time(elapsed_seconds),
             "remaining_seconds": round(remaining_seconds, 1) if remaining_seconds else None,
-            "remaining_formatted": format_time(remaining_seconds) if remaining_seconds else None
+            "remaining_formatted": format_time(remaining_seconds) if remaining_seconds else None,
+            "verification_job_id": verification_job_id  # Add this for debugging
         },
-        "result": result if verification["state"] in ["completed", "error"] else None
+        "result": result if verification.get("state") in ["completed", "error"] else None
     }
     
-    if verification["state"] == "completed" and "online_verification" in result:
+    if verification.get("state") == "completed" and "online_verification" in result:
         response["online_verification"] = {
             "rows": result["online_verification"]["rows"],
             "summary": result["online_verification"]["summary"]
         }
     
-    if verification["total"] > 0:
-        time_msg = f"Processing: {verification['progress']}/{verification['total']} ({verification['percentage']}%)"
+    if verification.get("total", 0) > 0:
+        time_msg = f"Processing: {verification.get('progress', 0)}/{verification.get('total', 0)} ({verification.get('percentage', 0)}%)"
         if remaining_seconds:
             time_msg += f" - Est. remaining: {format_time(remaining_seconds)}"
         response["progress"] = {
-            "current": verification["progress"],
-            "total": verification["total"],
-            "percentage": verification["percentage"],
-            "status": verification["state"],
+            "current": verification.get("progress", 0),
+            "total": verification.get("total", 0),
+            "percentage": verification.get("percentage", 0),
+            "status": verification.get("state", "idle"),
             "message": time_msg,
             "elapsed_seconds": round(elapsed_seconds, 1),
             "remaining_seconds": round(remaining_seconds, 1) if remaining_seconds else None
@@ -2162,7 +2227,6 @@ def online_status(job_id: str):
     response["queue"] = get_queue_status()
     
     return response
-
 # ============================================================
 # DOCUMENT EXPORT
 # ============================================================
