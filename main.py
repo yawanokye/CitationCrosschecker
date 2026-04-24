@@ -1011,21 +1011,67 @@ def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
             if isinstance(result, str):
                 result = json.loads(result)
 
-            return {
+            # Check if there's a verification job ID in the result
+            verification_job_id = result.get("verification_job_id")
+            verification_state = "idle"
+            verification_progress = 0
+            verification_total = 0
+            verification_percentage = 0
+            
+            # If verification_job_id exists, get its status from verify.py
+            if verification_job_id:
+                try:
+                    from verify import get_verification_status
+                    verify_status = get_verification_status(verification_job_id)
+                    if verify_status:
+                        verification_state = verify_status.get("status", "idle")
+                        verification_progress = verify_status.get("progress", 0)
+                        verification_total = verify_status.get("total", 0)
+                        verification_percentage = verify_status.get("percentage", 0)
+                        print(f"[DEBUG] Loaded verification state for {verification_job_id}: {verification_progress}/{verification_total}")
+                except Exception as e:
+                    print(f"[DEBUG] Could not get verification status: {e}")
+            
+            # Check if online verification results exist
+            online_verification = result.get("online_verification", {})
+            if online_verification.get("rows"):
+                verification_state = "completed"
+                verification_total = len(online_verification.get("rows", []))
+                verification_progress = verification_total
+                verification_percentage = 100
+            
+            # Build the job record
+            job_record = {
                 "job_id": job_id,
                 "status": row["status"],
                 "result": result or {},
                 "error": row["error"],
                 "verification": {
-                    "state": "idle",
-                    "progress": 0,
-                    "total": 0,
-                    "percentage": 0,
-                    "message": ""
+                    "state": verification_state,
+                    "progress": verification_progress,
+                    "total": verification_total,
+                    "percentage": verification_percentage,
+                    "message": "",
+                    "verification_job_id": verification_job_id,
+                    "started_at": result.get("verification_started_at"),
+                    "completed_at": result.get("verification_completed_at"),
+                    "summary": online_verification.get("summary", {}),
+                    "results_count": len(online_verification.get("rows", []))
                 }
             }
+            
+            # Store in memory for future requests
+            with _lock:
+                _store[job_id] = job_record
+            
+            print(f"[DEBUG] Loaded job {job_id} from PostgreSQL with verification state: {verification_state} ({verification_progress}/{verification_total})")
+            
+            return job_record
+            
         except Exception as e:
             print(f"load_job_record DB error: {e}")
+            import traceback
+            traceback.print_exc()
 
     return None
 
@@ -1152,20 +1198,79 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     _store[job_id]["verification"]["summary"] = summary
                                     _store[job_id]["verification"]["state"] = "completed"
                                     _store[job_id]["verification"]["completed_at"] = now()
+                            
+                            # 🔥 Store completion info in PostgreSQL
+                            if DATABASE_URL:
+                                try:
+                                    conn = psycopg2.connect(DATABASE_URL)
+                                    cursor = conn.cursor()
+                                    cursor.execute("""
+                                        UPDATE jobs
+                                        SET result = result || jsonb_build_object(
+                                            'verification_completed_at', %s,
+                                            'online_verification', %s
+                                        )
+                                        WHERE job_id = %s
+                                    """, (now(), json.dumps({"rows": verification_results, "summary": summary}), job_id))
+                                    conn.commit()
+                                    cursor.close()
+                                    conn.close()
+                                    print(f"[DEBUG] Stored verification completion in PostgreSQL for job {job_id}")
+                                except Exception as e:
+                                    print(f"[DEBUG] Could not persist verification completion: {e}")
                         else:
                             with _lock:
                                 if job_id in _store:
                                     _store[job_id]["verification"]["state"] = "error"
                                     _store[job_id]["verification"]["message"] = "No results retrieved after completion"
+                            
+                            # 🔥 Store error state in PostgreSQL
+                            if DATABASE_URL:
+                                try:
+                                    conn = psycopg2.connect(DATABASE_URL)
+                                    cursor = conn.cursor()
+                                    cursor.execute("""
+                                        UPDATE jobs
+                                        SET result = result || jsonb_build_object(
+                                            'verification_error', %s,
+                                            'verification_completed_at', %s
+                                        )
+                                        WHERE job_id = %s
+                                    """, ("No results retrieved after completion", now(), job_id))
+                                    conn.commit()
+                                    cursor.close()
+                                    conn.close()
+                                except Exception as e:
+                                    print(f"[DEBUG] Could not persist error state: {e}")
                         
                         break
                     
                     # Check for error
                     elif status_state == "error":
+                        error_msg = status.get("error", "Unknown error")
                         with _lock:
                             if job_id in _store:
                                 _store[job_id]["verification"]["state"] = "error"
-                                _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
+                                _store[job_id]["verification"]["message"] = error_msg
+                        
+                        # 🔥 Store error state in PostgreSQL
+                        if DATABASE_URL:
+                            try:
+                                conn = psycopg2.connect(DATABASE_URL)
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    UPDATE jobs
+                                    SET result = result || jsonb_build_object(
+                                        'verification_error', %s,
+                                        'verification_completed_at', %s
+                                    )
+                                    WHERE job_id = %s
+                                """, (error_msg, now(), job_id))
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+                            except Exception as e:
+                                print(f"[DEBUG] Could not persist error state: {e}")
                         break
                     
                     # Check for stall (no progress for too long)
@@ -1175,6 +1280,25 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                             if job_id in _store:
                                 _store[job_id]["verification"]["state"] = "error"
                                 _store[job_id]["verification"]["message"] = "Verification stalled - no progress"
+                        
+                        # 🔥 Store stall error in PostgreSQL
+                        if DATABASE_URL:
+                            try:
+                                conn = psycopg2.connect(DATABASE_URL)
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    UPDATE jobs
+                                    SET result = result || jsonb_build_object(
+                                        'verification_error', %s,
+                                        'verification_completed_at', %s
+                                    )
+                                    WHERE job_id = %s
+                                """, ("Verification stalled - no progress", now(), job_id))
+                                conn.commit()
+                                cursor.close()
+                                conn.close()
+                            except Exception as e:
+                                print(f"[DEBUG] Could not persist stall error: {e}")
                         break
                         
                 else:
@@ -2100,6 +2224,26 @@ async def verify_online(job_id: str = Form(...)):
     verification_job_id = submit_verification(refs, style="apa", enrich_metadata=False)
     update_verification_status(job_id, verification_job_id=verification_job_id)
 
+    # 🔥 Store verification metadata in PostgreSQL
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE jobs
+                SET result = result || jsonb_build_object(
+                    'verification_job_id', %s,
+                    'verification_started_at', %s
+                )
+                WHERE job_id = %s
+            """, (verification_job_id, now(), job_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print(f"[DEBUG] Stored verification_job_id {verification_job_id} in PostgreSQL for job {job_id}")
+        except Exception as e:
+            print(f"[DEBUG] Could not persist verification_job_id: {e}")
+
     stats_tracker.add_verification(job_id, len(refs), success=True)
     start_progress_sync(job_id, verification_job_id)
 
@@ -2120,39 +2264,26 @@ async def verify_online(job_id: str = Form(...)):
 def online_status(job_id: str):
     print(f"[DEBUG] /online/status called with job_id: {job_id}")
     
-    # First, try to get the job from the main store
-    job = get_job(job_id)
+    # Use load_job_record which checks both memory and PostgreSQL
+    job = load_job_record(job_id)
     
-    print(f"[DEBUG] get_job returned: {job is not None}")
+    print(f"[DEBUG] load_job_record returned: {job is not None}")
     
     if not job:
-        print(f"[DEBUG] Job {job_id} not found in _store")
-        # Check if it might be in PostgreSQL
-        if DATABASE_URL:
-            try:
-                conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT status, result, error FROM jobs WHERE job_id = %s",
-                    (job_id,)
-                )
-                row = cursor.fetchone()
-                cursor.close()
-                conn.close()
-                if row:
-                    print(f"[DEBUG] Job {job_id} found in PostgreSQL but not in _store")
-                else:
-                    print(f"[DEBUG] Job {job_id} not found in PostgreSQL either")
-            except Exception as e:
-                print(f"[DEBUG] DB lookup error: {e}")
         raise HTTPException(404, "Job not found")
+    
+    # If job was loaded from PostgreSQL, store it in memory for future requests
+    if job_id not in _store:
+        with _lock:
+            _store[job_id] = job
+        print(f"[DEBUG] Loaded job {job_id} into memory from PostgreSQL")
     
     verification = job.get("verification", {})
     result = job.get("result", {})
     
     print(f"[DEBUG] Job found. Verification state: {verification.get('state')}, verification_job_id: {verification.get('verification_job_id')}")
     
-    # 🔥 CRITICAL: Get the actual verification job ID from the store
+    # Get the actual verification job ID from the store
     verification_job_id = verification.get("verification_job_id")
     
     if verification_job_id:
@@ -2170,7 +2301,23 @@ def online_status(job_id: str):
             verification["percentage"] = verify_status.get("percentage", 0)
             print(f"[DEBUG] Updated verification: progress={verification['progress']}/{verification['total']}, state={verification['state']}")
     else:
-        print(f"[DEBUG] No verification_job_id found for job {job_id}")
+        # Try to find verification_job_id in the result (from database)
+        verification_job_id_in_result = result.get("verification_job_id")
+        if verification_job_id_in_result:
+            verification["verification_job_id"] = verification_job_id_in_result
+            verification_job_id = verification_job_id_in_result
+            print(f"[DEBUG] Found verification_job_id in result: {verification_job_id}")
+            
+            from verify import get_verification_status
+            verify_status = get_verification_status(verification_job_id)
+            if verify_status:
+                verification["state"] = verify_status.get("status", "processing")
+                verification["progress"] = verify_status.get("progress", 0)
+                verification["total"] = verify_status.get("total", 0)
+                verification["percentage"] = verify_status.get("percentage", 0)
+                print(f"[DEBUG] Updated verification from result: progress={verification['progress']}/{verification['total']}")
+        else:
+            print(f"[DEBUG] No verification_job_id found for job {job_id}")
     
     elapsed_seconds = 0
     remaining_seconds = None
@@ -2199,7 +2346,7 @@ def online_status(job_id: str):
             "elapsed_formatted": format_time(elapsed_seconds),
             "remaining_seconds": round(remaining_seconds, 1) if remaining_seconds else None,
             "remaining_formatted": format_time(remaining_seconds) if remaining_seconds else None,
-            "verification_job_id": verification_job_id  # Add this for debugging
+            "verification_job_id": verification_job_id
         },
         "result": result if verification.get("state") in ["completed", "error"] else None
     }
