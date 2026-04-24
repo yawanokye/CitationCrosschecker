@@ -1753,43 +1753,125 @@ async function exportReferences(format = 'docx') {
 async function runInitialCheck() {
     const fileInput = document.getElementById("file");
     const file = fileInput?.files?.[0];
-    if (!file) { setStatus("Please choose a file first", "warn"); return; }
-    if (!file.name.toLowerCase().endsWith('.docx')) {
+
+    if (!file) {
+        setStatus("Please choose a file first", "warn");
+        return;
+    }
+
+    if (!file.name.toLowerCase().endsWith(".docx")) {
         setStatus("Only DOCX files are accepted.", "warn");
         return;
     }
+
     resetProcessFeedback();
     updateProcessFeedback("Upload", "active");
+
     if (POLL_TIMER) clearInterval(POLL_TIMER);
+
     VERIFICATION_IN_PROGRESS = false;
     LAST_JOB_ID = null;
     resetVerificationUI();
-    setStatus("Analyzing document...");
+
+    setStatus("Uploading document...", "warn");
+
     const fd = new FormData();
     fd.append("file", file);
     fd.append("style", "apa");
+
     const autofixCheck = document.getElementById("autofix");
     const onlineVerifyCheck = document.getElementById("onlineVerify");
+
     fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
     fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
+
     try {
-        const res = await fetch("/verify", { method: "POST", body: fd });
+        const res = await fetch("/verify", {
+            method: "POST",
+            body: fd
+        });
+
         if (res.status === 503) {
-            setStatus("Server is busy, please wait...", "warn");
-            if (RETRY_COUNT < 3) { RETRY_COUNT++; setTimeout(runInitialCheck, CONFIG.RETRY_DELAY); }
+            setStatus("Server is busy, please wait.", "warn");
+            if (RETRY_COUNT < 3) {
+                RETRY_COUNT++;
+                setTimeout(runInitialCheck, CONFIG.RETRY_DELAY);
+            }
             return;
         }
+
         const js = await res.json();
+
+        if (!js.job_id) {
+            throw new Error(js.message || js.error || "No job ID returned");
+        }
+
         LAST_JOB_ID = js.job_id;
-        updateProcessFeedback("Extract", "completed");
-        updateProcessFeedback("Match", "active");
-        renderAll(js);
-        setStatus("Analysis complete", "good");
-        updateQueueStatus();
-        const btnVerify = document.getElementById("btnVerify");
-        if (btnVerify) btnVerify.disabled = false;
-        if (js.online_verification_started) startPolling();
-    } catch (err) { setStatus("Error: " + err.message, "bad"); }
+
+        updateProcessFeedback("Upload", "completed");
+        updateProcessFeedback("Extract", "active");
+
+        setStatus("Document queued. Waiting for analysis result...", "warn");
+
+        pollAnalysisResult(js.job_id);
+
+    } catch (err) {
+        setStatus("Error: " + err.message, "bad");
+    }
+}
+
+async function pollAnalysisResult(jobId) {
+    try {
+        const res = await fetch(`/result/${encodeURIComponent(jobId)}`);
+        const js = await res.json();
+
+        console.log("ANALYSIS POLL:", js);
+
+        if (js.status === "completed") {
+            const result = js.data || js.result;
+
+            if (!result) {
+                throw new Error("Completed job has no result data");
+            }
+
+            renderAll(result);
+
+            updateProcessFeedback("Extract", "completed");
+            updateProcessFeedback("Match", "completed");
+            updateProcessFeedback("ACII", "completed");
+
+            setStatus("Analysis complete", "good");
+
+            const btnVerify = document.getElementById("btnVerify");
+            if (btnVerify) btnVerify.disabled = false;
+
+            updateQueueStatus();
+
+            const onlineVerifyCheck = document.getElementById("onlineVerify");
+            if (onlineVerifyCheck?.checked) {
+                runOnlineVerification();
+            }
+
+            return;
+        }
+
+        if (js.status === "failed") {
+            setStatus("Analysis failed: " + (js.error || "Unknown error"), "bad");
+            return;
+        }
+
+        if (js.status === "processing") {
+            setStatus("Processing document...", "warn");
+        } else if (js.status === "queued") {
+            setStatus("Waiting in queue...", "warn");
+        }
+
+        setTimeout(() => pollAnalysisResult(jobId), 2000);
+
+    } catch (err) {
+        console.error("Polling error:", err);
+        setStatus("Error checking result: " + err.message, "bad");
+    }
 }
 
 // Run Online Verification
