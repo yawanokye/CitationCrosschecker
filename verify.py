@@ -28,11 +28,11 @@ MAILTO = (
 # ============================================================
 
 # Timeout settings (in seconds)
-API_TIMEOUT = 120  # Increased from 60 to 120 seconds per API call
+API_TIMEOUT = 60  # Increased from 60 to 120 seconds per API call
 VERIFICATION_TIMEOUT = None  # No timeout for the overall verification
 WORKER_THREADS = 2  # Reduce to 2 workers to avoid rate limiting and memory issues
-RETRY_ATTEMPTS = 5  # Increase retries for failed API calls
-BATCH_DELAY = 1.0  # Increase delay between references to avoid rate limits
+RETRY_ATTEMPTS = 3  # Increase retries for failed API calls
+BATCH_DELAY = 0.5  # Increase delay between references to avoid rate limits
 
 # NEW: Chunk processing for large reference sets
 CHUNK_SIZE = 50  # Process references in chunks of 50
