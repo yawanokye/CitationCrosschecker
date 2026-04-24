@@ -2264,19 +2264,28 @@ async def verify_online(job_id: str = Form(...)):
 def online_status(job_id: str):
     print(f"[DEBUG] /online/status called with job_id: {job_id}")
     
-    # Use load_job_record which checks both memory and PostgreSQL
+    # First, try to get the job from the main store using load_job_record
     job = load_job_record(job_id)
     
-    print(f"[DEBUG] load_job_record returned: {job is not None}")
-    
     if not job:
-        raise HTTPException(404, "Job not found")
-    
-    # If job was loaded from PostgreSQL, store it in memory for future requests
-    if job_id not in _store:
+        print(f"[DEBUG] Job {job_id} not found in memory or PostgreSQL")
+        
+        # Check if there are any jobs in memory for debugging
         with _lock:
-            _store[job_id] = job
-        print(f"[DEBUG] Loaded job {job_id} into memory from PostgreSQL")
+            memory_jobs = list(_store.keys())
+            print(f"[DEBUG] Jobs in memory: {memory_jobs}")
+        
+        # Return a more helpful 404 response
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "Job not found",
+                "job_id": job_id,
+                "message": f"No job found with ID {job_id}. The job may have expired or been deleted.",
+                "status_code": 404,
+                "timestamp": now()
+            }
+        )
     
     verification = job.get("verification", {})
     result = job.get("result", {})
@@ -2576,7 +2585,46 @@ def debug_stats_info(credentials: HTTPBasicCredentials = Depends(security)):
         "database_size": os.path.getsize('/tmp/citation_stats.db') if os.path.exists('/tmp/citation_stats.db') else 0,
         "stats": stats
     }
-
+@app.get("/debug/recent-jobs")
+async def debug_recent_jobs(limit: int = 10):
+    """List recent jobs from PostgreSQL for debugging"""
+    jobs_info = []
+    
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT job_id, status, file_name, created_at, completed_at 
+                FROM jobs 
+                ORDER BY created_at DESC 
+                LIMIT %s
+            """, (limit,))
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            for row in rows:
+                jobs_info.append({
+                    "job_id": row["job_id"],
+                    "status": row["status"],
+                    "file_name": row["file_name"],
+                    "created_at": str(row["created_at"]) if row["created_at"] else None,
+                    "completed_at": str(row["completed_at"]) if row["completed_at"] else None
+                })
+        except Exception as e:
+            print(f"PostgreSQL lookup error: {e}")
+    
+    # Also get in-memory jobs
+    with _lock:
+        memory_jobs = list(_store.keys())
+    
+    return {
+        "recent_jobs_from_db": jobs_info,
+        "jobs_in_memory": memory_jobs,
+        "total_in_memory": len(memory_jobs),
+        "total_in_db": len(jobs_info)
+    }
 # ============================================================
 # HEALTH CHECK
 # ============================================================
