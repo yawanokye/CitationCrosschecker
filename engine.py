@@ -510,7 +510,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
             checked += 1
             if _ref_like(s):
                 seen += 1
-        return seen >= 6
+        return seen >= 2
 
     main_lines: List[str] = []
     ref_lines: List[str] = []
