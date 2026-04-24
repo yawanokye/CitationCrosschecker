@@ -880,7 +880,36 @@ def extract_references_enhanced(text: str) -> List[str]:
         refs = extract_references_heuristic(text)
     return refs
 
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in items:
+        k = norm_space(x).lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(norm_space(x))
+    return out
 
+
+def recover_references_for_verification(text: str, style_hint: str = "apa") -> List[str]:
+    if not text:
+        return []
+
+    refs = extract_references_enhanced(text)
+
+    if style_hint == "apa":
+        refs = [r for r in refs if _is_plausible_reference_entry(r)]
+    else:
+        refs = [r for r in refs if r and len(norm_space(r)) >= 10]
+
+    refs = _dedupe_keep_order(refs)
+
+    if style_hint == "numeric":
+        refs = _split_embedded_numeric_refs(refs)
+
+    return refs
+    
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
@@ -2139,6 +2168,18 @@ def run_crosscheck(
         references_raw = _merge_reference_lines(ref_block_lines)
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
+        
+        # Fallback recovery for weak or failed extraction
+        if style_hint == "apa" and len(references_raw) < 2:
+            recovered = recover_references_for_verification(main_text, style_hint="apa")
+            if len(recovered) > len(references_raw):
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
+        elif style_hint == "numeric" and len(references_raw) == 0:
+            recovered = recover_references_for_verification(main_text, style_hint="numeric")
+            if recovered:
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
 
     elif name.endswith(".pdf"):
         try:
@@ -2154,6 +2195,18 @@ def run_crosscheck(
             }
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
+        
+        # Fallback recovery for weak or failed extraction
+        if style_hint == "apa" and len(references_raw) < 2:
+            recovered = recover_references_for_verification(main_text, style_hint="apa")
+            if len(recovered) > len(references_raw):
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
+        elif style_hint == "numeric" and len(references_raw) == 0:
+            recovered = recover_references_for_verification(main_text, style_hint="numeric")
+            if recovered:
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
 
     else:
         return {"error": "Upload a DOCX or PDF"}
@@ -2248,7 +2301,6 @@ def run_crosscheck(
     }
     
     return result
-
 
 # ============================================================================
 # ENHANCED API WITH AUTO-FIX (OPTIONAL - DOES NOT REPLACE ORIGINAL)
