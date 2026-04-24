@@ -1609,7 +1609,36 @@ async def debug_verification_data(job_id: str):
         "raw_verification_sample": raw_sample if verification_job_id else None,
         "full_first_row": rows[0] if rows else None
     }
-
+@app.get("/debug/test-verification/{job_id}")
+async def test_verification(job_id: str):
+    """Test endpoint to check verification status"""
+    job = get_job(job_id)
+    if not job:
+        return {"error": "Job not found"}
+    
+    verification = job.get("verification", {})
+    result = job.get("result", {})
+    
+    # Get the verification job ID
+    verification_job_id = verification.get("verification_job_id")
+    
+    # Get status from verify.py
+    from verify import get_verification_status, get_verification_results
+    
+    verify_status = None
+    if verification_job_id:
+        verify_status = get_verification_status(verification_job_id)
+    
+    return {
+        "job_id": job_id,
+        "verification_job_id": verification_job_id,
+        "frontend_state": verification.get("state"),
+        "frontend_progress": verification.get("progress"),
+        "frontend_total": verification.get("total"),
+        "backend_verify_status": verify_status,
+        "has_verification_results": bool(get_verification_results(verification_job_id)) if verification_job_id else False,
+        "references_count": len(result.get("references_raw", []))
+    }
 # ============================================================
 # QUEUE STATUS ENDPOINT
 # ============================================================
