@@ -1677,7 +1677,33 @@ async def debug_sync_status(job_id: str):
         "completed_at": verification.get("completed_at"),
         "sync_thread_running": verification.get("state") == "running" and verification.get("total", 0) > 0
     }
+@app.get("/debug/check-verification/{job_id}")
+async def debug_check_verification(job_id: str):
+    """Debug endpoint to check verification data"""
+    job = load_job_record(job_id)
+    if not job:
+        return {"error": "Job not found"}
     
+    verification = job.get("verification", {})
+    result = job.get("result", {})
+    
+    # Check verification results from verify.py
+    from verify import get_verification_results
+    verification_job_id = verification.get("verification_job_id")
+    stored_results = get_verification_results(verification_job_id) if verification_job_id else None
+    
+    return {
+        "job_id": job_id,
+        "verification_job_id": verification_job_id,
+        "verification_state": verification.get("state"),
+        "verification_progress": verification.get("progress"),
+        "verification_total": verification.get("total"),
+        "verification_completed_at": verification.get("completed_at"),
+        "has_online_verification_in_result": "online_verification" in result,
+        "online_verification_rows": len(result.get("online_verification", {}).get("rows", [])),
+        "stored_results_from_verify_py": len(stored_results) if stored_results else 0,
+        "result_keys": list(result.keys())
+    }    
 @app.post("/debug/retry-verification/{job_id}")
 async def debug_retry_verification(job_id: str):
     refs = []
