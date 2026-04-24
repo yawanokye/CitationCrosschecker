@@ -1064,19 +1064,29 @@ def update_verification_status(job_id: str, **kwargs):
 
 def start_progress_sync(job_id: str, verification_job_id: str):
     def sync():
-        print(f"[DEBUG] Sync thread started for job {job_id}")
+        print(f"[DEBUG] Sync thread started for job {job_id}, verification_job_id={verification_job_id}")
         
         last_progress = -1
         no_progress_count = 0
         max_no_progress = 300
+        last_log_time = time.time()
         
         while True:
             try:
+                # Get status from verify.py's job tracking
                 status = get_verification_status(verification_job_id)
+                
+                # Debug log every 10 seconds
+                if time.time() - last_log_time > 10:
+                    print(f"[DEBUG] Sync status for {verification_job_id}: {status}")
+                    last_log_time = time.time()
                 
                 if status:
                     current_progress = status.get("progress", 0)
                     total = status.get("total", 0)
+                    status_state = status.get("status", "processing")
+                    
+                    print(f"[DEBUG] Progress update: {current_progress}/{total} (state: {status_state})")
                     
                     if current_progress == last_progress:
                         no_progress_count += 1
@@ -1086,24 +1096,37 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                     
                     with _lock:
                         if job_id in _store:
+                            # Update verification state for frontend polling
                             _store[job_id]["verification"]["progress"] = current_progress
                             _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
-                            _store[job_id]["verification"]["state"] = status.get("status", "running")
+                            _store[job_id]["verification"]["state"] = status_state
                             _store[job_id]["verification"]["total"] = total
                             
-                            if status.get("status") == "completed":
-                                verification_results = None
-                                max_attempts = 20
-                                for attempt in range(max_attempts):
-                                    verification_results = get_verification_results(verification_job_id)
-                                    if verification_results:
-                                        print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
-                                        break
-                                    time.sleep(2)
-                                
-                                if verification_results:
-                                    summary = _compute_verification_summary(verification_results)
-                                    
+                            # Also update the message for frontend display
+                            if total > 0:
+                                _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total}"
+                            else:
+                                _store[job_id]["verification"]["message"] = "Starting verification..."
+                            
+                            print(f"[DEBUG] Updated _store for job {job_id}: progress={current_progress}, total={total}, state={status_state}")
+                    
+                    # Check for completion
+                    if status_state == "completed":
+                        print(f"[DEBUG] Verification job {verification_job_id} completed!")
+                        verification_results = None
+                        max_attempts = 20
+                        for attempt in range(max_attempts):
+                            verification_results = get_verification_results(verification_job_id)
+                            if verification_results:
+                                print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
+                                break
+                            time.sleep(2)
+                        
+                        if verification_results:
+                            summary = _compute_verification_summary(verification_results)
+                            
+                            with _lock:
+                                if job_id in _store:
                                     _store[job_id]["result"]["online_verification"] = {
                                         "rows": verification_results,
                                         "summary": summary
@@ -1127,25 +1150,40 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     _store[job_id]["verification"]["results"] = verification_results
                                     _store[job_id]["verification"]["results_count"] = len(verification_results)
                                     _store[job_id]["verification"]["summary"] = summary
-                                else:
+                                    _store[job_id]["verification"]["state"] = "completed"
+                                    _store[job_id]["verification"]["completed_at"] = now()
+                        else:
+                            with _lock:
+                                if job_id in _store:
                                     _store[job_id]["verification"]["state"] = "error"
                                     _store[job_id]["verification"]["message"] = "No results retrieved after completion"
-                                
-                                _store[job_id]["verification"]["state"] = "completed"
-                                _store[job_id]["verification"]["completed_at"] = now()
-                                break
-                                
-                            elif status.get("status") == "error":
-                                with _lock:
-                                    if job_id in _store:
-                                        _store[job_id]["verification"]["state"] = "error"
-                                        _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
-                                break
+                        
+                        break
+                    
+                    # Check for error
+                    elif status_state == "error":
+                        with _lock:
+                            if job_id in _store:
+                                _store[job_id]["verification"]["state"] = "error"
+                                _store[job_id]["verification"]["message"] = status.get("error", "Unknown error")
+                        break
+                    
+                    # Check for stall (no progress for too long)
+                    if no_progress_count > max_no_progress:
+                        print(f"[DEBUG] No progress for {max_no_progress * 2} seconds, marking as error")
+                        with _lock:
+                            if job_id in _store:
+                                _store[job_id]["verification"]["state"] = "error"
+                                _store[job_id]["verification"]["message"] = "Verification stalled - no progress"
+                        break
+                        
                 else:
                     print(f"[DEBUG] No status found for verification job {verification_job_id}, waiting...")
                 
             except Exception as e:
                 print(f"[DEBUG] Error in sync thread: {e}")
+                import traceback
+                traceback.print_exc()
             
             time.sleep(2)
         
@@ -1414,6 +1452,25 @@ async def debug_all_jobs():
         "jobs": jobs_info
     }
 
+@app.get("/debug/sync-status/{job_id}")
+async def debug_sync_status(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        return {"error": "Job not found"}
+    
+    verification = job.get("verification", {})
+    return {
+        "job_id": job_id,
+        "verification_job_id": verification.get("verification_job_id"),
+        "state": verification.get("state"),
+        "progress": verification.get("progress"),
+        "total": verification.get("total"),
+        "percentage": verification.get("percentage"),
+        "started_at": verification.get("started_at"),
+        "completed_at": verification.get("completed_at"),
+        "sync_thread_running": verification.get("state") == "running" and verification.get("total", 0) > 0
+    }
+    
 @app.post("/debug/retry-verification/{job_id}")
 async def debug_retry_verification(job_id: str):
     refs = []
