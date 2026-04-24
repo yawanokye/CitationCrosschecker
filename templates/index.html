@@ -1372,11 +1372,8 @@ function startPolling() {
 
     console.log("🚀 STARTING POLLING...");
 
-    POLL_TIMER = setInterval(fetchStatus, 2000);
-}
-
-function stopPolling() {
-    if (POLL_TIMER) { clearInterval(POLL_TIMER); POLL_TIMER = null; }
+    // Poll more frequently for better responsiveness
+    POLL_TIMER = setInterval(fetchStatus, 1000);  // Change from 2000ms to 1000ms
 }
 
 // Helper Functions
@@ -1966,8 +1963,10 @@ async function runOnlineVerification() {
 
         // ✅ MATCH BACKEND FORMAT
         if (js.started === true) {
-            updateProgress(0, js.total_references || 0, "processing", `Verification started: 0/${js.total_references || 0}`);
-            setStatus("Verification in progress...", "info");
+            // 🔥 FIXED: Show total immediately
+            const total = js.total_references || 0;
+            updateProgress(0, total, "processing", `Verification started: 0/${total}`);
+            setStatus(`Verification in progress: 0/${total}`, "info");
             startPolling();
         }
         else if (js.completed === true) {
