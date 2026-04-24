@@ -1303,13 +1303,24 @@ async function fetchStatus() {
         console.log("🌍 CURRENT DOMAIN:", window.location.origin);
         
         if (js.online) {
-            const progress = js.online.progress || 0;
-            const total = js.online.total || 0;
+            // 🔥 FIXED: Use ?? instead of || to handle zero values properly
+            const progress = js.online.progress ?? 0;
+            const total = js.online.total ?? 0;
             const state = js.online.state || "processing";
 
-            if (total > 0) {
-                updateProgress(progress, total, state);
+            // 🔥 FIXED: Update progress even when total is 0 (show starting state)
+            // Use a meaningful message that doesn't say "0/0"
+            let message;
+            if (total === 0 && state === "running") {
+                message = "Starting verification... (0 references queued)";
+            } else if (total === 0 && state === "idle") {
+                message = "Waiting for verification to begin...";
+            } else {
+                message = `Verifying references: ${progress}/${total}`;
             }
+            
+            // Always update progress, even when total is 0
+            updateProgress(progress, total, state, message);
 
             // 🔥 COMPLETION HANDLING (FINAL)
             if (js.online.state === "completed") {
