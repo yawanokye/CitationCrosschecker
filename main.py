@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from engine import run_crosscheck, run_crosscheck_with_autofix, recover_references_for_verification
 
 # Your custom modules
 from engine import run_crosscheck, run_crosscheck_with_autofix
@@ -984,6 +985,49 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
         })
 
     return payload
+def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
+    # prefer in-memory because it contains verification state
+    with _lock:
+        if job_id in _store:
+            return _store[job_id]
+
+    # fallback to PostgreSQL
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT status, result, error FROM jobs WHERE job_id = %s",
+                (job_id,)
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+
+            if not row:
+                return None
+
+            result = row["result"]
+            if isinstance(result, str):
+                result = json.loads(result)
+
+            return {
+                "job_id": job_id,
+                "status": row["status"],
+                "result": result or {},
+                "error": row["error"],
+                "verification": {
+                    "state": "idle",
+                    "progress": 0,
+                    "total": 0,
+                    "percentage": 0,
+                    "message": ""
+                }
+            }
+        except Exception as e:
+            print(f"load_job_record DB error: {e}")
+
+    return None
 
 def store_result(result):
     job_id = uuid.uuid4().hex
@@ -1728,33 +1772,14 @@ async def get_result(job_id: str):
     return {"status": "pending", "message": "Job not found"}
 
 @app.get("/job/{job_id}")
-def get_job(job_id: str):
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-
-        cursor.execute(
-            "SELECT status, result FROM jobs WHERE job_id = %s",
-            (job_id,)
-        )
-
-        row = cursor.fetchone()
-
-        cursor.close()
-        conn.close()
-
-        if not row:
-            return {"status": "not_found"}
-
-        status, result = row
-
-        return {
-            "status": status,
-            "result": result if status == "completed" else None
-        }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+def get_job_endpoint(job_id: str):
+    job = load_job_record(job_id)
+    if not job:
+        return {"status": "not_found"}
+    return {
+        "status": job.get("status", "unknown"),
+        "result": job.get("result")
+    }
 # ============================================================
 # AUTO-FIX ENDPOINTS
 # ============================================================
@@ -1862,54 +1887,118 @@ async def get_fix_log(job_id: str):
 
 @app.post("/verify-online")
 async def verify_online(job_id: str = Form(...)):
-    job = get_job(job_id)
+    job = load_job_record(job_id)
 
     if not job:
         raise HTTPException(404, "Job not found")
 
-    if job["verification"]["state"] == "running":
+    verification = job.get("verification", {}) or {}
+    result = job.get("result", {}) or {}
+
+    # if an old bad attempt marked it completed but no rows exist, reopen it
+    existing_rows = ((result.get("online_verification") or {}).get("rows") or [])
+    if verification.get("state") == "completed" and not existing_rows:
+        update_verification_status(
+            job_id,
+            state="idle",
+            progress=0,
+            total=0,
+            percentage=0,
+            message=""
+        )
+        verification["state"] = "idle"
+
+    if verification.get("state") == "running":
         return {
             "started": False,
             "message": "Verification already in progress",
             "job_id": job_id,
-            "progress": job["verification"].get("progress", 0),
-            "total": job["verification"].get("total", 0)
+            "progress": verification.get("progress", 0),
+            "total": verification.get("total", 0)
         }
-    
-    if job["verification"]["state"] == "completed":
+
+    if verification.get("state") == "completed" and existing_rows:
         return {
             "started": False,
             "message": "Verification already completed",
             "job_id": job_id,
             "completed": True
         }
-    
-    refs = job["result"].get("references_raw", [])
-    
+
+    refs = result.get("references_raw", []) or []
+
+    # repair references if engine returned none
     if not refs:
-        update_verification_status(job_id, state="completed", message="No references to verify")
+        repaired = recover_references_for_verification(
+            result.get("main_text", ""),
+            style_hint="apa"
+        )
+        if repaired:
+            refs = repaired
+            result["references_raw"] = repaired
+            result.setdefault("summary", {})["reference_entries_found"] = len(repaired)
+
+            with _lock:
+                if job_id in _store:
+                    _store[job_id]["result"]["references_raw"] = repaired
+                    _store[job_id]["result"].setdefault("summary", {})["reference_entries_found"] = len(repaired)
+
+            if DATABASE_URL:
+                try:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE jobs
+                        SET result = result || %s::jsonb
+                        WHERE job_id = %s
+                    """, (
+                        json.dumps({
+                            "references_raw": repaired,
+                            "summary": {
+                                **(result.get("summary") or {}),
+                                "reference_entries_found": len(repaired)
+                            }
+                        }),
+                        job_id
+                    ))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                except Exception as e:
+                    print(f"[DEBUG] Could not persist repaired references: {e}")
+
+    if not refs:
+        update_verification_status(
+            job_id,
+            state="idle",
+            progress=0,
+            total=0,
+            percentage=0,
+            message=result.get("reference_detection_message", "No references extracted")
+        )
         return {
             "started": False,
-            "message": "No references to verify",
-            "job_id": job_id
+            "message": result.get("reference_detection_message", "No references extracted"),
+            "job_id": job_id,
+            "reason": "no_references"
         }
-    
-    print(f"[DEBUG] Starting verification for job {job_id} with {len(refs)} references")
-    
+
     update_verification_status(
         job_id,
         state="running",
         total=len(refs),
         progress=0,
         percentage=0,
-        started_at=now()
+        started_at=now(),
+        message="Verification started"
     )
-    
+
     verification_job_id = submit_verification(refs, style="apa")
     update_verification_status(job_id, verification_job_id=verification_job_id)
+
     stats_tracker.add_verification(job_id, len(refs), success=True)
     start_progress_sync(job_id, verification_job_id)
-    
+
     return {
         "started": True,
         "job_id": job_id,
@@ -1919,7 +2008,6 @@ async def verify_online(job_id: str = Form(...)):
         "estimated_time_formatted": format_time(len(refs) * 4),
         "message": "Verification started. Check /online/status for progress."
     }
-
 # ============================================================
 # STATUS POLLING
 # ============================================================
