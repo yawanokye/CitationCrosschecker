@@ -28,12 +28,15 @@ MAILTO = (
 # ============================================================
 
 # Timeout settings (in seconds)
-API_TIMEOUT = 60  # Increased from 45 to 60 seconds per API call
-VERIFICATION_TIMEOUT = None  # No timeout for the overall verification (None = infinite)
-WORKER_THREADS = 3  # Reduce to 2 workers to avoid rate limiting
-RETRY_ATTEMPTS = 4  # Number of retries for failed API calls
-BATCH_DELAY = 0.4  #Delay between references to avoid rate limits
+API_TIMEOUT = 120  # Increased from 60 to 120 seconds per API call
+VERIFICATION_TIMEOUT = None  # No timeout for the overall verification
+WORKER_THREADS = 2  # Reduce to 2 workers to avoid rate limiting and memory issues
+RETRY_ATTEMPTS = 5  # Increase retries for failed API calls
+BATCH_DELAY = 1.0  # Increase delay between references to avoid rate limits
 
+# NEW: Chunk processing for large reference sets
+CHUNK_SIZE = 50  # Process references in chunks of 50
+CHUNK_DELAY = 5  # Delay between chunks to allow system to recover
 # ============================================================
 # PROGRESS TRACKING (Lightweight)
 # ============================================================
@@ -494,18 +497,35 @@ def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None)
     if timeout is None:
         timeout = API_TIMEOUT
     
-    try:
-        headers = {
-            "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
-            "Accept": "application/json",
-        }
-        r = requests.get(url, params=params, timeout=timeout, headers=headers)
-        if r.status_code != 200:
+    for attempt in range(3):  # Add retry loop
+        try:
+            headers = {
+                "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
+                "Accept": "application/json",
+            }
+            r = requests.get(url, params=params, timeout=timeout, headers=headers)
+            if r.status_code == 200:
+                return r.json()
+            elif r.status_code == 429:  # Rate limited
+                wait_time = (attempt + 1) * 5
+                print(f"[DEBUG] Rate limited, waiting {wait_time} seconds...")
+                time.sleep(wait_time)
+                continue
+            else:
+                return None
+        except requests.exceptions.Timeout:
+            print(f"[DEBUG] Timeout on attempt {attempt + 1}, retrying...")
+            if attempt < 2:
+                time.sleep(2)
+                continue
             return None
-        return r.json()
-    except Exception as e:
-        print(f"[DEBUG] API request failed: {e}")
-        return None
+        except Exception as e:
+            print(f"[DEBUG] API request failed: {e}")
+            if attempt < 2:
+                time.sleep(2)
+                continue
+            return None
+    return None
 
 
 def _extract_year(text: str) -> str:
@@ -1231,16 +1251,13 @@ def verify_references_batch(
     enrich_metadata: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Verify references batch with optional progress tracking.
-    ALWAYS returns ALL results. NO TIME LIMITS - processes all references.
+    Verify references batch with chunked processing for large datasets.
     """
     print(f"[DEBUG] 🔥 verify_references_batch CALLED")
     print(f"[DEBUG] References count: {len(references)}")
     print(f"[DEBUG] Style: {style}")
     print(f"[DEBUG] job_id: {job_id}")
     print(f"[DEBUG] enrich_metadata: {enrich_metadata}")
-    print(f"[DEBUG] use_crossref: {use_crossref}")
-    print(f"[DEBUG] use_openalex: {use_openalex}")
     
     refs = [r for r in (references or []) if _safe_strip(r)]
     if not refs:
@@ -1250,124 +1267,133 @@ def verify_references_batch(
     normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
     total_refs = len(refs)
     
-    # Calculate estimated time
-    est_seconds = total_refs * (API_TIMEOUT / 2)
-    est_minutes = est_seconds / 60
-    est_hours = est_minutes / 60
+    # Process in chunks to avoid memory issues and timeouts
+    chunks = [refs[i:i + CHUNK_SIZE] for i in range(0, total_refs, CHUNK_SIZE)]
+    print(f"[DEBUG] Splitting into {len(chunks)} chunks of up to {CHUNK_SIZE} references each")
     
-    print(f"[DEBUG] ========================================")
-    print(f"[DEBUG] Starting verification for {total_refs} references")
-    print(f"[DEBUG] Style: {normalized_style}")
-    print(f"[DEBUG] Enrich metadata: {enrich_metadata}")
-    print(f"[DEBUG] Job ID for tracking: {job_id}")
-    if est_hours >= 1:
-        print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
-    elif est_minutes >= 1:
-        print(f"[DEBUG] Estimated time: ~{est_minutes:.1f} minutes")
-    else:
-        print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
-    print(f"[DEBUG] ========================================")
-
-    rows: List[Dict[str, Any]] = [None] * total_refs
-    # Use WORKER_THREADS to control concurrency
-    workers = min(WORKER_THREADS, max(1, total_refs))
-    print(f"[DEBUG] Using {workers} workers (to avoid rate limits)")
-
-    start_time = time.time()
+    all_rows: List[Dict[str, Any]] = []
+    completed_so_far = 0
     
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {}
+    for chunk_idx, chunk in enumerate(chunks):
+        print(f"[DEBUG] ========================================")
+        print(f"[DEBUG] Processing chunk {chunk_idx + 1}/{len(chunks)} ({len(chunk)} references)")
+        print(f"[DEBUG] Chunk references: {len(chunk)}")
         
-        print(f"[DEBUG] Submitting {total_refs} tasks to executor...")
-        for i, ref in enumerate(refs):
-            future = executor.submit(
-                _verify_single_reference,
-                ref,
-                normalized_style,
-                use_crossref,
-                use_openalex,
-                enrich_metadata,
-            )
-            futures[future] = i
-            if (i + 1) % 10 == 0 or i == 0:
-                print(f"[DEBUG] Submitted {i+1}/{total_refs} tasks")
+        # Calculate estimated time for this chunk
+        est_seconds = len(chunk) * (API_TIMEOUT / 2)
+        est_minutes = est_seconds / 60
         
-        print(f"[DEBUG] All {total_refs} tasks submitted. Waiting for completion...")
-        completed_count = 0
+        print(f"[DEBUG] Estimated time for chunk: ~{est_minutes:.1f} minutes")
+        print(f"[DEBUG] ========================================")
+
+        rows: List[Dict[str, Any]] = [None] * len(chunk)
+        workers = min(WORKER_THREADS, max(1, len(chunk)))
+        print(f"[DEBUG] Using {workers} workers for this chunk")
+
+        start_time = time.time()
         
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                rows[idx] = future.result()
-                completed_count += 1
-                
-                # Update progress if tracking
-                if job_id:
-                    update_job_progress(job_id, completed_count)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            
+            for i, ref in enumerate(chunk):
+                future = executor.submit(
+                    _verify_single_reference,
+                    ref,
+                    normalized_style,
+                    use_crossref,
+                    use_openalex,
+                    enrich_metadata,
+                )
+                futures[future] = i
+            
+            completed_count = 0
+            
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    rows[idx] = future.result()
+                    completed_count += 1
                     
-                    # Print progress every 5 references or at completion
-                    if completed_count % 5 == 0 or completed_count == total_refs:
-                        elapsed = time.time() - start_time
-                        rate = completed_count / elapsed if elapsed > 0 else 0
-                        remaining = (total_refs - completed_count) / rate if rate > 0 else 0
-                        print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%) - Rate: {rate:.1f}/sec - Est. remaining: {remaining/60:.1f} min")
-                
-                # Small delay to avoid rate limiting
-                time.sleep(BATCH_DELAY)
+                    # Update progress
+                    current_total = completed_so_far + completed_count
+                    if job_id:
+                        update_job_progress(job_id, current_total)
+                        
+                        if completed_count % 5 == 0 or completed_count == len(chunk):
+                            elapsed = time.time() - start_time
+                            rate = completed_count / elapsed if elapsed > 0 else 0
+                            remaining = (len(chunk) - completed_count) / rate if rate > 0 else 0
+                            total_remaining = (total_refs - current_total) / rate if rate > 0 else 0
+                            print(f"[DEBUG] Chunk progress: {completed_count}/{len(chunk)} - Overall: {current_total}/{total_refs}")
+                            print(f"[DEBUG] Est. remaining for chunk: {remaining/60:.1f} min - Total: {total_remaining/60:.1f} min")
                     
-            except Exception as e:
-                print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
-                import traceback
-                traceback.print_exc()
-                rows[idx] = {
-                    "reference": refs[idx],
-                    "style": normalized_style,
-                    "status": "not_found",
-                    "source": "",
-                    "score": 0,
-                    "doi": "",
-                    "matched_title": "",
-                    "matched_year": "",
-                    "matched_authors": "",
-                    "title_score": 0,
-                    "author_overlap": 0,
-                    "author_similarity": 0,
-                    "year_match": 0,
-                    "query_used": "",
-                    "author": "",
-                    "error": str(e),
-                }
-                completed_count += 1
-                if job_id:
-                    update_job_progress(job_id, completed_count)
-
-    print(f"[DEBUG] All references processed. Total completed: {completed_count}")
+                    # Small delay to avoid rate limiting
+                    time.sleep(BATCH_DELAY)
+                        
+                except Exception as e:
+                    print(f"[DEBUG] Error verifying reference in chunk {chunk_idx + 1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    rows[idx] = {
+                        "reference": chunk[idx],
+                        "style": normalized_style,
+                        "status": "not_found",
+                        "source": "",
+                        "score": 0,
+                        "doi": "",
+                        "matched_title": "",
+                        "matched_year": "",
+                        "matched_authors": "",
+                        "title_score": 0,
+                        "author_overlap": 0,
+                        "author_similarity": 0,
+                        "year_match": 0,
+                        "query_used": "",
+                        "author": "",
+                        "error": str(e),
+                    }
+                    completed_count += 1
+                    if job_id:
+                        update_job_progress(job_id, completed_so_far + completed_count)
+        
+        # Add chunk results to all_rows
+        all_rows.extend(rows)
+        completed_so_far += len(chunk)
+        
+        # Save intermediate results to prevent data loss
+        if job_id:
+            store_verification_results(job_id, all_rows)
+            print(f"[DEBUG] Saved intermediate results for chunk {chunk_idx + 1}, total so far: {len(all_rows)}")
+        
+        # Delay between chunks to allow system to recover
+        if chunk_idx < len(chunks) - 1:
+            print(f"[DEBUG] Waiting {CHUNK_DELAY} seconds before next chunk...")
+            time.sleep(CHUNK_DELAY)
     
-    # Count results for debugging
+    # Final count results
     result_counts = {
-        "verified": sum(1 for r in rows if r and r.get("status") == "verified"),
-        "likely": sum(1 for r in rows if r and r.get("status") == "likely"),
-        "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
-        "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
-        "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
+        "verified": sum(1 for r in all_rows if r and r.get("status") == "verified"),
+        "likely": sum(1 for r in all_rows if r and r.get("status") == "likely"),
+        "needs_review": sum(1 for r in all_rows if r and r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in all_rows if r and r.get("status") == "not_found"),
+        "offline": sum(1 for r in all_rows if r and r.get("status") == "offline"),
     }
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Verification COMPLETE for {total_refs} references")
     print(f"[DEBUG] Results: {result_counts}")
     print(f"[DEBUG] ========================================")
 
-    for r in rows:
+    for r in all_rows:
         if r:
             r["status"] = _normalize_verify_status(r.get("status"))
 
-    # Store results if job_id was provided
+    # Store final results
     if job_id:
         update_job_progress(job_id, total_refs)
-        store_verification_results(job_id, rows)
-        print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
+        store_verification_results(job_id, all_rows)
+        print(f"[DEBUG] Stored final verification results for job {job_id}, got {len(all_rows)} results")
 
-    return rows
-
+    return all_rows
 
 # ============================================================
 # BACKGROUND JOB SUBMISSION
