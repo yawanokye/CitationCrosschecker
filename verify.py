@@ -91,14 +91,17 @@ def update_job_progress(job_id: str, progress: int):
         if job_id in _jobs:
             job = _jobs[job_id]
             job.progress = progress
-            if progress >= job.total:
+            # 🔥 Ensure status is "processing" while in progress
+            if progress < job.total:
+                job.status = "processing"
+            else:
                 job.status = "completed"
                 job.completed_at = datetime.now().isoformat()
                 print(f"[DEBUG] Job {job_id}: COMPLETED - {progress}/{job.total}")
-            else:
-                # Print progress every 10 references to avoid spam
-                if progress % 10 == 0:
-                    print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total}")
+            
+            # Print every update for debugging
+            if progress % 5 == 0 or progress == job.total:
+                print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total} (status: {job.status})")
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
     """Get job progress status"""
@@ -1271,6 +1274,7 @@ def verify_references_batch(
     print(f"[DEBUG] Starting verification for {total_refs} references")
     print(f"[DEBUG] Style: {normalized_style}")
     print(f"[DEBUG] Enrich metadata: {enrich_metadata}")
+    print(f"[DEBUG] Job ID for tracking: {job_id}")
     if est_hours >= 1:
         print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
     elif est_minutes >= 1:
@@ -1278,9 +1282,6 @@ def verify_references_batch(
     else:
         print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
     print(f"[DEBUG] ========================================")
-
-    
-    print(f"[DEBUG] Created verification job {job_id}")
 
     rows: List[Dict[str, Any]] = [None] * total_refs
     # Use WORKER_THREADS to control concurrency
@@ -1305,28 +1306,40 @@ def verify_references_batch(
             futures[future] = i
 
         completed_count = 0
+        last_progress_update = 0
+        
         for future in as_completed(futures):
             idx = futures[future]
             try:
                 rows[idx] = future.result()
                 completed_count += 1
                 
-                # Update progress if tracking
+                # 🔥 CRITICAL: Update progress for EVERY completed reference
                 if job_id:
                     update_job_progress(job_id, completed_count)
                     
-                    # Print progress every 10 references or at completion
-                    if completed_count % 10 == 0 or completed_count == total_refs:
-                        elapsed = time.time() - start_time
-                        rate = completed_count / elapsed if elapsed > 0 else 0
-                        remaining = (total_refs - completed_count) / rate if rate > 0 else 0
+                    # Print progress every reference for debugging
+                    elapsed = time.time() - start_time
+                    rate = completed_count / elapsed if elapsed > 0 else 0
+                    remaining = (total_refs - completed_count) / rate if rate > 0 else 0
+                    
+                    # Print every reference for heavy debugging, or every 5 for production
+                    if completed_count % 5 == 0 or completed_count == total_refs:
                         print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%) - Rate: {rate:.1f}/sec - Est. remaining: {remaining/60:.1f} min")
+                    
+                    # 🔥 Force update every reference for frontend visibility
+                    # Get current job status to verify it's updating
+                    job_status = get_job_status(job_id)
+                    if job_status:
+                        print(f"[DEBUG] Job {job_id} status: {job_status['progress']}/{job_status['total']} ({job_status['percentage']}%)")
                 
                 # Small delay to avoid rate limiting
                 time.sleep(BATCH_DELAY)
                     
             except Exception as e:
                 print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
+                import traceback
+                traceback.print_exc()
                 rows[idx] = {
                     "reference": refs[idx],
                     "style": normalized_style,
@@ -1348,6 +1361,7 @@ def verify_references_batch(
                 completed_count += 1
                 if job_id:
                     update_job_progress(job_id, completed_count)
+                    print(f"[DEBUG] Error handled, progress updated to {completed_count}/{total_refs}")
 
     # Count results for debugging
     result_counts = {
@@ -1373,6 +1387,10 @@ def verify_references_batch(
         store_verification_results(job_id, rows)
         print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
         
+        # Verify storage worked
+        stored = get_verification_results(job_id)
+        print(f"[DEBUG] Verification stored, retrieved {len(stored) if stored else 0} results")
+        
         # Debug: Check if first row has suggestions
         if rows and len(rows) > 0:
             print(f"[DEBUG] First row has 'suggested_references': {'suggested_references' in rows[0]}")
@@ -1382,7 +1400,6 @@ def verify_references_batch(
                     print(f"[DEBUG] Suggestion: {s.get('title', 'N/A')[:60]}...")
 
     return rows
-
 
 # ---------------------------------------------------------
 # Background job submission (NO TIME LIMITS)
@@ -1421,7 +1438,7 @@ def submit_verification(references: List[str], style: str = "apa", enrich_metada
             references,
             style,
             job_id=job_id,
-            enrich_metadata=enrich_metadata
+            enrich_metadata=enrich_metadata  # ✅ Make sure this is passed
         )
         elapsed = time.time() - start_time
         print(f"[DEBUG] Background thread completed for job {job_id}")
