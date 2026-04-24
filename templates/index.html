@@ -1336,16 +1336,48 @@ function getUniqueCitationsWithCount(c2rRows) {
 }
 
 function normalizeData(payload) {
-    const data = payload?.data || payload?.result || payload || {};
-    const s = data.summary || {};
-    data.summary = {
-        in_text_citations_found: toNum(s.in_text_citations_found ?? data.intext_count),
-        reference_entries_found: toNum(s.reference_entries_found ?? data.reference_entries_found),
-        missing_in_references: toNum(s.missing_in_references ?? (data.missing_in_references || []).length),
-        uncited_references: toNum(s.uncited_references ?? (data.uncited_references || []).length),
-        match_rate: toNum(s.match_rate ?? data.match_rate)
+    const base = payload?.result || payload?.data || payload || {};
+
+    console.log("RAW PAYLOAD:", payload);
+    console.log("BASE USED:", base);
+
+    const s = base.summary;
+
+    return {
+        ...base,
+        summary: {
+            in_text_citations_found: toNum(
+                (s && s.in_text_citations_found !== undefined)
+                    ? s.in_text_citations_found
+                    : base.in_text_citations_found ?? base.intext_count ?? 0
+            ),
+
+            reference_entries_found: toNum(
+                (s && s.reference_entries_found !== undefined)
+                    ? s.reference_entries_found
+                    : base.reference_entries_found ??
+                      (base.references_raw?.length ?? 0)
+            ),
+
+            missing_in_references: toNum(
+                (s && s.missing_in_references !== undefined)
+                    ? s.missing_in_references
+                    : (base.missing_in_references?.length ?? 0)
+            ),
+
+            uncited_references: toNum(
+                (s && s.uncited_references !== undefined)
+                    ? s.uncited_references
+                    : (base.uncited_references?.length ?? 0)
+            ),
+
+            match_rate: toNum(
+                (s && s.match_rate !== undefined)
+                    ? s.match_rate
+                    : base.match_rate ?? 0
+            )
+        }
     };
-    return data;
 }
 
 // Render Functions
