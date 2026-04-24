@@ -68,8 +68,12 @@ task_queue = None
 if REDIS_URL:
     try:
         redis_conn = redis.from_url(REDIS_URL)
+
         task_queue = Queue("document_processing", connection=redis_conn)
-        print("✅ Redis connected and task queue initialized")
+        verification_queue = Queue("verification", connection=redis_conn)
+
+        print("✅ Redis connected and both queues initialized")
+
     except Exception as e:
         print(f"⚠️ Failed to connect to Redis: {e}")
 else:
