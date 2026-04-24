@@ -1274,9 +1274,7 @@ def verify_references_batch(
         print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
     print(f"[DEBUG] ========================================")
 
-    # Create job for progress tracking if job_id provided
-    if job_id:
-        create_verification_job(job_id, total_refs)
+    
         print(f"[DEBUG] Created verification job {job_id}")
 
     rows: List[Dict[str, Any]] = [None] * total_refs
