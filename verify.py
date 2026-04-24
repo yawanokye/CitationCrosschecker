@@ -1204,7 +1204,8 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
             row["correction_suggestions"] = []
 
             # NEW: Enrich with full metadata from Crossref
-            row = enrich_with_full_metadata(row)
+            if enrich_metadata:
+                row = enrich_with_full_metadata(row)
 
         else:
             row["status"] = "not_found"
@@ -1382,25 +1383,20 @@ def verify_references_batch(
 # Background job submission (NO TIME LIMITS)
 # ---------------------------------------------------------
 
-def submit_verification(references: List[str], style: str = "apa", enrich_metadata: bool = True) -> str:
+def submit_verification(references: List[str], style: str = "apa", enrich_metadata: bool = False) -> str:
     """
     Submit a verification job and return job ID (runs in background)
-    NO TIME LIMITS - will process all references regardless of count
-    
-    Args:
-        references: List of reference strings to verify
-        style: Citation style ("apa", "harvard", etc.)
-        enrich_metadata: If True, fetch full metadata (volume, issue, pages, full author names)
-    
-    Returns:
-        Job ID for tracking progress
     """
     job_id = uuid.uuid4().hex
     total_refs = len(references)
-    est_seconds = total_refs * (API_TIMEOUT / 2)
+
+    # CRITICAL: create the progress job before the thread starts
+    create_verification_job(job_id, total_refs)
+
+    est_seconds = total_refs * max(2, API_TIMEOUT / 4)
     est_minutes = est_seconds / 60
     est_hours = est_minutes / 60
-    
+
     print(f"[DEBUG] ========================================")
     print(f"[DEBUG] Submitting verification job {job_id}")
     print(f"[DEBUG] Total references: {total_refs}")
@@ -1412,26 +1408,30 @@ def submit_verification(references: List[str], style: str = "apa", enrich_metada
     else:
         print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
     print(f"[DEBUG] ========================================")
-    
+
     def run():
         print(f"[DEBUG] Starting background thread for job {job_id}")
         start_time = time.time()
-        results = verify_references_batch(references, style, job_id=job_id, enrich_metadata=enrich_metadata)
+        results = verify_references_batch(
+            references,
+            style,
+            job_id=job_id,
+            enrich_metadata=enrich_metadata
+        )
         elapsed = time.time() - start_time
         print(f"[DEBUG] Background thread completed for job {job_id}")
         print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
         print(f"[DEBUG] Results count: {len(results)}")
-        
-        # Print final summary
+
         verified = sum(1 for r in results if r.get("status") == "verified")
         likely = sum(1 for r in results if r.get("status") == "likely")
         needs_review = sum(1 for r in results if r.get("status") == "needs_review")
         not_found = sum(1 for r in results if r.get("status") == "not_found")
         print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
-    
+
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    
+
     return job_id
 
 
