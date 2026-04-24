@@ -1311,6 +1311,18 @@ async function fetchStatus() {
         const js = await res.json();
         console.log("📡 STATUS RESPONSE:", js);
         
+        // Check if we have results directly in the response
+        if (js.result && js.result.online_verification && js.result.online_verification.rows && js.result.online_verification.rows.length > 0) {
+            console.log("✅ Found verification results directly in status response");
+            renderAll(js.result);
+            stopPolling();
+            VERIFICATION_IN_PROGRESS = false;
+            const btnVerify = $("btnVerify");
+            if (btnVerify) btnVerify.disabled = false;
+            setStatus(`Verification complete! ${js.result.online_verification.rows.length} references verified.`, "good");
+            return;
+        }
+        
         if (js.online) {
             const progress = js.online.progress ?? 0;
             const total = js.online.total ?? 0;
@@ -1342,32 +1354,43 @@ async function fetchStatus() {
                 // Stop polling first
                 stopPolling();
                 
-                // Fetch final results with retries
+                // Try multiple endpoints to get results
                 let finalData = null;
                 let attempts = 0;
-                const maxAttempts = 15;
+                const maxAttempts = 20;
                 
                 while (!finalData && attempts < maxAttempts) {
                     try {
+                        // Try /job endpoint first
                         console.log(`Fetching final results attempt ${attempts + 1}/${maxAttempts}...`);
-                        const finalRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
-                        finalData = await finalRes.json();
-                        console.log(`Final result attempt ${attempts + 1}:`, finalData);
+                        const jobRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
+                        const jobData = await jobRes.json();
+                        console.log(`Job endpoint attempt ${attempts + 1}:`, jobData);
                         
-                        // Check if we have valid results
-                        if (finalData.result && finalData.result.online_verification && finalData.result.online_verification.rows) {
-                            console.log(`✅ Found ${finalData.result.online_verification.rows.length} verification results!`);
+                        if (jobData.result && jobData.result.online_verification && jobData.result.online_verification.rows && jobData.result.online_verification.rows.length > 0) {
+                            console.log(`✅ Found ${jobData.result.online_verification.rows.length} verification results via /job endpoint!`);
+                            finalData = jobData.result;
                             break;
-                        } else if (finalData.result && finalData.result.online_verification) {
-                            console.log("Found online_verification but no rows yet, waiting...");
-                            finalData = null;
-                        } else if (finalData.result) {
-                            console.log("Found result but no online_verification yet, waiting...");
-                            finalData = null;
-                        } else {
-                            console.log("No result yet, waiting...");
-                            finalData = null;
                         }
+                        
+                        // Try /result endpoint as fallback
+                        console.log(`Trying /result endpoint...`);
+                        const resultRes = await fetch(`/result/${encodeURIComponent(LAST_JOB_ID)}`);
+                        const resultData = await resultRes.json();
+                        console.log(`Result endpoint attempt ${attempts + 1}:`, resultData);
+                        
+                        if (resultData.data && resultData.data.online_verification && resultData.data.online_verification.rows && resultData.data.online_verification.rows.length > 0) {
+                            console.log(`✅ Found ${resultData.data.online_verification.rows.length} verification results via /result endpoint!`);
+                            finalData = resultData.data;
+                            break;
+                        }
+                        
+                        if (resultData.result && resultData.result.online_verification && resultData.result.online_verification.rows && resultData.result.online_verification.rows.length > 0) {
+                            console.log(`✅ Found ${resultData.result.online_verification.rows.length} verification results via /result endpoint!`);
+                            finalData = resultData.result;
+                            break;
+                        }
+                        
                     } catch (e) {
                         console.error("Final fetch error:", e);
                     }
@@ -1378,44 +1401,34 @@ async function fetchStatus() {
                     }
                 }
                 
-                if (finalData && finalData.result && finalData.result.online_verification && finalData.result.online_verification.rows) {
-                    console.log(`🎉 Rendering ${finalData.result.online_verification.rows.length} results...`);
-                    renderAll(finalData.result);
-                    setStatus(`Verification complete! ${finalData.result.online_verification.rows.length} references verified.`, "good");
+                if (finalData && finalData.online_verification && finalData.online_verification.rows) {
+                    console.log(`🎉 Rendering ${finalData.online_verification.rows.length} results...`);
+                    renderAll(finalData);
+                    setStatus(`Verification complete! ${finalData.online_verification.rows.length} references verified.`, "good");
                     console.log("Results rendered successfully");
                 } else {
                     console.error("Could not retrieve verification results after multiple attempts");
-                    setStatus("Verification complete but results not available. Please refresh the page and try again.", "warn");
+                    setStatus("Verification complete but results are still loading. Please wait a moment and refresh the page.", "warn");
                     
-                    // Try one more time with a different endpoint
-                    try {
-                        console.log("Trying alternative endpoint...");
-                        const altRes = await fetch(`/result/${encodeURIComponent(LAST_JOB_ID)}`);
-                        const altData = await altRes.json();
-                        if (altData.data && altData.data.online_verification) {
-                            console.log("Found results via /result endpoint!");
-                            renderAll(altData.data);
-                            setStatus("Verification complete! Results loaded.", "good");
+                    // Set a timer to auto-refresh the results after 5 seconds
+                    setTimeout(async () => {
+                        console.log("Auto-retry fetching results...");
+                        try {
+                            const retryRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
+                            const retryData = await retryRes.json();
+                            if (retryData.result && retryData.result.online_verification && retryData.result.online_verification.rows) {
+                                console.log(`Auto-retry found ${retryData.result.online_verification.rows.length} results!`);
+                                renderAll(retryData.result);
+                                setStatus(`Verification complete! ${retryData.result.online_verification.rows.length} references verified.`, "good");
+                            }
+                        } catch (e) {
+                            console.error("Auto-retry failed:", e);
                         }
-                    } catch (e) {
-                        console.error("Alternative fetch failed:", e);
-                    }
+                    }, 5000);
                 }
                 
                 return;
             }
-        }
-        
-        // Also check if js.result exists directly (for already completed jobs)
-        if (js.result && js.result.online_verification && js.result.online_verification.rows && js.result.online_verification.rows.length > 0) {
-            console.log("Found verification results directly in status response");
-            renderAll(js.result);
-            stopPolling();
-            VERIFICATION_IN_PROGRESS = false;
-            const btnVerify = $("btnVerify");
-            if (btnVerify) btnVerify.disabled = false;
-            setStatus(`Verification complete! ${js.result.online_verification.rows.length} references verified.`, "good");
-            return;
         }
         
     } catch (err) {
