@@ -1907,16 +1907,16 @@ async function runOnlineVerification() {
 
         console.log("VERIFY RESPONSE:", js);
 
-        // 🔥 FIX: use status instead of js.started / js.completed
-        if (js.status === "started" || js.status === "processing") {
+        // ✅ MATCH BACKEND FORMAT
+        if (js.started === true) {
             setStatus("Verification in progress...", "info");
-            startPolling();   // 🔥 critical
+            startPolling();
         }
-        else if (js.status === "completed") {
+        else if (js.completed === true) {
             setStatus("Verification already completed", "good");
             VERIFICATION_IN_PROGRESS = false;
             if (btnVerify) btnVerify.disabled = false;
-            fetchStatus();   // refresh UI immediately
+            fetchStatus();
         }
         else {
             setStatus(js.message || "Verification could not start", "warn");
