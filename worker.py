@@ -57,7 +57,7 @@ def process_document(job_id, filename, style="apa"):
             style=style,
             verify_online=False
         )
-        
+        print("🔍 RESULT:", result)
         # 👇 ADD THIS LINE HERE
         print("🔍 RESULT KEYS:", result.keys() if result else "NO RESULT")
         
