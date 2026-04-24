@@ -751,6 +751,20 @@ async def redirect_with_message(request: Request, call_next):
     
     return await call_next(request)
 
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+
+@app.middleware("http")
+async def force_single_domain(request: Request, call_next):
+    host = request.headers.get("host", "")
+
+    if "citationcrosschecker-1.onrender.com" in host:
+        return RedirectResponse(
+            url=f"https://citationcrosschecker.onrender.com{request.url.path}",
+            status_code=301
+        )
+
+    return await call_next(request)
 # =========================
 # SECURITY HEADERS (3rd)
 # =========================
