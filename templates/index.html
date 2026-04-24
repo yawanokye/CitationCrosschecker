@@ -1282,41 +1282,85 @@ document.querySelectorAll(".tab").forEach(tab => {
 // Status Polling
 async function fetchStatus() {
     if (!LAST_JOB_ID) return;
+
     POLL_ATTEMPT_COUNT++;
+
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
         stopPolling();
         VERIFICATION_IN_PROGRESS = false;
+
         const btnVerify = $("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
+
         return;
     }
+
     try {
         const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
         const js = await res.json();
+
+        console.log("📡 STATUS RESPONSE:", js);
+
         if (js.online) {
             const progress = js.online.progress || 0;
             const total = js.online.total || 0;
             const state = js.online.state || "processing";
-            if (total > 0) updateProgress(progress, total, state);
+
+            if (total > 0) {
+                updateProgress(progress, total, state);
+            }
+
+            // 🔥 COMPLETION HANDLING (FIXED)
             if (js.online.state === "completed") {
                 setStatus("Online verification complete", "good");
+
                 VERIFICATION_IN_PROGRESS = false;
+
                 const btnVerify = $("btnVerify");
                 if (btnVerify) btnVerify.disabled = false;
-                updateProgress(total, total, "completed", `✅ Complete! All ${total} citations verified`);
+
+                updateProgress(
+                    total,
+                    total,
+                    "completed",
+                    `✅ Complete! All ${total} citations verified`
+                );
+
+                // 🔥 CRITICAL: fetch final updated result
+                try {
+                    const finalRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
+                    const finalData = await finalRes.json();
+
+                    console.log("FINAL RESULT:", finalData);
+
+                    if (finalData.result) {
+                        renderAll(finalData.result);
+                    }
+                } catch (e) {
+                    console.error("Final fetch failed:", e);
+                }
+
                 stopPolling();
+                return;
             }
         }
-        if (js.result) renderAll(js.result);
-    } catch (err) { console.error(err); }
+
+        // 🔥 OPTIONAL: render incremental updates if backend sends them
+        if (js.result) {
+            renderAll(js.result);
+        }
+
+    } catch (err) {
+        console.error("Polling error:", err);
+    }
 }
 
 function startPolling() {
     if (POLL_TIMER) clearInterval(POLL_TIMER);
-    POLL_ATTEMPT_COUNT = 0;
-    LAST_PROGRESS = 0;
-    LAST_PROGRESS_TIME = null;
-    POLL_TIMER = setInterval(fetchStatus, CONFIG.POLL_INTERVAL);
+
+    console.log("🚀 STARTING POLLING...");
+
+    POLL_TIMER = setInterval(fetchStatus, 2000);
 }
 
 function stopPolling() {
