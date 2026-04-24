@@ -1300,7 +1300,8 @@ async function fetchStatus() {
         const js = await res.json();
 
         console.log("📡 STATUS RESPONSE:", js);
-
+        console.log("🌍 CURRENT DOMAIN:", window.location.origin);
+        
         if (js.online) {
             const progress = js.online.progress || 0;
             const total = js.online.total || 0;
