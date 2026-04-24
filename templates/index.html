@@ -1310,7 +1310,7 @@ async function fetchStatus() {
                 updateProgress(progress, total, state);
             }
 
-            // 🔥 COMPLETION HANDLING (FIXED)
+            // 🔥 COMPLETION HANDLING (FINAL)
             if (js.online.state === "completed") {
                 setStatus("Online verification complete", "good");
 
@@ -1326,7 +1326,7 @@ async function fetchStatus() {
                     `✅ Complete! All ${total} citations verified`
                 );
 
-                // 🔥 CRITICAL: fetch final updated result
+                // 🔥 ALWAYS fetch final authoritative result
                 try {
                     const finalRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
                     const finalData = await finalRes.json();
@@ -1345,10 +1345,10 @@ async function fetchStatus() {
             }
         }
 
-        // 🔥 OPTIONAL: render incremental updates if backend sends them
-        if (js.result) {
-            renderAll(js.result);
-        }
+        // ❌ REMOVE THIS BLOCK (causes inconsistent UI)
+        // if (js.result) {
+        //     renderAll(js.result);
+        // }
 
     } catch (err) {
         console.error("Polling error:", err);
