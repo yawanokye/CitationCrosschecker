@@ -1993,7 +1993,7 @@ async def verify_online(job_id: str = Form(...)):
         message="Verification started"
     )
 
-    verification_job_id = submit_verification(refs, style="apa")
+    verification_job_id = submit_verification(refs, style="apa", enrich_metadata=False)
     update_verification_status(job_id, verification_job_id=verification_job_id)
 
     stats_tracker.add_verification(job_id, len(refs), success=True)
