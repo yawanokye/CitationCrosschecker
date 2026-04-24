@@ -1063,13 +1063,15 @@ def _get_top_suggestions(
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
 
 
-def _verify_single_reference(
-    ref: str, 
-    style: str, 
-    use_crossref: bool, 
-    use_openalex: bool,
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
     enrich_metadata: bool = False,
-) -> Dict[str, Any]:
+) -> List[Dict[str, Any]]:
     """Original fast verification function with author-mismatch gating"""
     cache_key = f"{style}::{ref}"
     cached = _cache_get(cache_key)
@@ -1264,6 +1266,8 @@ def verify_references_batch(
 
     normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
     total_refs = len(refs)
+    if job_id:
+        update_job_progress(job_id, 0)
     
     # Calculate estimated time
     est_seconds = total_refs * (API_TIMEOUT / 2)
