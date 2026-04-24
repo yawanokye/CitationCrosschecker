@@ -1876,22 +1876,60 @@ async function pollAnalysisResult(jobId) {
 
 // Run Online Verification
 async function runOnlineVerification() {
-    if (!LAST_JOB_ID) { setStatus("Run document check first", "warn"); return; }
-    if (VERIFICATION_IN_PROGRESS) { setStatus("Verification already in progress...", "warn"); return; }
-    setStatus("Starting online verification...");
+    if (!LAST_JOB_ID) {
+        setStatus("Run document check first", "warn");
+        return;
+    }
+
+    if (VERIFICATION_IN_PROGRESS) {
+        setStatus("Verification already in progress...", "warn");
+        return;
+    }
+
+    setStatus("Starting online verification...", "warn");
     VERIFICATION_IN_PROGRESS = true;
+
     updateProgress(0, 0, "processing", "Starting verification...");
+
     const btnVerify = document.getElementById("btnVerify");
     if (btnVerify) btnVerify.disabled = true;
+
     const fd = new FormData();
     fd.append("job_id", LAST_JOB_ID);
+
     try {
-        const res = await fetch("/verify-online", { method: "POST", body: fd });
+        const res = await fetch("/verify-online", {
+            method: "POST",
+            body: fd
+        });
+
         const js = await res.json();
-        if (js.started) { setStatus("Verification in progress...", "info"); startPolling(); }
-        else if (js.completed) { setStatus("Verification already completed", "good"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; fetchStatus(); }
-        else { setStatus(js.message || "Verification could not start", "warn"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
-    } catch (err) { setStatus("Error: " + err.message, "bad"); VERIFICATION_IN_PROGRESS = false; if (btnVerify) btnVerify.disabled = false; }
+
+        console.log("VERIFY RESPONSE:", js);
+
+        // 🔥 FIX: use status instead of js.started / js.completed
+        if (js.status === "started" || js.status === "processing") {
+            setStatus("Verification in progress...", "info");
+            startPolling();   // 🔥 critical
+        }
+        else if (js.status === "completed") {
+            setStatus("Verification already completed", "good");
+            VERIFICATION_IN_PROGRESS = false;
+            if (btnVerify) btnVerify.disabled = false;
+            fetchStatus();   // refresh UI immediately
+        }
+        else {
+            setStatus(js.message || "Verification could not start", "warn");
+            VERIFICATION_IN_PROGRESS = false;
+            if (btnVerify) btnVerify.disabled = false;
+        }
+
+    } catch (err) {
+        console.error("Verification error:", err);
+        setStatus("Error: " + err.message, "bad");
+        VERIFICATION_IN_PROGRESS = false;
+        if (btnVerify) btnVerify.disabled = false;
+    }
 }
 
 // ACII Rating Function (must be defined before use)
