@@ -1275,7 +1275,7 @@ def verify_references_batch(
     print(f"[DEBUG] ========================================")
 
     
-        print(f"[DEBUG] Created verification job {job_id}")
+    print(f"[DEBUG] Created verification job {job_id}")
 
     rows: List[Dict[str, Any]] = [None] * total_refs
     # Use WORKER_THREADS to control concurrency
