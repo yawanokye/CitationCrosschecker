@@ -1531,6 +1531,50 @@ async def debug_verify_status(verification_job_id: str):
         "has_results": results is not None,
         "sample_result": results[0] if results and len(results) > 0 else None
     }
+@app.get("/debug/verification-details/{job_id}")
+async def debug_verification_details(job_id: str):
+    """Debug endpoint to check verification details"""
+    job = load_job_record(job_id)
+    if not job:
+        return {"error": "Job not found"}
+    
+    verification = job.get("verification", {})
+    verification_job_id = verification.get("verification_job_id")
+    
+    result = {
+        "job_id": job_id,
+        "verification_job_id": verification_job_id,
+        "verification_state": verification.get("state"),
+        "verification_progress": verification.get("progress"),
+        "verification_total": verification.get("total"),
+        "verification_percentage": verification.get("percentage"),
+        "started_at": verification.get("started_at"),
+        "completed_at": verification.get("completed_at")
+    }
+    
+    # Get the actual status from verify.py
+    if verification_job_id:
+        from verify import get_verification_status, get_verification_results
+        verify_status = get_verification_status(verification_job_id)
+        verify_results = get_verification_results(verification_job_id)
+        
+        result["actual_verify_status"] = verify_status
+        result["has_verify_results"] = verify_results is not None
+        result["verify_results_count"] = len(verify_results) if verify_results else 0
+        
+        # Also check if the verification is still in the jobs dictionary
+        from verify import _jobs
+        with verify._jobs_lock:
+            result["verify_job_exists"] = verification_job_id in verify._jobs
+            if verification_job_id in verify._jobs:
+                job_obj = verify._jobs[verification_job_id]
+                result["verify_job_details"] = {
+                    "status": job_obj.status,
+                    "progress": job_obj.progress,
+                    "total": job_obj.total
+                }
+    
+    return result
 
 @app.get("/debug/all-jobs")
 async def debug_all_jobs():
@@ -2222,6 +2266,8 @@ async def verify_online(job_id: str = Form(...)):
     )
 
     verification_job_id = submit_verification(refs, style="apa", enrich_metadata=False)
+    print(f"[DEBUG] Received verification_job_id: {verification_job_id}")
+    print(f"[DEBUG] Verification job should be running with ID: {verification_job_id}")
     update_verification_status(job_id, verification_job_id=verification_job_id)
 
     # 🔥 Store verification metadata in PostgreSQL
