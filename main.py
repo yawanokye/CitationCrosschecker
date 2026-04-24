@@ -1114,16 +1114,34 @@ def start_progress_sync(job_id: str, verification_job_id: str):
         
         last_progress = -1
         no_progress_count = 0
-        max_no_progress = 300
+        max_no_progress = 600  # Increased to 600 (20 minutes) for large reference sets
         last_log_time = time.time()
+        last_heartbeat = time.time()
+        heartbeat_interval = 30  # Send heartbeat every 30 seconds
         
         while True:
             try:
+                # Send heartbeat to prevent timeout and show job is alive
+                if time.time() - last_heartbeat > heartbeat_interval:
+                    print(f"[DEBUG] 💓 Heartbeat: Job {job_id} still processing (progress: {last_progress})")
+                    last_heartbeat = time.time()
+                    
+                    # Update a timestamp in store to show job is alive
+                    with _lock:
+                        if job_id in _store:
+                            _store[job_id]["verification"]["last_heartbeat"] = now()
+                            # Also update the message to show it's still working
+                            if _store[job_id]["verification"].get("total", 0) > 0:
+                                current_progress = _store[job_id]["verification"].get("progress", 0)
+                                total = _store[job_id]["verification"].get("total", 0)
+                                if current_progress < total:
+                                    _store[job_id]["verification"]["message"] = f"Still verifying: {current_progress}/{total} - This may take several minutes for large documents"
+                
                 # Get status from verify.py's job tracking
                 status = get_verification_status(verification_job_id)
                 
-                # Debug log every 10 seconds
-                if time.time() - last_log_time > 10:
+                # Debug log every 30 seconds (reduced frequency)
+                if time.time() - last_log_time > 30:
                     print(f"[DEBUG] Sync status for {verification_job_id}: {status}")
                     last_log_time = time.time()
                 
@@ -1132,7 +1150,9 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                     total = status.get("total", 0)
                     status_state = status.get("status", "processing")
                     
-                    print(f"[DEBUG] Progress update: {current_progress}/{total} (state: {status_state})")
+                    # Only log every 5th progress update to reduce noise
+                    if current_progress != last_progress:
+                        print(f"[DEBUG] Progress update: {current_progress}/{total} (state: {status_state})")
                     
                     if current_progress == last_progress:
                         no_progress_count += 1
@@ -1148,9 +1168,19 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                             _store[job_id]["verification"]["state"] = status_state
                             _store[job_id]["verification"]["total"] = total
                             
-                            # Also update the message for frontend display
+                            # Also update the message for frontend display with ETA for large sets
                             if total > 0:
-                                _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total}"
+                                if total > 100 and current_progress < total:
+                                    # For large reference sets, show estimated time
+                                    elapsed = time.time() - last_heartbeat + heartbeat_interval
+                                    if current_progress > 0 and elapsed > 0:
+                                        rate = current_progress / elapsed
+                                        remaining = (total - current_progress) / rate if rate > 0 else 0
+                                        _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total} (Est. remaining: {remaining/60:.1f} min)"
+                                    else:
+                                        _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total} - This may take several minutes"
+                                else:
+                                    _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total}"
                             else:
                                 _store[job_id]["verification"]["message"] = "Starting verification..."
                             
@@ -1158,14 +1188,15 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                     
                     # Check for completion
                     if status_state == "completed":
-                        print(f"[DEBUG] Verification job {verification_job_id} completed!")
+                        print(f"[DEBUG] ✅ Verification job {verification_job_id} completed!")
                         verification_results = None
-                        max_attempts = 20
+                        max_attempts = 30  # Increased attempts for large result sets
                         for attempt in range(max_attempts):
                             verification_results = get_verification_results(verification_job_id)
                             if verification_results:
                                 print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
                                 break
+                            print(f"[DEBUG] Waiting for results, attempt {attempt + 1}/{max_attempts}...")
                             time.sleep(2)
                         
                         if verification_results:
@@ -1219,6 +1250,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                 except Exception as e:
                                     print(f"[DEBUG] Could not persist verification completion: {e}")
                         else:
+                            print(f"[DEBUG] ⚠️ No results retrieved after {max_attempts} attempts")
                             with _lock:
                                 if job_id in _store:
                                     _store[job_id]["verification"]["state"] = "error"
@@ -1248,6 +1280,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                     # Check for error
                     elif status_state == "error":
                         error_msg = status.get("error", "Unknown error")
+                        print(f"[DEBUG] ❌ Verification job {verification_job_id} error: {error_msg}")
                         with _lock:
                             if job_id in _store:
                                 _store[job_id]["verification"]["state"] = "error"
@@ -1273,33 +1306,40 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                 print(f"[DEBUG] Could not persist error state: {e}")
                         break
                     
-                    # Check for stall (no progress for too long)
-                    if no_progress_count > max_no_progress:
-                        print(f"[DEBUG] No progress for {max_no_progress * 2} seconds, marking as error")
-                        with _lock:
-                            if job_id in _store:
-                                _store[job_id]["verification"]["state"] = "error"
-                                _store[job_id]["verification"]["message"] = "Verification stalled - no progress"
-                        
-                        # 🔥 Store stall error in PostgreSQL
-                        if DATABASE_URL:
-                            try:
-                                conn = psycopg2.connect(DATABASE_URL)
-                                cursor = conn.cursor()
-                                cursor.execute("""
-                                    UPDATE jobs
-                                    SET result = result || jsonb_build_object(
-                                        'verification_error', %s,
-                                        'verification_completed_at', %s
-                                    )
-                                    WHERE job_id = %s
-                                """, ("Verification stalled - no progress", now(), job_id))
-                                conn.commit()
-                                cursor.close()
-                                conn.close()
-                            except Exception as e:
-                                print(f"[DEBUG] Could not persist stall error: {e}")
-                        break
+                    # Check for stall (no progress for too long) - increased threshold for large sets
+                    if no_progress_count > max_no_progress and current_progress < total:
+                        print(f"[DEBUG] ⚠️ No progress for {max_no_progress * 2} seconds, but job may still be working on large references")
+                        # Reset counter and continue instead of failing immediately
+                        # Only fail if progress is 0 and we've been waiting over 30 minutes
+                        if current_progress == 0 and no_progress_count > 900:  # 30 minutes
+                            print(f"[DEBUG] ❌ No progress for 30 minutes, marking as error")
+                            with _lock:
+                                if job_id in _store:
+                                    _store[job_id]["verification"]["state"] = "error"
+                                    _store[job_id]["verification"]["message"] = "Verification stalled - no progress for 30 minutes"
+                            
+                            if DATABASE_URL:
+                                try:
+                                    conn = psycopg2.connect(DATABASE_URL)
+                                    cursor = conn.cursor()
+                                    cursor.execute("""
+                                        UPDATE jobs
+                                        SET result = result || jsonb_build_object(
+                                            'verification_error', %s,
+                                            'verification_completed_at', %s
+                                        )
+                                        WHERE job_id = %s
+                                    """, ("Verification stalled - no progress for 30 minutes", now(), job_id))
+                                    conn.commit()
+                                    cursor.close()
+                                    conn.close()
+                                except Exception as e:
+                                    print(f"[DEBUG] Could not persist stall error: {e}")
+                            break
+                        else:
+                            # Reset counter and continue
+                            no_progress_count = 0
+                            print(f"[DEBUG] Resetting stall counter, still processing...")
                         
                 else:
                     print(f"[DEBUG] No status found for verification job {verification_job_id}, waiting...")
@@ -1316,7 +1356,6 @@ def start_progress_sync(job_id: str, verification_job_id: str):
     thread = threading.Thread(target=sync, daemon=True)
     thread.start()
     return thread
-
 # ============================================================
 # DOCUMENT FIXING FUNCTIONS
 # ============================================================
