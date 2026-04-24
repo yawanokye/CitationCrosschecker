@@ -875,10 +875,6 @@ def _score(
     }
 
 
-# =========================
-# UPDATED CLASSIFICATION
-# =========================
-
 def _classify(
     doi_match: bool,
     title_score: int,
@@ -929,6 +925,7 @@ def _classify(
 
     return "not_found"
     
+
 # ---------------------------------------------------------
 # Candidate selection
 # ---------------------------------------------------------
@@ -964,9 +961,6 @@ def _best_candidate(
     return best, best_meta
 
 
-# ---------------------------------------------------------
-# Main verification function with improved error handling
-# ---------------------------------------------------------
 def _get_top_suggestions(
     ref_title: str,
     ref_authors: List[str],
@@ -1063,6 +1057,170 @@ def _get_top_suggestions(
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
 
 
+# ============================================================
+# SINGLE REFERENCE VERIFICATION
+# ============================================================
+
+def _verify_single_reference(
+    ref: str, 
+    style: str, 
+    use_crossref: bool, 
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    """Single reference verification function"""
+    cache_key = f"{style}::{ref}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    query, ref_authors, ref_year, ref_doi, title_only = _build_query(ref, style)
+    fields = _extract_fields_by_style(ref, style)
+    ref_title = fields.get("title") or ref
+
+    row: Dict[str, Any] = {
+        "reference": ref,
+        "style": style,
+        "status": "offline",
+        "source": "",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "title_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "query_used": query,
+        "author": ", ".join(ref_authors),
+        "author_mismatch_flag": 0,
+        "match_note": "",
+    }
+
+    candidates: List[Dict[str, Any]] = []
+
+    try:
+        # DOI-first shortcut
+        if ref_doi and use_crossref:
+            candidates.extend(_query_crossref_by_doi(ref_doi))
+
+        # stage 1
+        if use_crossref and query:
+            candidates.extend(_query_crossref(query, rows=10))
+        if use_openalex and query:
+            candidates.extend(_query_openalex(query, rows=10))
+
+        # If no candidates from query, try title-only search
+        if not candidates and title_only:
+            if use_crossref:
+                candidates.extend(_query_crossref_title_only(title_only, rows=8))
+            if use_openalex:
+                candidates.extend(_query_openalex_title_only(title_only, rows=8))
+
+        best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
+
+        if best:
+            status = _classify(
+                bool(best_meta.get("doi_match")),
+                int(best_meta.get("title_score", 0)),
+                int(best_meta.get("score", 0)),
+                int(best_meta.get("year_match", 0)),
+                int(best_meta.get("author_overlap", 0)),
+            )
+
+            # AUTHOR-MISMATCH GATE, first pass
+            ref_has_authors = bool(ref_authors)
+            cand_has_authors = bool(best_meta.get("authors", []))
+            author_overlap = int(best_meta.get("author_overlap", 0))
+            
+            if ref_has_authors and cand_has_authors and author_overlap == 0:
+                status = "needs_review"
+                best_meta["author_mismatch_flag"] = 1
+                best_meta["match_note"] = "Author mismatch"
+            else:
+                best_meta["author_mismatch_flag"] = 0
+                best_meta["match_note"] = ""
+
+            # deep fallback only for weak cases
+            if status in {"needs_review", "not_found"}:
+                deep_candidates = list(candidates)
+
+                if use_crossref and query:
+                    deep_candidates.extend(_query_crossref(query, rows=20))
+                    if title_only:
+                        deep_candidates.extend(_query_crossref_title_only(title_only, rows=15))
+
+                if use_openalex and query:
+                    deep_candidates.extend(_query_openalex(query, rows=20))
+                    if title_only:
+                        deep_candidates.extend(_query_openalex_title_only(title_only, rows=15))
+
+                best2, best_meta2 = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, deep_candidates)
+                if best2:
+                    best = best2
+                    best_meta = best_meta2
+                    candidates = deep_candidates
+
+                    status = _classify(
+                        bool(best_meta.get("doi_match")),
+                        int(best_meta.get("title_score", 0)),
+                        int(best_meta.get("score", 0)),
+                        int(best_meta.get("year_match", 0)),
+                        int(best_meta.get("author_overlap", 0)),
+                    )
+
+                    # AUTHOR-MISMATCH GATE, deep fallback
+                    ref_has_authors = bool(ref_authors)
+                    cand_has_authors = bool(best_meta.get("authors", []))
+                    author_overlap = int(best_meta.get("author_overlap", 0))
+                    
+                    if ref_has_authors and cand_has_authors and author_overlap == 0:
+                        status = "needs_review"
+                        best_meta["author_mismatch_flag"] = 1
+                        best_meta["match_note"] = "Author mismatch"
+                    else:
+                        best_meta["author_mismatch_flag"] = 0
+                        best_meta["match_note"] = ""
+
+            row.update({
+                "status": status,
+                "source": _safe_strip(best.get("source")),
+                "score": int(best_meta.get("score", 0)),
+                "doi": _safe_strip(best_meta.get("doi")),
+                "matched_title": _safe_strip(best_meta.get("title")),
+                "matched_year": _safe_strip(best_meta.get("year")),
+                "matched_authors": ", ".join(best_meta.get("authors", [])),
+                "title_score": int(best_meta.get("title_score", 0)),
+                "author_overlap": int(best_meta.get("author_overlap", 0)),
+                "author_similarity": int(best_meta.get("author_similarity", 0)),
+                "year_match": int(best_meta.get("year_match", 0)),
+                "author_mismatch_flag": int(best_meta.get("author_mismatch_flag", 0)),
+                "match_note": best_meta.get("match_note", ""),
+            })
+
+            row["correction_suggestions"] = []
+
+            if enrich_metadata:
+                row = enrich_with_full_metadata(row)
+
+        else:
+            row["status"] = "not_found"
+
+    except Exception as e:
+        print(f"[DEBUG] Error verifying reference: {e}")
+        row["status"] = "not_found"
+        row["error"] = str(e)
+
+    row["status"] = _normalize_verify_status(row.get("status"))
+    _cache_set(cache_key, row)
+    return row
+
+
+# ============================================================
+# BATCH VERIFICATION FUNCTION
+# ============================================================
+
 def verify_references_batch(
     references: List[str],
     style: str = "apa",
@@ -1075,18 +1233,6 @@ def verify_references_batch(
     """
     Verify references batch with optional progress tracking.
     ALWAYS returns ALL results. NO TIME LIMITS - processes all references.
-    
-    Args:
-        references: List of reference strings to verify
-        style: Citation style ("apa", "harvard", etc.)
-        throttle_s: Delay between requests (deprecated, use BATCH_DELAY instead)
-        use_crossref: Whether to query Crossref API
-        use_openalex: Whether to query OpenAlex API
-        job_id: Optional job ID for progress tracking
-        enrich_metadata: If True, fetch full metadata (volume, issue, pages, full author names)
-    
-    Returns:
-        List of verification results with full metadata
     """
     print(f"[DEBUG] 🔥 verify_references_batch CALLED")
     print(f"[DEBUG] References count: {len(references)}")
@@ -1134,7 +1280,6 @@ def verify_references_batch(
         
         print(f"[DEBUG] Submitting {total_refs} tasks to executor...")
         for i, ref in enumerate(refs):
-            # Submit each reference to the single verification function
             future = executor.submit(
                 _verify_single_reference,
                 ref,
@@ -1223,184 +1368,10 @@ def verify_references_batch(
 
     return rows
 
-# ---------------------------------------------------------
-# Public API - Returns ALL results (NO TIME LIMITS)
-# ---------------------------------------------------------
 
-def verify_references_batch(
-    references: List[str],
-    style: str = "apa",
-    throttle_s: float = 0.0,
-    use_crossref: bool = True,
-    use_openalex: bool = True,
-    job_id: str = None,
-    enrich_metadata: bool = True,  # NEW: Enrich with full metadata by default
-) -> List[Dict[str, Any]]:
-    """
-    Verify references batch with optional progress tracking.
-    ALWAYS returns ALL results. NO TIME LIMITS - processes all references.
-    
-    Args:
-        references: List of reference strings to verify
-        style: Citation style ("apa", "harvard", etc.)
-        throttle_s: Delay between requests (deprecated, use BATCH_DELAY instead)
-        use_crossref: Whether to query Crossref API
-        use_openalex: Whether to query OpenAlex API
-        job_id: Optional job ID for progress tracking
-        enrich_metadata: If True, fetch full metadata (volume, issue, pages, full author names)
-    
-    Returns:
-        List of verification results with full metadata
-    """
-    refs = [r for r in (references or []) if _safe_strip(r)]
-    if not refs:
-        print("[DEBUG] No references to verify")
-        return []
-
-    normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
-    total_refs = len(refs)
-    if job_id:
-        update_job_progress(job_id, 0)
-    
-    # Calculate estimated time
-    est_seconds = total_refs * (API_TIMEOUT / 2)
-    est_minutes = est_seconds / 60
-    est_hours = est_minutes / 60
-    
-    print(f"[DEBUG] ========================================")
-    print(f"[DEBUG] Starting verification for {total_refs} references")
-    print(f"[DEBUG] Style: {normalized_style}")
-    print(f"[DEBUG] Enrich metadata: {enrich_metadata}")
-    print(f"[DEBUG] Job ID for tracking: {job_id}")
-    if est_hours >= 1:
-        print(f"[DEBUG] Estimated time: ~{est_hours:.1f} hours ({est_minutes:.0f} minutes)")
-    elif est_minutes >= 1:
-        print(f"[DEBUG] Estimated time: ~{est_minutes:.1f} minutes")
-    else:
-        print(f"[DEBUG] Estimated time: ~{est_seconds:.0f} seconds")
-    print(f"[DEBUG] ========================================")
-
-    rows: List[Dict[str, Any]] = [None] * total_refs
-    # Use WORKER_THREADS to control concurrency
-    workers = min(WORKER_THREADS, max(1, total_refs))
-    print(f"[DEBUG] Using {workers} workers (to avoid rate limits)")
-
-    start_time = time.time()
-    
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {}
-        
-        for i, ref in enumerate(refs):
-            # 🔥 FIXED: Pass enrich_metadata parameter
-            future = executor.submit(
-                _verify_single_reference,
-                ref,
-                normalized_style,
-                use_crossref,
-                use_openalex,
-                enrich_metadata,  # Pass the enrich_metadata flag
-            )
-            futures[future] = i
-
-        completed_count = 0
-        last_progress_update = 0
-        
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                rows[idx] = future.result()
-                completed_count += 1
-                
-                # 🔥 CRITICAL: Update progress for EVERY completed reference
-                if job_id:
-                    update_job_progress(job_id, completed_count)
-                    
-                    # Print progress every reference for debugging
-                    elapsed = time.time() - start_time
-                    rate = completed_count / elapsed if elapsed > 0 else 0
-                    remaining = (total_refs - completed_count) / rate if rate > 0 else 0
-                    
-                    # Print every reference for heavy debugging, or every 5 for production
-                    if completed_count % 5 == 0 or completed_count == total_refs:
-                        print(f"[DEBUG] Progress: {completed_count}/{total_refs} ({completed_count*100//total_refs}%) - Rate: {rate:.1f}/sec - Est. remaining: {remaining/60:.1f} min")
-                    
-                    # 🔥 Force update every reference for frontend visibility
-                    # Get current job status to verify it's updating
-                    job_status = get_job_status(job_id)
-                    if job_status:
-                        print(f"[DEBUG] Job {job_id} status: {job_status['progress']}/{job_status['total']} ({job_status['percentage']}%)")
-                
-                # Small delay to avoid rate limiting
-                time.sleep(BATCH_DELAY)
-                    
-            except Exception as e:
-                print(f"[DEBUG] Error verifying reference {refs[idx][:100]}: {e}")
-                import traceback
-                traceback.print_exc()
-                rows[idx] = {
-                    "reference": refs[idx],
-                    "style": normalized_style,
-                    "status": "not_found",
-                    "source": "",
-                    "score": 0,
-                    "doi": "",
-                    "matched_title": "",
-                    "matched_year": "",
-                    "matched_authors": "",
-                    "title_score": 0,
-                    "author_overlap": 0,
-                    "author_similarity": 0,
-                    "year_match": 0,
-                    "query_used": "",
-                    "author": "",
-                    "error": str(e),
-                }
-                completed_count += 1
-                if job_id:
-                    update_job_progress(job_id, completed_count)
-                    print(f"[DEBUG] Error handled, progress updated to {completed_count}/{total_refs}")
-
-    # Count results for debugging
-    result_counts = {
-        "verified": sum(1 for r in rows if r and r.get("status") == "verified"),
-        "likely": sum(1 for r in rows if r and r.get("status") == "likely"),
-        "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
-        "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
-        "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
-    }
-    print(f"[DEBUG] ========================================")
-    print(f"[DEBUG] Verification COMPLETE for {total_refs} references")
-    print(f"[DEBUG] Results: {result_counts}")
-    print(f"[DEBUG] Total processed: {len([r for r in rows if r is not None])}")
-    print(f"[DEBUG] ========================================")
-
-    for r in rows:
-        if r:
-            r["status"] = _normalize_verify_status(r.get("status"))
-
-    # Store results if job_id was provided
-    if job_id:
-        update_job_progress(job_id, total_refs)
-        store_verification_results(job_id, rows)
-        print(f"[DEBUG] Stored verification results for job {job_id}, got {len(rows)} results")
-        
-        # Verify storage worked
-        stored = get_verification_results(job_id)
-        print(f"[DEBUG] Verification stored, retrieved {len(stored) if stored else 0} results")
-        
-        # Debug: Check if first row has suggestions
-        if rows and len(rows) > 0:
-            print(f"[DEBUG] First row has 'suggested_references': {'suggested_references' in rows[0]}")
-            if 'suggested_references' in rows[0]:
-                print(f"[DEBUG] First row has {len(rows[0]['suggested_references'])} suggestions")
-                for s in rows[0]['suggested_references']:
-                    print(f"[DEBUG] Suggestion: {s.get('title', 'N/A')[:60]}...")
-
-    return rows
-
-# ---------------------------------------------------------
-# Background job submission (NO TIME LIMITS)
-# ---------------------------------------------------------
+# ============================================================
+# BACKGROUND JOB SUBMISSION
+# ============================================================
 
 def submit_verification(references: List[str], style: str = "apa", enrich_metadata: bool = False) -> str:
     """
@@ -1435,7 +1406,7 @@ def submit_verification(references: List[str], style: str = "apa", enrich_metada
             references,
             style,
             job_id=job_id,
-            enrich_metadata=enrich_metadata  # ✅ Make sure this is passed
+            enrich_metadata=enrich_metadata
         )
         elapsed = time.time() - start_time
         print(f"[DEBUG] Background thread completed for job {job_id}")
