@@ -1060,7 +1060,13 @@ def _get_top_suggestions(
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
 
 
-def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool) -> Dict[str, Any]:
+def _verify_single_reference(
+    ref: str, 
+    style: str, 
+    use_crossref: bool, 
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
     """Original fast verification function with author-mismatch gating"""
     cache_key = f"{style}::{ref}"
     cached = _cache_get(cache_key)
@@ -1219,7 +1225,6 @@ def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_opena
     _cache_set(cache_key, row)
     return row
 
-
 # ---------------------------------------------------------
 # Public API - Returns ALL results (NO TIME LIMITS)
 # ---------------------------------------------------------
@@ -1288,12 +1293,14 @@ def verify_references_batch(
         futures = {}
         
         for i, ref in enumerate(refs):
+            # 🔥 FIXED: Pass enrich_metadata parameter
             future = executor.submit(
                 _verify_single_reference,
                 ref,
                 normalized_style,
                 use_crossref,
                 use_openalex,
+                enrich_metadata,  # Pass the enrich_metadata flag
             )
             futures[future] = i
 
