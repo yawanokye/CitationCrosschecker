@@ -1920,6 +1920,7 @@ async function pollAnalysisResult(jobId) {
 }
 
 // Run Online Verification
+// Run Online Verification
 async function runOnlineVerification() {
     if (!LAST_JOB_ID) {
         setStatus("Run document check first", "warn");
@@ -1964,7 +1965,12 @@ async function runOnlineVerification() {
             fetchStatus();
         }
         else {
-            setStatus(js.message || "Verification could not start", "warn");
+            // 🔥 UPDATED: Clearer fallback for no_references
+            const msg = js.reason === "no_references"
+                ? (js.message || "No references were extracted from this document.")
+                : (js.message || "Verification could not start");
+
+            setStatus(msg, "warn");
             VERIFICATION_IN_PROGRESS = false;
             if (btnVerify) btnVerify.disabled = false;
         }
