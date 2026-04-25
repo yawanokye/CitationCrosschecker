@@ -1743,37 +1743,20 @@ function renderAll(data) {
     renderVerify(normalized);
     renderRecovery(normalized);
     renderClaimSupport(normalized);
-    const recovery = normalized.recovery || {};
 
-    const recoveryMissingSuggestions = (recovery.missing_recovery || [])
-        .flatMap(r => (r.suggestions || []).map(s => ({
-            ...s,
-            citation: r.citation
-        })));
-    
-    const recoveryVerificationSuggestions = (recovery.verification_recovery || [])
-        .flatMap(r => (r.suggestions || []).map(s => ({
-            ...s,
-            citation: r.citation,
-            reference: r.reference,
-            status: r.status
-        })));
-    
+    // Suggestions tab should show ONLY reconciliation/autofix suggestions.
+    // Verification recovery stays in the Recovery tab.
     if (normalized.autofix && normalized.autofix.suggestions) {
         displaySuggestions({
-            suggestions: {
-                ...normalized.autofix.suggestions,
-                recovery_missing: recoveryMissingSuggestions,
-                recovery_verification: recoveryVerificationSuggestions
-            }
+            suggestions: normalized.autofix.suggestions
+        });
+    } else if (normalized.suggestions) {
+        displaySuggestions({
+            suggestions: normalized.suggestions
         });
     } else {
         displaySuggestions({
-            suggestions: {
-                ...(normalized.suggestions || {}),
-                recovery_missing: recoveryMissingSuggestions,
-                recovery_verification: recoveryVerificationSuggestions
-            }
+            suggestions: buildReconciliationSuggestions(normalized)
         });
     }
     updateProcessFeedback("Upload", "completed");
@@ -2122,7 +2105,116 @@ function generateACIIRecommendations(aciiData) {
     }
     return html;
 }
+function extractYearFromText(text) {
+    const m = String(text || "").match(/\b(19|20)\d{2}[a-z]?\b/i);
+    return m ? m[0] : "";
+}
 
+function extractAuthorToken(text) {
+    const s = String(text || "").trim();
+
+    // Parenthetical citation, e.g. (Adam, 2020) or (Adam & Mensah, 2020)
+    let m = s.match(/\(?\s*([A-Z][A-Za-z'’-]+)(?:\s*(?:&|and|,)\s*[A-Z][A-Za-z'’-]+| et al\.)?\s*,?\s*(?:19|20)\d{2}[a-z]?\s*\)?/);
+    if (m) return m[1].toLowerCase();
+
+    // Narrative citation, e.g. Adam (2020)
+    m = s.match(/\b([A-Z][A-Za-z'’-]+)\s*\(\s*(?:19|20)\d{2}[a-z]?\s*\)/);
+    if (m) return m[1].toLowerCase();
+
+    return "";
+}
+
+function buildReconciliationSuggestions(data) {
+    const rows = data?.reconciliation_intext_to_reference || [];
+    const suggestions = {
+        citations: [],
+        missing: [],
+        unmatched: [],
+        references: []
+    };
+
+    const seen = new Set();
+
+    rows.forEach(r => {
+        const citation = r.in_text || r.citation || r.citation_in_text || "";
+        const matchedRef = r.matched_reference || r.reference || "";
+        const status = String(r.status || "").toLowerCase();
+        const flags = String(r.flags || "").toLowerCase();
+
+        if (!citation) return;
+
+        const keyBase = `${citation}|${matchedRef}|${status}|${flags}`;
+        if (seen.has(keyBase)) return;
+        seen.add(keyBase);
+
+        const citationYear = extractYearFromText(citation);
+        const referenceYear = extractYearFromText(matchedRef);
+        const citationAuthor = extractAuthorToken(citation);
+        const referenceAuthor = extractAuthorToken(matchedRef);
+
+        const isUnmatched =
+            status.includes("not_found") ||
+            status.includes("unmatched") ||
+            !matchedRef;
+
+        const yearMismatch =
+            citationYear &&
+            referenceYear &&
+            citationYear.toLowerCase() !== referenceYear.toLowerCase();
+
+        const authorMismatch =
+            citationAuthor &&
+            referenceAuthor &&
+            citationAuthor !== referenceAuthor;
+
+        if (isUnmatched) {
+            suggestions.unmatched.push({
+                citation,
+                original: citation,
+                suggested: "Check whether this citation has a corresponding reference entry.",
+                confidence: 0.75,
+                reason: "Citation was not confidently matched to a reference entry.",
+                action: "review_required"
+            });
+            return;
+        }
+
+        if (yearMismatch) {
+            suggestions.citations.push({
+                citation,
+                original: citation,
+                suggested: citation.replace(citationYear, referenceYear),
+                confidence: 0.90,
+                reason: `Year mismatch: citation uses ${citationYear}, but matched reference appears to use ${referenceYear}.`,
+                action: "review_required"
+            });
+        }
+
+        if (authorMismatch) {
+            suggestions.citations.push({
+                citation,
+                original: citation,
+                suggested: "Review author name against the matched reference.",
+                confidence: 0.80,
+                reason: `Possible author mismatch: citation begins with "${citationAuthor}", but reference appears to begin with "${referenceAuthor}".`,
+                action: "review_required"
+            });
+        }
+
+        if (flags && (flags.includes("year") || flags.includes("author") || flags.includes("mismatch"))) {
+            suggestions.citations.push({
+                citation,
+                original: citation,
+                suggested: "Review citation against the matched reference.",
+                confidence: 0.78,
+                reason: `Reconciliation flag: ${flags}`,
+                action: "review_required"
+            });
+        }
+    });
+
+    return suggestions;
+}
 function displaySuggestions(data) {
     const panel = $("suggestionsPanel");
     const content = $("suggestionsContent");
@@ -2140,11 +2232,9 @@ function displaySuggestions(data) {
 
     const allSuggestions = [
         ...citations.map(s => ({ ...s, category: "citation", action: s.action || "review_required" })),
-        ...missing.map(s => ({ ...s, category: "missing", action: "add_reference" })),
-        ...unmatched.map(s => ({ ...s, category: "unmatched", action: "review_required" })),
-        ...references.map(s => ({ ...s, category: "reference", action: "optional_fix" })),
-        ...recoveryMissing.map(s => ({ ...s, category: "missing", action: "recovery_suggestion" })),
-        ...recoveryVerification.map(s => ({ ...s, category: "unmatched", action: "context_recovery" }))
+        ...missing.map(s => ({ ...s, category: "missing", action: s.action || "add_reference" })),
+        ...unmatched.map(s => ({ ...s, category: "unmatched", action: s.action || "review_required" })),
+        ...references.map(s => ({ ...s, category: "reference", action: s.action || "optional_fix" }))
     ];
 
     const seen = new Set();
