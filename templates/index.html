@@ -1076,6 +1076,7 @@ let POLL_ATTEMPT_COUNT = 0;
 let LAST_PROGRESS = 0;
 let LAST_PROGRESS_TIME = null;
 window.latestResults = null;
+let POLL_TIMER = null;
 
 // Utility Functions
 function esc(s) {
@@ -1433,18 +1434,26 @@ async function fetchStatus() {
         
     } catch (err) {
         console.error("Polling error:", err);
+        stopPolling();   // ✅ prevent broken loop
     }
 }
 
 function startPolling() {
-    if (POLL_TIMER) clearInterval(POLL_TIMER);
+    if (POLL_TIMER) {
+        console.log("Polling already running");
+        return;
+    }
 
     console.log("🚀 STARTING POLLING...");
-
-    // Poll more frequently for better responsiveness
-    POLL_TIMER = setInterval(fetchStatus, 1000);  // Change from 2000ms to 1000ms
+    POLL_TIMER = setInterval(fetchStatus, 1000);
 }
-
+function stopPolling() {
+    if (POLL_TIMER) {
+        clearInterval(POLL_TIMER);
+        POLL_TIMER = null;
+        console.log("🛑 POLLING STOPPED");
+    }
+}
 // Helper Functions
 function getUniqueCitationsWithCount(c2rRows) {
     const uniqueMap = new Map();
