@@ -914,47 +914,107 @@ def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
     
     return summary
 
+def _norm_lookup_text(s: str) -> str:
+    s = (s or "").lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _find_citation_for_reference(original_ref: str, matched_title: str, c2r_rows: list) -> str:
+    """
+    Robustly recover the in-text citation linked to a reference.
+    This avoids exact-match failure between verification rows and reconciliation rows.
+    """
+    ref_norm = _norm_lookup_text(original_ref)
+    title_norm = _norm_lookup_text(matched_title)
+
+    for r in c2r_rows:
+        matched_ref = (
+            r.get("matched_reference", "")
+            or r.get("reference", "")
+            or r.get("ref", "")
+            or ""
+        )
+        in_text = (
+            r.get("in_text", "")
+            or r.get("citation", "")
+            or r.get("citation_in_text", "")
+            or ""
+        )
+
+        if not matched_ref or not in_text:
+            continue
+
+        matched_norm = _norm_lookup_text(matched_ref)
+
+        if ref_norm and (ref_norm == matched_norm or ref_norm[:120] in matched_norm or matched_norm[:120] in ref_norm):
+            return in_text
+
+        if title_norm and title_norm in matched_norm:
+            return in_text
+
+    return ""
+
+
 def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
     payload = {
         "missing_recovery": [],
         "verification_recovery": []
     }
 
-    full_text = result.get("main_text", "") or result.get("full_text", "")
+    full_text = (
+        result.get("main_text", "")
+        or result.get("full_text", "")
+        or result.get("data", {}).get("main_text", "")
+        or ""
+    )
 
-    # Top section: Missing citation recovery
     missing_items = result.get("missing_in_references", []) or []
     missing_suggestions = result.get("missing_citation_suggestions", {}) or {}
 
+    # Missing citation recovery
     for item in missing_items:
         if isinstance(item, dict):
-            citation_text = item.get("citation_in_text", "") or item.get("citation", "")
+            citation_text = (
+                item.get("citation_in_text", "")
+                or item.get("citation", "")
+                or item.get("in_text", "")
+                or ""
+            )
             count = item.get("count", 1)
         else:
             citation_text = str(item)
             count = 1
 
-        suggestions = missing_suggestions.get(citation_text, [])
+        if not citation_text:
+            continue
 
-        if citation_text:
-            payload["missing_recovery"].append({
-                "citation": citation_text,
-                "count": count,
-                "suggestions": suggestions,
-                "message": "" if suggestions else "No evidence found."
-            })
+        suggestions = missing_suggestions.get(citation_text, []) or []
 
-    # Bottom section: needs_review / not_found
+        # Generate context-based suggestions if none already exist
+        if not suggestions and full_text:
+            try:
+                context = extract_context(full_text, citation_text, window=250)
+                if context:
+                    suggestions = suggest_from_context(
+                        context=context,
+                        citation=citation_text,
+                        top_k=3
+                    )
+            except Exception as e:
+                print(f"[DEBUG] Missing recovery failed for {citation_text}: {e}")
+                suggestions = []
+
+        payload["missing_recovery"].append({
+            "citation": citation_text,
+            "count": count,
+            "suggestions": suggestions,
+            "message": "" if suggestions else "No evidence found."
+        })
+
+    # Verification recovery
     verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
-
-    # Build lookup: matched reference -> in-text citation
-    ref_to_citation = {}
-    for r in c2r_rows:
-        matched_ref = r.get("matched_reference", "") or ""
-        in_text = r.get("in_text", "") or r.get("citation", "") or r.get("citation_in_text", "") or ""
-        if matched_ref and in_text and matched_ref not in ref_to_citation:
-            ref_to_citation[matched_ref] = in_text
 
     for row in verify_rows:
         status = row.get("status", "")
@@ -964,17 +1024,26 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
         original_ref = row.get("reference", "") or ""
         matched_title = row.get("matched_title", "") or ""
 
-        citation_text = ref_to_citation.get(original_ref, "") or ref_to_citation.get(matched_title, "")
+        citation_text = _find_citation_for_reference(
+            original_ref=original_ref,
+            matched_title=matched_title,
+            c2r_rows=c2r_rows
+        )
 
         suggestions = []
+
         if citation_text and full_text:
-            context = extract_context(full_text, citation_text, window=200)
-            if context:
-                suggestions = suggest_from_context(
-                    context=context,
-                    citation=citation_text,
-                    top_k=3
-                )
+            try:
+                context = extract_context(full_text, citation_text, window=250)
+                if context:
+                    suggestions = suggest_from_context(
+                        context=context,
+                        citation=citation_text,
+                        top_k=3
+                    )
+            except Exception as e:
+                print(f"[DEBUG] Verification recovery failed for {citation_text}: {e}")
+                suggestions = []
 
         payload["verification_recovery"].append({
             "reference": original_ref,
@@ -985,6 +1054,7 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
         })
 
     return payload
+
 def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
     # prefer in-memory because it contains verification state
     with _lock:
@@ -1031,7 +1101,8 @@ def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
                         print(f"[DEBUG] Loaded verification state for {verification_job_id}: {verification_progress}/{verification_total}")
                 except Exception as e:
                     print(f"[DEBUG] Could not get verification status: {e}")
-            
+
+        
             # Check if online verification results exist
             online_verification = result.get("online_verification", {})
             if online_verification.get("rows"):
