@@ -1743,10 +1743,38 @@ function renderAll(data) {
     renderVerify(normalized);
     renderRecovery(normalized);
     renderClaimSupport(normalized);
+    const recovery = normalized.recovery || {};
+
+    const recoveryMissingSuggestions = (recovery.missing_recovery || [])
+        .flatMap(r => (r.suggestions || []).map(s => ({
+            ...s,
+            citation: r.citation
+        })));
+    
+    const recoveryVerificationSuggestions = (recovery.verification_recovery || [])
+        .flatMap(r => (r.suggestions || []).map(s => ({
+            ...s,
+            citation: r.citation,
+            reference: r.reference,
+            status: r.status
+        })));
+    
     if (normalized.autofix && normalized.autofix.suggestions) {
-        displaySuggestions(normalized.autofix);
-    } else if (normalized.suggestions) {
-        displaySuggestions({ suggestions: normalized.suggestions });
+        displaySuggestions({
+            suggestions: {
+                ...normalized.autofix.suggestions,
+                recovery_missing: recoveryMissingSuggestions,
+                recovery_verification: recoveryVerificationSuggestions
+            }
+        });
+    } else {
+        displaySuggestions({
+            suggestions: {
+                ...(normalized.suggestions || {}),
+                recovery_missing: recoveryMissingSuggestions,
+                recovery_verification: recoveryVerificationSuggestions
+            }
+        });
     }
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
@@ -2099,107 +2127,88 @@ function displaySuggestions(data) {
     const panel = $("suggestionsPanel");
     const content = $("suggestionsContent");
     if (!panel || !content) return;
-    const suggestions = data?.suggestions || data;
-    const citations = suggestions?.citations || [];
-    const missing = suggestions?.missing || [];
-    const unmatched = suggestions?.unmatched || [];
-    const references = suggestions?.references || [];
+
+    const suggestions = data?.suggestions || data || {};
+
+    const citations = suggestions.citations || [];
+    const missing = suggestions.missing || [];
+    const unmatched = suggestions.unmatched || [];
+    const references = suggestions.references || [];
+
+    const recoveryMissing = suggestions.recovery_missing || [];
+    const recoveryVerification = suggestions.recovery_verification || [];
+
     const allSuggestions = [
         ...citations.map(s => ({ ...s, category: "citation", action: s.action || "review_required" })),
         ...missing.map(s => ({ ...s, category: "missing", action: "add_reference" })),
         ...unmatched.map(s => ({ ...s, category: "unmatched", action: "review_required" })),
-        ...references.map(s => ({ ...s, category: "reference", action: "optional_fix" }))
+        ...references.map(s => ({ ...s, category: "reference", action: "optional_fix" })),
+        ...recoveryMissing.map(s => ({ ...s, category: "missing", action: "recovery_suggestion" })),
+        ...recoveryVerification.map(s => ({ ...s, category: "unmatched", action: "context_recovery" }))
     ];
+
     const seen = new Set();
     const uniqueSuggestions = [];
+
     for (const s of allSuggestions) {
-        const key = (s.citation || s.original || "").substring(0, 100);
+        const key = (
+            s.citation ||
+            s.original ||
+            s.title ||
+            s.doi ||
+            JSON.stringify(s).substring(0, 120)
+        );
+
         if (!seen.has(key)) {
             seen.add(key);
             uniqueSuggestions.push(s);
         }
     }
+
     if (uniqueSuggestions.length === 0) {
-        panel.style.display = "none";
+        panel.style.display = "block";
+        content.innerHTML = `
+            <div style="padding:14px; background:#f8fafc; border-radius:12px; color:#64748b;">
+                No suggestions available for this document.
+            </div>
+        `;
         return;
     }
+
     panel.style.display = "block";
-    const highConf = uniqueSuggestions.filter(s => s.confidence >= 0.85);
-    const medConf = uniqueSuggestions.filter(s => s.confidence >= 0.70 && s.confidence < 0.85);
-    const lowConf = uniqueSuggestions.filter(s => s.confidence < 0.70);
-    let html = `<div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
-        <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
-            <span>✅ High confidence: ${highConf.length}</span>
-            <span>⚠️ Needs review: ${medConf.length + lowConf.length}</span>
-            <span>📋 Total suggestions: ${uniqueSuggestions.length}</span>
+
+    let html = `
+        <div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
+            <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
+                <span>📋 Total suggestions: ${uniqueSuggestions.length}</span>
+            </div>
         </div>
-    </div>`;
-    const byCategory = {
-        citation: uniqueSuggestions.filter(s => s.category === "citation"),
-        missing: uniqueSuggestions.filter(s => s.category === "missing"),
-        unmatched: uniqueSuggestions.filter(s => s.category === "unmatched"),
-        reference: uniqueSuggestions.filter(s => s.category === "reference")
-    };
-    if (byCategory.citation.length > 0) {
-        html += `<div class="suggestions-section"><h4>📝 Citation Suggestions (${byCategory.citation.length})</h4>`;
-        html += byCategory.citation.slice(0, 20).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : s.confidence >= 0.7 ? 'med-conf' : 'low-conf'}">
-                <div class="suggestion-original">❌ ${esc(s.citation || s.original || '')}</div>
-                <div class="suggestion-suggested">✅ ${esc(s.suggested || '')}</div>
+    `;
+
+    html += `<div class="suggestions-section"><h4>💡 Suggestions</h4>`;
+
+    html += uniqueSuggestions.slice(0, 80).map((s, i) => {
+        const title = esc(s.title || s.suggested || s.original || s.citation || "Untitled suggestion");
+        const year = s.year ? ` (${esc(String(s.year))})` : "";
+        const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
+        const doi = s.doi
+            ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View DOI</a>`
+            : "";
+
+        return `
+            <div class="suggestion-item med-conf">
+                <div class="suggestion-suggested">${i + 1}. ${title}${year}</div>
                 <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action ${s.action === 'add_reference' ? 'action-add' : s.action === 'optional_fix' ? 'action-optional' : 'action-review'}">${s.action === 'add_reference' ? 'Add reference' : s.action === 'optional_fix' ? 'Optional' : 'Review required'}</span>
+                    <span>${esc(authors)}</span>
+                    <span>${esc(s.category || "")}</span>
+                    <span>${esc(s.action || "")}</span>
+                    <span>${doi}</span>
                 </div>
             </div>
-        `).join('');
-        html += `</div>`;
-    }
-    if (byCategory.missing.length > 0) {
-        html += `<div class="suggestions-section"><h4>🔍 Missing Reference Suggestions (${byCategory.missing.length})</h4>`;
-        html += byCategory.missing.slice(0, 20).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="suggestion-original">❌ Missing: ${esc(s.citation || s.original || '')}</div>
-                <div class="suggestion-suggested">✅ Suggested: ${esc(s.suggested || '')}</div>
-                <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action action-add">Add to references</span>
-                </div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    if (byCategory.unmatched.length > 0) {
-        html += `<div class="suggestions-section"><h4>⚠️ Unmatched Citation Suggestions (${byCategory.unmatched.length})</h4>`;
-        html += byCategory.unmatched.slice(0, 20).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="suggestion-original">❌ ${esc(s.citation || s.original || '')}</div>
-                <div class="suggestion-suggested">✅ ${esc(s.suggested || '')}</div>
-                <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action action-review">Review required</span>
-                </div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
-    if (byCategory.reference.length > 0) {
-        html += `<div class="suggestions-section"><h4>📚 Reference Formatting Suggestions (${byCategory.reference.length})</h4>`;
-        html += byCategory.reference.slice(0, 15).map(s => `
-            <div class="suggestion-item ${s.confidence >= 0.85 ? 'high-conf' : 'med-conf'}">
-                <div class="suggestion-original">${esc((s.original || "").substring(0, 150))}${(s.original || "").length > 150 ? '…' : ''}</div>
-                <div class="suggestion-suggested">${esc((s.suggested || "").substring(0, 150))}${(s.suggested || "").length > 150 ? '…' : ''}</div>
-                <div class="suggestion-meta">
-                    <span>📊 ${Math.round((s.confidence || 0) * 100)}% confidence</span>
-                    <span>📝 ${esc(s.reason || '')}</span>
-                    <span class="suggestion-action action-optional">Optional improvement</span>
-                </div>
-            </div>
-        `).join('');
-        html += `</div>`;
-    }
+        `;
+    }).join("");
+
+    html += `</div>`;
     content.innerHTML = html;
 }
 
