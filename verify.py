@@ -28,14 +28,14 @@ MAILTO = (
 # ============================================================
 
 # Timeout settings (in seconds)
-API_TIMEOUT = 189  # Increased from 60 to 120 seconds per API call
+API_TIMEOUT = 120  # Increased from 60 to 120 seconds per API call
 VERIFICATION_TIMEOUT = None  # No timeout for the overall verification
-WORKER_THREADS = 3  # Reduce to 2 workers to avoid rate limiting and memory issues
-RETRY_ATTEMPTS = 3  # Increase retries for failed API calls
-BATCH_DELAY = 0.3  # Increase delay between references to avoid rate limits
+WORKER_THREADS = 2  # Reduce to 2 workers to avoid rate limiting and memory issues
+RETRY_ATTEMPTS = 2  # Increase retries for failed API calls
+BATCH_DELAY = 0.5  # Increase delay between references to avoid rate limits
 
 # NEW: Chunk processing for large reference sets
-CHUNK_SIZE = 25  # Process references in chunks of 50
+CHUNK_SIZE = 15  # Process references in chunks of 50
 CHUNK_DELAY = 10  # Delay between chunks to allow system to recover
 MAX_RETRIES_PER_REFERENCE = 3  # Retry failed references up to 3 times
 # ============================================================
@@ -1253,7 +1253,7 @@ def verify_references_batch(
 ) -> List[Dict[str, Any]]:
     """
     Verify references batch with chunked processing for large datasets.
-    Includes retry logic for failed references.
+    Includes heartbeat and timeout handling.
     """
     print(f"[DEBUG] 🔥 verify_references_batch CALLED")
     print(f"[DEBUG] References count: {len(references)}")
@@ -1269,30 +1269,31 @@ def verify_references_batch(
     normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
     total_refs = len(refs)
     
-    # Process in chunks to avoid memory issues and timeouts
+    # Process in smaller chunks
     chunks = [refs[i:i + CHUNK_SIZE] for i in range(0, total_refs, CHUNK_SIZE)]
     print(f"[DEBUG] Splitting into {len(chunks)} chunks of up to {CHUNK_SIZE} references each")
     
     all_rows: List[Dict[str, Any]] = []
-    failed_references: List[Tuple[int, str]] = []  # Store (original_index, reference)
+    failed_references: List[Tuple[int, str]] = []
     completed_so_far = 0
+    last_heartbeat_time = time.time()
     
     for chunk_idx, chunk in enumerate(chunks):
         print(f"[DEBUG] ========================================")
         print(f"[DEBUG] Processing chunk {chunk_idx + 1}/{len(chunks)} ({len(chunk)} references)")
         
-        # Calculate estimated time for this chunk
-        est_seconds = len(chunk) * (API_TIMEOUT / 2)
-        est_minutes = est_seconds / 60
+        # Send heartbeat to show we're still alive
+        if job_id:
+            update_job_progress(job_id, completed_so_far)
+            print(f"[DEBUG] 💓 Heartbeat: Still processing chunk {chunk_idx + 1}, completed {completed_so_far}/{total_refs}")
         
-        print(f"[DEBUG] Estimated time for chunk: ~{est_minutes:.1f} minutes")
-        print(f"[DEBUG] ========================================")
-
         rows: List[Dict[str, Any]] = [None] * len(chunk)
         workers = min(WORKER_THREADS, max(1, len(chunk)))
         print(f"[DEBUG] Using {workers} workers for this chunk")
-
-        start_time = time.time()
+        
+        # Use a timeout for the entire chunk
+        chunk_start_time = time.time()
+        chunk_timeout = len(chunk) * (API_TIMEOUT / 2) + 300  # Add 5 minute buffer
         
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {}
@@ -1306,15 +1307,40 @@ def verify_references_batch(
                     use_openalex,
                     enrich_metadata,
                 )
-                futures[future] = i
+                futures[future] = (i, ref)
             
             completed_count = 0
             
             for future in as_completed(futures):
-                idx = futures[future]
+                idx, ref = futures[future]
+                
+                # Check if chunk has timed out
+                if time.time() - chunk_start_time > chunk_timeout:
+                    print(f"[DEBUG] ⚠️ Chunk {chunk_idx + 1} timed out after {chunk_timeout} seconds")
+                    # Mark remaining as failed
+                    rows[idx] = {
+                        "reference": ref,
+                        "style": normalized_style,
+                        "status": "not_found",
+                        "source": "",
+                        "score": 0,
+                        "doi": "",
+                        "matched_title": "",
+                        "matched_year": "",
+                        "matched_authors": "",
+                        "title_score": 0,
+                        "author_overlap": 0,
+                        "author_similarity": 0,
+                        "year_match": 0,
+                        "query_used": "",
+                        "author": "",
+                        "error": "Chunk timeout",
+                    }
+                    completed_count += 1
+                    continue
+                
                 try:
-                    # Add timeout to future result
-                    result = future.result(timeout=API_TIMEOUT + 30)
+                    result = future.result(timeout=60)  # 60 second timeout per reference
                     rows[idx] = result
                     completed_count += 1
                     
@@ -1324,27 +1350,20 @@ def verify_references_batch(
                         update_job_progress(job_id, current_total)
                         
                         if completed_count % 5 == 0 or completed_count == len(chunk):
-                            elapsed = time.time() - start_time
+                            elapsed = time.time() - chunk_start_time
                             rate = completed_count / elapsed if elapsed > 0 else 0
                             remaining = (len(chunk) - completed_count) / rate if rate > 0 else 0
                             total_remaining = (total_refs - current_total) / rate if rate > 0 else 0
                             print(f"[DEBUG] Chunk {chunk_idx + 1}: {completed_count}/{len(chunk)} - Overall: {current_total}/{total_refs}")
                             print(f"[DEBUG] Est. remaining for chunk: {remaining/60:.1f} min - Total: {total_remaining/60:.1f} min")
                     
-                    # Small delay to avoid rate limiting
                     time.sleep(BATCH_DELAY)
                         
                 except Exception as e:
-                    print(f"[DEBUG] Error verifying reference in chunk {chunk_idx + 1}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    
-                    # Store failed reference for retry
-                    global_index = completed_so_far + idx
-                    failed_references.append((global_index, chunk[idx]))
-                    
+                    print(f"[DEBUG] Error verifying reference: {e}")
+                    failed_references.append((completed_so_far + idx, ref))
                     rows[idx] = {
-                        "reference": chunk[idx],
+                        "reference": ref,
                         "style": normalized_style,
                         "status": "not_found",
                         "source": "",
@@ -1365,75 +1384,53 @@ def verify_references_batch(
                     if job_id:
                         update_job_progress(job_id, completed_so_far + completed_count)
         
-        # Add chunk results to all_rows
+        # Add chunk results
         all_rows.extend(rows)
         completed_so_far += len(chunk)
         
-        # Save intermediate results to prevent data loss
+        # Save intermediate results
         if job_id:
             store_verification_results(job_id, all_rows)
-            print(f"[DEBUG] Saved intermediate results for chunk {chunk_idx + 1}, total so far: {len(all_rows)}")
+            print(f"[DEBUG] Saved intermediate results for chunk {chunk_idx + 1}")
         
-        # Delay between chunks to allow system to recover
+        # Delay between chunks
         if chunk_idx < len(chunks) - 1:
             print(f"[DEBUG] Waiting {CHUNK_DELAY} seconds before next chunk...")
             time.sleep(CHUNK_DELAY)
     
     # Retry failed references
     if failed_references:
-        print(f"[DEBUG] ========================================")
         print(f"[DEBUG] Retrying {len(failed_references)} failed references...")
         
         for retry_idx, (original_idx, ref) in enumerate(failed_references):
-            print(f"[DEBUG] Retry {retry_idx + 1}/{len(failed_references)}: {ref[:100]}...")
-            
-            # Exponential backoff for retries
             wait_time = min(30, (retry_idx + 1) * 5)
-            print(f"[DEBUG] Waiting {wait_time} seconds before retry...")
+            print(f"[DEBUG] Waiting {wait_time}s before retry {retry_idx + 1}")
             time.sleep(wait_time)
             
             try:
                 result = _verify_single_reference_with_retry(
                     ref, normalized_style, use_crossref, use_openalex, enrich_metadata,
-                    max_retries=2  # Fewer retries for the retry phase
+                    max_retries=2
                 )
                 all_rows[original_idx] = result
                 print(f"[DEBUG] Successfully retried reference {retry_idx + 1}")
-                
-                # Update progress after successful retry
-                if job_id:
-                    update_job_progress(job_id, completed_so_far)
-                    
             except Exception as e:
-                print(f"[DEBUG] Retry failed for reference: {e}")
-                # Keep the original error
-                all_rows[original_idx]["error"] = f"Retry failed: {str(e)}"
+                print(f"[DEBUG] Retry failed: {e}")
     
-    # Final count results
+    # Final results
     result_counts = {
         "verified": sum(1 for r in all_rows if r and r.get("status") == "verified"),
         "likely": sum(1 for r in all_rows if r and r.get("status") == "likely"),
         "needs_review": sum(1 for r in all_rows if r and r.get("status") == "needs_review"),
         "not_found": sum(1 for r in all_rows if r and r.get("status") == "not_found"),
-        "offline": sum(1 for r in all_rows if r and r.get("status") == "offline"),
     }
-    print(f"[DEBUG] ========================================")
-    print(f"[DEBUG] Verification COMPLETE for {total_refs} references")
-    print(f"[DEBUG] Results: {result_counts}")
-    print(f"[DEBUG] ========================================")
+    print(f"[DEBUG] Verification COMPLETE: {result_counts}")
 
-    for r in all_rows:
-        if r:
-            r["status"] = _normalize_verify_status(r.get("status"))
-
-    # Store final results
     if job_id:
         update_job_progress(job_id, total_refs)
         store_verification_results(job_id, all_rows)
-        print(f"[DEBUG] Stored final verification results for job {job_id}, got {len(all_rows)} results")
 
     return all_rows
-
 
 def _verify_single_reference_with_retry(
     ref: str, 
