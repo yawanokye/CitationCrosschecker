@@ -1726,7 +1726,13 @@ function renderClaimSupport(data) {
         return `<tr><td>${i + 1}</div><td>${esc(r.citation || "")}</div><td style="max-width:320px;">${claimText}</div><td style="max-width:280px;">${titleText}<div style="margin-top:4px;">${doiHtml}</div></div><td><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></div><td>${esc(String(r.support_score ?? ""))}</div></tr>`;
     }).join("");
 }
-    
+function hideSuggestionsPanel() {
+    const panel = $("suggestionsPanel");
+    const content = $("suggestionsContent");
+
+    if (panel) panel.style.display = "none";
+    if (content) content.innerHTML = "";
+}    
 function renderAll(data) {
     if (!data) return;
     const normalized = normalizeData(data);
@@ -1744,20 +1750,20 @@ function renderAll(data) {
     renderRecovery(normalized);
     renderClaimSupport(normalized);
 
-    // Suggestions tab should show ONLY reconciliation/autofix suggestions.
+    // Suggestions tab should show ONLY Auto-fix suggestions from engine.py.
     // Verification recovery stays in the Recovery tab.
-    if (normalized.autofix && normalized.autofix.suggestions) {
+    // Missing Citation Recovery stays in the Recovery tab.
+    
+    if (
+        normalized.autofix &&
+        normalized.autofix.enabled === true &&
+        normalized.autofix.suggestions
+    ) {
         displaySuggestions({
             suggestions: normalized.autofix.suggestions
         });
-    } else if (normalized.suggestions) {
-        displaySuggestions({
-            suggestions: normalized.suggestions
-        });
     } else {
-        displaySuggestions({
-            suggestions: buildReconciliationSuggestions(normalized)
-        });
+        hideSuggestionsPanel();
     }
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
@@ -2231,11 +2237,41 @@ function displaySuggestions(data) {
     const recoveryVerification = suggestions.recovery_verification || [];
 
     const allSuggestions = [
-        ...citations.map(s => ({ ...s, category: "citation", action: s.action || "review_required" })),
-        ...missing.map(s => ({ ...s, category: "missing", action: s.action || "add_reference" })),
-        ...unmatched.map(s => ({ ...s, category: "unmatched", action: s.action || "review_required" })),
-        ...references.map(s => ({ ...s, category: "reference", action: s.action || "optional_fix" }))
-    ];
+        ...citations.map(s => ({
+            ...s,
+            category: "citation",
+            action: s.action || "review_required"
+        })),
+    
+        ...missing.map(s => ({
+            ...s,
+            category: "missing",
+            action: s.action || "add_reference"
+        })),
+    
+        ...unmatched.map(s => ({
+            ...s,
+            category: "unmatched",
+            action: s.action || "review_required"
+        })),
+    
+        ...references.map(s => ({
+            ...s,
+            category: "reference",
+            action: s.action || "optional_fix"
+        }))
+    ].filter(s => {
+        const source = String(s.source || "").toLowerCase();
+        const action = String(s.action || "").toLowerCase();
+    
+        // Keep Suggestions tab clean.
+        if (source.includes("verification")) return false;
+        if (source.includes("recovery")) return false;
+        if (action.includes("recovery")) return false;
+        if (action.includes("context")) return false;
+    
+        return true;
+    });
 
     const seen = new Set();
     const uniqueSuggestions = [];
