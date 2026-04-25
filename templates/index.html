@@ -1313,14 +1313,22 @@ async function fetchStatus() {
         console.log("📡 STATUS RESPONSE:", js);
         
         // Check if we have results directly in the response
-        if (js.result && js.result.online_verification && js.result.online_verification.rows && js.result.online_verification.rows.length > 0) {
-            console.log("✅ Found verification results directly in status response");
+        if (js.result && js.result.online_verification && js.result.online_verification.rows) {
+            const rows = js.result.online_verification.rows.length;
+        
+            // ✅ FORCE FINAL PROGRESS
+            updateProgress(rows, rows, "completed", `✅ Complete! ${rows}/${rows}`);
+        
+            setStatus(`Verification complete! ${rows} references verified.`, "good");
+        
             renderAll(js.result);
             stopPolling();
+        
             VERIFICATION_IN_PROGRESS = false;
+        
             const btnVerify = $("btnVerify");
             if (btnVerify) btnVerify.disabled = false;
-            setStatus(`Verification complete! ${js.result.online_verification.rows.length} references verified.`, "good");
+        
             return;
         }
         
@@ -1341,18 +1349,23 @@ async function fetchStatus() {
             } else {
                 message = `Verifying references: ${progress}/${total}`;
                 updateProgress(progress, total, state, message);
+                setStatus(`Verification in progress: ${progress}/${total}`, "warn");
             }
             
             // 🔥 CRITICAL: Handle completed state - fetch results immediately
             if (state === "completed") {
                 console.log("🎉 Verification completed! Fetching final results...");
-                setStatus("Verification complete! Loading results...", "good");
-                
+            
                 VERIFICATION_IN_PROGRESS = false;
+            
                 const btnVerify = $("btnVerify");
                 if (btnVerify) btnVerify.disabled = false;
-                
-                // Stop polling first
+            
+                // ✅ FORCE PROGRESS TO 100%
+                updateProgress(total, total, "completed", `✅ Complete! ${total}/${total}`);
+                setStatus(`Verification complete: ${total}/${total}`, "good");
+            
+                // ⛔ THEN stop polling
                 stopPolling();
                 
                 // Try multiple endpoints to get results
