@@ -1799,7 +1799,52 @@ async def debug_retry_verification(job_id: str):
         
     except Exception as e:
         return {"error": str(e)}
-
+@app.post("/debug/retry-stuck-verification/{job_id}")
+async def retry_stuck_verification(job_id: str):
+    """Force retry a stuck verification job"""
+    job = load_job_record(job_id)
+    if not job:
+        return {"error": "Job not found"}
+    
+    verification = job.get("verification", {})
+    if verification.get("state") != "running":
+        return {"error": "Job is not running"}
+    
+    # Get the verification job ID
+    verification_job_id = verification.get("verification_job_id")
+    if not verification_job_id:
+        return {"error": "No verification job ID found"}
+    
+    from verify import get_verification_status, _jobs
+    
+    # Check if the job is actually stuck
+    status = get_verification_status(verification_job_id)
+    if status and status.get("progress", 0) > 0:
+        return {"error": "Job is making progress", "status": status}
+    
+    # Mark existing verification as failed
+    update_verification_status(job_id, state="error", message="Stuck - retrying")
+    
+    # Restart verification
+    refs = job.get("result", {}).get("references_raw", [])
+    if not refs:
+        return {"error": "No references to verify"}
+    
+    new_verification_job_id = submit_verification(refs, style="apa", enrich_metadata=False)
+    update_verification_status(job_id, 
+        verification_job_id=new_verification_job_id,
+        state="running",
+        progress=0,
+        started_at=now()
+    )
+    start_progress_sync(job_id, new_verification_job_id)
+    
+    return {
+        "success": True,
+        "old_verification_job_id": verification_job_id,
+        "new_verification_job_id": new_verification_job_id,
+        "message": "Verification restarted"
+    }
 @app.get("/debug/verification-data/{job_id}")
 async def debug_verification_data(job_id: str):
     """Debug endpoint to check verification data structure"""
@@ -2751,7 +2796,39 @@ def health():
         "redis_connected": redis_conn is not None,
         "postgresql_connected": DATABASE_URL is not None
     }
-
+@app.get("/debug/verification-health/{job_id}")
+async def verification_health(job_id: str):
+    """Check if verification is making progress"""
+    job = load_job_record(job_id)
+    if not job:
+        return {"error": "Job not found"}
+    
+    verification = job.get("verification", {})
+    progress = verification.get("progress", 0)
+    total = verification.get("total", 0)
+    state = verification.get("state", "idle")
+    last_heartbeat = verification.get("last_heartbeat")
+    started_at = verification.get("started_at")
+    
+    # Calculate if stuck
+    is_stuck = False
+    if state == "running" and started_at:
+        elapsed = (datetime.now() - datetime.fromisoformat(started_at)).total_seconds()
+        if elapsed > 300 and progress == 0:  # 5 minutes with 0 progress
+            is_stuck = True
+    
+    return {
+        "job_id": job_id,
+        "state": state,
+        "progress": progress,
+        "total": total,
+        "percentage": (progress / total * 100) if total > 0 else 0,
+        "started_at": started_at,
+        "last_heartbeat": last_heartbeat,
+        "elapsed_seconds": (datetime.now() - datetime.fromisoformat(started_at)).total_seconds() if started_at else 0,
+        "is_stuck": is_stuck,
+        "recommendation": "Job appears stuck" if is_stuck else "Job is progressing"
+    }
 # ============================================================
 # ERROR HANDLERS
 # ============================================================
