@@ -35,7 +35,7 @@ RETRY_ATTEMPTS = 2  # Increase retries for failed API calls
 BATCH_DELAY = 0.5  # Increase delay between references to avoid rate limits
 
 # NEW: Chunk processing for large reference sets
-CHUNK_SIZE = 15  # Process references in chunks of 50
+CHUNK_SIZE = 50  # Process references in chunks of 50
 CHUNK_DELAY = 10  # Delay between chunks to allow system to recover
 MAX_RETRIES_PER_REFERENCE = 3  # Retry failed references up to 3 times
 # ============================================================
