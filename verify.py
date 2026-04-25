@@ -28,15 +28,16 @@ MAILTO = (
 # ============================================================
 
 # Timeout settings (in seconds)
-API_TIMEOUT = 60  # Increased from 60 to 120 seconds per API call
+API_TIMEOUT = 189  # Increased from 60 to 120 seconds per API call
 VERIFICATION_TIMEOUT = None  # No timeout for the overall verification
 WORKER_THREADS = 3  # Reduce to 2 workers to avoid rate limiting and memory issues
 RETRY_ATTEMPTS = 3  # Increase retries for failed API calls
 BATCH_DELAY = 0.3  # Increase delay between references to avoid rate limits
 
 # NEW: Chunk processing for large reference sets
-CHUNK_SIZE = 50  # Process references in chunks of 50
-CHUNK_DELAY = 5  # Delay between chunks to allow system to recover
+CHUNK_SIZE = 25  # Process references in chunks of 50
+CHUNK_DELAY = 10  # Delay between chunks to allow system to recover
+MAX_RETRIES_PER_REFERENCE = 3  # Retry failed references up to 3 times
 # ============================================================
 # PROGRESS TRACKING (Lightweight)
 # ============================================================
@@ -1252,6 +1253,7 @@ def verify_references_batch(
 ) -> List[Dict[str, Any]]:
     """
     Verify references batch with chunked processing for large datasets.
+    Includes retry logic for failed references.
     """
     print(f"[DEBUG] 🔥 verify_references_batch CALLED")
     print(f"[DEBUG] References count: {len(references)}")
@@ -1272,12 +1274,12 @@ def verify_references_batch(
     print(f"[DEBUG] Splitting into {len(chunks)} chunks of up to {CHUNK_SIZE} references each")
     
     all_rows: List[Dict[str, Any]] = []
+    failed_references: List[Tuple[int, str]] = []  # Store (original_index, reference)
     completed_so_far = 0
     
     for chunk_idx, chunk in enumerate(chunks):
         print(f"[DEBUG] ========================================")
         print(f"[DEBUG] Processing chunk {chunk_idx + 1}/{len(chunks)} ({len(chunk)} references)")
-        print(f"[DEBUG] Chunk references: {len(chunk)}")
         
         # Calculate estimated time for this chunk
         est_seconds = len(chunk) * (API_TIMEOUT / 2)
@@ -1297,7 +1299,7 @@ def verify_references_batch(
             
             for i, ref in enumerate(chunk):
                 future = executor.submit(
-                    _verify_single_reference,
+                    _verify_single_reference_with_retry,
                     ref,
                     normalized_style,
                     use_crossref,
@@ -1311,7 +1313,9 @@ def verify_references_batch(
             for future in as_completed(futures):
                 idx = futures[future]
                 try:
-                    rows[idx] = future.result()
+                    # Add timeout to future result
+                    result = future.result(timeout=API_TIMEOUT + 30)
+                    rows[idx] = result
                     completed_count += 1
                     
                     # Update progress
@@ -1324,7 +1328,7 @@ def verify_references_batch(
                             rate = completed_count / elapsed if elapsed > 0 else 0
                             remaining = (len(chunk) - completed_count) / rate if rate > 0 else 0
                             total_remaining = (total_refs - current_total) / rate if rate > 0 else 0
-                            print(f"[DEBUG] Chunk progress: {completed_count}/{len(chunk)} - Overall: {current_total}/{total_refs}")
+                            print(f"[DEBUG] Chunk {chunk_idx + 1}: {completed_count}/{len(chunk)} - Overall: {current_total}/{total_refs}")
                             print(f"[DEBUG] Est. remaining for chunk: {remaining/60:.1f} min - Total: {total_remaining/60:.1f} min")
                     
                     # Small delay to avoid rate limiting
@@ -1334,6 +1338,11 @@ def verify_references_batch(
                     print(f"[DEBUG] Error verifying reference in chunk {chunk_idx + 1}: {e}")
                     import traceback
                     traceback.print_exc()
+                    
+                    # Store failed reference for retry
+                    global_index = completed_so_far + idx
+                    failed_references.append((global_index, chunk[idx]))
+                    
                     rows[idx] = {
                         "reference": chunk[idx],
                         "style": normalized_style,
@@ -1370,6 +1379,36 @@ def verify_references_batch(
             print(f"[DEBUG] Waiting {CHUNK_DELAY} seconds before next chunk...")
             time.sleep(CHUNK_DELAY)
     
+    # Retry failed references
+    if failed_references:
+        print(f"[DEBUG] ========================================")
+        print(f"[DEBUG] Retrying {len(failed_references)} failed references...")
+        
+        for retry_idx, (original_idx, ref) in enumerate(failed_references):
+            print(f"[DEBUG] Retry {retry_idx + 1}/{len(failed_references)}: {ref[:100]}...")
+            
+            # Exponential backoff for retries
+            wait_time = min(30, (retry_idx + 1) * 5)
+            print(f"[DEBUG] Waiting {wait_time} seconds before retry...")
+            time.sleep(wait_time)
+            
+            try:
+                result = _verify_single_reference_with_retry(
+                    ref, normalized_style, use_crossref, use_openalex, enrich_metadata,
+                    max_retries=2  # Fewer retries for the retry phase
+                )
+                all_rows[original_idx] = result
+                print(f"[DEBUG] Successfully retried reference {retry_idx + 1}")
+                
+                # Update progress after successful retry
+                if job_id:
+                    update_job_progress(job_id, completed_so_far)
+                    
+            except Exception as e:
+                print(f"[DEBUG] Retry failed for reference: {e}")
+                # Keep the original error
+                all_rows[original_idx]["error"] = f"Retry failed: {str(e)}"
+    
     # Final count results
     result_counts = {
         "verified": sum(1 for r in all_rows if r and r.get("status") == "verified"),
@@ -1395,6 +1434,62 @@ def verify_references_batch(
 
     return all_rows
 
+
+def _verify_single_reference_with_retry(
+    ref: str, 
+    style: str, 
+    use_crossref: bool, 
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+    max_retries: int = 3,
+) -> Dict[str, Any]:
+    """Single reference verification with retry logic"""
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                wait_time = min(30, attempt * 10)  # Cap at 30 seconds
+                print(f"[DEBUG] Retry attempt {attempt + 1}/{max_retries} for reference: {ref[:100]}... (waiting {wait_time}s)")
+                time.sleep(wait_time)
+            
+            result = _verify_single_reference(
+                ref, style, use_crossref, use_openalex, enrich_metadata
+            )
+            
+            # If we got a valid result (not offline), return it
+            if result and result.get("status") != "offline":
+                if attempt > 0:
+                    print(f"[DEBUG] Retry succeeded for reference after {attempt + 1} attempts")
+                return result
+            elif attempt == max_retries - 1:
+                # Last attempt, return whatever we have
+                return result
+                
+        except Exception as e:
+            last_error = e
+            print(f"[DEBUG] Attempt {attempt + 1} failed: {e}")
+            continue
+    
+    # If all retries failed, return error result
+    return {
+        "reference": ref,
+        "style": style,
+        "status": "not_found",
+        "source": "",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "title_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "query_used": "",
+        "author": "",
+        "error": f"All {max_retries} retries failed: {str(last_error)}",
+    }
 # ============================================================
 # BACKGROUND JOB SUBMISSION
 # ============================================================
