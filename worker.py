@@ -23,6 +23,11 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
     """Process a document - runs in background"""
     print(f"🔥 Processing job {job_id}: {filename}")
     print(f"📋 enable_autofix flag received: {enable_autofix}") 
+    
+    # 🔥 FORCE AUTOFIX TO TRUE (TEMPORARY FIX)
+    # Remove this line after testing
+    enable_autofix = True
+    print(f"📋 FORCED enable_autofix to: {enable_autofix}")
     # =========================
     # LOAD FILE FROM REDIS
     # =========================
