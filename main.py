@@ -2136,7 +2136,7 @@ async def verify(
             job_id,                      # 🔥 positional args ONLY
             file.filename,
             style,
-            enable_autofix, 
+            True, 
             job_timeout=3600
         )
 
