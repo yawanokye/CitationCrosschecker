@@ -2075,16 +2075,18 @@ def privacy(request: Request):
 async def verify(
     file: UploadFile = File(...),
     style: str = Form("apa"),
-    enable_autofix: bool = Form(False),
-    enable_online_verification: bool = Form(False),
+    enable_autofix: str = Form("false"),  # CHANGE: Use str instead of bool
+    enable_online_verification: str = Form("false"),  # CHANGE: Use str instead of bool
     request: Request = None
 ):
     # Convert string to boolean
-    enable_autofix_bool = enable_autofix.lower() == "true"
-    enable_online_verification_bool = enable_online_verification.lower() == "true"
+    autofix_enabled = enable_autofix.lower() == "true"
+    online_verify_enabled = enable_online_verification.lower() == "true"
     
     print(f"📋 Received enable_autofix string: {enable_autofix}")
-    print(f"📋 Converted to bool: {enable_autofix_bool}")
+    print(f"📋 Converted to bool: {autofix_enabled}")
+    print(f"📋 Received enable_online_verification: {online_verify_enabled}")
+    
     # =========================
     # 1. VALIDATION
     # =========================
@@ -2157,7 +2159,7 @@ async def verify(
             print(f"⚠️ Database error: {db_error}")
 
     # =========================
-    # 6. ENQUEUE JOB (🔥 FIXED)
+    # 6. ENQUEUE JOB
     # =========================
     if not task_queue:
         return JSONResponse(
@@ -2166,16 +2168,17 @@ async def verify(
         )
 
     try:
+        # 🔥 FIX: Use the autofix_enabled variable instead of hardcoded True
         task_queue.enqueue(
-            "worker.process_document",   # 🔥 must match module.function
-            job_id,                      # 🔥 positional args ONLY
+            "worker.process_document",
+            job_id,
             file.filename,
             style,
-            True, 
+            autofix_enabled,  # CHANGE: Use the variable, not hardcoded True
             job_timeout=3600
         )
 
-        print(f"🔥 Job {job_id} queued successfully")
+        print(f"🔥 Job {job_id} queued successfully with autofix={autofix_enabled}")
 
     except Exception as q_error:
         print(f"❌ Queue error: {q_error}")
@@ -2207,7 +2210,8 @@ async def verify(
         "status": "queued",
         "message": "Document queued. Poll /job/{job_id} for status.",
         "file_name": file.filename,
-        "file_size_mb": file_size_mb
+        "file_size_mb": file_size_mb,
+        "autofix_enabled": autofix_enabled  # Include for debugging
     }
 # ============================================================
 # RESULT CHECK ENDPOINT
