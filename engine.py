@@ -1851,83 +1851,88 @@ def generate_suggestions(
     ref_map: Dict[str, str]
 ) -> Dict[str, Any]:
     """
-    Master Suggestion Engine:
-    - Non-invasive
-    - Structured
-    - UI-ready
+    Clean Suggestion Engine:
+    - No duplication with Missing/Recovery tabs
+    - Only fixable inconsistencies
+    - UI-ready + action-ready
     """
 
-    # 1. Direct citation suggestions
-    citation_suggestions = generate_citation_suggestions(
-        citations,
-        references,
-        ref_map
-    )
-
-    # 2. Missing citation suggestions
-    missing_suggestions = []
-    seen_missing = set()
-
-    for missing in missing_rows:
-        citation = missing.get("citation_in_text", "")
-        if citation and citation not in seen_missing:
-            seen_missing.add(citation)
-
-            suggestion = _generate_citation_fixes(
-                citation,
-                references,
-                ref_map
-            )
-
-            if suggestion:
-                missing_suggestions.append({
-                    "citation": suggestion.original,
-                    "suggested": suggestion.suggested,
-                    "type": suggestion.fix_type,
-                    "confidence": suggestion.confidence,
-                    "reason": suggestion.reason,
-                    "action": "add_reference"
-                })
-
-    # 3. Unmatched citations in c2r
-    unmatched_suggestions = []
-    seen_unmatched = set()
-
-    for item in c2r:
-        if item.get("status") == "not_found":
-            citation = item.get("in_text", "")
-            if citation and citation not in seen_unmatched:
-                seen_unmatched.add(citation)
-
-                suggestion = _generate_citation_fixes(
-                    citation,
-                    references,
-                    ref_map
-                )
-
-                if suggestion:
-                    unmatched_suggestions.append({
-                        "citation": suggestion.original,
-                        "suggested": suggestion.suggested,
-                        "type": suggestion.fix_type,
-                        "confidence": suggestion.confidence,
-                        "reason": suggestion.reason,
-                        "action": "review_required"
-                    })
-
-    # 4. Reference suggestions
-    reference_suggestions = generate_reference_suggestions(references)
-
     # ============================================================
-    # STATISTICS
+    # 1. CITATION FIXES (MAIN)
     # ============================================================
 
-    all_suggestions = (
-        citation_suggestions +
-        missing_suggestions +
-        unmatched_suggestions +
-        reference_suggestions
-    )
+    citation_suggestions = []
+
+    for citation in citations:
+        suggestion = _generate_citation_fixes(
+            citation,
+            references,
+            ref_map
+        )
+
+        if suggestion:
+            issue_type = suggestion.fix_type or "ambiguous_match"
+
+            # ❌ skip missing_reference & uncited_reference
+            if issue_type in {"missing_reference", "uncited_reference"}:
+                continue
+
+            citation_suggestions.append({
+                "original": suggestion.original,
+                "suggested": suggestion.suggested,
+                "confidence": suggestion.confidence,
+            
+                # WHAT IS WRONG
+                "issue_type": issue_type,
+            
+                # WHY IT IS WRONG
+                "reason": suggestion.reason or "Inconsistency detected",
+            
+                # WHAT TO DO
+                "fix_type": "required_fix" if suggestion.confidence >= 0.85 else "review_required",
+            
+                # 🔥 APPLY ACTION (ONLY ONCE)
+                "apply": {
+                    "type": "replace_text",
+                    "target": suggestion.original,
+                    "replacement": suggestion.suggested
+                }
+            })
+    # ============================================================
+    # 2. REFERENCE FIXES (FORMATTING / STYLE)
+    # ============================================================
+
+    reference_suggestions = []
+
+    for ref in references:
+        ref_fix = _generate_reference_fix(ref)
+
+        if ref_fix:
+            reference_suggestions.append({
+                "original": ref.reference_full,
+                "suggested": ref_fix.suggested,
+                "confidence": ref_fix.confidence,
+                "issue_type": "formatting_issue",
+                "reason": ref_fix.reason or "Reference formatting inconsistency",
+                "fix_type": "optional_fix",
+
+                # 🔥 APPLY ACTION
+                "apply": {
+                    "type": "replace_text",
+                    "target": ref.reference_full,
+                    "replacement": ref_fix.suggested
+                }
+            })
+
+    # ============================================================
+    # 3. COMBINE (NO DUPLICATES FROM OTHER TABS)
+    # ============================================================
+
+    all_suggestions = citation_suggestions + reference_suggestions
+
+    # ============================================================
+    # 4. STATISTICS
+    # ============================================================
 
     high_conf = [s for s in all_suggestions if s["confidence"] >= 0.85]
     med_conf = [s for s in all_suggestions if 0.70 <= s["confidence"] < 0.85]
@@ -1935,17 +1940,17 @@ def generate_suggestions(
 
     by_type = {}
     for s in all_suggestions:
-        by_type[s["type"]] = by_type.get(s["type"], 0) + 1
+        by_type[s["issue_type"]] = by_type.get(s["issue_type"], 0) + 1
 
     # ============================================================
-    # FINAL OUTPUT
+    # 5. FINAL OUTPUT
     # ============================================================
 
     return {
         "citations": citation_suggestions,
-        "missing": missing_suggestions,
-        "unmatched": unmatched_suggestions,
         "references": reference_suggestions,
+
+        # ❌ REMOVED: missing + unmatched (handled elsewhere)
 
         "statistics": {
             "total": len(all_suggestions),
@@ -1961,7 +1966,23 @@ def generate_suggestions(
         }
     }
 
+def _generate_reference_fix(ref):
+    """
+    Simple reference formatting fixer (extend later)
+    """
+    text = ref.reference_full
 
+    # Example fix: double spaces, punctuation, etc.
+    cleaned = " ".join(text.split())
+
+    if cleaned != text:
+        return type("RefFix", (), {
+            "suggested": cleaned,
+            "confidence": 0.75,
+            "reason": "Reference formatting cleaned"
+        })
+
+    return None
 # ============================================================
 # HELPER FUNCTIONS FOR SUGGESTIONS (PRESERVED FROM ORIGINAL)
 # ============================================================
