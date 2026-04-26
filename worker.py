@@ -6,7 +6,7 @@ import time
 import redis
 import psycopg2
 from rq import Worker, Queue, Connection
-
+from engine import run_crosscheck, run_crosscheck_with_autofix
 # Get connection strings
 REDIS_URL = os.environ.get("REDIS_URL")
 DATABASE_URL = os.environ.get("DATABASE_URL")
