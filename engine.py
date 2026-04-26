@@ -2372,3 +2372,52 @@ def run_crosscheck_with_autofix(
             }
     
     return result
+def run_crosscheck_with_autofix(
+    file_bytes,
+    filename,
+    style="apa",
+    verify_online=False
+):
+    # 1. Run normal analysis
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style,
+        verify_online=verify_online
+    )
+
+    try:
+        # 2. Extract required parts safely
+        citations = result.get("citations", [])
+        c2r = result.get("c2r", [])
+        missing = result.get("missing", [])
+        references = result.get("references_parsed", [])
+
+        # 3. Build reference map
+        ref_map = {}
+        for r in references:
+            if hasattr(r, "key"):
+                ref_map[r.key] = r.reference_full
+
+        # 4. Generate suggestions
+        suggestions = generate_suggestions(
+            citations=citations,
+            c2r=c2r,
+            missing_rows=missing,
+            references=references,
+            ref_map=ref_map
+        )
+
+        # 5. Attach to result
+        result["autofix"] = suggestions
+
+    except Exception as e:
+        print(f"[AUTOFIX ERROR] {e}")
+        result["autofix"] = {
+            "citations": [],
+            "missing": [],
+            "unmatched": [],
+            "references": []
+        }
+
+    return result
