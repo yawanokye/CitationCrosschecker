@@ -2316,13 +2316,15 @@ def run_crosscheck_with_autofix(
     throttle_s: float = 0.12,
     use_crossref: bool = True,
     use_openalex: bool = True,
-    enable_autofix: bool = False,
+    enable_autofix: bool = True,
 ) -> Dict[str, Any]:
     """
-    Enhanced version with non-invasive suggestions.
-    Calls original run_crosscheck and adds suggestion data.
+    Clean autofix wrapper: runs crosscheck + generates suggestions
     """
-    
+
+    # -----------------------------
+    # 1. Run base analysis
+    # -----------------------------
     result = run_crosscheck(
         file_bytes=file_bytes,
         filename=filename,
@@ -2334,90 +2336,97 @@ def run_crosscheck_with_autofix(
         use_crossref=use_crossref,
         use_openalex=use_openalex
     )
-    
-    if enable_autofix and "error" not in result:
-        style_s = (style or "apa").strip().lower()
-        is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
-        
-        if not is_numeric and style_s not in ["ieee", "vancouver"]:
-            references_raw = result.get("references_raw", [])
-            refs = [parse_reference_author_year(r) for r in references_raw]
-            refs = [r for r in refs if r is not None]
-            
-            ref_map = {r.key: r.reference_full for r in refs}
-            
-            # Extract citations from main text
-            main_text = result.get("main_text", "")
-            citations = extract_author_year_citations(main_text)
-            
-            # Generate suggestions using the new non-invasive engine
-            suggestions_data = generate_suggestions(
-                citations=citations,
-                c2r=result.get("reconciliation_intext_to_reference", []),
-                missing_rows=result.get("missing_in_references", []),
-                references=refs,
-                ref_map=ref_map
-            )
-            
-            result["autofix"] = {
-                "enabled": True,
-                "suggestions": suggestions_data,
-                "summary": suggestions_data["summary"]
-            }
-        else:
-            result["autofix"] = {
-                "enabled": True,
-                "message": f"Auto-fix primarily supports APA/Harvard style. Current style: {style_s}",
-                "suggestions": {"citations": [], "references": [], "statistics": {"total_suggestions": 0}}
-            }
-    
-    return result
-def run_crosscheck_with_autofix(
-    file_bytes,
-    filename,
-    style="apa",
-    verify_online=False
-):
-    # 1. Run normal analysis
-    result = run_crosscheck(
-        file_bytes=file_bytes,
-        filename=filename,
-        style=style,
-        verify_online=verify_online
-    )
+
+    if not enable_autofix or "error" in result:
+        return result
 
     try:
-        # 2. Extract required parts safely
-        citations = result.get("citations", [])
-        c2r = result.get("c2r", [])
+        style_s = (style or "apa").strip().lower()
+        is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
+
+        if is_numeric:
+            result["autofix"] = {
+                "enabled": True,
+                "message": f"Auto-fix supports APA/Harvard. Current style: {style_s}",
+                "suggestions": {
+                    "citations": [],
+                    "missing": [],
+                    "unmatched": [],
+                    "references": []
+                }
+            }
+            return result
+
+        # -----------------------------
+        # 2. Extract CORRECT data
+        # -----------------------------
+        citations = result.get("citations", []) or result.get("in_text_citations", [])
+        references_raw = result.get("references_raw", [])
         missing = result.get("missing", [])
-        references = result.get("references_parsed", [])
+        c2r = result.get("c2r", [])
 
-        # 3. Build reference map
-        ref_map = {}
-        for r in references:
-            if hasattr(r, "key"):
-                ref_map[r.key] = r.reference_full
+        # -----------------------------
+        # 3. Parse references
+        # -----------------------------
+        refs = [parse_reference_author_year(r) for r in references_raw]
+        refs = [r for r in refs if r is not None]
 
-        # 4. Generate suggestions
-        suggestions = generate_suggestions(
+        ref_map = {r.key: r.reference_full for r in refs if hasattr(r, "key")}
+
+        # -----------------------------
+        # 4. DEBUG (VERY IMPORTANT)
+        # -----------------------------
+        print("📊 DEBUG COUNTS:",
+              "citations:", len(citations),
+              "refs:", len(refs),
+              "c2r:", len(c2r),
+              "missing:", len(missing))
+
+        if not citations and not refs:
+            print("⚠️ WARNING: No citations or references extracted")
+
+        # -----------------------------
+        # 5. Generate suggestions
+        # -----------------------------
+        suggestions_data = generate_suggestions(
             citations=citations,
             c2r=c2r,
             missing_rows=missing,
-            references=references,
+            references=refs,
             ref_map=ref_map
         )
 
-        # 5. Attach to result
-        result["autofix"] = suggestions
+        # -----------------------------
+        # 6. SAFETY TEST (UI check)
+        # -----------------------------
+        if not suggestions_data["citations"] and not suggestions_data["missing"]:
+            print("⚠️ No suggestions generated — injecting test")
+
+            suggestions_data["citations"].append({
+                "original": "Test (2020)",
+                "suggested": "Test (2021)",
+                "confidence": 0.8,
+                "reason": "Test suggestion to confirm UI rendering"
+            })
+
+        # -----------------------------
+        # 7. Attach to result
+        # -----------------------------
+        result["autofix"] = {
+            "enabled": True,
+            "suggestions": suggestions_data
+        }
 
     except Exception as e:
         print(f"[AUTOFIX ERROR] {e}")
         result["autofix"] = {
-            "citations": [],
-            "missing": [],
-            "unmatched": [],
-            "references": []
+            "enabled": False,
+            "suggestions": {
+                "citations": [],
+                "missing": [],
+                "unmatched": [],
+                "references": []
+            }
         }
 
     return result
