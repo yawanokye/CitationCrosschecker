@@ -2252,61 +2252,23 @@ function displaySuggestions(data) {
 
     const suggestions = data?.suggestions || data || {};
 
+    // 🔥 ONLY USE CLEAN SOURCES (no duplication)
     const citations = suggestions.citations || [];
-    const missing = suggestions.missing || [];
-    const unmatched = suggestions.unmatched || [];
     const references = suggestions.references || [];
 
-    const recoveryMissing = suggestions.recovery_missing || [];
-    const recoveryVerification = suggestions.recovery_verification || [];
+    // 🔥 MERGE
+    const allSuggestions = [...citations, ...references];
 
-    const allSuggestions = [
-        ...citations.map(s => ({
-            ...s,
-            category: "citation",
-            action: s.action || "review_required"
-        })),
-    
-        ...missing.map(s => ({
-            ...s,
-            category: "missing",
-            action: s.action || "add_reference"
-        })),
-    
-        ...unmatched.map(s => ({
-            ...s,
-            category: "unmatched",
-            action: s.action || "review_required"
-        })),
-    
-        ...references.map(s => ({
-            ...s,
-            category: "reference",
-            action: s.action || "optional_fix"
-        }))
-    ].filter(s => {
-        const source = String(s.source || "").toLowerCase();
-        const action = String(s.action || "").toLowerCase();
-    
-        // Keep Suggestions tab clean.
-        if (source.includes("verification")) return false;
-        if (source.includes("recovery")) return false;
-        if (action.includes("recovery")) return false;
-        if (action.includes("context")) return false;
-    
-        return true;
-    });
-
+    // 🔥 REMOVE duplicates
     const seen = new Set();
     const uniqueSuggestions = [];
 
     for (const s of allSuggestions) {
         const key = (
-            s.citation ||
             s.original ||
-            s.title ||
-            s.doi ||
-            JSON.stringify(s).substring(0, 120)
+            s.citation ||
+            s.suggested ||
+            JSON.stringify(s).substring(0, 100)
         );
 
         if (!seen.has(key)) {
@@ -2315,6 +2277,7 @@ function displaySuggestions(data) {
         }
     }
 
+    // 🔥 EMPTY STATE
     if (uniqueSuggestions.length === 0) {
         panel.style.display = "block";
         content.innerHTML = `
@@ -2327,6 +2290,9 @@ function displaySuggestions(data) {
 
     panel.style.display = "block";
 
+    // 🔥 STORE FOR APPLY FIX
+    window.CURRENT_SUGGESTIONS = uniqueSuggestions;
+
     let html = `
         <div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
             <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
@@ -2338,22 +2304,35 @@ function displaySuggestions(data) {
     html += `<div class="suggestions-section"><h4>💡 Suggestions</h4>`;
 
     html += uniqueSuggestions.slice(0, 80).map((s, i) => {
-        const title = esc(s.title || s.suggested || s.original || s.citation || "Untitled suggestion");
-        const year = s.year ? ` (${esc(String(s.year))})` : "";
-        const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
-        const doi = s.doi
-            ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View DOI</a>`
-            : "";
+
+        const confClass =
+            s.confidence >= 0.85 ? "high-conf" :
+            s.confidence >= 0.7 ? "med-conf" :
+            "low-conf";
 
         return `
-            <div class="suggestion-item med-conf">
-                <div class="suggestion-suggested">${i + 1}. ${title}${year}</div>
-                <div class="suggestion-meta">
-                    <span>${esc(authors)}</span>
-                    <span>${esc(s.category || "")}</span>
-                    <span>${esc(s.action || "")}</span>
-                    <span>${doi}</span>
+            <div class="suggestion-item ${confClass}">
+
+                <div class="suggestion-original">
+                    ${esc(s.original || "")}
                 </div>
+
+                <div class="suggestion-suggested">
+                    → ${esc(s.suggested || "")}
+                </div>
+
+                <div class="suggestion-meta">
+                    <span><b>Issue:</b> ${esc(s.issue_type || "unknown")}</span>
+                    <span><b>Reason:</b> ${esc(s.reason || "Not specified")}</span>
+                    <span><b>Confidence:</b> ${Math.round((s.confidence || 0)*100)}%</span>
+                </div>
+
+                ${s.apply ? `
+                    <button class="btn btn-small btn-success" onclick="applyFix(${i})">
+                        ✔ Apply Fix
+                    </button>
+                ` : ""}
+
             </div>
         `;
     }).join("");
@@ -2361,7 +2340,19 @@ function displaySuggestions(data) {
     html += `</div>`;
     content.innerHTML = html;
 }
+function applyFix(index) {
+    const s = window.CURRENT_SUGGESTIONS[index];
+    if (!s || !s.apply) return;
 
+    if (s.apply.type === "replace_text") {
+        const target = s.apply.target;
+        const replacement = s.apply.replacement;
+
+        alert(`Fix ready: ${target} → ${replacement}`);
+
+        // 🔜 Next step: apply to document
+    }
+}
 // ============================================
 // BUTTON EVENT LISTENERS (AT THE BOTTOM - CRITICAL!)
 // ============================================
