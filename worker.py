@@ -66,6 +66,8 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
                 style=style,
                 verify_online=False
             )
+        print("🔍 AUTOFIX PRESENT:", "autofix" in result)
+        print("🔍 AUTOFIX CONTENT:", result.get("autofix"))
         print("🔍 RESULT:", result)
         # 👇 ADD THIS LINE HERE
         print("🔍 RESULT KEYS:", result.keys() if result else "NO RESULT")
