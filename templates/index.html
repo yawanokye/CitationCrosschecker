@@ -2044,8 +2044,14 @@ async function runInitialCheck() {
     const autofixCheck = document.getElementById("autofix");
     const onlineVerifyCheck = document.getElementById("onlineVerify");
 
-    fd.append("enable_autofix", (autofixCheck?.checked || false).toString());
-    fd.append("enable_online_verification", (onlineVerifyCheck?.checked || false).toString());
+    // 🔥 CRITICAL FIX: Send as string "true" or "false"
+    // The backend expects boolean values as strings
+    fd.append("enable_autofix", autofixCheck?.checked ? "true" : "false");
+    fd.append("enable_online_verification", onlineVerifyCheck?.checked ? "true" : "false");
+    
+    // Debug - verify values are being set correctly
+    console.log("🔍 Sending enable_autofix:", autofixCheck?.checked ? "true" : "false");
+    console.log("🔍 Sending enable_online_verification:", onlineVerifyCheck?.checked ? "true" : "false");
 
     try {
         const res = await fetch("/verify", {
@@ -2081,7 +2087,6 @@ async function runInitialCheck() {
         setStatus("Error: " + err.message, "bad");
     }
 }
-
 async function pollAnalysisResult(jobId) {
     try {
         const res = await fetch(`/result/${encodeURIComponent(jobId)}`);
