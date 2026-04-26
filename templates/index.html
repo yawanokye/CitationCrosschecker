@@ -1622,7 +1622,7 @@ function renderC2R(data) {
     const body = $("c2rBody");
     if (!body) return;
     if (!uniqueCitations.length) { body.innerHTML = `<tr><td colspan="6">No mapping available</div></td>`; return; }
-    body.innerHTML = uniqueCitations.slice(0, 100).map((item, i) => `
+    body.innerHTML = uniqueCitations.slice(0, 1000).map((item, i) => `
         <tr>
             <td style="width:50px;">${i + 1}</div>
             <td style="width:100px;"><span class="badge ${item.status === 'matched' ? 'matched' : 'not_found'}">${esc(item.status || '')}</span></div>
