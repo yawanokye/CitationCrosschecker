@@ -1775,6 +1775,35 @@ async def debug_check_verification(job_id: str):
         "stored_results_from_verify_py": len(stored_results) if stored_results else 0,
         "result_keys": list(result.keys())
     }    
+@app.get("/debug/test-suggestions")
+async def test_suggestions():
+    """Test endpoint to see what suggestions look like"""
+    from engine import generate_suggestions, parse_reference_author_year
+    
+    # Create test data
+    test_citations = ["(Smith, 2019)", "(Wrong, 2020)"]
+    test_references_raw = [
+        "Smith, J. (2020). A test title. Journal of Testing, 10(2), 100-110.",
+        "Johnson, A. (2019). Another title. Another Journal, 5(1), 20-30."
+    ]
+    
+    test_refs = [parse_reference_author_year(r) for r in test_references_raw]
+    test_refs = [r for r in test_refs if r is not None]
+    test_ref_map = {r.key: r.reference_full for r in test_refs}
+    
+    suggestions = generate_suggestions(
+        citations=test_citations,
+        c2r=[],
+        missing_rows=[],
+        references=test_refs,
+        ref_map=test_ref_map
+    )
+    
+    return {
+        "test_suggestions": suggestions,
+        "citations_count": len(suggestions.get("citations", [])),
+        "sample": suggestions.get("citations", [])[:2]
+    }
 @app.post("/debug/retry-verification/{job_id}")
 async def debug_retry_verification(job_id: str):
     refs = []
