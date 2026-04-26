@@ -26,7 +26,7 @@ except ImportError as e:
     print(f"ERROR: Cannot import engine - {e}")
     sys.exit(1)
 
-def process_document(job_id, filename, style="apa"):
+def process_document(job_id, filename, style="apa", enable_autofix=False):
     """Process a document - runs in background"""
     print(f"🔥 Processing job {job_id}: {filename}")
 
@@ -50,13 +50,22 @@ def process_document(job_id, filename, style="apa"):
         )
         conn.commit()
         
-        # Process the document
-        result = run_crosscheck(
-            file_bytes=file_content,
-            filename=filename,
-            style=style,
-            verify_online=False
-        )
+        if enable_autofix:
+            print("⚡ Running with AUTO-FIX enabled")
+            result = run_crosscheck_with_autofix(
+                file_bytes=file_content,
+                filename=filename,
+                style=style,
+                verify_online=False
+            )
+        else:
+            print("🔍 Running normal crosscheck")
+            result = run_crosscheck(
+                file_bytes=file_content,
+                filename=filename,
+                style=style,
+                verify_online=False
+            )
         print("🔍 RESULT:", result)
         # 👇 ADD THIS LINE HERE
         print("🔍 RESULT KEYS:", result.keys() if result else "NO RESULT")
