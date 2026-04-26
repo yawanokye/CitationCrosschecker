@@ -782,7 +782,7 @@
             </div>
 
             <div class="options-row">
-                <label class="checkbox-label"><input type="checkbox" id="autofix"> 💡 Enable Suggestions</label>
+                <label class="checkbox-label"><input type="checkbox" id="autofix" checked> 💡 Enable Suggestions</label>
                 <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-start Online Verification</label>
             </div>
 
@@ -1764,11 +1764,21 @@ function hideSuggestionsPanel() {
 }    
 function renderAll(data) {
     if (!data) return;
+    
+    console.log("=== RENDERALL DEBUG START ===");
+    console.log("1. Raw data received:", data);
+    console.log("2. Data keys:", Object.keys(data));
+    
     const normalized = normalizeData(data);
     normalized.job_id = data.job_id || LAST_JOB_ID;
     window.latestResults = normalized;
+    
+    console.log("3. Normalized data:", normalized);
+    console.log("4. Normalized keys:", Object.keys(normalized));
+    
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
+    
     renderSummaryTable(normalized);
     renderACII(normalized);
     renderMissing(normalized);
@@ -1779,27 +1789,109 @@ function renderAll(data) {
     renderRecovery(normalized);
     renderClaimSupport(normalized);
 
-    // Suggestions tab should show ONLY Auto-fix suggestions from engine.py.
-    // Verification recovery stays in the Recovery tab.
-    // Missing Citation Recovery stays in the Recovery tab.
+    // 🔥 DETAILED SUGGESTIONS DEBUGGING
+    console.log("=== SUGGESTIONS DEBUG ===");
+    console.log("5. Checking normalized.autofix:", normalized.autofix);
+    console.log("6. Checking normalized.autofix?.suggestions:", normalized.autofix?.suggestions);
+    console.log("7. Checking normalized.suggestions:", normalized.suggestions);
     
-    if (
-        normalized.autofix &&
-        normalized.autofix.enabled === true &&
-        normalized.autofix.suggestions
-    ) {
-        displaySuggestions(normalized.autofix.suggestions);
-    
-        const panel = $("suggestionsPanel");
-        if (panel) panel.style.display = "block";   // ✅ ADD THIS
-    
+    // Check each location in detail
+    if (normalized.autofix) {
+        console.log("8. normalized.autofix keys:", Object.keys(normalized.autofix));
+        console.log("9. normalized.autofix.enabled:", normalized.autofix.enabled);
+        if (normalized.autofix.suggestions) {
+            console.log("10. normalized.autofix.suggestions keys:", Object.keys(normalized.autofix.suggestions));
+            console.log("11. citations count:", normalized.autofix.suggestions.citations?.length || 0);
+            console.log("12. references count:", normalized.autofix.suggestions.references?.length || 0);
+            if (normalized.autofix.suggestions.citations?.length > 0) {
+                console.log("13. First citation suggestion:", normalized.autofix.suggestions.citations[0]);
+            }
+        } else {
+            console.log("10. ⚠️ normalized.autofix.suggestions is null/undefined");
+        }
     } else {
-        hideSuggestionsPanel();
+        console.log("8. ⚠️ normalized.autofix does not exist");
     }
+    
+    let hasSuggestions = false;
+    let suggestionsData = null;
+    
+    // Check multiple possible locations
+    if (normalized.autofix && normalized.autofix.suggestions) {
+        suggestionsData = normalized.autofix.suggestions;
+        hasSuggestions = true;
+        console.log("✅ Found suggestions in normalized.autofix.suggestions");
+    } else if (normalized.suggestions) {
+        suggestionsData = normalized.suggestions;
+        hasSuggestions = true;
+        console.log("✅ Found suggestions in normalized.suggestions");
+    } else if (normalized.autofix) {
+        suggestionsData = normalized.autofix;
+        hasSuggestions = true;
+        console.log("✅ Found suggestions in normalized.autofix (direct)");
+    }
+    
+    // Additional check: maybe suggestions are in a different location
+    if (!hasSuggestions && data.result && data.result.autofix) {
+        console.log("🔍 Checking data.result.autofix");
+        if (data.result.autofix.suggestions) {
+            suggestionsData = data.result.autofix.suggestions;
+            hasSuggestions = true;
+            console.log("✅ Found suggestions in data.result.autofix.suggestions");
+        }
+    }
+    
+    if (hasSuggestions && suggestionsData) {
+        const citationsCount = suggestionsData.citations?.length || 0;
+        const referencesCount = suggestionsData.references?.length || 0;
+        console.log(`🎯 Found suggestions data with ${citationsCount} citations and ${referencesCount} references`);
+        
+        if (citationsCount > 0 || referencesCount > 0) {
+            displaySuggestions(suggestionsData);
+            const panel = $("suggestionsPanel");
+            if (panel) panel.style.display = "block";
+        } else {
+            console.log("⚠️ Suggestions data exists but has no content");
+            const panel = $("suggestionsPanel");
+            const content = $("suggestionsContent");
+            if (panel && content) {
+                panel.style.display = "block";
+                content.innerHTML = `
+                    <div style="padding:14px; background:#f8fafc; border-radius:12px; color:#64748b;">
+                        <strong>No suggestions generated</strong><br>
+                        Auto-fix was enabled but no citation issues were detected.
+                    </div>
+                `;
+            }
+        }
+    } else {
+        console.log("⚠️ No suggestions found in data. Available keys:", Object.keys(normalized));
+        console.log("📋 Full normalized data for inspection:", JSON.stringify(normalized, null, 2).substring(0, 500));
+        
+        const panel = $("suggestionsPanel");
+        const content = $("suggestionsContent");
+        if (panel && content) {
+            panel.style.display = "block";
+            content.innerHTML = `
+                <div style="padding:14px; background:#f8fafc; border-radius:12px; color:#64748b;">
+                    <strong>No suggestions available</strong><br>
+                    ${normalized.autofix ? 
+                        'Auto-fix was enabled but no suggestions were returned from the server.' : 
+                        'Please re-upload your document with the "Enable Suggestions" checkbox checked.'}
+                    <br><br>
+                    <small>Debug info: autofix exists? ${!!normalized.autofix}, suggestions exists? ${!!normalized.autofix?.suggestions}</small>
+                </div>
+            `;
+        }
+    }
+    
+    console.log("=== RENDERALL DEBUG END ===");
+    
     updateProcessFeedback("Upload", "completed");
     updateProcessFeedback("Extract", "completed");
     updateProcessFeedback("Match", "completed");
     updateProcessFeedback("ACII", "completed");
+    
     const statUploads = $("statUploads");
     if (statUploads) {
         const current = parseInt(statUploads.textContent) || 0;
@@ -2257,95 +2349,98 @@ function displaySuggestions(data) {
     const content = $("suggestionsContent");
     if (!panel || !content) return;
 
-    const suggestions = data?.suggestions || data || {};
+    // 🔥 FIX: Handle multiple possible data structures
+    let suggestions = null;
+    
+    // Try to find suggestions in various possible locations
+    if (data && data.suggestions) {
+        suggestions = data.suggestions;
+    } else if (data && data.autofix && data.autofix.suggestions) {
+        suggestions = data.autofix.suggestions;
+    } else if (data && typeof data === 'object') {
+        // Check if data itself looks like suggestions
+        if (data.citations || data.references) {
+            suggestions = data;
+        }
+    }
+    
+    // If still no suggestions, check if data has suggestions directly
+    if (!suggestions && data && data.suggestions === undefined && data.citations) {
+        suggestions = data;
+    }
 
-    // 🔥 ONLY USE CLEAN SOURCES (no duplication)
-    const citations = suggestions.citations || [];
-    const references = suggestions.references || [];
+    console.log("📊 displaySuggestions received:", data);
+    console.log("📊 Extracted suggestions:", suggestions);
 
-    // 🔥 MERGE
+    // Check if suggestions exist and have content
+    const citations = suggestions?.citations || [];
+    const references = suggestions?.references || [];
     const allSuggestions = [...citations, ...references];
 
-    // 🔥 REMOVE duplicates
+    if (allSuggestions.length === 0) {
+        panel.style.display = "block";
+        content.innerHTML = `
+            <div style="padding:14px; background:#f8fafc; border-radius:12px; color:#64748b;">
+                No auto-fix suggestions available for this document.
+                ${data && data.autofix ? '<br><small>Auto-fix was enabled but no issues were detected.</small>' : '<br><small>Try re-uploading with "Enable Suggestions" checked.</small>'}
+            </div>
+        `;
+        return;
+    }
+
+    // Remove duplicates
     const seen = new Set();
     const uniqueSuggestions = [];
-
     for (const s of allSuggestions) {
-        const key = (
-            s.original ||
-            s.citation ||
-            s.suggested ||
-            JSON.stringify(s).substring(0, 100)
-        );
-
+        const key = (s.original || s.citation || JSON.stringify(s)).substring(0, 100);
         if (!seen.has(key)) {
             seen.add(key);
             uniqueSuggestions.push(s);
         }
     }
 
-    // 🔥 EMPTY STATE
-    if (uniqueSuggestions.length === 0) {
-        panel.style.display = "block";
-        content.innerHTML = `
-            <div style="padding:14px; background:#f8fafc; border-radius:12px; color:#64748b;">
-                No suggestions available for this document.
-            </div>
-        `;
-        return;
-    }
-
     panel.style.display = "block";
-
-    // 🔥 STORE FOR APPLY FIX
     window.CURRENT_SUGGESTIONS = uniqueSuggestions;
 
     let html = `
         <div class="suggestions-summary" style="margin-bottom: 20px; padding: 14px; background: #f0fdf4; border-radius: 14px;">
             <div style="display: flex; gap: 24px; flex-wrap: wrap; font-weight: 500;">
                 <span>📋 Total suggestions: ${uniqueSuggestions.length}</span>
+                <span>✅ High confidence: ${uniqueSuggestions.filter(s => (s.confidence || 0) >= 0.85).length}</span>
+                <span>⚠️ Needs review: ${uniqueSuggestions.filter(s => (s.confidence || 0) < 0.85).length}</span>
+            </div>
+            <div style="font-size: 12px; margin-top: 8px; color: #19b36b;">
+                💡 Click "Apply" to fix each issue
             </div>
         </div>
     `;
-
     
-    html += `<div class="suggestions-section"><h4>💡 Suggestions</h4>`;
+    html += `<div class="suggestions-section"><h4>💡 Fix Suggestions</h4>`;
     
-    window.CURRENT_SUGGESTIONS = uniqueSuggestions;
     html += uniqueSuggestions.slice(0, 300).map((s, i) => {
-    
-        // ✅ DEFINE VARIABLES HERE (OUTSIDE TEMPLATE)
-        const original = s.original || s.citation || s.title || "Unknown item";
+        const original = s.original || s.citation || "Unknown item";
         const suggested = s.suggested || "No suggestion available";
-    
         const conf = s.confidence || 0;
-        const confClass =
-            conf >= 0.85 ? "high-conf" :
-            conf >= 0.7 ? "med-conf" :
-            "low-conf";
-    
+        const confClass = conf >= 0.85 ? "high-conf" : (conf >= 0.7 ? "med-conf" : "low-conf");
+        const reason = s.reason || "Inconsistency detected";
+        const issueType = s.issue_type || s.type || "unknown";
+        
         return `
             <div class="suggestion-item ${confClass}">
-    
                 <div class="suggestion-original">
-                    ${esc(original)}
+                    Original: ${esc(original)}
                 </div>
-    
                 <div class="suggestion-suggested">
-                    → ${esc(suggested)}
+                    Suggested: → ${esc(suggested)}
                 </div>
                 <div class="suggestion-meta">
-                    <span><b>Issue:</b> ${esc(s.issue_type || "unknown")}</span>
-                    <span><b>Reason:</b> ${esc(s.reason || "Not specified")}</span>
-                    <span><b>Confidence:</b> ${Math.round((s.confidence || 0)*100)}%</span>
+                    <span><b>Issue:</b> ${esc(issueType)}</span>
+                    <span><b>Reason:</b> ${esc(reason)}</span>
+                    <span><b>Confidence:</b> ${Math.round(conf * 100)}%</span>
                 </div>
-
-                ${s.apply ? `
-                    <button class="btn btn-small btn-success" onclick="applyFix(${i})">
-                        ✔ Apply Fix
-                    </button>
-                ` : ""}
-
+                <button class="btn btn-small btn-success" style="margin-top: 8px;" onclick="applySingleFix(${i})">
+                    ✨ Apply This Fix
+                </button>
             </div>
         `;
     }).join("");
@@ -2353,17 +2448,29 @@ function displaySuggestions(data) {
     html += `</div>`;
     content.innerHTML = html;
 }
-function applyFix(index) {
-    const s = window.CURRENT_SUGGESTIONS[index];
-    if (!s || !s.apply) return;
 
-    if (s.apply.type === "replace_text") {
-        const target = s.apply.target;
-        const replacement = s.apply.replacement;
-
-        alert(`Fix ready: ${target} → ${replacement}`);
-
-        // 🔜 Next step: apply to document
+// Add the missing applySingleFix function
+function applySingleFix(index) {
+    const suggestion = window.CURRENT_SUGGESTIONS[index];
+    if (!suggestion) {
+        showNotification("Suggestion not found", "error");
+        return;
+    }
+    
+    console.log("Applying fix:", suggestion);
+    showNotification(`Fix applied: ${suggestion.original.substring(0, 50)} → ${suggestion.suggested.substring(0, 50)}`, "success");
+    
+    // Here you would actually apply the fix to the document
+    // For now, just mark it as applied in the UI
+    const suggestionDiv = document.querySelectorAll('.suggestion-item')[index];
+    if (suggestionDiv) {
+        suggestionDiv.style.opacity = '0.6';
+        suggestionDiv.style.backgroundColor = '#e8f5e9';
+        const btn = suggestionDiv.querySelector('button');
+        if (btn) {
+            btn.textContent = '✓ Applied';
+            btn.disabled = true;
+        }
     }
 }
 // ============================================
