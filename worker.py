@@ -23,7 +23,9 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
     """Process a document - runs in background"""
     print(f"🔥 Processing job {job_id}: {filename}")
 
-    # 🔥 LOAD FILE FROM REDIS (THIS IS THE FIX)
+    # =========================
+    # LOAD FILE FROM REDIS
+    # =========================
     file_content = redis_conn.get(f"file:{job_id}")
     
     print(f"📦 File size from Redis: {len(file_content) if file_content else 0}")
@@ -32,40 +34,54 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         raise Exception(f"❌ File not found in Redis for job {job_id}")
 
     try:
-        # Connect to PostgreSQL
+        # =========================
+        # DB CONNECTION
+        # =========================
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         
-        # Update status
         cursor.execute(
             "UPDATE jobs SET status = 'processing', started_at = NOW() WHERE job_id = %s",
             (job_id,)
         )
         conn.commit()
-        
-        if enable_autofix:
-            print("⚡ Running with AUTO-FIX enabled")
-            result = run_crosscheck_with_autofix(
-                file_bytes=file_content,
-                filename=filename,
-                style=style,
-                verify_online=False
-            )
-        else:
-            print("🔍 Running normal crosscheck")
-            result = run_crosscheck(
-                file_bytes=file_content,
-                filename=filename,
-                style=style,
-                verify_online=False
-            )
+
+        # =========================
+        # 🔥 ALWAYS RUN AUTOFIX
+        # =========================
+        print("⚡ Running with AUTO-FIX FORCED ON")
+
+        result = run_crosscheck_with_autofix(
+            file_bytes=file_content,
+            filename=filename,
+            style=style,
+            verify_online=False,
+            enable_autofix=True   # 🔥 FORCE TRUE
+        )
+
+        # =========================
+        # DEBUG LOGS
+        # =========================
         print("🔍 AUTOFIX PRESENT:", "autofix" in result)
         print("🔍 AUTOFIX CONTENT:", result.get("autofix"))
-        print("🔍 RESULT:", result)
-        # 👇 ADD THIS LINE HERE
         print("🔍 RESULT KEYS:", result.keys() if result else "NO RESULT")
-        
-        # Store result
+
+        # =========================
+        # 🔥 CRITICAL FIX: MAP TO FRONTEND
+        # =========================
+        if result.get("autofix") and result["autofix"].get("suggestions"):
+            result["suggestions"] = result["autofix"]["suggestions"]
+            print("✅ Suggestions mapped to result['suggestions']")
+        else:
+            result["suggestions"] = {
+                "citations": [],
+                "references": []
+            }
+            print("⚠️ No suggestions generated")
+
+        # =========================
+        # SAVE RESULT
+        # =========================
         cursor.execute(
             "UPDATE jobs SET status = 'completed', result = %s, completed_at = NOW() WHERE job_id = %s",
             (json.dumps(result), job_id)
@@ -75,7 +91,9 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         cursor.close()
         conn.close()
         
-        # Cache in Redis
+        # =========================
+        # CACHE RESULT
+        # =========================
         redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
         redis_conn.delete(f"file:{job_id}")
         
@@ -84,6 +102,7 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         
     except Exception as e:
         print(f"❌ Failed job {job_id}: {e}")
+        
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         cursor.execute(
@@ -93,6 +112,7 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         conn.commit()
         cursor.close()
         conn.close()
+        
         raise e
 
 # Start the worker
