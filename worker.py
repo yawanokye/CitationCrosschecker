@@ -1,4 +1,4 @@
-# worker.py - Complete with all mismatch detection
+# worker.py - Complete with all mismatch detection (FIXED VERSION)
 import os
 import sys
 import json
@@ -7,6 +7,7 @@ import time
 import redis
 import psycopg2
 from collections import Counter
+from difflib import SequenceMatcher
 from rq import Worker, Queue, Connection
 from engine import run_crosscheck, run_crosscheck_with_autofix
 
@@ -23,58 +24,131 @@ redis_conn = redis.from_url(REDIS_URL)
 
 
 # ============================================================
-# MISMATCH DETECTION FUNCTIONS
+# HELPER FUNCTIONS
 # ============================================================
+
+def similarity_ratio(a, b):
+    """Calculate similarity ratio between two strings."""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
 
 def extract_year_from_text(text):
     """Extract year from citation or reference text."""
+    if not text:
+        return None
     match = re.search(r'\b(19|20)\d{2}\b', str(text))
     return match.group(0) if match else None
 
 
 def extract_surname_from_citation(citation):
     """Extract author surname from citation like (Smith, 2020) or Smith (2020)."""
-    # Pattern for (Smith, 2020)
-    match = re.search(r'\(([A-Z][a-z]+(?:\s*[-–]\s*[A-Z][a-z]+)?)', citation)
+    if not citation:
+        return None
+    
+    # Pattern for (Smith, 2020) or (Smith & Jones, 2020)
+    match = re.search(r'\(([A-Z][a-z]+(?:\s*[-–][A-Z][a-z]+)?)', citation)
     if match:
         return match.group(1).lower()
+    
     # Pattern for Smith (2020)
-    match = re.search(r'^([A-Z][a-z]+(?:\s*[-–]\s*[A-Z][a-z]+)?)\s*\(', citation)
+    match = re.search(r'^([A-Z][a-z]+(?:\s*[-–][A-Z][a-z]+)?)\s*\(', citation)
     if match:
         return match.group(1).lower()
+    
+    # Pattern for (Smith 2020) - no comma
+    match = re.search(r'\(([A-Z][a-z]+)\s+\d{4}', citation)
+    if match:
+        return match.group(1).lower()
+    
     return None
 
 
 def extract_surname_from_reference(ref_text):
     """Extract author surname from reference like Smith, J. (2020)."""
-    match = re.search(r'^([A-Z][a-z]+(?:\s*[-–]\s*[A-Z][a-z]+)?)', ref_text)
+    if not ref_text:
+        return None
+    
+    # Pattern for "Smith, J. (2020)"
+    match = re.search(r'^([A-Z][a-z]+(?:\s*[-–][A-Z][a-z]+)?)', ref_text)
     return match.group(1).lower() if match else None
+
+
+def extract_all_authors_from_reference(ref_text):
+    """Extract all author surnames from reference for multi-author papers."""
+    if not ref_text:
+        return []
+    
+    # Get everything before the year
+    year_match = re.search(r'\b(19|20)\d{2}\b', ref_text)
+    if not year_match:
+        return []
+    
+    author_part = ref_text[:year_match.start()].strip()
+    
+    # Split by &, and, or commas
+    authors = re.split(r'[&,]\s+|\s+and\s+', author_part)
+    
+    surnames = []
+    for author in authors:
+        author = author.strip()
+        if not author:
+            continue
+        # Get first word (surname) for formats like "Smith, J." or "Smith J."
+        surname_match = re.match(r'^([A-Z][a-z]+)', author)
+        if surname_match:
+            surnames.append(surname_match.group(1).lower())
+    
+    return surnames
 
 
 def extract_initial_from_citation(citation):
     """Extract initial from citation like (J. Smith, 2020)."""
+    if not citation:
+        return None
     match = re.search(r'\(([A-Z])\.\s+[A-Z][a-z]+', citation)
     return match.group(1) if match else None
 
 
 def extract_initial_from_reference(ref_text):
     """Extract initial from reference like Smith, J. (2020)."""
+    if not ref_text:
+        return None
     match = re.search(r'^[A-Z][a-z]+,\s+([A-Z])\.', ref_text)
     return match.group(1) if match else None
 
+
+def is_narrative_citation(citation):
+    """Check if citation is narrative (Smith, 2020) vs parenthetical (Smith, 2020)."""
+    if not citation:
+        return False
+    # Narrative: Author name BEFORE the parenthesis
+    return bool(re.match(r'^[A-Z][a-z]+', citation)) and '(' in citation
+
+
+def is_parenthetical_citation(citation):
+    """Check if citation is parenthetical (Smith, 2020)."""
+    if not citation:
+        return False
+    return citation.startswith('(')
+
+
+# ============================================================
+# MISMATCH DETECTION FUNCTIONS
+# ============================================================
 
 def detect_year_mismatches(c2r_rows):
     """Detect year mismatches between citations and references."""
     suggestions = []
     
     for row in c2r_rows:
-        status = row.get("status", "")
         in_text = row.get("in_text", "")
         matched_ref = row.get("matched_reference", "")
+        status = row.get("status", "")
         
-        if status != "matched" or not in_text or not matched_ref:
+        if not in_text or not matched_ref:
             continue
         
+        # Check even if status is not "matched" - we can still suggest year fixes
         citation_year = extract_year_from_text(in_text)
         ref_year = extract_year_from_text(matched_ref)
         
@@ -88,9 +162,14 @@ def detect_year_mismatches(c2r_rows):
             else:
                 suggested = in_text.replace(citation_year, ref_year)
                 year_diff = abs(int(citation_year) - int(ref_year))
-                confidence = 0.95 if year_diff <= 2 else 0.85
+                if year_diff <= 2:
+                    confidence = 0.95
+                elif year_diff <= 5:
+                    confidence = 0.85
+                else:
+                    confidence = 0.75
                 issue_type = "year_mismatch"
-                reason = f"Year mismatch: '{citation_year}' should be '{ref_year}'"
+                reason = f"Year mismatch: '{citation_year}' should be '{ref_year}' (off by {year_diff} years)"
             
             suggestions.append({
                 "original": in_text,
@@ -98,42 +177,74 @@ def detect_year_mismatches(c2r_rows):
                 "confidence": confidence,
                 "issue_type": issue_type,
                 "reason": reason,
-                "fix_type": "required_fix",
+                "fix_type": "required_fix" if confidence >= 0.85 else "review_required",
                 "category": "year"
             })
     
-    return suggestions
+    # Remove duplicates
+    seen = set()
+    unique = []
+    for s in suggestions:
+        if s["original"] not in seen:
+            seen.add(s["original"])
+            unique.append(s)
+    
+    return unique
 
 
 def detect_author_surname_mismatches(c2r_rows):
-    """Detect author surname mismatches between citations and references."""
+    """Detect author surname mismatches including spelling errors."""
     suggestions = []
     
     for row in c2r_rows:
-        status = row.get("status", "")
         in_text = row.get("in_text", "")
         matched_ref = row.get("matched_reference", "")
         
-        if status != "matched" or not in_text or not matched_ref:
+        if not in_text or not matched_ref:
             continue
         
         citation_surname = extract_surname_from_citation(in_text)
-        ref_surname = extract_surname_from_reference(matched_ref)
         
-        if citation_surname and ref_surname and citation_surname != ref_surname:
-            # Check if it's a simple spelling variation
-            if len(citation_surname) == len(ref_surname) and sum(1 for a, b in zip(citation_surname, ref_surname) if a != b) <= 2:
+        # Get all authors from reference (for multi-author papers)
+        ref_surnames = extract_all_authors_from_reference(matched_ref)
+        
+        if not citation_surname or not ref_surnames:
+            continue
+        
+        # Check if citation surname matches ANY author in reference
+        best_match = None
+        best_ratio = 0
+        
+        for ref_surname in ref_surnames:
+            ratio = similarity_ratio(citation_surname, ref_surname)
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = ref_surname
+        
+        # If no good match (ratio < 0.85) or exact mismatch
+        if best_match and citation_surname != best_match:
+            # Spelling error detection (high similarity)
+            if best_ratio >= 0.85:
                 confidence = 0.90
-                reason = f"Author surname spelling error: '{citation_surname.capitalize()}' should be '{ref_surname.capitalize()}'"
-            elif citation_surname in ref_surname or ref_surname in citation_surname:
+                reason = f"Author surname spelling error: '{citation_surname.capitalize()}' should be '{best_match.capitalize()}'"
+                fix_type = "required_fix"
+            # Missing hyphen or name part
+            elif citation_surname in best_match or best_match in citation_surname:
                 confidence = 0.85
-                reason = f"Author surname missing part: '{citation_surname.capitalize()}' should be '{ref_surname.capitalize()}'"
+                reason = f"Author surname missing part: '{citation_surname.capitalize()}' should be '{best_match.capitalize()}'"
+                fix_type = "required_fix"
+            # Completely different author
             else:
-                confidence = 0.75
-                reason = f"Author surname mismatch: '{citation_surname.capitalize()}' should be '{ref_surname.capitalize()}'"
+                confidence = 0.70
+                reason = f"Author surname mismatch: '{citation_surname.capitalize()}' should be '{best_match.capitalize()}' (check reference)"
+                fix_type = "review_required"
             
-            suggested = re.sub(r'\([A-Z][a-z]+', f'({ref_surname.capitalize()}', in_text, count=1)
-            suggested = re.sub(r'^[A-Z][a-z]+\s*\(', f'{ref_surname.capitalize()} (', suggested)
+            # Create suggestion
+            suggested = in_text
+            # Replace in parenthetical citation
+            suggested = re.sub(r'\([A-Z][a-z]+', f'({best_match.capitalize()}', suggested, count=1)
+            # Replace in narrative citation
+            suggested = re.sub(r'^[A-Z][a-z]+\s*\(', f'{best_match.capitalize()} (', suggested)
             
             suggestions.append({
                 "original": in_text,
@@ -141,7 +252,7 @@ def detect_author_surname_mismatches(c2r_rows):
                 "confidence": confidence,
                 "issue_type": "author_surname_mismatch",
                 "reason": reason,
-                "fix_type": "required_fix" if confidence >= 0.85 else "review_required",
+                "fix_type": fix_type,
                 "category": "author"
             })
     
@@ -153,11 +264,10 @@ def detect_author_initial_mismatches(c2r_rows):
     suggestions = []
     
     for row in c2r_rows:
-        status = row.get("status", "")
         in_text = row.get("in_text", "")
         matched_ref = row.get("matched_reference", "")
         
-        if status != "matched" or not in_text or not matched_ref:
+        if not in_text or not matched_ref:
             continue
         
         citation_initial = extract_initial_from_citation(in_text)
@@ -180,10 +290,31 @@ def detect_author_initial_mismatches(c2r_rows):
     return suggestions
 
 
+def detect_missing_references(c2r_rows):
+    """Detect citations that have no matching reference."""
+    suggestions = []
+    
+    for row in c2r_rows:
+        status = row.get("status", "")
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        
+        if status == "not_found" and in_text and not matched_ref:
+            suggestions.append({
+                "original": in_text,
+                "suggested": "Add corresponding reference entry",
+                "confidence": 0.60,
+                "issue_type": "missing_reference",
+                "reason": f"This citation has no matching reference entry in the reference list",
+                "fix_type": "review_required",
+                "category": "missing"
+            })
+    
+    return suggestions
+
+
 def detect_document_wide_initial_inconsistency(c2r_rows):
     """Detect if document has mix of citations with and without initials."""
-    import re
-    
     citations_with_initials = []
     citations_without_initials = []
     
@@ -207,11 +338,10 @@ def detect_document_wide_initial_inconsistency(c2r_rows):
         
         if total_with >= total_without:
             # Add initials to those without
-            for citation in citations_without_initials[:10]:  # Limit to 10 examples
+            for citation in citations_without_initials[:10]:
                 surname = extract_surname_from_citation(citation)
                 year = extract_year_from_text(citation)
                 if surname and year:
-                    # Try to find common initial from existing citations
                     common_initial = None
                     for ex in citations_with_initials:
                         if surname in ex.lower():
@@ -256,8 +386,10 @@ def detect_mixed_referencing_styles(c2r_rows):
         "narrative": 0,
         "apa_comma": 0,
         "harvard_no_comma": 0,
-        "with_and_symbol": 0,
-        "with_and_word": 0,
+        "with_and_symbol_parenthetical": 0,
+        "with_and_symbol_narrative": 0,
+        "with_and_word_parenthetical": 0,
+        "with_and_word_narrative": 0,
     }
     
     citation_examples = {key: [] for key in styles_detected.keys()}
@@ -267,11 +399,14 @@ def detect_mixed_referencing_styles(c2r_rows):
         if not in_text:
             continue
         
+        is_narrative = is_narrative_citation(in_text)
+        is_parenthetical = is_parenthetical_citation(in_text)
+        
         # Parenthetical vs Narrative
-        if re.match(r'\([^)]+\)', in_text):
+        if is_parenthetical:
             styles_detected["parenthetical"] += 1
             citation_examples["parenthetical"].append(in_text)
-        elif re.match(r'^[A-Z][a-z]+\s*\(', in_text):
+        elif is_narrative:
             styles_detected["narrative"] += 1
             citation_examples["narrative"].append(in_text)
         
@@ -279,66 +414,133 @@ def detect_mixed_referencing_styles(c2r_rows):
         if ',' in in_text and re.search(r',\s*\d{4}', in_text):
             styles_detected["apa_comma"] += 1
             citation_examples["apa_comma"].append(in_text)
-        elif re.search(r'\([A-Z][a-z]+\s+\d{4}\)', in_text):
+        elif re.search(r'\([A-Z][a-z]+\s+\d{4}\)', in_text) or re.search(r'[A-Z][a-z]+\s+\(\d{4}\)', in_text):
             styles_detected["harvard_no_comma"] += 1
             citation_examples["harvard_no_comma"].append(in_text)
         
-        # "&" vs "and"
+        # "&" vs "and" - with context (parenthetical uses &, narrative uses and)
         if '&' in in_text:
-            styles_detected["with_and_symbol"] += 1
-            citation_examples["with_and_symbol"].append(in_text)
+            if is_parenthetical:
+                styles_detected["with_and_symbol_parenthetical"] += 1
+                citation_examples["with_and_symbol_parenthetical"].append(in_text)
+            else:
+                styles_detected["with_and_symbol_narrative"] += 1
+                citation_examples["with_and_symbol_narrative"].append(in_text)
         elif re.search(r'\band\b', in_text):
-            styles_detected["with_and_word"] += 1
-            citation_examples["with_and_word"].append(in_text)
+            if is_parenthetical:
+                styles_detected["with_and_word_parenthetical"] += 1
+                citation_examples["with_and_word_parenthetical"].append(in_text)
+            else:
+                styles_detected["with_and_word_narrative"] += 1
+                citation_examples["with_and_word_narrative"].append(in_text)
     
     suggestions = []
     
     # Check parenthetical vs narrative
     if styles_detected["parenthetical"] > 0 and styles_detected["narrative"] > 0:
-        total = styles_detected["parenthetical"] + styles_detected["narrative"]
-        for citation in citation_examples["narrative"][:5]:
-            match = re.search(r'^([A-Z][a-z]+)\s*\((\d{4})\)', citation)
-            if match:
-                suggested = f"({match.group(1)}, {match.group(2)})"
-                suggestions.append({
-                    "original": citation,
-                    "suggested": suggested,
-                    "confidence": 0.85,
-                    "issue_type": "mixed_style_parenthetical_vs_narrative",
-                    "reason": f"Document has both parenthetical ({styles_detected['parenthetical']}) and narrative ({styles_detected['narrative']}) citations. Convert to parenthetical.",
-                    "fix_type": "review_required",
-                    "category": "style"
-                })
-                break
+        total_parenthetical = styles_detected["parenthetical"]
+        total_narrative = styles_detected["narrative"]
+        
+        if total_parenthetical >= total_narrative:
+            # Convert narrative to parenthetical
+            for citation in citation_examples["narrative"][:5]:
+                match = re.search(r'^([A-Z][a-z]+(?:\s*[-–][A-Z][a-z]+)?)\s*\((\d{4})\)', citation)
+                if match:
+                    suggested = f"({match.group(1)}, {match.group(2)})"
+                    suggestions.append({
+                        "original": citation,
+                        "suggested": suggested,
+                        "confidence": 0.85,
+                        "issue_type": "mixed_style_parenthetical_vs_narrative",
+                        "reason": f"Document has both parenthetical ({total_parenthetical}) and narrative ({total_narrative}) citations. Convert to parenthetical.",
+                        "fix_type": "review_required",
+                        "category": "style"
+                    })
+                    break
+        else:
+            # Convert parenthetical to narrative
+            for citation in citation_examples["parenthetical"][:5]:
+                match = re.search(r'\(([A-Z][a-z]+(?:\s*[-–][A-Z][a-z]+)?),\s*(\d{4})\)', citation)
+                if match:
+                    suggested = f"{match.group(1)} ({match.group(2)})"
+                    suggestions.append({
+                        "original": citation,
+                        "suggested": suggested,
+                        "confidence": 0.85,
+                        "issue_type": "mixed_style_parenthetical_vs_narrative",
+                        "reason": f"Document has both parenthetical ({total_parenthetical}) and narrative ({total_narrative}) citations. Convert to narrative.",
+                        "fix_type": "review_required",
+                        "category": "style"
+                    })
+                    break
     
     # Check APA vs Harvard
     if styles_detected["apa_comma"] > 0 and styles_detected["harvard_no_comma"] > 0:
-        for citation in citation_examples["harvard_no_comma"][:5]:
-            suggested = re.sub(r'\(([A-Z][a-z]+)\s+(\d{4})\)', r'(\1, \2)', citation)
-            if suggested != citation:
-                suggestions.append({
-                    "original": citation,
-                    "suggested": suggested,
-                    "confidence": 0.80,
-                    "issue_type": "mixed_style_apa_vs_harvard",
-                    "reason": f"Document has APA ({styles_detected['apa_comma']}) and Harvard ({styles_detected['harvard_no_comma']}) styles. Add comma for APA consistency.",
-                    "fix_type": "review_required",
-                    "category": "style"
-                })
-                break
+        total_apa = styles_detected["apa_comma"]
+        total_harvard = styles_detected["harvard_no_comma"]
+        
+        if total_apa >= total_harvard:
+            # Add commas to Harvard style
+            for citation in citation_examples["harvard_no_comma"][:5]:
+                suggested = re.sub(r'\(([A-Z][a-z]+)\s+(\d{4})\)', r'(\1, \2)', citation)
+                suggested = re.sub(r'([A-Z][a-z]+)\s+\((\d{4})\)', r'\1 (\2)', suggested)
+                if suggested != citation:
+                    suggestions.append({
+                        "original": citation,
+                        "suggested": suggested,
+                        "confidence": 0.80,
+                        "issue_type": "mixed_style_apa_vs_harvard",
+                        "reason": f"Document has APA ({total_apa}) and Harvard ({total_harvard}) styles. Add comma for APA consistency.",
+                        "fix_type": "review_required",
+                        "category": "style"
+                    })
+                    break
+        else:
+            # Remove commas from APA style
+            for citation in citation_examples["apa_comma"][:5]:
+                suggested = re.sub(r'\(([A-Z][a-z]+),\s*(\d{4})\)', r'(\1 \2)', citation)
+                suggested = re.sub(r'([A-Z][a-z]+),\s*\((\d{4})\)', r'\1 (\2)', suggested)
+                if suggested != citation:
+                    suggestions.append({
+                        "original": citation,
+                        "suggested": suggested,
+                        "confidence": 0.80,
+                        "issue_type": "mixed_style_apa_vs_harvard",
+                        "reason": f"Document has APA ({total_apa}) and Harvard ({total_harvard}) styles. Remove comma for Harvard consistency.",
+                        "fix_type": "review_required",
+                        "category": "style"
+                    })
+                    break
     
-    # Check "&" vs "and"
-    if styles_detected["with_and_symbol"] > 0 and styles_detected["with_and_word"] > 0:
-        for citation in citation_examples["with_and_word"][:5]:
+    # Check "&" vs "and" - Parenthetical should use "&", Narrative should use "and"
+    # Fix parenthetical citations using "and"
+    if styles_detected["with_and_word_parenthetical"] > 0:
+        for citation in citation_examples["with_and_word_parenthetical"][:5]:
             suggested = citation.replace(" and ", " & ")
             if suggested != citation:
                 suggestions.append({
                     "original": citation,
                     "suggested": suggested,
-                    "confidence": 0.75,
+                    "confidence": 0.85,
                     "issue_type": "mixed_style_and_symbol",
-                    "reason": f"Document has both '&' ({styles_detected['with_and_symbol']}) and 'and' ({styles_detected['with_and_word']}). Use '&' for consistency.",
-                    "fix_type": "review_required",
+                    "reason": "Parenthetical citations should use '&' instead of 'and' per APA style.",
+                    "fix_type": "required_fix",
+                    "category": "style"
+                })
+                break
+    
+    # Fix narrative citations using "&"
+    if styles_detected["with_and_symbol_narrative"] > 0:
+        for citation in citation_examples["with_and_symbol_narrative"][:5]:
+            suggested = citation.replace(" & ", " and ")
+            if suggested != citation:
+                suggestions.append({
+                    "original": citation,
+                    "suggested": suggested,
+                    "confidence": 0.85,
+                    "issue_type": "mixed_style_and_symbol",
+                    "reason": "Narrative citations should use 'and' instead of '&' per APA style.",
+                    "fix_type": "required_fix",
                     "category": "style"
                 })
                 break
@@ -352,6 +554,8 @@ def detect_reference_formatting_issues(references_raw):
     
     for ref in references_raw:
         original = ref
+        if not original:
+            continue
         
         # Fix 1: Add DOI prefix
         doi_match = re.search(r'\b10\.\d{4,9}/[^\s)]+', ref)
@@ -359,8 +563,8 @@ def detect_reference_formatting_issues(references_raw):
             doi = doi_match.group(0)
             suggested = ref.replace(doi, f"DOI: {doi}")
             suggestions.append({
-                "original": original[:100],
-                "suggested": suggested[:100],
+                "original": original[:150],
+                "suggested": suggested[:150],
                 "confidence": 0.95,
                 "issue_type": "missing_doi_prefix",
                 "reason": "Add 'DOI:' prefix to DOI",
@@ -372,8 +576,8 @@ def detect_reference_formatting_issues(references_raw):
         elif 'http://' in ref and 'https://' not in ref:
             suggested = ref.replace('http://', 'https://')
             suggestions.append({
-                "original": original[:100],
-                "suggested": suggested[:100],
+                "original": original[:150],
+                "suggested": suggested[:150],
                 "confidence": 0.90,
                 "issue_type": "http_to_https",
                 "reason": "Update HTTP to HTTPS for security",
@@ -385,8 +589,8 @@ def detect_reference_formatting_issues(references_raw):
         elif ref and not ref.rstrip().endswith('.'):
             suggested = ref.rstrip() + '.'
             suggestions.append({
-                "original": original[:100],
-                "suggested": suggested[:100],
+                "original": original[:150],
+                "suggested": suggested[:150],
                 "confidence": 0.70,
                 "issue_type": "missing_period",
                 "reason": "Add trailing period at end of reference",
@@ -394,7 +598,7 @@ def detect_reference_formatting_issues(references_raw):
                 "category": "reference"
             })
     
-    # Remove duplicates (by original text)
+    # Remove duplicates
     seen = set()
     unique_suggestions = []
     for s in suggestions:
@@ -470,12 +674,12 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         # COLLECT ALL SUGGESTIONS
         all_suggestions = []
         
-        # 1. Year mismatches
+        # 1. Year mismatches (works on all rows, not just matched)
         year_suggestions = detect_year_mismatches(c2r_rows)
         all_suggestions.extend(year_suggestions)
         print(f"📅 Year mismatches: {len(year_suggestions)}")
         
-        # 2. Author surname mismatches
+        # 2. Author surname mismatches (spelling errors, missing parts)
         surname_suggestions = detect_author_surname_mismatches(c2r_rows)
         all_suggestions.extend(surname_suggestions)
         print(f"👤 Author surname mismatches: {len(surname_suggestions)}")
@@ -485,17 +689,22 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         all_suggestions.extend(initial_suggestions)
         print(f"🔤 Author initial mismatches: {len(initial_suggestions)}")
         
-        # 4. Document-wide initial inconsistency
+        # 4. Missing references
+        missing_suggestions = detect_missing_references(c2r_rows)
+        all_suggestions.extend(missing_suggestions)
+        print(f"❌ Missing references: {len(missing_suggestions)}")
+        
+        # 5. Document-wide initial inconsistency
         style_initial_suggestions = detect_document_wide_initial_inconsistency(c2r_rows)
         all_suggestions.extend(style_initial_suggestions)
         print(f"📝 Document-wide initial inconsistencies: {len(style_initial_suggestions)}")
         
-        # 5. Mixed referencing styles
+        # 6. Mixed referencing styles
         mixed_style_suggestions = detect_mixed_referencing_styles(c2r_rows)
         all_suggestions.extend(mixed_style_suggestions)
         print(f"🎨 Mixed referencing styles: {len(mixed_style_suggestions)}")
         
-        # 6. Reference formatting issues
+        # 7. Reference formatting issues
         ref_suggestions = detect_reference_formatting_issues(references_raw)
         all_suggestions.extend(ref_suggestions)
         print(f"📚 Reference formatting issues: {len(ref_suggestions)}")
@@ -535,6 +744,8 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
             # Print sample
             for i, s in enumerate(unique_suggestions[:5]):
                 print(f"  Sample {i+1}: [{s.get('category')}] {s.get('issue_type')} - {s.get('original', '')[:50]}...")
+        else:
+            print("⚠️ No suggestions generated")
         
         # Save result
         cursor.execute(
@@ -585,10 +796,11 @@ if __name__ == "__main__":
         worker = Worker(["document_processing"])
         print("✅ Worker ready, waiting for jobs...")
         print("📋 Detection features enabled:")
-        print("   - Year mismatches")
-        print("   - Author surname mismatches")
+        print("   - Year mismatches (including malformed years)")
+        print("   - Author surname mismatches (spelling errors, missing parts)")
         print("   - Author initial mismatches")
+        print("   - Missing references")
         print("   - Document-wide initial inconsistency")
-        print("   - Mixed referencing styles")
-        print("   - Reference formatting issues")
+        print("   - Mixed referencing styles (parenthetical/narrative, &/and, APA/Harvard)")
+        print("   - Reference formatting issues (DOI prefix, HTTP→HTTPS, missing period)")
         worker.work(burst=False)
