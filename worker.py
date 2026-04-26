@@ -69,15 +69,26 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         # =========================
         # 🔥 CRITICAL FIX: MAP TO FRONTEND
         # =========================
-        if result.get("autofix") and result["autofix"].get("suggestions"):
-            result["suggestions"] = result["autofix"]["suggestions"]
-            print("✅ Suggestions mapped to result['suggestions']")
+        # 🔥 HANDLE BOTH STRUCTURES
+        autofix = result.get("autofix")
+        
+        if isinstance(autofix, dict):
+            if "suggestions" in autofix:
+                result["suggestions"] = autofix["suggestions"]
+                print("✅ Suggestions mapped from autofix.suggestions")
+            else:
+                # autofix itself IS the suggestions object
+                result["suggestions"] = autofix
+                print("✅ Suggestions mapped directly from autofix")
         else:
             result["suggestions"] = {
                 "citations": [],
+                "missing": [],
+                "unmatched": [],
                 "references": []
             }
-            print("⚠️ No suggestions generated")
+            print("⚠️ No suggestions structure found")
+            
 
         # =========================
         # SAVE RESULT
