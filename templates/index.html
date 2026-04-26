@@ -1781,9 +1781,11 @@ function renderAll(data) {
         normalized.autofix.enabled === true &&
         normalized.autofix.suggestions
     ) {
-        displaySuggestions({
-            suggestions: normalized.autofix.suggestions
-        });
+        displaySuggestions(normalized.autofix.suggestions);
+    
+        const panel = $("suggestionsPanel");
+        if (panel) panel.style.display = "block";   // ✅ ADD THIS
+    
     } else {
         hideSuggestionsPanel();
     }
