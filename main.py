@@ -1899,6 +1899,48 @@ async def debug_retry_verification(job_id: str):
         
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/debug/db-status")
+async def db_status():
+    """Check database connection status"""
+    status = {
+        "postgresql_configured": DATABASE_URL is not None,
+        "redis_configured": REDIS_URL is not None,
+        "tables_exist": False,
+        "stats_count": 0
+    }
+    
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            
+            # Check if stats table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'stats'
+                )
+            """)
+            status["stats_table_exists"] = cursor.fetchone()[0]
+            
+            # Get total uploads
+            cursor.execute("SELECT total_uploads FROM stats WHERE id = 1")
+            row = cursor.fetchone()
+            if row:
+                status["stats_count"] = row[0]
+            
+            cursor.close()
+            conn.close()
+            status["database_connected"] = True
+            
+        except Exception as e:
+            status["database_connected"] = False
+            status["error"] = str(e)
+    
+    return status
+
+
 @app.post("/debug/retry-stuck-verification/{job_id}")
 async def retry_stuck_verification(job_id: str):
     """Force retry a stuck verification job"""
@@ -2705,16 +2747,75 @@ def get_private_stats(
     days: int = 30
 ):
     authenticate(credentials)
+    
+    # Get basic stats
     stats = stats_tracker.get_stats(detailed=detailed, days=days)
+    
+    # Get recent uploads
+    recent_uploads = []
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT timestamp, filename, references_count, processing_time, success
+                FROM uploads 
+                ORDER BY timestamp DESC 
+                LIMIT 50
+            """)
+            recent_uploads = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Error fetching recent uploads: {e}")
+    
+    # Get daily stats
+    daily_stats = {}
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT date, uploads, processed, failed, references_count, 
+                       total_processing_time, processing_count
+                FROM daily_stats 
+                WHERE date >= CURRENT_DATE - INTERVAL '%s days'
+                ORDER BY date DESC
+            """, (days,))
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
+                daily_stats[date_str] = {
+                    "uploads": row['uploads'],
+                    "processed": row['processed'],
+                    "failed": row['failed'],
+                    "references": row['references_count'],
+                    "total_processing_time": float(row['total_processing_time']) if row['total_processing_time'] else 0,
+                    "processing_count": row['processing_count'],
+                    "avg_processing_time": round(float(row['total_processing_time']) / row['processing_count'], 2) if row['processing_count'] > 0 else 0
+                }
+            
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Error fetching daily stats: {e}")
+    
+    stats["recent_uploads"] = recent_uploads
+    stats["daily_stats"] = daily_stats
+    
     stats["system_info"] = {
         "current_time": datetime.now().isoformat(),
-        "active_jobs": len([j for j in _store.values() if j["verification"]["state"] == "running"]),
+        "active_jobs": len([j for j in _store.values() if j.get("verification", {}).get("state") == "running"]),
         "total_jobs": len(_store),
         "queue_status": get_queue_status(),
         "server_busy": is_server_busy()
     }
+    
     return stats
-
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page(request: Request):
+    return templates.TemplateResponse("stats.html", {"request": request})
 @app.get("/private-stats/count")
 def get_simple_count(credentials: HTTPBasicCredentials = Depends(security)):
     authenticate(credentials)
