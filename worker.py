@@ -22,7 +22,7 @@ redis_conn = redis.from_url(REDIS_URL)
 def process_document(job_id, filename, style="apa", enable_autofix=False):
     """Process a document - runs in background"""
     print(f"🔥 Processing job {job_id}: {filename}")
-
+    print(f"📋 enable_autofix flag received: {enable_autofix}") 
     # =========================
     # LOAD FILE FROM REDIS
     # =========================
