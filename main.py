@@ -2079,6 +2079,12 @@ async def verify(
     enable_online_verification: bool = Form(False),
     request: Request = None
 ):
+    # Convert string to boolean
+    enable_autofix_bool = enable_autofix.lower() == "true"
+    enable_online_verification_bool = enable_online_verification.lower() == "true"
+    
+    print(f"📋 Received enable_autofix string: {enable_autofix}")
+    print(f"📋 Converted to bool: {enable_autofix_bool}")
     # =========================
     # 1. VALIDATION
     # =========================
