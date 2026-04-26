@@ -1077,6 +1077,13 @@ let LAST_PROGRESS = 0;
 let LAST_PROGRESS_TIME = null;
 window.latestResults = null;
 
+function esc(str) {
+    if (!str) return "";
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
 
 // Utility Functions
 function esc(s) {
@@ -2301,26 +2308,32 @@ function displaySuggestions(data) {
         </div>
     `;
 
+    
     html += `<div class="suggestions-section"><h4>💡 Suggestions</h4>`;
-
+    
+    window.CURRENT_SUGGESTIONS = uniqueSuggestions;
     html += uniqueSuggestions.slice(0, 80).map((s, i) => {
-
+    
+        // ✅ DEFINE VARIABLES HERE (OUTSIDE TEMPLATE)
+        const original = s.original || s.citation || s.title || "Unknown item";
+        const suggested = s.suggested || "No suggestion available";
+    
+        const conf = s.confidence || 0;
         const confClass =
-            s.confidence >= 0.85 ? "high-conf" :
-            s.confidence >= 0.7 ? "med-conf" :
+            conf >= 0.85 ? "high-conf" :
+            conf >= 0.7 ? "med-conf" :
             "low-conf";
-
+    
         return `
             <div class="suggestion-item ${confClass}">
-
+    
                 <div class="suggestion-original">
-                    ${esc(s.original || "")}
+                    ${esc(original)}
                 </div>
-
+    
                 <div class="suggestion-suggested">
-                    → ${esc(s.suggested || "")}
+                    → ${esc(suggested)}
                 </div>
-
                 <div class="suggestion-meta">
                     <span><b>Issue:</b> ${esc(s.issue_type || "unknown")}</span>
                     <span><b>Reason:</b> ${esc(s.reason || "Not specified")}</span>
