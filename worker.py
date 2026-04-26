@@ -18,13 +18,6 @@ if not REDIS_URL or not DATABASE_URL:
 # Connect to Redis
 redis_conn = redis.from_url(REDIS_URL)
 
-# Import your engine (adjust path if needed)
-try:
-    from engine import run_crosscheck
-    print("✅ Engine imported successfully")
-except ImportError as e:
-    print(f"ERROR: Cannot import engine - {e}")
-    sys.exit(1)
 
 def process_document(job_id, filename, style="apa", enable_autofix=False):
     """Process a document - runs in background"""
