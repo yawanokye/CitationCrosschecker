@@ -46,7 +46,12 @@ def extract_year_from_text(text):
     match = re.search(r'\b((?:19|20)\d{2}[a-z]?)\b', str(text), flags=re.I)
     return match.group(1) if match else None
 
-
+def year_to_int(year):
+    """Convert 2020a or 2020 to 2020."""
+    if not year:
+        return None
+    m = re.search(r'(?:19|20)\d{2}', str(year))
+    return int(m.group(0)) if m else None
 
 def extract_authors_from_citation(citation):
     """
@@ -334,7 +339,9 @@ def scenario_1_year_mismatch(c2r_rows):
             suggested = in_text.replace(year_check["citation_year"], year_check["ref_year"])
             
             # Determine confidence based on year difference
-            year_diff = abs(int(year_check["citation_year"]) - int(year_check["ref_year"]))
+            cy = year_to_int(year_check["citation_year"])
+            ry = year_to_int(year_check["ref_year"])
+            year_diff = abs(cy - ry) if cy and ry else 99
             if year_diff == 1:
                 confidence = 0.95
             elif year_diff <= 3:
@@ -355,7 +362,7 @@ def scenario_1_year_mismatch(c2r_rows):
     return suggestions
 
 
-def scenario_2_author_name_mismatch(c2r_rows):
+def scenario_2_author_name_mismatch(c2r_rows, style="apa"):
     """Detect author name mismatches (spelling, missing parts like -Koduah)."""
     suggestions = []
     
@@ -407,7 +414,7 @@ def scenario_2_author_name_mismatch(c2r_rows):
     return suggestions
 
 
-def scenario_3_author_order_mismatch(c2r_rows):
+def scenario_3_author_order_mismatch(c2r_rows, style="apa"):
     """Detect author order mismatches (Scenario 3)."""
     suggestions = []
     
@@ -511,7 +518,8 @@ def scenario_5_et_al_misuse(c2r_rows, style="apa"):
             suggested = build_citation_string(
                 et_al_check["ref_authors"], 
                 citation_year, 
-                "narrative" if is_narrative else "parenthetical"
+                "narrative" if is_narrative else "parenthetical",
+                style
             )
             
             suggestions.append({
@@ -549,7 +557,9 @@ def scenario_6_potential_wrong_reference(c2r_rows):
             # If authors match but years differ significantly
             if citation_authors and ref_authors and citation_authors[0] == ref_authors[0]:
                 if citation_year and ref_year and citation_year != ref_year:
-                    year_diff = abs(int(citation_year) - int(ref_year))
+                    cy = year_to_int(citation_year)
+                    ry = year_to_int(ref_year)
+                    year_diff = abs(cy - ry) if cy and ry else 99
                     if year_diff > 3:
                         suggestions.append({
                             "original": in_text,
@@ -843,14 +853,14 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         all_suggestions.extend(et_al_suggestions)
         print(f"📝 Scenario 5 - Et al. misuse: {len(et_al_suggestions)}")
 
-# Reference quality issues
-ref_suggestions = detect_reference_quality_issues(
-    references_raw,
-    style=style,
-    enable_online_suggestions=False
-)
-all_suggestions.extend(ref_suggestions)
-print(f"📚 Reference quality issues: {len(ref_suggestions)}")
+        # Reference quality issues
+        ref_suggestions = detect_reference_quality_issues(
+            references_raw,
+            style=style,
+            enable_online_suggestions=False
+        )
+        all_suggestions.extend(ref_suggestions)
+        print(f"📚 Reference quality issues: {len(ref_suggestions)}")
         
         # Remove duplicates (by original text)
         unique_suggestions = dedupe_suggestions_by_priority(all_suggestions)
@@ -945,14 +955,19 @@ if __name__ == "__main__":
     
     with Connection(redis_conn):
         queue = Queue("document_processing", connection=redis_conn)
-        worker = Worker(["document_processing"])
+        print(f"📌 Queue name: {queue.name}")
+        print(f"📌 Jobs waiting: {queue.count}")
+
+        worker = Worker(["document_processing"], connection=redis_conn)
+
         print("✅ Worker ready, waiting for jobs...")
         print("📋 Detection scenarios enabled:")
         print("   Scenario 1: Year mismatches")
-        print("   Scenario 2: Author name mismatches (spelling, missing parts)")
+        print("   Scenario 2: Author name mismatches")
         print("   Scenario 3: Author order mismatches")
         print("   Scenario 4: Combined author + year mismatches")
         print("   Scenario 5: Et al. misuse")
         print("   Scenario 6: Potential wrong references")
-        print("   Reference formatting issues")
+        print("   Reference quality issues")
+
         worker.work(burst=False)
