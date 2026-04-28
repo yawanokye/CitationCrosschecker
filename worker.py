@@ -53,6 +53,92 @@ def year_to_int(year):
     m = re.search(r'(?:19|20)\d{2}', str(year))
     return int(m.group(0)) if m else None
 
+
+def normalize_name_text(text):
+    """Normalise author/institution names safely."""
+    text = str(text or "")
+    text = text.replace("‐", "-").replace("–", "-").replace("—", "-")
+    text = text.replace("’", "'")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def clean_org_author(author_part):
+    """Clean organisational author names such as Bank of Ghana, OECD, IMF."""
+    org = normalize_name_text(author_part)
+    org = re.sub(r"\(?\s*$", "", org).strip()
+    org = org.strip(" .,(;:")
+
+    # Remove leftover year punctuation if any slipped in
+    org = re.sub(r"\(\s*$", "", org).strip()
+    org = org.strip(" .,(;:")
+
+    return org
+
+
+def looks_like_institutional_author(name):
+    """Detect likely organisational or institutional author."""
+    if not name:
+        return False
+
+    n = normalize_name_text(name)
+    lower = n.lower()
+
+    institutional_terms = {
+        "bank", "reserve", "ministry", "department", "office", "bureau",
+        "authority", "commission", "organisation", "organization",
+        "university", "institute", "fund", "chamber", "conference",
+        "nations", "monetary", "oecd", "imf", "world bank", "unctad"
+    }
+
+    if n.isupper() and len(n) >= 2:
+        return True
+
+    return any(term in lower for term in institutional_terms)
+
+
+def looks_like_merged_reference(ref):
+    """Detect references that appear to contain two or more joined entries."""
+    if not ref:
+        return False
+
+    text = normalize_name_text(ref)
+
+    # Multiple APA-style author-year starts inside one entry
+    starts = re.findall(
+        r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+){0,7}\.\s*\((?:19|20)\d{2}",
+        text
+    )
+
+    # Multiple years in brackets can indicate joined refs, especially with long text
+    year_brackets = re.findall(r"\((?:19|20)\d{2}[a-z]?(?:,\s*[A-Za-z]+)?\)", text)
+
+    return len(starts) >= 2 or (len(year_brackets) >= 2 and len(text) > 250)
+
+
+def force_review_only(suggestion):
+    """Ensure every suggestion is review-only and not auto-applied."""
+    suggestion["fix_type"] = "review_required"
+    suggestion["action"] = "review_required"
+    suggestion["apply"] = None
+    return suggestion
+
+
+def make_suggestion(original, suggested, confidence, issue_type, reason, category, field=""):
+    """Create one standard review-only suggestion."""
+    return force_review_only({
+        "original": original,
+        "suggested": suggested,
+        "confidence": confidence,
+        "issue_type": issue_type,
+        "reason": reason,
+        "fix_type": "review_required",
+        "action": "review_required",
+        "category": category,
+        "field": field,
+        "apply": None
+    })
+
 def extract_authors_from_citation(citation):
     """
     Extract author surnames from in-text citation.
@@ -111,46 +197,48 @@ def extract_authors_from_citation(citation):
 
 def extract_authors_from_reference(ref_text):
     """
-    Extract author surnames from reference list entry.
-    Handles:
-    Adam, A. M., Mensah, K., & Boateng, E. (2021).
-    Adam, A. M., & Mensah, K. (2021).
-    World Bank. (2020).
+    Extract author surnames or institutional authors from reference list entry.
+    Avoids malformed outputs like 'Bank of Ghana. ('.
     """
     if not ref_text:
         return []
 
-    text = str(ref_text).strip()
+    text = normalize_name_text(ref_text)
 
-    year_match = re.search(r'\b(?:19|20)\d{2}[a-z]?\b', text, flags=re.I)
+    year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", text, flags=re.I)
     if not year_match:
         return []
 
     author_part = text[:year_match.start()].strip()
-    author_part = re.sub(r'\s+', ' ', author_part)
-    author_part = author_part.replace('&', ',')
+    author_part = re.sub(r"\s+", " ", author_part)
+    author_part = author_part.strip(" .,(;:")
 
-    # Remove brackets and trailing punctuation
-    author_part = author_part.strip(" .,")
+    # Institutional author fallback first
+    if looks_like_institutional_author(author_part):
+        org = clean_org_author(author_part)
+        return [org] if org else []
+
+    author_part_for_people = author_part.replace("&", ",")
 
     # APA personal author pattern: Surname, Initials
     surnames = re.findall(
-        r'\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ\'\-]+)\s*,\s*(?:[A-Z]\.?\s*)+',
-        author_part
+        r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)\s*,\s*(?:[A-Z]\.?\s*)+",
+        author_part_for_people
     )
 
     if surnames:
         seen = set()
         clean = []
         for s in surnames:
+            s = normalize_name_text(s)
             key = s.lower()
             if key not in seen:
                 seen.add(key)
                 clean.append(s)
         return clean
 
-    # Organisational author fallback
-    org = author_part.strip(" .,")
+    # Final fallback, only for short organisation-like author part
+    org = clean_org_author(author_part)
     if org and len(org.split()) <= 8:
         return [org]
 
@@ -203,33 +291,40 @@ def detect_year_mismatch(citation, reference):
 
 
 def detect_author_mismatch(citation, reference):
-    """Detect author mismatches including spelling, missing parts, and order."""
+    """
+    Conservative author mismatch detection.
+    Only flags clear spelling/order differences.
+    Avoids institutional and ambiguous partial-match false positives.
+    """
     citation_authors = extract_authors_from_citation(citation)
     ref_authors = extract_authors_from_reference(reference)
-    
+
     if not citation_authors or not ref_authors:
         return {"mismatch": False}
-    
-    # Check for exact match
-    if citation_authors == ref_authors:
+
+    cit_first = citation_authors[0]
+    ref_first = ref_authors[0]
+
+    # Exact case-insensitive match
+    if [a.lower() for a in citation_authors] == [a.lower() for a in ref_authors]:
         return {"mismatch": False}
-    
-    # Check for partial match (missing part like -Koduah)
-    for i, ca in enumerate(citation_authors):
-        if i < len(ref_authors):
-            # Check if citation author is contained in reference author
-            if ca.lower() in ref_authors[i].lower() or ref_authors[i].lower() in ca.lower():
-                if ca != ref_authors[i]:
-                    return {
-                        "mismatch": True,
-                        "type": "partial_match",
-                        "citation_authors": citation_authors,
-                        "ref_authors": ref_authors,
-                        "suggested_authors": ref_authors
-                    }
-    
-    # Check for order mismatch (same authors but different order)
-    if sorted(citation_authors) == sorted(ref_authors) and citation_authors != ref_authors:
+
+    # Do not flag institutional author partial matches, e.g. Ghana vs Bank of Ghana
+    if looks_like_institutional_author(cit_first) or looks_like_institutional_author(ref_first):
+        if cit_first.lower() in ref_first.lower() or ref_first.lower() in cit_first.lower():
+            return {"mismatch": False}
+
+    # Avoid reducing De Silva to Silva, Olasehinde-Williams to Williams
+    if cit_first.lower().endswith(ref_first.lower()) or ref_first.lower().endswith(cit_first.lower()):
+        return {"mismatch": False}
+
+    # Order mismatch, only if same number of authors and at least two authors
+    if (
+        len(citation_authors) == len(ref_authors)
+        and len(citation_authors) >= 2
+        and sorted(a.lower() for a in citation_authors) == sorted(a.lower() for a in ref_authors)
+        and [a.lower() for a in citation_authors] != [a.lower() for a in ref_authors]
+    ):
         return {
             "mismatch": True,
             "type": "order_mismatch",
@@ -237,50 +332,65 @@ def detect_author_mismatch(citation, reference):
             "ref_authors": ref_authors,
             "suggested_authors": ref_authors
         }
-    
-    # Check for spelling errors using similarity
-    for i, ca in enumerate(citation_authors):
-        if i < len(ref_authors):
-            ratio = similarity_ratio(ca, ref_authors[i])
-            if 0.8 <= ratio < 1.0:
-                return {
-                    "mismatch": True,
-                    "type": "spelling_error",
-                    "citation_authors": citation_authors,
-                    "ref_authors": ref_authors,
-                    "suggested_authors": ref_authors
-                }
-    
+
+    # Spelling error, only for strong similarity and same author count
+    if len(citation_authors) == len(ref_authors):
+        for i, ca in enumerate(citation_authors):
+            if i < len(ref_authors):
+                ratio = similarity_ratio(ca, ref_authors[i])
+                if 0.88 <= ratio < 1.0:
+                    return {
+                        "mismatch": True,
+                        "type": "spelling_error",
+                        "citation_authors": citation_authors,
+                        "ref_authors": ref_authors,
+                        "suggested_authors": ref_authors
+                    }
+
     return {"mismatch": False}
 
 
 def detect_et_al_misuse(citation, reference, style="apa"):
     """
-    Detect misuse of et al.
-    APA 7:
-    - One author: use one author.
-    - Two authors: cite both authors.
-    - Three or more authors: use first author et al.
+    Conservative et al. misuse detection.
+    Only flags when the reference clearly has one or two authors.
     """
     if not citation or not reference:
         return {"misuse": False}
 
-    citation_uses_et_al = bool(re.search(r'\bet\s+al\.?\b', citation, flags=re.I))
+    if style.lower() != "apa":
+        return {"misuse": False}
+
+    citation_uses_et_al = bool(re.search(r"\bet\s+al\.?\b", citation, flags=re.I))
     if not citation_uses_et_al:
         return {"misuse": False}
 
+    year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", reference, flags=re.I)
+    if not year_match:
+        return {"misuse": False}
+
+    author_part = reference[:year_match.start()]
+    personal_author_count = len(re.findall(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'\-]+,\s*(?:[A-Z]\.?\s*)+",
+        author_part
+    ))
+
     ref_authors = extract_authors_from_reference(reference)
 
-    if style.lower() == "apa" and len(ref_authors) <= 2:
+    # If reference clearly has 3+ personal authors, et al. is acceptable
+    if personal_author_count >= 3:
+        return {"misuse": False}
+
+    # Only flag when clearly one or two authors
+    if 1 <= len(ref_authors) <= 2 and personal_author_count <= 2:
         return {
             "misuse": True,
             "citation_authors": extract_authors_from_citation(citation),
             "ref_authors": ref_authors,
-            "reason": "APA 7 uses 'et al.' for three or more authors. For one or two authors, list the author names."
+            "reason": "APA 7 uses 'et al.' for three or more authors. This reference appears to have one or two authors, so review the in-text citation."
         }
 
     return {"misuse": False}
-
 
 def build_citation_string(authors, year, citation_type="parenthetical", style="apa"):
     """Build a corrected in-text citation string."""
@@ -349,15 +459,14 @@ def scenario_1_year_mismatch(c2r_rows):
             else:
                 confidence = 0.80
             
-            suggestions.append({
-                "original": in_text,
-                "suggested": suggested,
-                "confidence": confidence,
-                "issue_type": "year_mismatch",
-                "reason": f"Year mismatch: '{year_check['citation_year']}' should be '{year_check['ref_year']}' to match reference",
-                "fix_type": "required_fix",
-                "category": "year"
-            })
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=confidence,
+                issue_type="year_mismatch",
+                reason=f"Year mismatch: '{year_check['citation_year']}' may need review against reference year '{year_check['ref_year']}'.",
+                category="citation_accuracy"
+            ))
     
     return suggestions
 
@@ -400,16 +509,16 @@ def scenario_2_author_name_mismatch(c2r_rows, style="apa"):
                 confidence = 0.75
                 reason = f"Author name mismatch: Expected '{author_check['suggested_authors'][0]}'"
             
-            suggestions.append({
-                "original": in_text,
-                "suggested": suggested,
-                "confidence": confidence,
-                "issue_type": "author_mismatch",
-                "reason": reason,
-                "fix_type": "required_fix" if confidence >= 0.85 else "review_required",
-                "category": "author",
-                "mismatch_type": author_check["type"]
-            })
+            item = make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=confidence,
+                issue_type="author_mismatch",
+                reason=reason + " Review before changing.",
+                category="citation_accuracy"
+            )
+            item["mismatch_type"] = author_check["type"]
+            suggestions.append(item)
     
     return suggestions
 
@@ -443,15 +552,14 @@ def scenario_3_author_order_mismatch(c2r_rows, style="apa"):
                 style
             )
             
-            suggestions.append({
-                "original": in_text,
-                "suggested": suggested,
-                "confidence": 0.80,
-                "issue_type": "author_order_mismatch",
-                "reason": f"Author order mismatch: Expected '{ref_authors[0]} and {ref_authors[1]}' based on reference",
-                "fix_type": "review_required",
-                "category": "author_order"
-            })
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=0.80,
+                issue_type="author_order_mismatch",
+                reason="Author order may differ from the reference entry. Review before changing.",
+                category="citation_accuracy"
+            ))
     
     return suggestions
 
@@ -485,15 +593,14 @@ def scenario_4_combined_mismatch(c2r_rows, style="apa"):
             
             confidence = 0.85
             
-            suggestions.append({
-                "original": in_text,
-                "suggested": suggested,
-                "confidence": confidence,
-                "issue_type": "author_year_mismatch",
-                "reason": f"Both author name and year differ from reference: Author '{author_check['citation_authors'][0]}' should be '{author_check['suggested_authors'][0]}', Year '{year_check['citation_year']}' should be '{year_check['ref_year']}'",
-                "fix_type": "required_fix",
-                "category": "combined"
-            })
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=confidence,
+                issue_type="author_year_mismatch",
+                reason="Both author and year appear to differ from the matched reference. Review carefully before changing.",
+                category="citation_accuracy"
+            ))
     
     return suggestions
 
@@ -522,16 +629,15 @@ def scenario_5_et_al_misuse(c2r_rows, style="apa"):
                 style
             )
             
-            suggestions.append({
-                "original": in_text,
-                "suggested": suggested,
-                "confidence": 0.75,
-                "issue_type": "et_al_misuse",
-                "reason": et_al_check["reason"],
-                "fix_type": "review_required",
-                "category": "style"
-            })
-    
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=0.75,
+                issue_type="et_al_misuse",
+                reason=et_al_check["reason"],
+                category="citation_accuracy"
+            ))
+                
     return suggestions
 
 
@@ -561,96 +667,110 @@ def scenario_6_potential_wrong_reference(c2r_rows):
                     ry = year_to_int(ref_year)
                     year_diff = abs(cy - ry) if cy and ry else 99
                     if year_diff > 3:
-                        suggestions.append({
-                            "original": in_text,
-                            "suggested": "Verify reference - Year mismatch suggests different paper",
-                            "confidence": 0.60,
-                            "issue_type": "potential_wrong_reference",
-                            "reason": f"No exact match found. Closest reference has different year ({ref_year} vs {citation_year}). Verify this is the correct source.",
-                            "fix_type": "review_required",
-                            "category": "verification"
-                        })
+                        suggestions.append(make_suggestion(
+                            original=in_text,
+                            suggested="Verify the matched reference manually",
+                            confidence=0.60,
+                            issue_type="potential_wrong_reference",
+                            reason=f"The closest matched reference has a different year ({ref_year} vs {citation_year}). Review whether this is the correct source.",
+                            category="citation_accuracy"
+                        ))
     
     return suggestions
 
 
 def detect_reference_quality_issues(references_raw, style="apa", enable_online_suggestions=False):
     """
-    Detect reference-quality issues:
-    - DOI format issue
-    - Missing DOI
-    - Incomplete reference
-    - Missing journal details
+    Safer reference-quality checks.
+    Only flags high-value, lower-risk issues:
+    - merged references
+    - DOI format
     - HTTP to HTTPS
-    - Missing final period
+    - seriously incomplete reference
+
+    Disabled due to false positives:
+    - missing_period
+    - missing_journal_details
+    - missing page range
     """
     suggestions = []
 
     for ref in references_raw:
         original = ref or ""
-        ref = original.strip()
+        ref = normalize_name_text(original)
 
         if not ref:
             continue
 
+        # 1. Merged references
+        if looks_like_merged_reference(ref):
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested="Split into separate reference entries",
+                confidence=0.90,
+                issue_type="merged_references",
+                reason="This entry appears to contain two or more references joined together.",
+                category="reference_quality",
+                field="reference_structure"
+            ))
+            continue
+
         year = extract_year_from_text(ref)
 
-        # DOI detection
-        doi_match = re.search(r'\b10\.\d{4,9}/[^\s\)]+' , ref, flags=re.I)
-        has_doi_url = bool(re.search(r'https?://doi\.org/10\.\d{4,9}/[^\s\)]+' , ref, flags=re.I))
-        has_doi_label = bool(re.search(r'\bdoi\s*:\s*10\.\d{4,9}/[^\s\)]+' , ref, flags=re.I))
+        doi_match = re.search(r"\b10\.\d{4,9}/[^\s\)]+" , ref, flags=re.I)
+        has_doi_url = bool(re.search(r"https?://doi\.org/10\.\d{4,9}/[^\s\)]+" , ref, flags=re.I))
 
-        # 1. DOI exists but is not in APA URL format
+        # 2. DOI format
         if doi_match and style.lower() == "apa" and not has_doi_url:
             doi = doi_match.group(0).rstrip(".,")
-            suggested_ref = re.sub(r'\bdoi\s*:\s*', '', ref, flags=re.I)
-            suggested_ref = suggested_ref.replace(doi, f"https://doi.org/{doi}")
+            cleaned = re.sub(r"\bdoi\s*:\s*", "", ref, flags=re.I)
+            cleaned = cleaned.replace(doi, f"https://doi.org/{doi}")
 
-            suggestions.append({
-                "original": original,
-                "suggested": suggested_ref,
-                "confidence": 0.95,
-                "issue_type": "doi_format",
-                "reason": "APA 7 recommends DOI in URL format, for example https://doi.org/xxxxx.",
-                "fix_type": "suggested_fix",
-                "category": "reference_quality",
-                "field": "doi"
-            })
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested=cleaned,
+                confidence=0.95,
+                issue_type="doi_format",
+                reason="APA 7 recommends DOI in URL format. Review before applying.",
+                category="reference_quality",
+                field="doi"
+            ))
 
-        # 2. HTTP to HTTPS
+        # 3. HTTP to HTTPS
         if "http://" in ref:
-            suggestions.append({
-                "original": original,
-                "suggested": ref.replace("http://", "https://"),
-                "confidence": 0.90,
-                "issue_type": "http_to_https",
-                "reason": "Use HTTPS for stable and secure links.",
-                "fix_type": "suggested_fix",
-                "category": "reference_quality",
-                "field": "url"
-            })
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested=ref.replace("http://", "https://"),
+                confidence=0.90,
+                issue_type="http_to_https",
+                reason="The reference uses HTTP. Review whether HTTPS is available and appropriate.",
+                category="reference_quality",
+                field="url"
+            ))
 
-        # 3. Incomplete reference check
-        has_title_like_text = bool(year and len(ref[ref.find(str(year)) + len(str(year)):].strip()) > 20)
-        has_journal_markers = bool(re.search(
-            r'\b(journal|review|proceedings|conference|press|publisher|international|volume|vol\.|no\.|\d+\s*\(\d+\)|pp\.)\b',
-            ref,
-            flags=re.I
-        ))
-        has_pages = bool(re.search(r'\b\d{1,4}\s*[-–]\s*\d{1,4}\b', ref))
-        has_volume_issue = bool(re.search(r'\b\d+\s*\(\d+\)', ref))
+        # 4. Seriously incomplete reference only
+        has_enough_length = len(ref) >= 45
+        has_title_after_year = False
 
-        if not year or not has_title_like_text:
-            suggestions.append({
-                "original": original,
-                "suggested": "Review reference manually",
-                "confidence": 0.80,
-                "issue_type": "incomplete_reference",
-                "reason": "The reference appears to be missing a year or a clear title.",
-                "fix_type": "review_required",
-                "category": "reference_quality",
-                "field": "bibliographic_details"
-            })
+        if year and str(year) in ref:
+            after_year = ref.split(str(year), 1)[-1]
+            has_title_after_year = len(after_year.strip(" .,)")) >= 15
+
+        if not year or not has_enough_length or not has_title_after_year:
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested="Review reference manually",
+                confidence=0.80,
+                issue_type="seriously_incomplete_reference",
+                reason="The reference appears to be missing a year, title, or essential bibliographic content.",
+                category="reference_quality",
+                field="bibliographic_details"
+            ))
+
+        # Missing DOI online suggestions remain disabled for speed and safety
+        # Do not add missing_period, missing_journal_details, or missing page-range suggestions here.
+
+    return dedupe_suggestions_by_priority(suggestions)
 
         elif not has_journal_markers and not has_doi_url and not has_doi_label:
             suggestions.append({
@@ -864,6 +984,7 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         
         # Remove duplicates (by original text)
         unique_suggestions = dedupe_suggestions_by_priority(all_suggestions)
+        unique_suggestions = [force_review_only(s) for s in unique_suggestions]
         
         print(f"💡 TOTAL UNIQUE SUGGESTIONS: {len(unique_suggestions)}")
         
@@ -898,9 +1019,9 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
                 "total": len(unique_suggestions),
                 "citation_accuracy_total": len(citation_suggestions),
                 "reference_quality_total": len(reference_suggestions),
-                "high_confidence": len([s for s in unique_suggestions if s.get("confidence", 0) >= 0.85]),
-                "medium_confidence": len([s for s in unique_suggestions if 0.70 <= s.get("confidence", 0) < 0.85]),
-                "low_confidence": len([s for s in unique_suggestions if s.get("confidence", 0) < 0.70]),
+                "review_high_confidence": len([s for s in unique_suggestions if s.get("confidence", 0) >= 0.85]),
+                "review_medium_confidence": len([s for s in unique_suggestions if 0.70 <= s.get("confidence", 0) < 0.85]),
+                "review_low_confidence": len([s for s in unique_suggestions if s.get("confidence", 0) < 0.70]),
                 "by_category": dict(categories),
                 "by_issue_type": dict(Counter(s.get("issue_type", "other") for s in unique_suggestions))
             }
