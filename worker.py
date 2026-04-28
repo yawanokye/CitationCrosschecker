@@ -772,69 +772,7 @@ def detect_reference_quality_issues(references_raw, style="apa", enable_online_s
 
     return dedupe_suggestions_by_priority(suggestions)
 
-        elif not has_journal_markers and not has_doi_url and not has_doi_label:
-            suggestions.append({
-                "original": original,
-                "suggested": "Add source title or publisher/journal details",
-                "confidence": 0.75,
-                "issue_type": "missing_journal_details",
-                "reason": "The reference may be missing journal, publisher, conference, or source details.",
-                "fix_type": "review_required",
-                "category": "reference_quality",
-                "field": "source_title"
-            })
-
-        elif has_journal_markers and not has_pages and not has_doi_url and not has_doi_label:
-            suggestions.append({
-                "original": original,
-                "suggested": "Add page range and DOI if available",
-                "confidence": 0.70,
-                "issue_type": "incomplete_reference",
-                "reason": "The reference may be missing page range and DOI.",
-                "fix_type": "review_required",
-                "category": "reference_quality",
-                "field": "pages_or_doi"
-            })
-
-        # 4. Missing DOI candidate from online suggestion
-        if enable_online_suggestions and not doi_match and suggest_for_unverified:
-            try:
-                candidates = suggest_for_unverified(ref, top_k=1)
-                if candidates:
-                    cand = candidates[0]
-                    cand_doi = cand.get("doi", "")
-                    if cand_doi:
-                        suggestions.append({
-                            "original": original,
-                            "suggested": f"https://doi.org/{cand_doi}",
-                            "confidence": min(0.90, cand.get("score", 80) / 100),
-                            "issue_type": "missing_doi",
-                            "reason": "A DOI candidate was found from online metadata. Verify before applying.",
-                            "fix_type": "review_required",
-                            "category": "reference_quality",
-                            "field": "doi",
-                            "candidate_title": cand.get("title", ""),
-                            "candidate_year": cand.get("year", ""),
-                            "candidate_authors": cand.get("authors", [])
-                        })
-            except Exception as e:
-                print(f"[WARN] DOI lookup failed for reference: {e}")
-
-        # 5. Missing final period
-        if ref and not ref.rstrip().endswith("."):
-            suggestions.append({
-                "original": original,
-                "suggested": ref.rstrip() + ".",
-                "confidence": 0.65,
-                "issue_type": "missing_period",
-                "reason": "The reference may need a final period depending on the selected style.",
-                "fix_type": "optional_fix",
-                "category": "reference_quality",
-                "field": "punctuation"
-            })
-
-    return dedupe_suggestions_by_priority(suggestions)
-
+       
 def dedupe_suggestions_by_priority(suggestions):
     """
     Keep the strongest suggestion for each original text.
