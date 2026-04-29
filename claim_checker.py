@@ -133,9 +133,11 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 })
                 continue
 
-            metadata = fetch_openalex_metadata_by_doi(doi) if doi else {}
-            source_abstract = metadata.get("abstract", "")
-            source_concepts = metadata.get("concepts", [])
+            # Fast mode: do not fetch OpenAlex metadata during the main verification flow.
+            # Claim support will use the already-verified source title only.
+            metadata = {}
+            source_abstract = ""
+            source_concepts = []
 
             if not source_title and not source_abstract and not source_concepts:
                 out.append({
