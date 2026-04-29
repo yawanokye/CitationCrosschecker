@@ -156,22 +156,56 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
                 idx = match.start()
                 break
     
-    # Author-year pattern match
-    if idx == -1:
-        author_match = re.search(r'([A-Z][a-z]+(?:\s+et\s+al\.?)?)', raw_cit)
-        year_match = re.search(r'\b(19|20)\d{2}\b', raw_cit)
-        
-        if author_match and year_match:
-            author = author_match.group(1)
-            year = year_match.group(1)
-            pattern = rf'{re.escape(author)}.*?\b{year}\b'
-            m = re.search(pattern, raw_text)
-            if m:
-                idx = m.start()
-                raw_cit = raw_text[m.start():m.end()]
+        # Author-year pattern match with citation variants
+        if idx == -1:
+            authors, year = extract_citation_author_year(raw_cit)
     
-    if idx == -1:
-        return ""
+            if authors and year:
+                author1 = re.escape(authors[0])
+                year_base = re.escape(year[:4])
+    
+                # Allow small citation-format variations:
+                # (Author, 2001), Author (2001), Author, 2001, Author and Coauthor (2001)
+                variant_patterns = [
+                    rf"\(\s*{author1}\s*,\s*{year_base}[a-z]?\s*\)",
+                    rf"{author1}\s*\(\s*{year_base}[a-z]?\s*\)",
+                    rf"{author1}\s*,\s*{year_base}[a-z]?",
+                    rf"{author1}\s+et\s+al\.?\s*,?\s*{year_base}[a-z]?",
+                ]
+    
+                if len(authors) >= 2:
+                    author2 = re.escape(authors[1])
+                    variant_patterns.extend([
+                        rf"\(\s*{author1}\s*(?:&|and)\s*{author2}\s*,\s*{year_base}[a-z]?\s*\)",
+                        rf"{author1}\s*(?:&|and)\s*{author2}\s*\(\s*{year_base}[a-z]?\s*\)",
+                        rf"{author1}\s*(?:&|and)\s*{author2}\s*,\s*{year_base}[a-z]?",
+                    ])
+    
+                for pat in variant_patterns:
+                    m = re.search(pat, raw_text, flags=re.I)
+                    if m:
+                        idx = m.start()
+                        raw_cit = raw_text[m.start():m.end()]
+                        break
+            # Cluster fallback:
+            # If the individual citation is part of a parenthetical cluster,
+            # find the full cluster that contains the author-year pair.
+            if idx == -1:
+                authors, year = extract_citation_author_year(raw_cit)
+        
+                if authors and year:
+                    author1 = re.escape(authors[0])
+                    year_base = re.escape(year[:4])
+        
+                    cluster_pattern = rf"\([^)]*{author1}[^)]*{year_base}[a-z]?[^)]*\)"
+                    m = re.search(cluster_pattern, raw_text, flags=re.I)
+        
+                    if m:
+                        idx = m.start()
+                        raw_cit = raw_text[m.start():m.end()]
+
+        if idx == -1:
+            return ""
 
     cit_start = idx
     cit_end = min(len(raw_text), idx + len(raw_cit))
