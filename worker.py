@@ -291,9 +291,12 @@ def detect_year_mismatch(citation, reference):
 
 def find_reference_by_author_different_year(citation, references_raw):
     """
-    Find a likely reference for an unmatched citation where the author matches
-    but the year differs.
-    This catches cases missed by normal citation-reference reconciliation.
+    Conservative unmatched year-mismatch detector.
+    Only flags likely year errors when:
+    - first author matches very strongly
+    - second author also matches when present
+    - the year difference is small
+    This avoids false matches in long theses.
     """
     citation_authors = extract_authors_from_citation(citation)
     citation_year = extract_year_from_text(citation)
@@ -301,7 +304,12 @@ def find_reference_by_author_different_year(citation, references_raw):
     if not citation_authors or not citation_year:
         return None
 
+    cit_year_int = year_to_int(citation_year)
+    if not cit_year_int:
+        return None
+
     cit_first = citation_authors[0].lower()
+    cit_second = citation_authors[1].lower() if len(citation_authors) >= 2 else ""
 
     best = None
     best_score = 0
@@ -313,21 +321,43 @@ def find_reference_by_author_different_year(citation, references_raw):
         if not ref_authors or not ref_year:
             continue
 
-        ref_first = ref_authors[0].lower()
+        ref_year_int = year_to_int(ref_year)
+        if not ref_year_int:
+            continue
 
-        # Do not flag if years are already the same
         if ref_year == citation_year:
             continue
 
-        # Strong exact or near-exact author match
-        score = similarity_ratio(cit_first, ref_first)
+        year_diff = abs(cit_year_int - ref_year_int)
 
-        # Handle institutional and punctuation variants, e.g., AUC/OECD vs AUCOECD
+        # Only allow small year differences for unmatched year suggestions.
+        # Larger differences are usually different publications, not citation-year errors.
+        if year_diff > 2:
+            continue
+
+        ref_first = ref_authors[0].lower()
+        ref_second = ref_authors[1].lower() if len(ref_authors) >= 2 else ""
+
         cit_key = re.sub(r"[^a-z0-9]", "", cit_first)
         ref_key = re.sub(r"[^a-z0-9]", "", ref_first)
 
-        if cit_key == ref_key:
-            score = 1.0
+        first_score = 1.0 if cit_key == ref_key else similarity_ratio(cit_first, ref_first)
+
+        if first_score < 0.95:
+            continue
+
+        # If citation has two authors, require the second author too.
+        if cit_second:
+            second_score = similarity_ratio(cit_second, ref_second)
+            if second_score < 0.90:
+                continue
+
+        # Do not make unmatched year suggestions for et al. citations.
+        # Too risky without title/context verification.
+        if re.search(r"\bet\s+al\.?\b", citation, flags=re.I):
+            continue
+
+        score = first_score
 
         if score > best_score:
             best_score = score
@@ -340,10 +370,7 @@ def find_reference_by_author_different_year(citation, references_raw):
                 "score": score
             }
 
-    if best and best["score"] >= 0.88:
-        return best
-
-    return None
+    return best
 
 def detect_author_mismatch(citation, reference):
     """
@@ -836,39 +863,83 @@ def detect_reference_quality_issues(references_raw, style="apa", enable_online_s
         year = extract_year_from_text(ref)
 
         # Normalise broken DOI URL spacing such as "https://doi. org/"
-        ref_for_doi = re.sub(r"https?://doi\.\s*org/", "https://doi.org/", ref, flags=re.I)
-
-        doi_match = re.search(r"\b10\.\d{4,9}/[^\s\)]+" , ref_for_doi, flags=re.I)
-        has_doi_url = bool(re.search(r"https?://doi\.org/10\.\d{4,9}/[^\s\)]+" , ref_for_doi, flags=re.I))
-
-        # 2. DOI format
-        if doi_match and style.lower() == "apa" and not has_doi_url:
-            doi = doi_match.group(0).rstrip(".,")
-            cleaned = re.sub(r"\bdoi\s*:\s*", "", ref_for_doi, flags=re.I)
+        # 2. DOI format and DOI spacing
+        ref_for_doi = ref
         
-            # Avoid duplicating DOI URL
-            if f"https://doi.org/{doi}" not in cleaned:
-                cleaned = cleaned.replace(doi, f"https://doi.org/{doi}")
-
+        # Fix broken DOI URL spacing such as "https://doi. org/"
+        ref_for_doi = re.sub(
+            r"https?://doi\.\s*org/",
+            "https://doi.org/",
+            ref_for_doi,
+            flags=re.I
+        )
+        
+        # Convert dx.doi.org to doi.org
+        ref_for_doi = re.sub(
+            r"https?://dx\.doi\.org/",
+            "https://doi.org/",
+            ref_for_doi,
+            flags=re.I
+        )
+        
+        # Convert DOI labels to DOI URL
+        # Handles:
+        # DOI: 10.xxxx
+        # doi:10.xxxx
+        # DOI http://dx.doi.org/10.xxxx
+        # DOI: org/10.xxxx
+        doi_label_match = re.search(
+            r"\bdoi\s*:?\s*(?:https?://(?:dx\.)?doi\.org/)?(?:org/)?(10\.\d{4,9}/[^\s\)]*)",
+            ref_for_doi,
+            flags=re.I
+        )
+        
+        if doi_label_match:
+            doi = doi_label_match.group(1).rstrip(".,")
+            cleaned = (
+                ref_for_doi[:doi_label_match.start()]
+                + f"https://doi.org/{doi}"
+                + ref_for_doi[doi_label_match.end():]
+            )
+        
             suggestions.append(make_suggestion(
                 original=original,
                 suggested=cleaned,
                 confidence=0.95,
                 issue_type="doi_format",
-                reason="APA 7 recommends DOI in URL format. Review before applying.",
+                reason="The DOI format appears non-standard. Review the DOI URL before applying.",
                 category="reference_quality",
                 field="doi"
             ))
-        elif ref != ref_for_doi:
+        
+        elif ref_for_doi != ref:
             suggestions.append(make_suggestion(
                 original=original,
                 suggested=ref_for_doi,
                 confidence=0.95,
                 issue_type="doi_spacing",
-                reason="The DOI URL appears to contain spacing inside doi.org. Review before applying.",
+                reason="The DOI URL appears to contain spacing or dx.doi.org formatting. Review before applying.",
                 category="reference_quality",
                 field="doi"
             ))
+        
+        else:
+            # Raw DOI without DOI URL
+            raw_doi_match = re.search(r"(?<!doi\.org/)\b10\.\d{4,9}/[^\s\)]*", ref_for_doi, flags=re.I)
+        
+            if raw_doi_match and style.lower() == "apa":
+                doi = raw_doi_match.group(0).rstrip(".,")
+                cleaned = ref_for_doi.replace(doi, f"https://doi.org/{doi}")
+        
+                suggestions.append(make_suggestion(
+                    original=original,
+                    suggested=cleaned,
+                    confidence=0.95,
+                    issue_type="doi_format",
+                    reason="APA 7 recommends DOI in URL format. Review before applying.",
+                    category="reference_quality",
+                    field="doi"
+                ))
         # 3. HTTP to HTTPS
         if "http://" in ref:
             suggestions.append(make_suggestion(
