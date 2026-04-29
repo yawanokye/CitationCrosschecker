@@ -289,6 +289,61 @@ def detect_year_mismatch(citation, reference):
         }
     return {"mismatch": False}
 
+def find_reference_by_author_different_year(citation, references_raw):
+    """
+    Find a likely reference for an unmatched citation where the author matches
+    but the year differs.
+    This catches cases missed by normal citation-reference reconciliation.
+    """
+    citation_authors = extract_authors_from_citation(citation)
+    citation_year = extract_year_from_text(citation)
+
+    if not citation_authors or not citation_year:
+        return None
+
+    cit_first = citation_authors[0].lower()
+
+    best = None
+    best_score = 0
+
+    for ref in references_raw or []:
+        ref_authors = extract_authors_from_reference(ref)
+        ref_year = extract_year_from_text(ref)
+
+        if not ref_authors or not ref_year:
+            continue
+
+        ref_first = ref_authors[0].lower()
+
+        # Do not flag if years are already the same
+        if ref_year == citation_year:
+            continue
+
+        # Strong exact or near-exact author match
+        score = similarity_ratio(cit_first, ref_first)
+
+        # Handle institutional and punctuation variants, e.g., AUC/OECD vs AUCOECD
+        cit_key = re.sub(r"[^a-z0-9]", "", cit_first)
+        ref_key = re.sub(r"[^a-z0-9]", "", ref_first)
+
+        if cit_key == ref_key:
+            score = 1.0
+
+        if score > best_score:
+            best_score = score
+            best = {
+                "reference": ref,
+                "ref_year": ref_year,
+                "citation_year": citation_year,
+                "ref_authors": ref_authors,
+                "citation_authors": citation_authors,
+                "score": score
+            }
+
+    if best and best["score"] >= 0.88:
+        return best
+
+    return None
 
 def detect_author_mismatch(citation, reference):
     """
@@ -305,6 +360,15 @@ def detect_author_mismatch(citation, reference):
     cit_first = citation_authors[0]
     ref_first = ref_authors[0]
 
+    cit_first = citation_authors[0]
+    ref_first = ref_authors[0]
+    
+    def comparable_author_key(x):
+        return re.sub(r"[^a-z0-9]", "", str(x).lower())
+    
+    if comparable_author_key(cit_first) == comparable_author_key(ref_first):
+        return {"mismatch": False}
+    
     # Exact case-insensitive match
     if [a.lower() for a in citation_authors] == [a.lower() for a in ref_authors]:
         return {"mismatch": False}
@@ -468,6 +532,60 @@ def scenario_1_year_mismatch(c2r_rows):
                 category="citation_accuracy"
             ))
     
+    return suggestions
+
+def scenario_1b_unmatched_year_mismatch(c2r_rows, references_raw):
+    """
+    Detect likely year mismatches for citations that were not matched
+    because the citation year differs from the reference year.
+    """
+    suggestions = []
+
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        status = row.get("status", "")
+
+        # Only inspect citations that normal reconciliation did not match
+        if not in_text:
+            continue
+
+        if matched_ref and status == "matched":
+            continue
+
+        candidate = find_reference_by_author_different_year(in_text, references_raw)
+
+        if not candidate:
+            continue
+
+        citation_year = candidate["citation_year"]
+        ref_year = candidate["ref_year"]
+
+        suggested = in_text.replace(citation_year, ref_year)
+
+        cy = year_to_int(citation_year)
+        ry = year_to_int(ref_year)
+        year_diff = abs(cy - ry) if cy and ry else 99
+
+        if year_diff == 1:
+            confidence = 0.88
+        elif year_diff <= 3:
+            confidence = 0.82
+        else:
+            confidence = 0.72
+
+        suggestions.append(make_suggestion(
+            original=in_text,
+            suggested=suggested,
+            confidence=confidence,
+            issue_type="possible_year_mismatch_unmatched",
+            reason=(
+                f"The citation was not matched, but a reference with a similar author "
+                f"uses year '{ref_year}' instead of '{citation_year}'. Review manually."
+            ),
+            category="citation_accuracy"
+        ))
+
     return suggestions
 
 
@@ -717,14 +835,20 @@ def detect_reference_quality_issues(references_raw, style="apa", enable_online_s
 
         year = extract_year_from_text(ref)
 
-        doi_match = re.search(r"\b10\.\d{4,9}/[^\s\)]+" , ref, flags=re.I)
-        has_doi_url = bool(re.search(r"https?://doi\.org/10\.\d{4,9}/[^\s\)]+" , ref, flags=re.I))
+        # Normalise broken DOI URL spacing such as "https://doi. org/"
+        ref_for_doi = re.sub(r"https?://doi\.\s*org/", "https://doi.org/", ref, flags=re.I)
+
+        doi_match = re.search(r"\b10\.\d{4,9}/[^\s\)]+" , ref_for_doi, flags=re.I)
+        has_doi_url = bool(re.search(r"https?://doi\.org/10\.\d{4,9}/[^\s\)]+" , ref_for_doi, flags=re.I))
 
         # 2. DOI format
         if doi_match and style.lower() == "apa" and not has_doi_url:
             doi = doi_match.group(0).rstrip(".,")
-            cleaned = re.sub(r"\bdoi\s*:\s*", "", ref, flags=re.I)
-            cleaned = cleaned.replace(doi, f"https://doi.org/{doi}")
+            cleaned = re.sub(r"\bdoi\s*:\s*", "", ref_for_doi, flags=re.I)
+        
+            # Avoid duplicating DOI URL
+            if f"https://doi.org/{doi}" not in cleaned:
+                cleaned = cleaned.replace(doi, f"https://doi.org/{doi}")
 
             suggestions.append(make_suggestion(
                 original=original,
@@ -735,7 +859,16 @@ def detect_reference_quality_issues(references_raw, style="apa", enable_online_s
                 category="reference_quality",
                 field="doi"
             ))
-
+        elif ref != ref_for_doi:
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested=ref_for_doi,
+                confidence=0.95,
+                issue_type="doi_spacing",
+                reason="The DOI URL appears to contain spacing inside doi.org. Review before applying.",
+                category="reference_quality",
+                field="doi"
+            ))
         # 3. HTTP to HTTPS
         if "http://" in ref:
             suggestions.append(make_suggestion(
@@ -783,10 +916,12 @@ def dedupe_suggestions_by_priority(suggestions):
         "potential_wrong_reference": 2,
         "author_mismatch": 3,
         "year_mismatch": 4,
+        "possible_year_mismatch_unmatched": 4,
         "author_order_mismatch": 5,
         "et_al_misuse": 6,
         "missing_doi": 7,
         "doi_format": 8,
+        "doi_spacing": 8,
         "incomplete_reference": 9,
         "missing_journal_details": 10,
         "http_to_https": 11,
@@ -900,6 +1035,13 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         year_suggestions = scenario_1_year_mismatch(c2r_rows)
         all_suggestions.extend(year_suggestions)
         print(f"📅 Scenario 1 - Year mismatches: {len(year_suggestions)}")
+        # Scenario 1b: Year mismatch among unmatched citations
+        unmatched_year_suggestions = scenario_1b_unmatched_year_mismatch(
+            c2r_rows,
+            references_raw
+        )
+        all_suggestions.extend(unmatched_year_suggestions)
+        print(f"📅 Scenario 1b - Unmatched year mismatches: {len(unmatched_year_suggestions)}")
         
         # Scenario 3: Author order mismatch
         order_suggestions = scenario_3_author_order_mismatch(c2r_rows, style)
@@ -907,9 +1049,10 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         print(f"🔄 Scenario 3 - Author order mismatches: {len(order_suggestions)}")
         
         # Scenario 5: Et al. misuse
-        et_al_suggestions = scenario_5_et_al_misuse(c2r_rows, style)
-        all_suggestions.extend(et_al_suggestions)
-        print(f"📝 Scenario 5 - Et al. misuse: {len(et_al_suggestions)}")
+        # Scenario 5: Et al. misuse
+        # Disabled for now because et al. suggestions require highly reliable author extraction.
+        et_al_suggestions = []
+        print("📝 Scenario 5 - Et al. misuse: disabled")
 
         # Reference quality issues
         ref_suggestions = detect_reference_quality_issues(
