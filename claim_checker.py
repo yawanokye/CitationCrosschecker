@@ -105,7 +105,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         citation_items = split_citation_cluster(citation_text)
 
         for cit in citation_items:
-            claim = extract_context(full_text, cit, window=300)
+            claim = extract_context(full_text, cit, window=600)
             claim = (claim or "").strip()
 
             source_title = vr.get("matched_title", "") or ""
@@ -119,8 +119,8 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "source_title": source_title or "No source found",
                     "doi": doi,
                     "support_score": 0,
-                    "support_status": "no_evidence_found",
-                    "evidence_used": "none",
+                    "support_status": "claim_not_extracted",
+                    "evidence_used": "claim_extraction_failed",
                     "title_overlap": 0,
                     "abstract_overlap": 0,
                     "keyword_overlap": 0,
