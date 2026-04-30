@@ -197,8 +197,13 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
                     author1 = re.escape(authors[0])
                     year_base = re.escape(year[:4])
         
-                    cluster_pattern = rf"\([^)]*{author1}[^)]*{year_base}[a-z]?[^)]*\)"
+                    cluster_pattern = rf"\([^)]*{author1}[^)]*(?:{year_base}[a-z]?)[^)]*\)"
                     m = re.search(cluster_pattern, raw_text, flags=re.I)
+                    
+                    # Extra fallback: author and year appear within the same 120-character citation cluster
+                    if not m:
+                        cluster_pattern = rf"\([^)]{{0,120}}{author1}[^)]{{0,120}}{year_base}[a-z]?[^)]{{0,120}}\)"
+                        m = re.search(cluster_pattern, raw_text, flags=re.I)
         
                     if m:
                         idx = m.start()
