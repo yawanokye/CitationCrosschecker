@@ -184,24 +184,17 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         
         for cit in citation_items:
             claim = cluster_claim
+            claim_source = "cluster_context" if claim and len(claim) >= 10 else ""
         
-            # If cluster-level extraction fails, try the individual citation.
+            # If cluster-level extraction fails, use the forced claim candidate fallback.
             if not claim or len(claim) < 10:
-                claim = extract_context(full_text, cit, window=600)
-                claim = (claim or "").strip()
-
-            # Fallback: use context already captured during citation extraction/reconciliation
-            if not claim or len(claim) < 10:
-                claim = (
-                    row.get("context", "")
-                    or row.get("sentence", "")
-                    or row.get("citation_context", "")
-                    or row.get("nearby_text", "")
-                    or row.get("left_context", "")
-                    or row.get("right_context", "")
-                    or ""
-                ).strip()
-                    
+                claim, claim_source = force_claim_candidate(
+                    full_text=full_text,
+                    citation=cit,
+                    row=row,
+                    window=600
+                )
+                            
             source_title = vr.get("matched_title", "") or ""
             doi = vr.get("doi", "") or ""
             
