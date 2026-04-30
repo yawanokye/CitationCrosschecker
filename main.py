@@ -1293,8 +1293,27 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     except Exception as e:
                                         print(f"[DEBUG] Error rebuilding reference mapping: {e}")
                                     
-                                    _store[job_id]["result"]["recovery"] = build_context_specific_recovery(_store[job_id]["result"])
-                                    _store[job_id]["result"]["claim_support"] = build_claim_support_rows(_store[job_id]["result"])
+                                    try:
+                                        _store[job_id]["result"]["recovery"] = build_context_specific_recovery(
+                                            _store[job_id]["result"]
+                                        )
+                                        print("[RECOVERY] Rows built")
+                                    except Exception as e:
+                                        print(f"[RECOVERY ERROR] {e}")
+                                        _store[job_id]["result"]["recovery"] = {
+                                            "missing_recovery": [],
+                                            "verification_recovery": []
+                                        }
+                                    
+                                    try:
+                                        _store[job_id]["result"]["claim_support"] = build_claim_support_rows(
+                                            _store[job_id]["result"]
+                                        )
+                                        print("[CLAIM SUPPORT] Rows:", len(_store[job_id]["result"].get("claim_support", [])))
+                                    except Exception as e:
+                                        print(f"[CLAIM SUPPORT ERROR] {e}")
+                                        _store[job_id]["result"]["claim_support"] = []
+                                    
                                     _store[job_id]["verification"]["results"] = verification_results
                                     _store[job_id]["verification"]["results_count"] = len(verification_results)
                                     _store[job_id]["verification"]["summary"] = summary
@@ -1306,14 +1325,14 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                 try:
                                     conn = psycopg2.connect(DATABASE_URL)
                                     cursor = conn.cursor()
+                                    final_result = _store[job_id]["result"]
+                                    final_result["verification_completed_at"] = now()
+                                    
                                     cursor.execute("""
                                         UPDATE jobs
-                                        SET result = result || jsonb_build_object(
-                                            'verification_completed_at', %s,
-                                            'online_verification', %s
-                                        )
+                                        SET result = %s::jsonb
                                         WHERE job_id = %s
-                                    """, (now(), json.dumps({"rows": verification_results, "summary": summary}), job_id))
+                                    """, (json.dumps(final_result), job_id))
                                     conn.commit()
                                     cursor.close()
                                     conn.close()
@@ -1773,6 +1792,8 @@ async def debug_check_verification(job_id: str):
         "has_online_verification_in_result": "online_verification" in result,
         "online_verification_rows": len(result.get("online_verification", {}).get("rows", [])),
         "stored_results_from_verify_py": len(stored_results) if stored_results else 0,
+        "has_claim_support": "claim_support" in result,
+        "claim_support_rows": len(result.get("claim_support", [])),
         "result_keys": list(result.keys())
     }    
 @app.get("/debug/test-suggestions")
