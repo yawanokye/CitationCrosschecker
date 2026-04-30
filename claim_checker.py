@@ -176,14 +176,32 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         citation_items = split_citation_cluster(citation_text)
 
+        # First extract claim using the full citation or full citation cluster.
+        # This is important because individual split citations may not appear
+        # as standalone text in the manuscript.
+        cluster_claim = extract_context(full_text, citation_text, window=600)
+        cluster_claim = (cluster_claim or "").strip()
+        
         for cit in citation_items:
-            claim, claim_source = force_claim_candidate(
-                full_text=full_text,
-                citation=cit,
-                row=row,
-                window=600
-            )
-            
+            claim = cluster_claim
+        
+            # If cluster-level extraction fails, try the individual citation.
+            if not claim or len(claim) < 10:
+                claim = extract_context(full_text, cit, window=600)
+                claim = (claim or "").strip()
+
+            # Fallback: use context already captured during citation extraction/reconciliation
+            if not claim or len(claim) < 10:
+                claim = (
+                    row.get("context", "")
+                    or row.get("sentence", "")
+                    or row.get("citation_context", "")
+                    or row.get("nearby_text", "")
+                    or row.get("left_context", "")
+                    or row.get("right_context", "")
+                    or ""
+                ).strip()
+                    
             source_title = vr.get("matched_title", "") or ""
             doi = vr.get("doi", "") or ""
             
