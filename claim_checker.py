@@ -4,6 +4,78 @@ from typing import List, Dict, Any
 from citation_suggester import extract_context, split_citation_cluster
 from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by_doi
 
+def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], window: int = 600):
+    """
+    Always return a claim candidate once a citation exists.
+    Priority:
+    1. Use extract_context()
+    2. Use context fields from reconciliation row
+    3. Locate author-year in full_text and extract sentence window
+    4. Return extraction_failed marker
+    """
+    citation = (citation or "").strip()
+
+    # 1. Normal extractor
+    claim = extract_context(full_text, citation, window=window)
+    claim = (claim or "").strip()
+
+    if len(claim) >= 10:
+        return claim, "extract_context"
+
+    # 2. Reconciliation row fallback
+    for key in ["context", "sentence", "citation_context", "nearby_text", "left_context", "right_context"]:
+        val = (row.get(key, "") or "").strip()
+        if len(val) >= 10:
+            return val, f"row_{key}"
+
+    # 3. Last manuscript-text fallback using author-year pieces
+    # This handles cases where citation is stored as "Xue, 2002"
+    # but appears in text as "(Xue, 2002)" or "Xue (2002)".
+    import re
+
+    years = re.findall(r"(?:19|20)\d{2}[a-z]?", citation)
+    year = years[0] if years else ""
+
+    tokens = re.findall(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", citation)
+    stop = {"And", "Et", "Al"}
+    authors = [t for t in tokens if t not in stop]
+    author = authors[0] if authors else ""
+
+    if full_text and author and year:
+        pattern = rf"{re.escape(author)}[^.?!;]{{0,80}}{re.escape(year[:4])}[a-z]?"
+        m = re.search(pattern, full_text, flags=re.I)
+
+        if m:
+            pos = m.start()
+
+            left = max(
+                full_text.rfind(".", 0, pos),
+                full_text.rfind("?", 0, pos),
+                full_text.rfind("!", 0, pos),
+                full_text.rfind(";", 0, pos),
+                full_text.rfind("\n", 0, pos)
+            )
+            left = 0 if left == -1 else left + 1
+
+            rights = [
+                full_text.find(".", pos),
+                full_text.find("?", pos),
+                full_text.find("!", pos),
+                full_text.find(";", pos),
+                full_text.find("\n", pos)
+            ]
+            rights = [r for r in rights if r != -1]
+            right = min(rights) + 1 if rights else min(len(full_text), pos + window)
+
+            candidate = full_text[left:right]
+            candidate = re.sub(r"\s+", " ", candidate).strip(" ,;:-")
+
+            if len(candidate) >= 10:
+                return candidate, "fallback_sentence_window"
+
+    # 4. Final forced output
+    return "Claim could not be extracted from the manuscript context.", "extraction_failed"
+
 def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Build claim-to-source support rows.
@@ -105,16 +177,21 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         citation_items = split_citation_cluster(citation_text)
 
         for cit in citation_items:
-            claim = extract_context(full_text, cit, window=600)
-            claim = (claim or "").strip()
-
+            claim, claim_source = force_claim_candidate(
+                full_text=full_text,
+                citation=cit,
+                row=row,
+                window=600
+            )
+            
             source_title = vr.get("matched_title", "") or ""
             doi = vr.get("doi", "") or ""
-
-            if not claim or len(claim) < 10:
+            
+            if claim_source == "extraction_failed":
                 out.append({
                     "citation": cit,
-                    "claim": "No claim extracted",
+                    "claim": claim,
+                    "claim_source": claim_source,
                     "reference": matched_ref,
                     "source_title": source_title or "No source found",
                     "doi": doi,
@@ -129,7 +206,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "partial_support": False,
                     "concept_matches": [],
                     "match_note": vr.get("match_note", ""),
-                    "score_explanation": "No meaningful claim could be extracted from the citation context."
+                    "score_explanation": "A citation was detected, but the system could not extract a meaningful manuscript claim around it."
                 })
                 continue
 
@@ -143,6 +220,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 out.append({
                     "citation": cit,
                     "claim": claim,
+                    "claim_source": claim_source,
                     "reference": matched_ref,
                     "source_title": "No source found",
                     "doi": doi,
@@ -172,6 +250,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             out.append({
                 "citation": cit,
                 "claim": claim,
+                "claim_source": claim_source,
                 "reference": matched_ref,
                 "source_title": source_title,
                 "doi": doi,
