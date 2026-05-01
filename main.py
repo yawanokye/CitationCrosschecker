@@ -6,7 +6,7 @@ import re
 import uuid
 import threading
 import time
-import json
+import jsonn
 import secrets
 import sqlite3
 from datetime import datetime, timedelta
@@ -681,6 +681,8 @@ async def security_middleware(request: Request, call_next):
         "/apply-autofix",
         "/queue/status",
         "/new",
+        "/analyse",
+        "/results",
         "/features",
         "/pricing",
         "/contact",
@@ -2164,7 +2166,28 @@ async def analyse_page(request: Request):
 @app.get("/upload", response_class=HTMLResponse)
 async def upload_page(request: Request):
     return templates.TemplateResponse("new_analyse.html", {"request": request})
+@app.get("/results/{job_id}", response_class=HTMLResponse)
+async def results_dashboard_page(request: Request, job_id: str, verify: int = 0):
+    return templates.TemplateResponse(
+        "new_results.html",
+        {
+            "request": request,
+            "job_id": job_id,
+            "auto_verify": "true" if verify == 1 else "false"
+        }
+    )
 
+
+@app.get("/new/results/{job_id}", response_class=HTMLResponse)
+async def new_results_dashboard_page(request: Request, job_id: str, verify: int = 0):
+    return templates.TemplateResponse(
+        "new_results.html",
+        {
+            "request": request,
+            "job_id": job_id,
+            "auto_verify": "true" if verify == 1 else "false"
+        }
+    )
 # ============================================================
 # ASYNC DOCUMENT CHECK (QUEUED)
 # ============================================================
