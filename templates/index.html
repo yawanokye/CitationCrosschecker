@@ -1464,8 +1464,10 @@ async function fetchStatus() {
                 if (btnVerify) btnVerify.disabled = false;
             
                 // ✅ FORCE PROGRESS TO 100%
+                // ✅ Verification is complete, but final tables may still be building
+                
                 updateProgress(total, total, "completed", `✅ Complete! ${total}/${total}`);
-                setStatus(`Verification complete: ${total}/${total}`, "good");
+                setStatus(`Verification complete: ${total}/${total}. Finalising tables...`,);
             
                 // ⛔ THEN stop polling
                 stopPolling();
