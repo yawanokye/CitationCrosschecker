@@ -431,6 +431,49 @@
             font-size: 12px;
         }
 
+        /* Alternative Source Suggestions */
+        .alt-source-box {
+            margin-top: 10px;
+            padding: 10px 12px;
+            border: 1px solid #dbeafe;
+            border-left: 4px solid #3498db;
+            border-radius: 10px;
+            background: #f8fbff;
+            font-size: 12px;
+        }
+        
+        .alt-source-box summary {
+            cursor: pointer;
+            font-weight: 700;
+            color: #1e3a5f;
+        }
+        
+        .alt-source-note {
+            margin: 8px 0 10px 0;
+            color: #475569;
+            line-height: 1.4;
+        }
+        
+        .alt-source-item {
+            padding: 8px;
+            margin-top: 8px;
+            border-radius: 8px;
+            background: white;
+            border: 1px solid #eef2f6;
+        }
+        
+        .alt-source-title {
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 4px;
+        }
+        
+        .alt-source-meta {
+            color: #64748b;
+            font-size: 11px;
+            margin-bottom: 3px;
+        }
+        
         .suggestion-title {
             font-weight: 700;
             margin-bottom: 6px;
@@ -1733,7 +1776,60 @@ function renderRecovery(data) {
         }).join("");
     }
 }
-    
+
+function normalizeDoiUrl(doi) {
+    if (!doi) return "";
+    const clean = String(doi).trim().replace(/^https?:\/\/doi\.org\//i, "");
+    return `https://doi.org/${encodeURIComponent(clean)}`;
+}
+
+function renderAlternativeSources(row) {
+    const alternatives = row.alternative_sources || [];
+
+    if (!alternatives.length) {
+        return "";
+    }
+
+    const items = alternatives.map((src, index) => {
+        const title = src.title || "Untitled source";
+        const year = src.year || "Year not available";
+
+        const authors = Array.isArray(src.authors)
+            ? src.authors.join(", ")
+            : (src.authors || "Authors not available");
+
+        const relevance = src.relevance !== undefined && src.relevance !== null
+            ? src.relevance
+            : "Not scored";
+
+        const doi = src.doi || "";
+        const doiHtml = doi
+            ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">🔗 View DOI</a>`
+            : `<span class="doi-text">DOI not available</span>`;
+
+        return `
+            <div class="alt-source-item">
+                <div class="alt-source-title">${index + 1}. ${esc(title)}</div>
+                <div class="alt-source-meta"><strong>Authors:</strong> ${esc(authors)}</div>
+                <div class="alt-source-meta"><strong>Year:</strong> ${esc(year)}</div>
+                <div class="alt-source-meta"><strong>Relevance:</strong> ${esc(relevance)}</div>
+                <div>${doiHtml}</div>
+            </div>
+        `;
+    }).join("");
+
+    return `
+        <details class="alt-source-box">
+            <summary>Possible alternative supporting sources</summary>
+            <p class="alt-source-note">
+                The current source did not provide enough evidence for the extracted claim.
+                These are possible sources that may better support the claim. Review before use.
+            </p>
+            ${items}
+        </details>
+    `;
+}
+
 function renderClaimSupport(data) {
     const body = $("claimSupportBody");
     if (!body) return;
@@ -1750,10 +1846,33 @@ function renderClaimSupport(data) {
         else if (r.support_status === "related_evidence") badgeClass = "needs_review";
         else if (r.support_status === "weak_or_unclear") badgeClass = "needs_review";
         else if (r.support_status === "insufficient_evidence") badgeClass = "not_found";
-        const claimText = r.claim && r.claim.trim() ? esc(r.claim) : `<span style="color:#7f8c8d;">No evidence found</span>`;
-        const titleText = r.source_title && r.source_title.trim() ? `${esc((r.source_title || "").substring(0, 90))}${(r.source_title || "").length > 90 ? "…" : ""}` : `<span style="color:#7f8c8d;">No evidence found</span>`;
-        return `<tr><td>${i + 1}</div><td>${esc(r.citation || "")}</div><td style="max-width:320px;">${claimText}</div><td style="max-width:280px;">${titleText}<div style="margin-top:4px;">${doiHtml}</div></div><td><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></div><td>${esc(String(r.support_score ?? ""))}</div></tr>`;
-    }).join("");
+        const claimText = r.claim && r.claim.trim()
+            ? esc(r.claim)
+            : `<span style="color:#7f8c8d;">No evidence found</span>`;
+        
+        const altSourceHtml = renderAlternativeSources(r);
+        
+        const titleText = r.source_title && r.source_title.trim()
+            ? `${esc((r.source_title || "").substring(0, 90))}${(r.source_title || "").length > 90 ? "…" : ""}`
+            : `<span style="color:#7f8c8d;">No evidence found</span>`;
+        
+        return `
+            <tr>
+                <td>${i + 1}</td>
+                <td>${esc(r.citation || "")}</td>
+                <td style="max-width:320px;">
+                    ${claimText}
+                    ${altSourceHtml}
+                </td>
+                <td style="max-width:280px;">
+                    ${titleText}
+                    <div style="margin-top:4px;">${doiHtml}</div>
+                </td>
+                <td><span class="badge ${badgeClass}">${esc(r.support_status || "")}</span></td>
+                <td>${esc(r.support_score ?? 0)}</td>
+            </tr>
+        `;
+        	
 }
 function hideSuggestionsPanel() {
     const panel = $("suggestionsPanel");
