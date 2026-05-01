@@ -191,7 +191,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     - support_status field: support decision, including "no_evidence_found"
     """
     out = []
-    MAX_ALT_SOURCE_ROWS = 10
+    MAX_ALT_SOURCE_ROWS = 100
     alt_source_count = 0
     
     full_text = result.get("main_text", "") or result.get("full_text", "")
