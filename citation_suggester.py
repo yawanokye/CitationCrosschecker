@@ -56,6 +56,55 @@ def _find_sentence_span(text: str, pos: int):
     right = min(candidates) + 1 if candidates else len(text)
     return left, right
 
+def _expand_to_parenthetical_cluster(text: str, cit_start: int, cit_end: int):
+    """
+    If a detected citation is inside a parenthetical citation cluster,
+    expand it to the full cluster.
+
+    Example:
+    Stored citation: Cohen, 1988
+    Manuscript text: (Cohen, 1988; Button et al., 2013)
+    Returns the span for the full parenthetical cluster.
+    """
+    if not text or cit_start < 0:
+        return None
+
+    # Look for nearest opening parenthesis before the citation
+    left_paren = text.rfind("(", 0, cit_start + 1)
+    if left_paren == -1:
+        return None
+
+    # Look for nearest closing parenthesis after the citation
+    right_paren = text.find(")", cit_end)
+    if right_paren == -1:
+        return None
+
+    # Avoid expanding across sentence boundaries before the parenthesis
+    prev_sentence = max(
+        text.rfind(".", 0, cit_start),
+        text.rfind("?", 0, cit_start),
+        text.rfind("!", 0, cit_start),
+        text.rfind("\n", 0, cit_start)
+    )
+
+    if prev_sentence > left_paren:
+        return None
+
+    cluster = text[left_paren:right_paren + 1]
+
+    # Confirm it looks like a citation cluster
+    has_year = re.search(r"(?:19|20)\d{2}[a-z]?", cluster)
+    has_author_like = re.search(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", cluster)
+
+    if not has_year or not has_author_like:
+        return None
+
+    # Avoid huge accidental captures
+    if len(cluster) > 350:
+        return None
+
+    return left_paren, right_paren + 1, cluster
+
 def split_citation_cluster(citation_text: str) -> List[str]:
     """
     Split clustered citations like:
@@ -214,6 +263,16 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
 
     cit_start = idx
     cit_end = min(len(raw_text), idx + len(raw_cit))
+    
+    # If the detected citation is inside a parenthetical cluster,
+    # expand to the full cluster before deciding parenthetical/narrative.
+    expanded_cluster = _expand_to_parenthetical_cluster(raw_text, cit_start, cit_end)
+    if expanded_cluster:
+        cit_start, cit_end, raw_cit = expanded_cluster
+
+# ============================================================
+# DETECT NARRATIVE VS PARENTHETICAL
+# ============================================================
 
     # ============================================================
     # DETECT NARRATIVE VS PARENTHETICAL
