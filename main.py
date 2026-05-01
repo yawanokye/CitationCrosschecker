@@ -2150,6 +2150,21 @@ async def new_landing_page(request: Request):
             "success_rate": total_stats.get("success_rate", 0),
         }
     )
+
+@app.get("/new/analyse", response_class=HTMLResponse)
+async def new_analyse_page(request: Request):
+    return templates.TemplateResponse("new_analyse.html", {"request": request})
+
+
+@app.get("/analyse", response_class=HTMLResponse)
+async def analyse_page(request: Request):
+    return templates.TemplateResponse("new_analyse.html", {"request": request})
+
+
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page(request: Request):
+    return templates.TemplateResponse("new_analyse.html", {"request": request})
+
 # ============================================================
 # ASYNC DOCUMENT CHECK (QUEUED)
 # ============================================================
