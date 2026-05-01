@@ -197,7 +197,14 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     MAX_ALT_SOURCE_ROWS = 100
     alt_source_count = 0
     
-    full_text = result.get("main_text", "") or result.get("full_text", "")
+    full_text = (
+        result.get("main_text", "")
+        or result.get("full_text", "")
+        or result.get("data", {}).get("main_text", "")
+        or result.get("data", {}).get("full_text", "")
+        or ""
+    )
+    print("[CLAIM DEBUG] full_text length:", len(full_text or ""))
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
     online_verification = result.get("online_verification", {}) or {}
