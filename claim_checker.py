@@ -4,6 +4,39 @@ from typing import List, Dict, Any
 from citation_suggester import extract_context, split_citation_cluster
 from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by_doi
 
+def clean_extracted_claim_text(claim: str) -> str:
+    """
+    Remove citation residue from extracted claim text.
+    Keeps the manuscript claim but removes fragments such as:
+    'Button et al., 2013).' or 'Lohr, 2010).'
+    """
+    import re
+
+    claim = claim or ""
+    claim = re.sub(r"\s+", " ", claim).strip()
+
+    # Remove leading broken closing punctuation from citation clusters
+    claim = re.sub(r"^[\s\)\]\.,;:]+", "", claim)
+
+    # Remove leading single citation fragment
+    claim = re.sub(
+        r"^[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?\s*,?\s*(?:19|20)\d{2}[a-z]?\)?[\s\.,;:]*",
+        "",
+        claim,
+        flags=re.I
+    )
+
+    # Remove leading multiple citation fragments
+    claim = re.sub(
+        r"^(?:[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s*(?:&|and)\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,?\s*(?:19|20)\d{2}[a-z]?\s*;?\s*)+\)?[\s\.,;:]*",
+        "",
+        claim,
+        flags=re.I
+    )
+
+    return claim.strip(" ,;:-")
+
+
 def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], window: int = 600):
     """
     Always return a claim candidate once a citation exists.
@@ -152,10 +185,17 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     note = "Matched source was excluded because of author mismatch."
                 elif fallback_vr.get("status") in {"needs_review", "not_found"}:
                     note = f"Matched source was not trusted because verification status is {fallback_vr.get('status')}."
-
+            claim, claim_source = force_claim_candidate(
+                full_text=full_text,
+                citation=citation_text,
+                row=row,
+                window=600
+            )
+            claim = clean_extracted_claim_text(claim)
             out.append({
                 "citation": citation_text,
-                "claim": "No claim extracted",
+                "claim": claim,
+                "claim_source": claim_source,
                 "reference": matched_ref,
                 "source_title": source_label,
                 "doi": fallback_vr.get("doi", "") or "",
@@ -185,6 +225,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         for cit in citation_items:
             claim = cluster_claim
             claim_source = "cluster_context" if claim and len(claim) >= 10 else ""
+            claim = clean_extracted_claim_text(claim)
         
             # If cluster-level extraction fails, use the forced claim candidate fallback.
             if not claim or len(claim) < 10:
@@ -194,6 +235,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     row=row,
                     window=600
                 )
+                claim = clean_extracted_claim_text(claim)
                             
             source_title = vr.get("matched_title", "") or ""
             doi = vr.get("doi", "") or ""
