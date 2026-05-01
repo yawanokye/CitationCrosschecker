@@ -75,7 +75,7 @@ def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], wi
     author = authors[0] if authors else ""
 
     if full_text and author and year:
-        pattern = rf"{re.escape(author)}[^.?!;]{{0,80}}{re.escape(year[:4])}[a-z]?"
+        pattern = rf"{re.escape(author)}[^.?!;]{{0,180}}(?:\(\s*)?{re.escape(year[:4])}[a-z]?(?:\s*\))?"
         m = re.search(pattern, full_text, flags=re.I)
 
         if m:
@@ -107,7 +107,10 @@ def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], wi
                 return candidate, "fallback_sentence_window"
 
     # 4. Final forced output
-    return "Claim could not be extracted from the manuscript context.", "extraction_failed"
+    return (
+        f"Claim could not be extracted from the manuscript context. Citation searched: {citation}",
+        "extraction_failed"
+    )
 
 def suggest_alternative_sources_for_claim(
     claim: str,
@@ -222,15 +225,32 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
 
         if not matched_ref or not citation_text:
+            claim = ""
+            claim_source = "mapping_incomplete"
+        
+            if citation_text:
+                claim, claim_source = force_claim_candidate(
+                    full_text=full_text,
+                    citation=citation_text,
+                    row=row,
+                    window=600
+                )
+                claim = clean_extracted_claim_text(claim)
+        
+            if not claim or claim_source == "extraction_failed":
+                claim = "Claim not extracted because citation-reference mapping was incomplete."
+        
             out.append({
                 "citation": citation_text,
-                "claim": "No claim extracted",
+                "claim": claim,
+                "claim_source": claim_source,
                 "reference": matched_ref,
                 "source_title": "No source found",
                 "doi": "",
                 "support_score": 0,
-                "support_status": "no_evidence_found",
+                "support_status": "mapping_incomplete",
                 "evidence_used": "none",
+                "alternative_sources": [],
                 "title_overlap": 0,
                 "abstract_overlap": 0,
                 "keyword_overlap": 0,
@@ -238,7 +258,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "relation_overlap": 0,
                 "partial_support": False,
                 "concept_matches": [],
-                "score_explanation": "Citation-reference mapping was incomplete."
+                "score_explanation": "Citation-reference mapping was incomplete, so source-support checking could not be performed."
             })
             continue
 
