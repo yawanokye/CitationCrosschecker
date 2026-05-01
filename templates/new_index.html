@@ -136,7 +136,7 @@
         }
 
         .hero {
-            padding: 74px 0 46px;
+            padding: 74px 0 58px;
             text-align: center;
             position: relative;
             overflow: hidden;
@@ -264,160 +264,13 @@
             color: var(--slate);
             font-size: 14px;
             font-weight: 650;
+            margin-bottom: 24px;
         }
 
         .trust-item {
             display: inline-flex;
             align-items: center;
             gap: 7px;
-        }
-
-        .product-preview {
-            margin: 34px auto 0;
-            max-width: 1060px;
-            background: white;
-            border: 1px solid var(--line);
-            border-radius: 32px;
-            box-shadow: var(--shadow);
-            padding: 18px;
-            text-align: left;
-        }
-
-        .preview-top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 10px 12px 18px;
-            border-bottom: 1px solid var(--line);
-        }
-
-        .preview-dots {
-            display: flex;
-            gap: 7px;
-        }
-
-        .dot {
-            width: 11px;
-            height: 11px;
-            border-radius: 50%;
-            background: var(--line);
-        }
-
-        .dot:nth-child(1) { background: #ef4444; }
-        .dot:nth-child(2) { background: #f59e0b; }
-        .dot:nth-child(3) { background: #19b36b; }
-
-        .preview-label {
-            color: var(--slate);
-            font-size: 13px;
-            font-weight: 750;
-        }
-
-        .preview-body {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 18px;
-            padding-top: 18px;
-        }
-
-        .preview-panel {
-            border: 1px solid var(--line);
-            border-radius: 22px;
-            background: #fbfdff;
-            padding: 20px;
-        }
-
-        .preview-panel.dark {
-            background: linear-gradient(135deg, var(--navy), #1e3a5f);
-            color: white;
-            border-color: transparent;
-        }
-
-        .preview-panel h3 {
-            font-size: 16px;
-            margin-bottom: 14px;
-        }
-
-        .mini-upload {
-            border: 2px dashed #cbd5e1;
-            border-radius: 18px;
-            padding: 28px;
-            text-align: center;
-            background: white;
-        }
-
-        .mini-upload-icon {
-            font-size: 38px;
-            margin-bottom: 10px;
-        }
-
-        .mini-upload strong {
-            display: block;
-            margin-bottom: 5px;
-        }
-
-        .mini-upload span {
-            color: var(--slate);
-            font-size: 13px;
-        }
-
-        .score {
-            text-align: center;
-            padding: 18px 0;
-        }
-
-        .score-value {
-            font-size: 58px;
-            line-height: 1;
-            font-weight: 900;
-            letter-spacing: -2px;
-        }
-
-        .score-label {
-            margin-top: 8px;
-            opacity: 0.86;
-            font-weight: 750;
-        }
-
-        .score-badge {
-            display: inline-flex;
-            margin-top: 13px;
-            background: #60a5fa;
-            border-radius: 999px;
-            padding: 7px 18px;
-            font-weight: 800;
-        }
-
-        .mini-recommendations {
-            background: rgba(255, 255, 255, 0.12);
-            border-radius: 16px;
-            padding: 14px 16px;
-            margin-top: 14px;
-            font-size: 13px;
-        }
-
-        .section {
-            padding: 62px 0;
-        }
-
-        .section-heading {
-            text-align: center;
-            max-width: 760px;
-            margin: 0 auto 34px;
-        }
-
-        .section-heading h2 {
-            font-size: clamp(28px, 4vw, 44px);
-            line-height: 1.1;
-            font-weight: 900;
-            letter-spacing: -1px;
-            margin-bottom: 12px;
-        }
-
-        .section-heading p {
-            color: var(--slate);
-            font-size: 17px;
         }
 
         .stats-strip {
@@ -447,6 +300,29 @@
             color: var(--slate);
             font-size: 13px;
             font-weight: 700;
+        }
+
+        .section {
+            padding: 62px 0;
+        }
+
+        .section-heading {
+            text-align: center;
+            max-width: 760px;
+            margin: 0 auto 34px;
+        }
+
+        .section-heading h2 {
+            font-size: clamp(28px, 4vw, 44px);
+            line-height: 1.1;
+            font-weight: 900;
+            letter-spacing: -1px;
+            margin-bottom: 12px;
+        }
+
+        .section-heading p {
+            color: var(--slate);
+            font-size: 17px;
         }
 
         .features-grid {
@@ -691,7 +567,6 @@
                 display: none;
             }
 
-            .preview-body,
             .features-grid,
             .steps,
             .pricing-preview,
@@ -733,16 +608,11 @@
             }
 
             .hero {
-                padding: 52px 0 34px;
+                padding: 52px 0 42px;
             }
 
             .hero h1 {
                 letter-spacing: -1px;
-            }
-
-            .product-preview {
-                padding: 12px;
-                border-radius: 24px;
             }
 
             .section {
@@ -849,40 +719,6 @@
                     <div class="stat-card">
                         <div class="stat-number">{{ success_rate | default(0) }}%</div>
                         <div class="stat-label">Processing success rate</div>
-                    </div>
-                </div>
-
-                <div class="product-preview" aria-label="CiteIntegrity product preview">
-                    <div class="preview-top">
-                        <div class="preview-dots">
-                            <span class="dot"></span>
-                            <span class="dot"></span>
-                            <span class="dot"></span>
-                        </div>
-                        <div class="preview-label">CiteIntegrity workflow preview</div>
-                    </div>
-
-                    <div class="preview-body">
-                        <div class="preview-panel">
-                            <h3>Upload and analyse</h3>
-                            <div class="mini-upload">
-                                <div class="mini-upload-icon">📑</div>
-                                <strong>Upload manuscript</strong>
-                                <span>Analyse citations, references, matching, and submission readiness.</span>
-                            </div>
-                        </div>
-
-                        <div class="preview-panel dark">
-                            <h3>Academic Citation Integrity Index</h3>
-                            <div class="score">
-                                <div class="score-value">73.5</div>
-                                <div class="score-label">ACII Score</div>
-                                <div class="score-badge">Good</div>
-                            </div>
-                            <div class="mini-recommendations">
-                                Improve recency, verify more references, and review claim-source alignment.
-                            </div>
-                        </div>
                     </div>
                 </div>
 
