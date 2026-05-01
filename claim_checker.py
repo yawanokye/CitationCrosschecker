@@ -1,7 +1,7 @@
 # claim_checker.py
 
 from typing import List, Dict, Any
-from citation_suggester import extract_context, split_citation_cluster
+from citation_suggester import extract_context, split_citation_cluster, suggest_from_context
 from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by_doi
 
 def clean_extracted_claim_text(claim: str) -> str:
@@ -109,6 +109,77 @@ def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], wi
     # 4. Final forced output
     return "Claim could not be extracted from the manuscript context.", "extraction_failed"
 
+def suggest_alternative_sources_for_claim(
+    claim: str,
+    citation: str = "",
+    current_source_title: str = "",
+    top_k: int = 3
+):
+    """
+    Suggest alternative sources when the current matched source gives
+    no evidence, weak evidence, or is excluded.
+
+    This is review-only. It should not replace the citation automatically.
+    """
+    claim = (claim or "").strip()
+    citation = (citation or "").strip()
+    current_source_title = (current_source_title or "").strip().lower()
+
+    if len(claim) < 20:
+        return []
+
+    try:
+        candidates = suggest_from_context(
+            context=claim,
+            citation=citation,
+            top_k=top_k + 3
+        )
+    except Exception as e:
+        print(f"[ALT SOURCE ERROR] {citation}: {e}")
+        return []
+
+    suggestions = []
+    seen = set()
+
+    for cand in candidates:
+        title = (cand.get("title", "") or "").strip()
+        doi = (cand.get("doi", "") or "").strip()
+        year = cand.get("year", "")
+        authors = cand.get("authors", []) or []
+
+        if not title:
+            continue
+
+        title_key = title.lower()
+
+        # Avoid suggesting the same weak/current source again
+        if current_source_title and (
+            title_key == current_source_title
+            or title_key in current_source_title
+            or current_source_title in title_key
+        ):
+            continue
+
+        key = f"{title_key}|{year}|{doi.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        suggestions.append({
+            "title": title,
+            "year": year,
+            "authors": authors,
+            "doi": doi,
+            "relevance": cand.get("relevance", 0),
+            "suggestion_type": "alternative_source",
+            "reason": "Suggested because the current matched source provided weak or no evidence for the extracted claim."
+        })
+
+        if len(suggestions) >= top_k:
+            break
+
+    return suggestions
+
 def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Build claim-to-source support rows.
@@ -120,7 +191,9 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     - support_status field: support decision, including "no_evidence_found"
     """
     out = []
-
+    MAX_ALT_SOURCE_ROWS = 10
+    alt_source_count = 0
+    
     full_text = result.get("main_text", "") or result.get("full_text", "")
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
@@ -174,10 +247,10 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not vr:
             fallback_vr = all_verify_lookup.get(matched_ref, {})
             mismatch_flag = int(fallback_vr.get("author_mismatch_flag", 0))
-
+        
             source_label = "No source found"
             note = "No trusted source evidence was available."
-
+        
             if fallback_vr:
                 source_label = fallback_vr.get("matched_title", "") or "No source found"
                 if mismatch_flag == 1:
@@ -185,6 +258,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     note = "Matched source was excluded because of author mismatch."
                 elif fallback_vr.get("status") in {"needs_review", "not_found"}:
                     note = f"Matched source was not trusted because verification status is {fallback_vr.get('status')}."
+        
             claim, claim_source = force_claim_candidate(
                 full_text=full_text,
                 citation=citation_text,
@@ -192,6 +266,19 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 window=600
             )
             claim = clean_extracted_claim_text(claim)
+        
+            alternative_sources = []
+        
+            if alt_source_count < MAX_ALT_SOURCE_ROWS:
+                alternative_sources = suggest_alternative_sources_for_claim(
+                    claim=claim,
+                    citation=citation_text,
+                    current_source_title=source_label,
+                    top_k=3
+                )
+                if alternative_sources:
+                    alt_source_count += 1
+        
             out.append({
                 "citation": citation_text,
                 "claim": claim,
@@ -202,6 +289,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "support_score": 0,
                 "support_status": "no_evidence_found",
                 "evidence_used": "none",
+                "alternative_sources": alternative_sources,
                 "title_overlap": 0,
                 "abstract_overlap": 0,
                 "keyword_overlap": 0,
@@ -270,6 +358,13 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             source_concepts = []
 
             if not source_title and not source_abstract and not source_concepts:
+                alternative_sources = suggest_alternative_sources_for_claim(
+                    claim=claim,
+                    citation=cit,
+                    current_source_title=source_title,
+                    top_k=3
+                )
+            
                 out.append({
                     "citation": cit,
                     "claim": claim,
@@ -280,6 +375,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "support_score": 0,
                     "support_status": "no_evidence_found",
                     "evidence_used": "none",
+                    "alternative_sources": alternative_sources,
                     "title_overlap": 0,
                     "abstract_overlap": 0,
                     "keyword_overlap": 0,
@@ -299,7 +395,24 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 source_concepts=source_concepts,
                 source_metadata=metadata
             )
-
+            support_status = support.get("status", "insufficient_evidence")
+            support_score = support.get("score", 0)
+            
+            alternative_sources = []
+            
+            if (
+                support_status in {"no_evidence_found", "insufficient_evidence"}
+                or support_score < 35
+            ):
+                if alt_source_count < MAX_ALT_SOURCE_ROWS:
+                    alternative_sources = suggest_alternative_sources_for_claim(
+                        claim=claim,
+                        citation=cit,
+                        current_source_title=source_title,
+                        top_k=3
+                    )
+                    if alternative_sources:
+                        alt_source_count += 1
             out.append({
                 "citation": cit,
                 "claim": claim,
@@ -307,8 +420,9 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "reference": matched_ref,
                 "source_title": source_title,
                 "doi": doi,
-                "support_score": support.get("score", 0),
-                "support_status": support.get("status", "insufficient_evidence"),
+                "support_score": support_score,
+                "support_status": support_status,
+                "alternative_sources": alternative_sources,
                 "evidence_used": (
                     "title+abstract+concepts"
                     if source_concepts else
