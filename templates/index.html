@@ -1329,7 +1329,54 @@ document.querySelectorAll(".tab").forEach(tab => {
         if (pane) pane.classList.add("active");
     });
 });
+function isFinalResultReady(result) {
+    if (!result) return false;
 
+    const verificationRows =
+        result.online_verification &&
+        Array.isArray(result.online_verification.rows) &&
+        result.online_verification.rows.length > 0;
+
+    const hasRecovery =
+        result.recovery &&
+        (
+            Array.isArray(result.recovery.missing_recovery) ||
+            Array.isArray(result.recovery.verification_recovery)
+        );
+
+    const hasClaimSupport =
+        Array.isArray(result.claim_support);
+
+    return verificationRows && hasRecovery && hasClaimSupport;
+}
+
+function showFinalisingMessage() {
+    setStatus(
+        "Verification complete. Preparing Recovery and Claim Support results. Please wait...",
+        "warn"
+    );
+
+    const progressText = $("progressText");
+    const verifyProgress = $("verifyProgress");
+
+    if (verifyProgress) verifyProgress.style.display = "block";
+    if (progressText) {
+        progressText.textContent =
+            "Finalising results: populating Verification, Recovery, and Claim Support tables...";
+    }
+}
+
+function showFinalReadyMessage(result) {
+    const verifyRows = result?.online_verification?.rows?.length || 0;
+    const claimRows = result?.claim_support?.length || 0;
+
+    setStatus(
+        `Results ready. ${verifyRows} references verified and ${claimRows} claim-support rows populated.`,
+        "good"
+    );
+
+    showNotification("Verification, Recovery, and Claim Support results are ready.", "success");
+}
 // Status Polling
 async function fetchStatus() {
     if (!LAST_JOB_ID) return;
@@ -1366,22 +1413,27 @@ async function fetchStatus() {
         if (js.result && js.result.online_verification && js.result.online_verification.rows) {
             const rows = js.result.online_verification.rows.length;
         
-            // ✅ FORCE FINAL PROGRESS
-            updateProgress(rows, rows, "completed", `✅ Complete! ${rows}/${rows}`);
+            updateProgress(rows, rows, "processing", `✅ Verification complete: ${rows}/${rows}. Finalising tables...`);
         
-            setStatus(`Verification complete! ${rows} references verified.`, "good");
+            if (isFinalResultReady(js.result)) {
+                updateProgress(rows, rows, "completed", `✅ Complete! ${rows}/${rows}`);
+                renderAll(js.result);
+                showFinalReadyMessage(js.result);
+                stopPolling();
         
-            renderAll(js.result);
-            stopPolling();
+                VERIFICATION_IN_PROGRESS = false;
         
-            VERIFICATION_IN_PROGRESS = false;
+                const btnVerify = $("btnVerify");
+                if (btnVerify) btnVerify.disabled = false;
         
-            const btnVerify = $("btnVerify");
-            if (btnVerify) btnVerify.disabled = false;
+                return;
+            }
         
+            showFinalisingMessage();
+        
+            // Keep polling because Recovery and Claim Support are not populated yet.
             return;
         }
-        
         if (js.online) {
             const progress = js.online.progress ?? 0;
             const total = js.online.total ?? 0;
@@ -1432,9 +1484,14 @@ async function fetchStatus() {
                         console.log(`Job endpoint attempt ${attempts + 1}:`, jobData);
                         
                         if (jobData.result && jobData.result.online_verification && jobData.result.online_verification.rows && jobData.result.online_verification.rows.length > 0) {
-                            console.log(`✅ Found ${jobData.result.online_verification.rows.length} verification results via /job endpoint!`);
-                            finalData = jobData.result;
-                            break;
+                            console.log(`✅ Found ${jobData.result.online_verification.rows.length} verification results via /job endpoint.`);
+                        
+                            if (isFinalResultReady(jobData.result)) {
+                                finalData = jobData.result;
+                                break;
+                            }
+                        
+                            showFinalisingMessage();
                         }
                         
                         // Try /result endpoint as fallback
@@ -1444,15 +1501,25 @@ async function fetchStatus() {
                         console.log(`Result endpoint attempt ${attempts + 1}:`, resultData);
                         
                         if (resultData.data && resultData.data.online_verification && resultData.data.online_verification.rows && resultData.data.online_verification.rows.length > 0) {
-                            console.log(`✅ Found ${resultData.data.online_verification.rows.length} verification results via /result endpoint!`);
-                            finalData = resultData.data;
-                            break;
+                            console.log(`✅ Found ${resultData.data.online_verification.rows.length} verification results via /result endpoint.`);
+                        
+                            if (isFinalResultReady(resultData.data)) {
+                                finalData = resultData.data;
+                                break;
+                            }
+                        
+                            showFinalisingMessage();
                         }
                         
                         if (resultData.result && resultData.result.online_verification && resultData.result.online_verification.rows && resultData.result.online_verification.rows.length > 0) {
-                            console.log(`✅ Found ${resultData.result.online_verification.rows.length} verification results via /result endpoint!`);
-                            finalData = resultData.result;
-                            break;
+                            console.log(`✅ Found ${resultData.result.online_verification.rows.length} verification results via /result endpoint.`);
+                        
+                            if (isFinalResultReady(resultData.result)) {
+                                finalData = resultData.result;
+                                break;
+                            }
+                        
+                            showFinalisingMessage();
                         }
                         
                     } catch (e) {
@@ -1465,11 +1532,11 @@ async function fetchStatus() {
                     }
                 }
                 
-                if (finalData && finalData.online_verification && finalData.online_verification.rows) {
-                    console.log(`🎉 Rendering ${finalData.online_verification.rows.length} results...`);
+                if (finalData && isFinalResultReady(finalData)) {
+                    console.log(`🎉 Rendering complete results...`);
                     renderAll(finalData);
-                    setStatus(`Verification complete! ${finalData.online_verification.rows.length} references verified.`, "good");
-                    console.log("Results rendered successfully");
+                    showFinalReadyMessage(finalData);
+                    console.log("Full results rendered successfully");
                 } else {
                     console.error("Could not retrieve verification results after multiple attempts");
                     setStatus("Verification complete but results are still loading. Please wait a moment and refresh the page.", "warn");
