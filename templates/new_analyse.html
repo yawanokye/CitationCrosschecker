@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Manuscript | CiteIntegrity</title>
+    <meta name="description" content="Upload a thesis, dissertation, or manuscript for citation integrity analysis.">
+
+    <style>
+        :root {
+            --navy: #0f172a;
+            --navy-soft: #1e293b;
+            --blue: #2563eb;
+            --blue-soft: #e8f0fe;
+            --green: #19b36b;
+            --green-dark: #13855a;
+            --green-soft: #ecfdf5;
+            --amber: #f59e0b;
+            --red: #ef4444;
+            --slate: #64748b;
+            --muted: #94a3b8;
+            --line: #e2e8f0;
+            --soft-bg: #f8fafc;
+            --white: #ffffff;
+            --shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+            --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: var(--soft-bg);
+            color: var(--navy);
+            line-height: 1.6;
+            font-size: 15px;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .site-header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(255, 255, 255, 0.94);
+            backdrop-filter: blur(14px);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .header-inner {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: max-content;
+        }
+
+        .brand-mark {
+            width: 56px;
+            height: 38px;
+            display: block;
+        }
+
+        .brand-name {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .brand-badge {
+            background: var(--blue-soft);
+            color: var(--blue);
+            padding: 5px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .nav {
+            display: flex;
+            align-items: center;
+            gap: 22px;
+            color: var(--slate);
+            font-size: 14px;
+            font-weight: 650;
+        }
+
+        .nav a:hover {
+            color: var(--navy);
+        }
+
+        .nav-cta {
+            background: var(--navy);
+            color: white !important;
+            padding: 10px 18px;
+            border-radius: 999px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .mobile-toggle {
+            display: none;
+            border: 1px solid var(--line);
+            background: white;
+            border-radius: 12px;
+            padding: 8px 11px;
+            cursor: pointer;
+            font-size: 18px;
+        }
+
+        .container {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .page-hero {
+            padding: 54px 0 26px;
+            text-align: center;
+        }
+
+        .preview-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            color: #c2410c;
+            border-radius: 999px;
+            padding: 8px 14px;
+            font-weight: 800;
+            font-size: 13px;
+            margin-bottom: 14px;
+        }
+
+        .page-hero h1 {
+            font-size: clamp(34px, 5vw, 56px);
+            line-height: 1.08;
+            font-weight: 900;
+            letter-spacing: -1.5px;
+            margin-bottom: 14px;
+        }
+
+        .page-hero p {
+            max-width: 760px;
+            margin: 0 auto;
+            color: #475569;
+            font-size: 18px;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1.45fr 0.75fr;
+            gap: 24px;
+            align-items: start;
+            padding: 28px 0 60px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 28px;
+            box-shadow: var(--shadow-soft);
+            padding: 26px;
+        }
+
+        .upload-card {
+            min-height: 460px;
+        }
+
+        .card-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+
+        .card-title h2 {
+            font-size: 22px;
+            font-weight: 900;
+            letter-spacing: -0.4px;
+        }
+
+        .small-pill {
+            background: var(--green-soft);
+            color: var(--green-dark);
+            padding: 6px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+
+        .file-area {
+            border: 2px dashed #cbd5e1;
+            border-radius: 24px;
+            padding: 42px 22px;
+            text-align: center;
+            background: #fbfdff;
+            cursor: pointer;
+            transition: 0.25s ease;
+        }
+
+        .file-area:hover {
+            border-color: var(--green);
+            background: #f0fdf4;
+            transform: translateY(-1px);
+        }
+
+        .file-area.drag-over {
+            border-color: var(--green);
+            background: #ecfdf5;
+            transform: scale(1.01);
+        }
+
+        .file-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        .file-main {
+            font-size: 17px;
+            font-weight: 850;
+            margin-bottom: 6px;
+        }
+
+        .file-sub {
+            color: var(--slate);
+            font-size: 13px;
+            max-width: 620px;
+            margin: 0 auto;
+        }
+
+        .file-name {
+            margin-top: 14px;
+            color: var(--green-dark);
+            font-size: 14px;
+            font-weight: 850;
+            word-break: break-word;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .helper-box {
+            margin-top: 16px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            border-radius: 18px;
+            padding: 14px 16px;
+            color: var(--slate);
+            font-size: 13px;
+        }
+
+        .options-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-top: 18px;
+        }
+
+        .option-card {
+            border: 1px solid var(--line);
+            background: #fbfdff;
+            border-radius: 18px;
+            padding: 14px;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            cursor: pointer;
+        }
+
+        .option-card input {
+            margin-top: 4px;
+            accent-color: var(--green);
+        }
+
+        .option-card strong {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 3px;
+        }
+
+        .option-card span {
+            display: block;
+            color: var(--slate);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .progress-panel {
+            display: grid;
+            gap: 12px;
+            margin-top: 18px;
+        }
+
+        .step {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            border-radius: 16px;
+            padding: 12px 14px;
+            color: var(--slate);
+            font-weight: 750;
+            font-size: 13px;
+        }
+
+        .step .circle {
+            width: 26px;
+            height: 26px;
+            border-radius: 999px;
+            background: #e2e8f0;
+            color: #475569;
+            display: grid;
+            place-items: center;
+            font-size: 12px;
+            font-weight: 900;
+        }
+
+        .step.active {
+            color: var(--blue);
+            border-color: #bfdbfe;
+            background: #eff6ff;
+        }
+
+        .step.active .circle {
+            background: var(--blue);
+            color: white;
+        }
+
+        .step.done {
+            color: var(--green-dark);
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+        }
+
+        .step.done .circle {
+            background: var(--green);
+            color: white;
+        }
+
+        .button-row {
+            display: grid;
+            gap: 12px;
+        }
+
+        .btn {
+            width: 100%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            padding: 14px 22px;
+            border-radius: 999px;
+            font-weight: 850;
+            font-size: 15px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: 0.2s ease;
+            font-family: inherit;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--navy), #1e3a5f);
+            color: white;
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.20);
+        }
+
+        .btn-secondary {
+            background: white;
+            color: var(--navy);
+            border-color: var(--line);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .btn-green {
+            background: linear-gradient(135deg, var(--green), var(--green-dark));
+            color: white;
+            box-shadow: 0 14px 30px rgba(25, 179, 107, 0.22);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .status-box {
+            margin-top: 16px;
+            border-radius: 18px;
+            padding: 14px 16px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+        }
+
+        .status {
+            color: var(--slate);
+            font-weight: 750;
+            font-size: 13px;
+        }
+
+        .status.good { color: var(--green-dark); }
+        .status.warn { color: #c2410c; }
+        .status.bad { color: var(--red); }
+        .status.info { color: var(--blue); }
+
+        .progress-wrap {
+            display: none;
+            margin-top: 14px;
+        }
+
+        .progress-track {
+            width: 100%;
+            height: 9px;
+            background: #e2e8f0;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, var(--green), var(--green-dark));
+            border-radius: 999px;
+            transition: width 0.25s ease;
+        }
+
+        .progress-text {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--slate);
+            font-weight: 750;
+        }
+
+        .queue-box {
+            margin-top: 16px;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1d4ed8;
+            border-radius: 18px;
+            padding: 13px 15px;
+            font-size: 13px;
+            font-weight: 750;
+        }
+
+        .feature-list {
+            display: grid;
+            gap: 14px;
+            margin-top: 10px;
+        }
+
+        .feature-item {
+            display: flex;
+            gap: 12px;
+            padding: 14px;
+            border-radius: 18px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+        }
+
+        .feature-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 14px;
+            background: var(--green-soft);
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+            font-size: 19px;
+        }
+
+        .feature-item strong {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 2px;
+        }
+
+        .feature-item span {
+            color: var(--slate);
+            font-size: 12.5px;
+            line-height: 1.4;
+        }
+
+        .trust-badge {
+            margin-top: 16px;
+            padding: 14px;
+            border-radius: 18px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            color: var(--slate);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .footer {
+            border-top: 1px solid var(--line);
+            background: white;
+            padding: 30px 24px;
+            color: var(--slate);
+            text-align: center;
+            font-size: 13px;
+        }
+
+        .footer a {
+            color: var(--green-dark);
+            font-weight: 750;
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 18px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+
+        @media (max-width: 980px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+
+            .brand-badge {
+                display: none;
+            }
+
+            .options-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .header-inner {
+                align-items: flex-start;
+                flex-wrap: wrap;
+            }
+
+            .mobile-toggle {
+                display: block;
+            }
+
+            .nav {
+                display: none;
+                width: 100%;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+                padding-top: 12px;
+            }
+
+            .nav.open {
+                display: flex;
+            }
+
+            .page-hero {
+                padding: 42px 0 18px;
+            }
+
+            .card {
+                padding: 20px;
+                border-radius: 22px;
+            }
+
+            .file-area {
+                padding: 32px 18px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<header class="site-header">
+    <div class="header-inner">
+        <a class="brand" href="/new" aria-label="CiteIntegrity home">
+            <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
+                <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
+                <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="brand-name">CiteIntegrity</span>
+            <span class="brand-badge">Manuscript and Thesis Readiness Platform</span>
+        </a>
+
+        <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
+
+        <nav class="nav" id="mainNav">
+            <a href="/new">Home</a>
+            <a href="/new#features">Features</a>
+            <a href="/new#pricing">Pricing</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/" class="nav-cta">Old Interface</a>
+        </nav>
+    </div>
+</header>
+
+<main>
+    <section class="page-hero">
+        <div class="container">
+            <div class="preview-badge">New upload page preview. Old interface remains active.</div>
+            <h1>Upload your manuscript for citation integrity analysis</h1>
+            <p>
+                Analyse citation-reference matching, missing citations, uncited references, ACII readiness, and optional online verification.
+            </p>
+        </div>
+    </section>
+
+    <section class="container">
+        <div class="layout">
+
+            <div class="card upload-card">
+                <div class="card-title">
+                    <h2>Document upload</h2>
+                    <span class="small-pill">DOCX recommended</span>
+                </div>
+
+                <div class="file-area" id="fileArea">
+                    <div class="file-icon">📑</div>
+                    <div class="file-main">Drag and drop your manuscript here</div>
+                    <div class="file-sub">
+                        Upload a thesis, dissertation, project report, or journal manuscript in DOCX format.
+                    </div>
+                    <div class="file-name" id="fileName"></div>
+                    <input type="file" id="file" accept=".docx">
+                </div>
+
+                <div class="helper-box">
+                    <strong>PDF users:</strong> Open the PDF in Microsoft Word, then save it as DOCX before uploading. DOCX gives better citation and reference extraction.
+                </div>
+
+                <div class="options-grid">
+                    <label class="option-card">
+                        <input type="checkbox" id="autofix" checked>
+                        <span>
+                            <strong>Enable suggestions</strong>
+                            <span>Generate citation and reference improvement suggestions where possible.</span>
+                        </span>
+                    </label>
+
+                    <label class="option-card">
+                        <input type="checkbox" id="onlineVerify">
+                        <span>
+                            <strong>Auto-start online verification</strong>
+                            <span>Start verification after analysis and open the results dashboard with verification mode.</span>
+                        </span>
+                    </label>
+                </div>
+
+                <div class="progress-panel">
+                    <div class="step" id="stepUpload"><span class="circle">1</span> Document selected</div>
+                    <div class="step" id="stepQueue"><span class="circle">2</span> Document queued</div>
+                    <div class="step" id="stepProcess"><span class="circle">3</span> Citation analysis running</div>
+                    <div class="step" id="stepDone"><span class="circle">4</span> Results ready</div>
+                </div>
+            </div>
+
+            <aside>
+                <div class="card">
+                    <div class="card-title">
+                        <h2>Run analysis</h2>
+                    </div>
+
+                    <div class="button-row">
+                        <button class="btn btn-primary" id="btnCheck" disabled>📊 Analyse Document</button>
+                        <a class="btn btn-secondary" href="/new">Back to Landing Page</a>
+                    </div>
+
+                    <div class="status-box">
+                        <div class="status" id="status">System ready. Select a DOCX file to begin.</div>
+
+                        <div class="progress-wrap" id="progressWrap">
+                            <div class="progress-track">
+                                <div class="progress-bar" id="progressBar"></div>
+                            </div>
+                            <div class="progress-text" id="progressText">Waiting to begin...</div>
+                        </div>
+                    </div>
+
+                    <div class="queue-box" id="queueStatus">
+                        Checking system availability...
+                    </div>
+
+                    <div class="trust-badge">
+                        🔒 Your document is processed securely. Do not store manuscripts permanently unless your Privacy Policy states a specific retention period.
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-title">
+                        <h2>What this checks</h2>
+                    </div>
+
+                    <div class="feature-list">
+                        <div class="feature-item">
+                            <div class="feature-icon">🔎</div>
+                            <div>
+                                <strong>Missing citations</strong>
+                                <span>Find in-text citations that do not appear in the reference list.</span>
+                            </div>
+                        </div>
+
+                        <div class="feature-item">
+                            <div class="feature-icon">📚</div>
+                            <div>
+                                <strong>Uncited references</strong>
+                                <span>Identify listed references that are not cited in the manuscript body.</span>
+                            </div>
+                        </div>
+
+                        <div class="feature-item">
+                            <div class="feature-icon">📈</div>
+                            <div>
+                                <strong>ACII readiness</strong>
+                                <span>Prepare data for citation integrity scoring and dashboard review.</span>
+                            </div>
+                        </div>
+
+                        <div class="feature-item">
+                            <div class="feature-icon">🌐</div>
+                            <div>
+                                <strong>Online verification</strong>
+                                <span>Optionally verify references after document analysis is complete.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+        </div>
+    </section>
+</main>
+
+<footer class="footer">
+    <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
+    <div class="footer-links">
+        <a href="/new">New Landing Page</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/">Old Interface</a>
+    </div>
+</footer>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    "use strict";
+
+    const RESULT_ROUTE_PREFIX = "/new/results";
+    const POLL_INTERVAL = 2000;
+    const MAX_POLL_ATTEMPTS = 900;
+
+    const $ = (id) => document.getElementById(id);
+
+    const mobileToggle = $("mobileToggle");
+    const mainNav = $("mainNav");
+    const fileArea = $("fileArea");
+    const fileInput = $("file");
+    const fileName = $("fileName");
+    const btnCheck = $("btnCheck");
+    const statusEl = $("status");
+    const queueStatus = $("queueStatus");
+    const progressWrap = $("progressWrap");
+    const progressBar = $("progressBar");
+    const progressText = $("progressText");
+
+    let pollAttempts = 0;
+    let currentJobId = null;
+
+    if (mobileToggle && mainNav) {
+        mobileToggle.addEventListener("click", function () {
+            mainNav.classList.toggle("open");
+        });
+    }
+
+    function setStatus(message, tone = "") {
+        if (!statusEl) return;
+        statusEl.className = `status ${tone}`;
+        statusEl.textContent = message;
+        console.log("[Status]", message);
+    }
+
+    function setStep(stepId, state) {
+        const step = $(stepId);
+        if (!step) return;
+        step.classList.remove("active", "done");
+        if (state) step.classList.add(state);
+    }
+
+    function resetSteps() {
+        ["stepUpload", "stepQueue", "stepProcess", "stepDone"].forEach(id => {
+            const step = $(id);
+            if (step) step.classList.remove("active", "done");
+        });
+    }
+
+    function updateProgress(percent, message) {
+        if (progressWrap) progressWrap.style.display = "block";
+        if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        if (progressText) progressText.textContent = message || "";
+    }
+
+    function validateFile(file) {
+        if (!file) {
+            return { valid: false, message: "Please select a DOCX file." };
+        }
+
+        if (!file.name.toLowerCase().endsWith(".docx")) {
+            return { valid: false, message: "Only DOCX files are accepted." };
+        }
+
+        const maxSizeMB = 35;
+        const sizeMB = file.size / (1024 * 1024);
+
+        if (sizeMB > maxSizeMB) {
+            return { valid: false, message: `File is too large. Maximum allowed size is ${maxSizeMB}MB.` };
+        }
+
+        return { valid: true, message: "DOCX file selected. Ready to analyse." };
+    }
+
+    function handleFileSelected() {
+        const file = fileInput.files[0];
+        const validation = validateFile(file);
+
+        if (!validation.valid) {
+            fileName.textContent = validation.message;
+            fileName.style.color = "#ef4444";
+            btnCheck.disabled = true;
+            setStatus(validation.message, "warn");
+            setStep("stepUpload", "");
+            return;
+        }
+
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+        fileName.textContent = `✅ ${file.name} (${sizeMB} MB)`;
+        fileName.style.color = "#13855a";
+        btnCheck.disabled = false;
+
+        resetSteps();
+        setStep("stepUpload", "done");
+        setStatus(validation.message, "good");
+    }
+
+    if (fileArea && fileInput) {
+        fileArea.addEventListener("click", function () {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener("change", handleFileSelected);
+
+        fileArea.addEventListener("dragover", function (event) {
+            event.preventDefault();
+            fileArea.classList.add("drag-over");
+        });
+
+        fileArea.addEventListener("dragleave", function (event) {
+            event.preventDefault();
+            fileArea.classList.remove("drag-over");
+        });
+
+        fileArea.addEventListener("drop", function (event) {
+            event.preventDefault();
+            fileArea.classList.remove("drag-over");
+
+            const files = event.dataTransfer.files;
+            if (!files || !files.length) return;
+
+            fileInput.files = files;
+            handleFileSelected();
+        });
+    }
+
+    async function updateQueueStatus() {
+        try {
+            const response = await fetch("/queue/status");
+            const data = await response.json();
+
+            if (!queueStatus) return;
+
+            const readyText = data.server_busy ? "Server is busy" : "Server is ready";
+            const queueSize = data.queue_size ?? data.redis_queue_length ?? 0;
+            const pending = data.pending_jobs ?? 0;
+            const processing = data.processing_jobs ?? 0;
+
+            queueStatus.textContent = `${readyText}. Queue: ${queueSize}. Pending: ${pending}. Processing: ${processing}.`;
+        } catch (error) {
+            if (queueStatus) {
+                queueStatus.textContent = "System availability could not be checked, but you may still try uploading.";
+            }
+        }
+    }
+
+    async function runAnalysis() {
+        const file = fileInput.files[0];
+        const validation = validateFile(file);
+
+        if (!validation.valid) {
+            setStatus(validation.message, "warn");
+            return;
+        }
+
+        btnCheck.disabled = true;
+        pollAttempts = 0;
+        currentJobId = null;
+
+        resetSteps();
+        setStep("stepUpload", "done");
+        setStep("stepQueue", "active");
+
+        updateProgress(8, "Uploading document...");
+        setStatus("Uploading document...", "info");
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("style", "apa");
+        formData.append("enable_autofix", $("autofix")?.checked ? "true" : "false");
+        formData.append("enable_online_verification", $("onlineVerify")?.checked ? "true" : "false");
+
+        try {
+            const response = await fetch("/verify", {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await response.json().catch(() => ({}));
+
+            if (response.status === 503) {
+                setStatus(data.message || "Server is busy. Please wait and try again.", "warn");
+                updateProgress(0, "Server busy. Try again shortly.");
+                btnCheck.disabled = false;
+                setStep("stepQueue", "");
+                return;
+            }
+
+            if (!response.ok) {
+                throw new Error(data.message || data.error || "Upload failed.");
+            }
+
+            if (!data.job_id) {
+                throw new Error(data.message || data.error || "No job ID returned.");
+            }
+
+            currentJobId = data.job_id;
+
+            setStep("stepQueue", "done");
+            setStep("stepProcess", "active");
+            updateProgress(22, "Document queued. Waiting for analysis...");
+            setStatus("Document queued. Waiting for analysis result...", "info");
+
+            pollAnalysisResult(currentJobId);
+
+        } catch (error) {
+            console.error(error);
+            setStatus("Error: " + error.message, "bad");
+            updateProgress(0, "Upload failed.");
+            btnCheck.disabled = false;
+            setStep("stepQueue", "");
+        }
+    }
+
+    async function pollAnalysisResult(jobId) {
+        pollAttempts += 1;
+
+        if (pollAttempts > MAX_POLL_ATTEMPTS) {
+            setStatus("Analysis timed out. Please try again.", "bad");
+            updateProgress(0, "Analysis timed out.");
+            btnCheck.disabled = false;
+            return;
+        }
+
+        try {
+            const response = await fetch(`/result/${encodeURIComponent(jobId)}`);
+            const data = await response.json();
+
+            console.log("Analysis poll:", data);
+
+            const status = data.status || "processing";
+
+            if (status === "completed") {
+                const result = data.data || data.result;
+
+                if (!result) {
+                    throw new Error("Completed job has no result data.");
+                }
+
+                setStep("stepProcess", "done");
+                setStep("stepDone", "done");
+
+                updateProgress(100, "Analysis complete. Opening results dashboard...");
+                setStatus("Analysis complete. Opening results dashboard...", "good");
+
+                const autoVerify = $("onlineVerify")?.checked;
+                const suffix = autoVerify ? "?verify=1" : "";
+
+                setTimeout(function () {
+                    window.location.href = `${RESULT_ROUTE_PREFIX}/${encodeURIComponent(jobId)}${suffix}`;
+                }, 900);
+
+                return;
+            }
+
+            if (status === "failed" || status === "error") {
+                throw new Error(data.error || data.message || "Analysis failed.");
+            }
+
+            if (status === "queued") {
+                setStep("stepQueue", "active");
+                updateProgress(32, "Waiting in queue...");
+                setStatus("Waiting in queue...", "info");
+            } else {
+                setStep("stepQueue", "done");
+                setStep("stepProcess", "active");
+
+                const percent = Math.min(90, 40 + pollAttempts);
+                updateProgress(percent, "Processing document. Extracting citations and references...");
+                setStatus("Processing document...", "info");
+            }
+
+            setTimeout(function () {
+                pollAnalysisResult(jobId);
+            }, POLL_INTERVAL);
+
+        } catch (error) {
+            console.error(error);
+            setStatus("Error checking result: " + error.message, "bad");
+            updateProgress(0, "Could not check result.");
+            btnCheck.disabled = false;
+        }
+    }
+
+    if (btnCheck) {
+        btnCheck.addEventListener("click", runAnalysis);
+    }
+
+    updateQueueStatus();
+    setInterval(updateQueueStatus, 8000);
+
+    console.log("[CiteIntegrity] New analyse page ready");
+});
+</script>
+
+</body>
+</html>
