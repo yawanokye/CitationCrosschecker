@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CiteIntegrity | Thesis and Manuscript Citation Integrity Platform</title>
+    <meta name="description" content="Analyse, verify, and improve citations before thesis, dissertation, or manuscript submission. Detect missing citations, uncited references, weak source support, and citation integrity issues.">
+
+    <style>
+        :root {
+            --navy: #0f172a;
+            --navy-soft: #1e293b;
+            --blue: #2563eb;
+            --blue-soft: #e8f0fe;
+            --green: #19b36b;
+            --green-dark: #13855a;
+            --green-soft: #ecfdf5;
+            --amber: #f59e0b;
+            --red: #ef4444;
+            --slate: #64748b;
+            --muted: #94a3b8;
+            --line: #e2e8f0;
+            --soft-bg: #f8fafc;
+            --white: #ffffff;
+            --shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+            --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+            --radius-lg: 26px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: var(--soft-bg);
+            color: var(--navy);
+            line-height: 1.6;
+            font-size: 15px;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .site-header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(255, 255, 255, 0.94);
+            backdrop-filter: blur(14px);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .header-inner {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: max-content;
+        }
+
+        .brand-mark {
+            width: 56px;
+            height: 38px;
+            display: block;
+        }
+
+        .brand-name {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .brand-badge {
+            background: var(--blue-soft);
+            color: var(--blue);
+            padding: 5px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .nav {
+            display: flex;
+            align-items: center;
+            gap: 22px;
+            color: var(--slate);
+            font-size: 14px;
+            font-weight: 650;
+        }
+
+        .nav a:hover {
+            color: var(--navy);
+        }
+
+        .nav-cta {
+            background: var(--navy);
+            color: var(--white) !important;
+            padding: 10px 18px;
+            border-radius: 999px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .mobile-toggle {
+            display: none;
+            border: 1px solid var(--line);
+            background: white;
+            border-radius: 12px;
+            padding: 8px 11px;
+            cursor: pointer;
+            font-size: 18px;
+        }
+
+        .container {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .hero {
+            padding: 74px 0 46px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(circle at 20% 20%, rgba(37, 99, 235, 0.10), transparent 28%),
+                radial-gradient(circle at 80% 20%, rgba(25, 179, 107, 0.10), transparent 28%);
+            pointer-events: none;
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 940px;
+            margin: 0 auto;
+        }
+
+        .preview-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            color: #c2410c;
+            border-radius: 999px;
+            padding: 8px 14px;
+            font-weight: 800;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 8px 14px;
+            color: var(--blue);
+            font-weight: 750;
+            font-size: 13px;
+            margin-bottom: 22px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .hero h1 {
+            font-size: clamp(40px, 6vw, 72px);
+            line-height: 1.04;
+            font-weight: 900;
+            letter-spacing: -2px;
+            color: var(--navy);
+            margin-bottom: 20px;
+        }
+
+        .hero .highlight {
+            background: linear-gradient(135deg, var(--blue), var(--green));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        .hero-subtitle {
+            max-width: 820px;
+            margin: 0 auto 28px;
+            color: #475569;
+            font-size: clamp(17px, 2vw, 21px);
+        }
+
+        .hero-actions {
+            display: flex;
+            justify-content: center;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-bottom: 28px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            padding: 14px 24px;
+            border-radius: 999px;
+            font-weight: 800;
+            font-size: 15px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--navy), #1e3a5f);
+            color: white;
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.20);
+        }
+
+        .btn-secondary {
+            background: white;
+            color: var(--navy);
+            border-color: var(--line);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .btn-green {
+            background: linear-gradient(135deg, var(--green), var(--green-dark));
+            color: white;
+            box-shadow: 0 14px 30px rgba(25, 179, 107, 0.22);
+        }
+
+        .trust-row {
+            display: flex;
+            justify-content: center;
+            gap: 18px;
+            flex-wrap: wrap;
+            color: var(--slate);
+            font-size: 14px;
+            font-weight: 650;
+        }
+
+        .trust-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+        }
+
+        .product-preview {
+            margin: 34px auto 0;
+            max-width: 1060px;
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 32px;
+            box-shadow: var(--shadow);
+            padding: 18px;
+            text-align: left;
+        }
+
+        .preview-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 12px 18px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .preview-dots {
+            display: flex;
+            gap: 7px;
+        }
+
+        .dot {
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            background: var(--line);
+        }
+
+        .dot:nth-child(1) { background: #ef4444; }
+        .dot:nth-child(2) { background: #f59e0b; }
+        .dot:nth-child(3) { background: #19b36b; }
+
+        .preview-label {
+            color: var(--slate);
+            font-size: 13px;
+            font-weight: 750;
+        }
+
+        .preview-body {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 18px;
+            padding-top: 18px;
+        }
+
+        .preview-panel {
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            background: #fbfdff;
+            padding: 20px;
+        }
+
+        .preview-panel.dark {
+            background: linear-gradient(135deg, var(--navy), #1e3a5f);
+            color: white;
+            border-color: transparent;
+        }
+
+        .preview-panel h3 {
+            font-size: 16px;
+            margin-bottom: 14px;
+        }
+
+        .mini-upload {
+            border: 2px dashed #cbd5e1;
+            border-radius: 18px;
+            padding: 28px;
+            text-align: center;
+            background: white;
+        }
+
+        .mini-upload-icon {
+            font-size: 38px;
+            margin-bottom: 10px;
+        }
+
+        .mini-upload strong {
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .mini-upload span {
+            color: var(--slate);
+            font-size: 13px;
+        }
+
+        .score {
+            text-align: center;
+            padding: 18px 0;
+        }
+
+        .score-value {
+            font-size: 58px;
+            line-height: 1;
+            font-weight: 900;
+            letter-spacing: -2px;
+        }
+
+        .score-label {
+            margin-top: 8px;
+            opacity: 0.86;
+            font-weight: 750;
+        }
+
+        .score-badge {
+            display: inline-flex;
+            margin-top: 13px;
+            background: #60a5fa;
+            border-radius: 999px;
+            padding: 7px 18px;
+            font-weight: 800;
+        }
+
+        .mini-recommendations {
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 16px;
+            padding: 14px 16px;
+            margin-top: 14px;
+            font-size: 13px;
+        }
+
+        .section {
+            padding: 62px 0;
+        }
+
+        .section-heading {
+            text-align: center;
+            max-width: 760px;
+            margin: 0 auto 34px;
+        }
+
+        .section-heading h2 {
+            font-size: clamp(28px, 4vw, 44px);
+            line-height: 1.1;
+            font-weight: 900;
+            letter-spacing: -1px;
+            margin-bottom: 12px;
+        }
+
+        .section-heading p {
+            color: var(--slate);
+            font-size: 17px;
+        }
+
+        .stats-strip {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin: 20px auto 0;
+            max-width: 940px;
+        }
+
+        .stat-card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            padding: 20px;
+            box-shadow: var(--shadow-soft);
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 30px;
+            font-weight: 900;
+            color: var(--navy);
+        }
+
+        .stat-label {
+            color: var(--slate);
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+        }
+
+        .feature-card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            padding: 26px;
+            box-shadow: var(--shadow-soft);
+            min-height: 220px;
+        }
+
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 16px;
+            display: grid;
+            place-items: center;
+            background: var(--green-soft);
+            color: var(--green-dark);
+            font-size: 24px;
+            margin-bottom: 18px;
+        }
+
+        .feature-card h3 {
+            font-size: 19px;
+            font-weight: 850;
+            margin-bottom: 9px;
+        }
+
+        .feature-card p {
+            color: var(--slate);
+            font-size: 14.5px;
+        }
+
+        .workflow {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 34px;
+            padding: 34px;
+            box-shadow: var(--shadow);
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 18px;
+        }
+
+        .step {
+            background: #f8fafc;
+            border-radius: 24px;
+            padding: 24px;
+            border: 1px solid #eef2f6;
+        }
+
+        .step-number {
+            width: 36px;
+            height: 36px;
+            border-radius: 999px;
+            background: var(--navy);
+            color: white;
+            display: grid;
+            place-items: center;
+            font-weight: 900;
+            margin-bottom: 16px;
+        }
+
+        .step h3 {
+            font-size: 17px;
+            margin-bottom: 8px;
+        }
+
+        .step p {
+            color: var(--slate);
+            font-size: 14px;
+        }
+
+        .pricing-preview {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+        }
+
+        .price-card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 28px;
+            padding: 28px;
+            box-shadow: var(--shadow-soft);
+            position: relative;
+        }
+
+        .price-card.featured {
+            border: 2px solid var(--blue);
+            transform: translateY(-6px);
+        }
+
+        .popular {
+            position: absolute;
+            top: -14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--blue);
+            color: white;
+            padding: 6px 16px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 850;
+        }
+
+        .price-card h3 {
+            font-size: 22px;
+            margin-bottom: 6px;
+        }
+
+        .price-desc {
+            color: var(--slate);
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .price {
+            font-size: 36px;
+            font-weight: 900;
+            margin-bottom: 18px;
+        }
+
+        .price span {
+            font-size: 14px;
+            color: var(--slate);
+            font-weight: 700;
+        }
+
+        .price-list {
+            list-style: none;
+            display: grid;
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+
+        .price-list li {
+            display: flex;
+            align-items: flex-start;
+            gap: 9px;
+            color: var(--navy-soft);
+            font-size: 14px;
+        }
+
+        .price-list li::before {
+            content: "✓";
+            color: var(--green);
+            font-weight: 900;
+        }
+
+        .cta-band {
+            background: linear-gradient(135deg, var(--navy), #1e3a5f);
+            color: white;
+            border-radius: 36px;
+            padding: 46px;
+            display: grid;
+            grid-template-columns: 1.4fr 0.6fr;
+            gap: 24px;
+            align-items: center;
+            box-shadow: var(--shadow);
+        }
+
+        .cta-band h2 {
+            font-size: clamp(28px, 4vw, 42px);
+            line-height: 1.1;
+            margin-bottom: 12px;
+        }
+
+        .cta-band p {
+            color: rgba(255, 255, 255, 0.82);
+            font-size: 16px;
+        }
+
+        .cta-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .faq {
+            max-width: 860px;
+            margin: 0 auto;
+            display: grid;
+            gap: 14px;
+        }
+
+        details {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 18px 20px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: 850;
+            color: var(--navy);
+        }
+
+        details p {
+            color: var(--slate);
+            margin-top: 10px;
+            font-size: 14.5px;
+        }
+
+        .footer {
+            border-top: 1px solid var(--line);
+            background: white;
+            padding: 30px 24px;
+            color: var(--slate);
+            text-align: center;
+            font-size: 13px;
+        }
+
+        .footer a {
+            color: var(--green-dark);
+            font-weight: 750;
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 18px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+
+        @media (max-width: 980px) {
+            .brand-badge {
+                display: none;
+            }
+
+            .preview-body,
+            .features-grid,
+            .steps,
+            .pricing-preview,
+            .cta-band,
+            .stats-strip {
+                grid-template-columns: 1fr;
+            }
+
+            .price-card.featured {
+                transform: none;
+            }
+
+            .cta-actions {
+                justify-content: flex-start;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .header-inner {
+                align-items: flex-start;
+                flex-wrap: wrap;
+            }
+
+            .mobile-toggle {
+                display: block;
+            }
+
+            .nav {
+                display: none;
+                width: 100%;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+                padding-top: 12px;
+            }
+
+            .nav.open {
+                display: flex;
+            }
+
+            .hero {
+                padding: 52px 0 34px;
+            }
+
+            .hero h1 {
+                letter-spacing: -1px;
+            }
+
+            .product-preview {
+                padding: 12px;
+                border-radius: 24px;
+            }
+
+            .section {
+                padding: 46px 0;
+            }
+
+            .workflow,
+            .cta-band {
+                padding: 26px;
+                border-radius: 26px;
+            }
+
+            .btn {
+                width: 100%;
+            }
+
+            .hero-actions {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<header class="site-header">
+    <div class="header-inner">
+        <a class="brand" href="/new" aria-label="CiteIntegrity home">
+            <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
+                <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
+                <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="brand-name">CiteIntegrity</span>
+            <span class="brand-badge">Manuscript and Thesis Readiness Platform</span>
+        </a>
+
+        <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
+
+        <nav class="nav" id="mainNav">
+            <a href="#features">Features</a>
+            <a href="#workflow">How it works</a>
+            <a href="#pricing">Pricing</a>
+            <a href="#faq">FAQ</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/new/analyse" class="nav-cta">Start Analysis</a>
+        </nav>
+    </div>
+</header>
+
+<main>
+
+    <section class="hero">
+        <div class="container">
+            <div class="hero-content">
+
+                <div class="preview-badge">
+                    New interface preview. Old interface remains available.
+                </div>
+
+                <div class="eyebrow">
+                    <span>✓</span>
+                    <span>Built for theses, dissertations, manuscripts, and journal submissions</span>
+                </div>
+
+                <h1>
+                    Analyse, verify, and fix citations
+                    <span class="highlight">before submission.</span>
+                </h1>
+
+                <p class="hero-subtitle">
+                    CiteIntegrity checks your manuscript for missing citations, uncited references, weak verification, claim-source gaps, and overall citation integrity using the Academic Citation Integrity Index.
+                </p>
+
+                <div class="hero-actions">
+                    <a href="/new/analyse" class="btn btn-primary">📊 Start Analysis</a>
+                    <a href="#features" class="btn btn-secondary">See Features</a>
+                    <a href="/" class="btn btn-secondary">Use Old Interface</a>
+                </div>
+
+                <div class="trust-row">
+                    <span class="trust-item">🔒 Secure document processing</span>
+                    <span class="trust-item">📄 DOCX recommended</span>
+                    <span class="trust-item">🎓 Built for academic review</span>
+                    <span class="trust-item">📈 Exportable reports</span>
+                </div>
+
+                <div class="stats-strip">
+                    <div class="stat-card">
+                        <div class="stat-number">{{ total_uploads | default(0) }}</div>
+                        <div class="stat-label">Documents processed</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-number">{{ total_references_checked | default(0) }}</div>
+                        <div class="stat-label">References checked</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-number">{{ total_verifications | default(0) }}</div>
+                        <div class="stat-label">Verification runs</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-number">{{ success_rate | default(0) }}%</div>
+                        <div class="stat-label">Processing success rate</div>
+                    </div>
+                </div>
+
+                <div class="product-preview" aria-label="CiteIntegrity product preview">
+                    <div class="preview-top">
+                        <div class="preview-dots">
+                            <span class="dot"></span>
+                            <span class="dot"></span>
+                            <span class="dot"></span>
+                        </div>
+                        <div class="preview-label">CiteIntegrity workflow preview</div>
+                    </div>
+
+                    <div class="preview-body">
+                        <div class="preview-panel">
+                            <h3>Upload and analyse</h3>
+                            <div class="mini-upload">
+                                <div class="mini-upload-icon">📑</div>
+                                <strong>Upload manuscript</strong>
+                                <span>Analyse citations, references, matching, and submission readiness.</span>
+                            </div>
+                        </div>
+
+                        <div class="preview-panel dark">
+                            <h3>Academic Citation Integrity Index</h3>
+                            <div class="score">
+                                <div class="score-value">73.5</div>
+                                <div class="score-label">ACII Score</div>
+                                <div class="score-badge">Good</div>
+                            </div>
+                            <div class="mini-recommendations">
+                                Improve recency, verify more references, and review claim-source alignment.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="features">
+        <div class="container">
+            <div class="section-heading">
+                <h2>A full citation integrity audit, not just a citation checker</h2>
+                <p>
+                    CiteIntegrity is designed to help students, supervisors, examiners, journal authors, and institutions review the quality and credibility of citations before submission.
+                </p>
+            </div>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🔎</div>
+                    <h3>Missing citation detection</h3>
+                    <p>Find in-text citations that do not appear in the reference list, including author-year inconsistencies and unmatched citations.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">📚</div>
+                    <h3>Uncited reference detection</h3>
+                    <p>Identify references listed at the end of the manuscript but not cited in the body of the work.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🌐</div>
+                    <h3>Online reference verification</h3>
+                    <p>Check whether references are traceable through scholarly metadata sources and flag items needing review.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🧠</div>
+                    <h3>Claim-support review</h3>
+                    <p>Review whether cited sources appear relevant to the claims they are supporting in the manuscript.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">📈</div>
+                    <h3>ACII integrity score</h3>
+                    <p>Measure overall citation health using verification integrity, concentration, author diversity, and temporal balance.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🛠️</div>
+                    <h3>Recovery suggestions</h3>
+                    <p>Generate suggestions for missing citations, unverifiable references, and sources that need closer review.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="workflow">
+        <div class="container">
+            <div class="section-heading">
+                <h2>Simple workflow for serious academic review</h2>
+                <p>
+                    Move from upload to a structured citation integrity report in clear steps.
+                </p>
+            </div>
+
+            <div class="workflow">
+                <div class="steps">
+                    <div class="step">
+                        <div class="step-number">1</div>
+                        <h3>Upload document</h3>
+                        <p>Upload a DOCX manuscript, thesis, dissertation, project report, or journal paper.</p>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-number">2</div>
+                        <h3>Analyse citations</h3>
+                        <p>Extract citations and references, then match in-text citations to reference entries.</p>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-number">3</div>
+                        <h3>Verify and recover</h3>
+                        <p>Check references online and generate recovery suggestions for weak or missing entries.</p>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-number">4</div>
+                        <h3>Review report</h3>
+                        <p>Use the results dashboard to inspect issues, improve the document, and export reports.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="pricing">
+        <div class="container">
+            <div class="section-heading">
+                <h2>Plans for students, researchers, and institutions</h2>
+                <p>
+                    Keep this section as a pricing preview until you activate full payment and account management.
+                </p>
+            </div>
+
+            <div class="pricing-preview">
+                <div class="price-card">
+                    <h3>Starter</h3>
+                    <p class="price-desc">For testing and short manuscripts.</p>
+                    <div class="price">Free <span>/ limited use</span></div>
+                    <ul class="price-list">
+                        <li>Basic citation-reference matching</li>
+                        <li>Limited missing citation checks</li>
+                        <li>Limited uncited reference checks</li>
+                        <li>Basic summary dashboard</li>
+                    </ul>
+                    <a href="/new/analyse" class="btn btn-secondary">Try Free</a>
+                </div>
+
+                <div class="price-card featured">
+                    <div class="popular">Recommended</div>
+                    <h3>Researcher</h3>
+                    <p class="price-desc">For theses, dissertations, and journal manuscripts.</p>
+                    <div class="price">Pro <span>/ full report</span></div>
+                    <ul class="price-list">
+                        <li>Full citation integrity analysis</li>
+                        <li>Online reference verification</li>
+                        <li>Recovery suggestions</li>
+                        <li>Claim-support rows</li>
+                        <li>ACII score and recommendations</li>
+                    </ul>
+                    <a href="/new/analyse" class="btn btn-primary">Start Analysis</a>
+                </div>
+
+                <div class="price-card">
+                    <h3>Institution</h3>
+                    <p class="price-desc">For universities, journals, departments, and quality assurance units.</p>
+                    <div class="price">Custom <span>/ licence</span></div>
+                    <ul class="price-list">
+                        <li>Institutional access</li>
+                        <li>Supervisor and examiner workflows</li>
+                        <li>Bulk document review</li>
+                        <li>Custom reporting</li>
+                    </ul>
+                    <a href="mailto:admin@citeintegrity.org" class="btn btn-secondary">Contact Us</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="section" id="faq">
+        <div class="container">
+            <div class="section-heading">
+                <h2>Frequently asked questions</h2>
+                <p>
+                    Key points users need to understand before uploading a manuscript.
+                </p>
+            </div>
+
+            <div class="faq">
+                <details>
+                    <summary>Which file format works best?</summary>
+                    <p>DOCX is recommended because it preserves structure better for citation and reference extraction. PDF can distort references, line breaks, and citation patterns.</p>
+                </details>
+
+                <details>
+                    <summary>Does CiteIntegrity replace academic judgement?</summary>
+                    <p>No. CiteIntegrity helps detect, organise, and prioritise citation issues. The final decision should still be reviewed by the author, supervisor, examiner, or editor.</p>
+                </details>
+
+                <details>
+                    <summary>What does ACII measure?</summary>
+                    <p>The Academic Citation Integrity Index summarises citation health using signals such as verification integrity, author diversity, citation concentration, and temporal balance.</p>
+                </details>
+
+                <details>
+                    <summary>Are uploaded documents stored permanently?</summary>
+                    <p>The platform is designed for secure processing and should not store manuscripts permanently. State the exact retention period in the Privacy Policy before commercial launch.</p>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    <section class="section">
+        <div class="container">
+            <div class="cta-band">
+                <div>
+                    <h2>Ready to check your manuscript?</h2>
+                    <p>
+                        Upload your document, review the citation integrity dashboard, and fix issues before submission.
+                    </p>
+                </div>
+
+                <div class="cta-actions">
+                    <a href="/new/analyse" class="btn btn-green">Start Analysis</a>
+                    <a href="/" class="btn btn-secondary">Use Old Interface</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+</main>
+
+<footer class="footer">
+    <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
+    <div class="footer-links">
+        <a href="/privacy">Privacy Policy</a>
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="/new/analyse">Start Analysis</a>
+        <a href="/">Old Interface</a>
+    </div>
+</footer>
+
+<script>
+    const mobileToggle = document.getElementById("mobileToggle");
+    const mainNav = document.getElementById("mainNav");
+
+    if (mobileToggle && mainNav) {
+        mobileToggle.addEventListener("click", function () {
+            mainNav.classList.toggle("open");
+        });
+    }
+</script>
+
+</body>
+</html>
