@@ -216,9 +216,22 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
                 # Allow small citation-format variations:
                 # (Author, 2001), Author (2001), Author, 2001, Author and Coauthor (2001)
                 variant_patterns = [
+                    # Parenthetical single-author form: (Author, 2019)
                     rf"\(\s*{author1}\s*,\s*{year_base}[a-z]?\s*\)",
+                
+                    # Narrative single-author form: Author (2019)
                     rf"{author1}\s*\(\s*{year_base}[a-z]?\s*\)",
+                
+                    # Loose author-year form: Author, 2019
                     rf"{author1}\s*,\s*{year_base}[a-z]?",
+                
+                    # Parenthetical et al. form: (Author et al., 2019)
+                    rf"\(\s*{author1}\s+et\s+al\.?\s*,\s*{year_base}[a-z]?\s*\)",
+                
+                    # Narrative et al. form: Author et al. (2019)
+                    rf"{author1}\s+et\s+al\.?\s*\(\s*{year_base}[a-z]?\s*\)",
+                
+                    # Loose et al. form: Author et al., 2019
                     rf"{author1}\s+et\s+al\.?\s*,?\s*{year_base}[a-z]?",
                 ]
     
