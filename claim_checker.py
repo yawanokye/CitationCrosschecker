@@ -429,7 +429,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             
             if (
                 support_status in {"no_evidence_found", "insufficient_evidence"}
-                or support_score < 35
+                or support_score < 20
             ):
                 if alt_source_count < MAX_ALT_SOURCE_ROWS:
                     alternative_sources = suggest_alternative_sources_for_claim(
