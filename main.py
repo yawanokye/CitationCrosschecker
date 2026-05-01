@@ -1310,6 +1310,7 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                             _store[job_id]["result"]
                                         )
                                         print("[CLAIM SUPPORT] Rows:", len(_store[job_id]["result"].get("claim_support", [])))
+                                        print("[CLAIM SUPPORT] Sample:", _store[job_id]["result"].get("claim_support", [])[:1])
                                     except Exception as e:
                                         print(f"[CLAIM SUPPORT ERROR] {e}")
                                         _store[job_id]["result"]["claim_support"] = []
