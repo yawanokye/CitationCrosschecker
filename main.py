@@ -680,6 +680,10 @@ async def security_middleware(request: Request, call_next):
         "/fix-log",
         "/apply-autofix",
         "/queue/status",
+        "/new",
+        "/features",
+        "/pricing",
+        "/contact",
         "/private-stats"
     ]
     
@@ -2131,6 +2135,21 @@ def index(request: Request):
 def privacy(request: Request):
     return templates.TemplateResponse("privacy.html", {"request": request})
 
+@app.get("/new", response_class=HTMLResponse)
+async def new_landing_page(request: Request):
+    stats = stats_tracker.get_stats(detailed=False)
+    total_stats = stats.get("total_stats", {})
+
+    return templates.TemplateResponse(
+        "new_index.html",
+        {
+            "request": request,
+            "total_uploads": total_stats.get("total_uploads", 0),
+            "total_references_checked": total_stats.get("total_references_checked", 0),
+            "total_verifications": total_stats.get("total_verifications", 0),
+            "success_rate": total_stats.get("success_rate", 0),
+        }
+    )
 # ============================================================
 # ASYNC DOCUMENT CHECK (QUEUED)
 # ============================================================
