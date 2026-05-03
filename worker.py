@@ -282,19 +282,205 @@ def _build_recovery_payload(result, verification_rows):
         "verification_recovery": verification_recovery
     }
 
+def _split_sentences(text):
+    """
+    Lightweight sentence splitter for claim extraction.
+    Keeps enough context for citation-bearing sentences.
+    """
+    text = str(text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return []
+
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(])", text)
+    return [s.strip() for s in sentences if len(s.strip()) > 20]
+
+
+def _citation_variants(citation):
+    """
+    Build possible citation forms found in manuscript text.
+    Handles:
+    Cohen, 1988
+    (Cohen, 1988)
+    Cohen (1988)
+    Button et al., 2013
+    Button et al. (2013)
+    """
+    citation = str(citation or "").strip()
+    citation = citation.strip("() ")
+    variants = set()
+
+    if not citation:
+        return []
+
+    variants.add(citation)
+    variants.add(f"({citation})")
+
+    year_match = re.search(r"\b((?:19|20)\d{2}[a-z]?)\b", citation, flags=re.I)
+
+    if year_match:
+        year = year_match.group(1)
+        author_part = citation[:year_match.start()].strip(" ,;()")
+
+        if author_part:
+            variants.add(f"{author_part}, {year}")
+            variants.add(f"({author_part}, {year})")
+            variants.add(f"{author_part} ({year})")
+
+            # Handle "and" and "&" variants
+            if " and " in author_part.lower():
+                amp_author = re.sub(r"\s+and\s+", " & ", author_part, flags=re.I)
+                variants.add(f"{amp_author}, {year}")
+                variants.add(f"({amp_author}, {year})")
+                variants.add(f"{amp_author} ({year})")
+
+            if "&" in author_part:
+                and_author = author_part.replace("&", "and")
+                variants.add(f"{and_author}, {year}")
+                variants.add(f"({and_author}, {year})")
+                variants.add(f"{and_author} ({year})")
+
+    # Longest first helps locate full forms before partial forms
+    return sorted(variants, key=len, reverse=True)
+
+
+def _clean_extracted_claim(text):
+    """
+    Clean claim text without destroying its meaning.
+    """
+    text = str(text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Remove leftover citation brackets where possible
+    text = re.sub(
+        r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)",
+        "",
+        text,
+        flags=re.I
+    )
+
+    text = re.sub(r"\s+", " ", text).strip(" ,;:.")
+    return text
+
+
+def _extract_claim_from_sentence(sentence, citation):
+    """
+    Extract the claim around a citation.
+
+    For parenthetical citations, the claim is usually before the citation.
+    Example: Sample size affects statistical power (Cohen, 1988).
+
+    For narrative citations, useful claim text may come after the citation.
+    Example: Cohen (1988) argued that power depends on effect size...
+    """
+    sentence = str(sentence or "").strip()
+    variants = _citation_variants(citation)
+
+    if not sentence:
+        return ""
+
+    lower_sentence = sentence.lower()
+
+    for variant in variants:
+        lower_variant = variant.lower()
+        idx = lower_sentence.find(lower_variant)
+
+        if idx == -1:
+            continue
+
+        before = sentence[:idx].strip(" ,;:")
+        after = sentence[idx + len(variant):].strip(" ,;:")
+
+        before_clean = _clean_extracted_claim(before)
+        after_clean = _clean_extracted_claim(after)
+        full_clean = _clean_extracted_claim(sentence)
+
+        # Parenthetical citation, claim normally before citation
+        if variant.startswith("(") and len(before_clean) >= 25:
+            return before_clean
+
+        # Narrative citation, claim often after citation
+        if not variant.startswith("(") and "(" in variant and len(after_clean) >= 25:
+            return after_clean
+
+        # If before is meaningful, use it
+        if len(before_clean) >= 25:
+            return before_clean
+
+        # If after is meaningful, use it
+        if len(after_clean) >= 25:
+            return after_clean
+
+        # Fallback to full cleaned sentence
+        if len(full_clean) >= 25:
+            return full_clean
+
+    # If citation form was not found exactly, return the cleaned sentence
+    return _clean_extracted_claim(sentence)
+
+
+def _find_sentence_for_citation(sentences, citation):
+    """
+    Find the sentence containing a citation variant.
+    """
+    variants = _citation_variants(citation)
+
+    if not variants:
+        return ""
+
+    for sentence in sentences:
+        sentence_lower = sentence.lower()
+
+        for variant in variants:
+            if variant.lower() in sentence_lower:
+                return sentence
+
+    return ""
+
+
 def _fallback_claim_support_rows(result, verification_rows):
     """
-    Fallback claim-support rows.
+    Claim-support fallback with real claim extraction from main_text.
 
-    This does not claim that the source supports the claim.
-    It only ensures the Claim Support tab is populated with review-ready rows
-    when the full claim checker returns no rows.
+    It does not verify whether the source truly supports the claim.
+    It extracts the claim sentence around the citation and marks it for review.
     """
     rows = []
 
+    main_text = result.get("main_text", "") or ""
+    sentences = _split_sentences(main_text)
+
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
-    for i, row in enumerate(c2r_rows, start=1):
+    # Create lookup from verification rows
+    verification_lookup = {}
+
+    for row in verification_rows or []:
+        citation_key = str(
+            row.get("citation")
+            or row.get("in_text")
+            or row.get("citation_in_text")
+            or ""
+        ).strip().lower()
+
+        reference_value = (
+            row.get("reference")
+            or row.get("original_reference")
+            or row.get("matched_title")
+            or row.get("title")
+            or row.get("source_title")
+            or ""
+        )
+
+        if citation_key and citation_key not in verification_lookup:
+            verification_lookup[citation_key] = {
+                "reference": reference_value,
+                "doi": row.get("doi", ""),
+                "status": row.get("status", "")
+            }
+
+    for row in c2r_rows:
         citation = (
             row.get("in_text")
             or row.get("citation")
@@ -302,51 +488,79 @@ def _fallback_claim_support_rows(result, verification_rows):
             or ""
         )
 
+        citation = str(citation or "").strip()
+
         matched_reference = (
             row.get("matched_reference")
             or row.get("reference")
+            or row.get("matched_title")
             or ""
         )
 
-        status = row.get("status", "")
+        lookup = verification_lookup.get(citation.lower(), {})
 
-        if not citation and not matched_reference:
-            continue
+        if not matched_reference:
+            matched_reference = lookup.get("reference", "")
+
+        sentence = _find_sentence_for_citation(sentences, citation)
+        claim = _extract_claim_from_sentence(sentence, citation)
+
+        if not claim:
+            claim = "Claim could not be extracted automatically. Review the cited sentence manually."
 
         rows.append({
             "citation": citation,
-            "claim": "Claim extraction not available. Review the cited sentence manually.",
+            "claim": claim,
             "source_title": matched_reference[:250] if matched_reference else "Matched source not available",
             "matched_source": matched_reference,
-            "support_status": "not_checked",
+            "support_status": "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required",
             "support_score": 0,
-            "doi": "",
-            "note": "Fallback row generated because automated claim-support checking returned no rows.",
-            "citation_match_status": status
+            "doi": lookup.get("doi", ""),
+            "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
+            "citation_match_status": row.get("status", lookup.get("status", ""))
         })
 
+    # If c2r rows are unavailable, fall back to verification rows
     if rows:
         return rows
 
-    for i, row in enumerate(verification_rows or [], start=1):
-        reference = row.get("reference") or row.get("matched_title") or row.get("title") or ""
+    for row in verification_rows or []:
+        citation = (
+            row.get("citation")
+            or row.get("in_text")
+            or row.get("citation_in_text")
+            or ""
+        )
 
-        if not reference:
-            continue
+        reference = (
+            row.get("reference")
+            or row.get("original_reference")
+            or row.get("matched_title")
+            or row.get("title")
+            or row.get("source_title")
+            or ""
+        )
+
+        sentence = _find_sentence_for_citation(sentences, citation)
+        claim = _extract_claim_from_sentence(sentence, citation)
+
+        if not claim:
+            claim = "Claim could not be extracted automatically. Review the cited sentence manually."
 
         rows.append({
-            "citation": row.get("citation", ""),
-            "claim": "Claim extraction not available. Review the cited sentence manually.",
-            "source_title": row.get("matched_title") or reference[:250],
+            "citation": citation,
+            "claim": claim,
+            "source_title": (row.get("matched_title") or reference or "Source title not available")[:250],
             "matched_source": reference,
-            "support_status": "not_checked",
+            "support_status": "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required",
             "support_score": 0,
             "doi": row.get("doi", ""),
-            "note": "Fallback row generated from verification output.",
+            "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
             "citation_match_status": row.get("status", "")
         })
 
     return rows
+
 def _normalise_references_for_verification(result):
     refs = result.get("references_raw", []) or []
 
