@@ -2788,7 +2788,7 @@ def online_status(job_id: str):
 
     rq_job_id = verification.get("rq_job_id") or verification.get("verification_job_id")
 
-    if rq_job_id and redis_conn and verification.get("state") in {"queued", "running"}:
+    if rq_job_id and redis_conn and verification.get("state") in {"queued", "running", "finalising"}:
         try:
             from rq.job import Job
 
@@ -2806,12 +2806,23 @@ def online_status(job_id: str):
                 verification["message"] = "Verification running"
 
             elif rq_status == "finished":
-                if verification.get("final_tables_ready") is True:
-                    verification["state"] = "completed"
-                    verification["message"] = "Verification complete"
-                else:
-                    verification["state"] = "finalising"
-                    verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
+            # Reload once because the worker may have just written the final result
+            fresh_job = load_job_record_fresh(job_id)
+            fresh_result = (fresh_job or {}).get("result", {}) or {}
+            fresh_verification = fresh_result.get("verification") or {}
+        
+            if (
+                fresh_verification.get("final_tables_ready") is True
+                or fresh_result.get("final_tables_ready") is True
+                or bool(fresh_result.get("verification_completed_at"))
+            ):
+                result = fresh_result
+                verification = fresh_verification or verification
+                verification["state"] = "completed"
+                verification["message"] = "Verification complete"
+            else:
+                verification["state"] = "finalising"
+                verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
 
             elif rq_status == "failed":
                 verification["state"] = "error"
@@ -2841,31 +2852,59 @@ def online_status(job_id: str):
     if total:
         percentage = int((progress / max(total, 1)) * 100)
 
-    response = {
-        "job_id": job_id,
-        "online": {
-            "state": verification.get("state", "idle"),
-            "status": verification.get("state", "idle"),
-            "progress": progress,
-            "total": total,
-            "percentage": percentage,
-            "message": verification.get("message", ""),
-            "verification_job_id": verification.get("verification_job_id"),
-            "rq_job_id": verification.get("rq_job_id"),
-            "rq_status": verification.get("rq_status"),
-            "rq_status_error": verification.get("rq_status_error"),
-            "error": verification.get("error"),
-            "started_at": verification.get("started_at"),
-            "completed_at": verification.get("completed_at"),
-            "last_heartbeat": verification.get("last_heartbeat"),
-            "results_count": verification.get("results_count", len(rows))
+        # Keep latest verification metadata inside result
+        result["verification"] = verification
+    
+        state = verification.get("state", "idle")
+    
+        final_tables_ready = (
+            verification.get("final_tables_ready") is True
+            or result.get("final_tables_ready") is True
+            or bool(result.get("verification_completed_at"))
+        )
+    
+        response = {
+            "job_id": job_id,
+            "online": {
+                "state": state,
+                "status": state,
+                "progress": progress,
+                "total": total,
+                "percentage": percentage,
+                "message": verification.get("message", ""),
+                "verification_job_id": verification.get("verification_job_id"),
+                "rq_job_id": verification.get("rq_job_id"),
+                "rq_status": verification.get("rq_status"),
+                "rq_status_error": verification.get("rq_status_error"),
+                "error": verification.get("error"),
+                "started_at": verification.get("started_at"),
+                "completed_at": verification.get("completed_at"),
+                "last_heartbeat": verification.get("last_heartbeat"),
+                "results_count": verification.get("results_count", len(rows)),
+                "has_results": len(rows) > 0,
+                "final_tables_ready": final_tables_ready,
+    
+                # Extra useful diagnostics
+                "recovery_missing": len((result.get("recovery") or {}).get("missing_recovery") or []),
+                "recovery_verify": len((result.get("recovery") or {}).get("verification_recovery") or []),
+                "claim_support_rows": len(result.get("claim_support") or []),
+                "c2r_rows": len(result.get("reconciliation_intext_to_reference") or []),
+            }
         }
-    }
-
-    if rows or verification.get("state") == "completed":
-        response["result"] = result
-
-    return response
+    
+        # Important:
+        # Send result not only when completed, but also during finalising.
+        # The browser needs this to render Recovery and Claim Support.
+        if (
+            rows
+            or state in {"completed", "finalising"}
+            or final_tables_ready
+            or result.get("recovery")
+            or result.get("claim_support")
+        ):
+            response["result"] = result
+    
+        return response
 # ============================================================
 # DOCUMENT EXPORT
 # ============================================================
