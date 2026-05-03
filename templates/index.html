@@ -1417,214 +1417,150 @@ async function fetchStatus() {
     if (POLL_ATTEMPT_COUNT > CONFIG.MAX_POLL_ATTEMPTS) {
         stopPolling();
         VERIFICATION_IN_PROGRESS = false;
+
         const btnVerify = $("btnVerify");
         if (btnVerify) btnVerify.disabled = false;
+
         setStatus("Verification timed out", "bad");
         return;
     }
 
     try {
         const res = await fetch(`/online/status?job_id=${encodeURIComponent(LAST_JOB_ID)}`);
-        
+
         if (res.status === 404) {
-            console.error(`Job ${LAST_JOB_ID} not found`);
             stopPolling();
             VERIFICATION_IN_PROGRESS = false;
+
             const btnVerify = $("btnVerify");
             if (btnVerify) btnVerify.disabled = false;
+
             setStatus("Verification job not found. Please run analysis again.", "bad");
             LAST_JOB_ID = null;
             return;
         }
-        
+
         const js = await res.json();
         console.log("📡 STATUS RESPONSE:", js);
-        
-        // Backend returned JSON null. Do not crash polling.
+
         if (!js) {
-            console.warn("Empty /online/status response. Polling will continue.");
             setStatus("Waiting for verification status...", "warn");
             return;
         }
-        
-        // Check if we have results directly in the response
-        if (js.result && js.result.online_verification && js.result.online_verification.rows) {
-            const partialResult = normaliseFinalResult(js.result);
-        
-            const rows = partialResult.online_verification.rows.length;
-            const verification = partialResult.verification || {};
-            const total = Number(verification.total || js.online?.total || rows || 0);
-            const progress = Number(verification.progress || rows || 0);
-            const state = String(verification.state || js.online?.state || "").toLowerCase();
-        
-            if (isFinalResultReady(partialResult)) {
-                updateProgress(
-                    total || rows,
-                    total || rows,
-                    "completed",
-                    `✅ Complete! ${rows}/${total || rows}`
-                );
-        
-                renderAll(partialResult);
-                showFinalReadyMessage(partialResult);
-                stopPolling();
-        
-                VERIFICATION_IN_PROGRESS = false;
-        
-                const btnVerify = $("btnVerify");
-                if (btnVerify) btnVerify.disabled = false;
-        
-                return;
-            }
-        
-            // Partial rows have arrived, but verification is still running
-            renderVerify(partialResult);
-            updateProgress(
-                progress,
-                total || rows,
-                "processing",
-                `Verifying references: ${progress}/${total || rows}. Partial results loaded...`
-            );
-        
-            setStatus(
-                `Verification in progress: ${progress}/${total || rows}. Partial results loaded.`,
-                "warn"
-            );
-        
+
+        const online = js.online || {};
+        const state = String(online.state || online.status || "processing").toLowerCase();
+        const progress = Number(online.progress || 0);
+        const total = Number(online.total || 0);
+        const finalTablesReady = online.final_tables_ready === true;
+
+        if (state === "error") {
+            stopPolling();
+            VERIFICATION_IN_PROGRESS = false;
+
+            const btnVerify = $("btnVerify");
+            if (btnVerify) btnVerify.disabled = false;
+
+            setStatus(online.error || online.message || "Verification failed", "bad");
             return;
         }
-        if (js.online) {
-            const progress = js.online.progress ?? 0;
-            const total = js.online.total ?? 0;
-            const state = js.online.state || "processing";
-            
-            // Update progress display
-            let message;
-            if (total === 0 && state === "running") {
-                message = "Starting verification... (0 references queued)";
-            } else if (total === 0 && state === "idle") {
-                message = "Waiting for verification to begin...";
-            } else if (state === "completed") {
-                message = `✅ Complete! All ${total} references verified`;
-                updateProgress(progress, total, "completed", message);
-            } else {
-                message = `Verifying references: ${progress}/${total}`;
-                updateProgress(progress, total, state, message);
-                setStatus(`Verification in progress: ${progress}/${total}`, "warn");
-            }
-            
-            // 🔥 CRITICAL: Handle completed state - fetch results immediately
-            if (state === "completed") {
-                console.log("🎉 Verification completed! Fetching final results...");
-            
+
+        if (js.result && js.result.online_verification && Array.isArray(js.result.online_verification.rows)) {
+            const result = normaliseFinalResult(js.result);
+
+            const rows = result.online_verification.rows.length;
+            const verification = result.verification || {};
+            const resultState = String(verification.state || state || "").toLowerCase();
+
+            const resultTotal = Number(verification.total || total || rows || 0);
+            const resultProgress = Number(verification.progress || progress || rows || 0);
+
+            if (isFinalResultReady(result)) {
+                updateProgress(
+                    resultTotal || rows,
+                    resultTotal || rows,
+                    "completed",
+                    `✅ Complete! ${rows}/${resultTotal || rows}`
+                );
+
+                renderAll(result);
+                showFinalReadyMessage(result);
+
+                stopPolling();
                 VERIFICATION_IN_PROGRESS = false;
-            
+
                 const btnVerify = $("btnVerify");
                 if (btnVerify) btnVerify.disabled = false;
-            
-                // ✅ FORCE PROGRESS TO 100%
-                // ✅ Verification is complete, but final tables may still be building
-                
-                updateProgress(total, total, "completed", `✅ Complete! ${total}/${total}`);
-                setStatus(`Verification complete: ${total}/${total}. Finalising tables...`,);
-            
-                // ⛔ THEN stop polling
-                stopPolling();
-                
-                // Try multiple endpoints to get results
-                let finalData = null;
-                let attempts = 0;
-                const maxAttempts = 20;
-                
-                while (!finalData && attempts < maxAttempts) {
-                    try {
-                        // Try /job endpoint first
-                        console.log(`Fetching final results attempt ${attempts + 1}/${maxAttempts}...`);
-                        const jobRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
-                        const jobData = await jobRes.json();
-                        console.log(`Job endpoint attempt ${attempts + 1}:`, jobData);
-                        
-                        if (jobData.result && jobData.result.online_verification && jobData.result.online_verification.rows && jobData.result.online_verification.rows.length > 0) {
-                            console.log(`✅ Found ${jobData.result.online_verification.rows.length} verification results via /job endpoint.`);
-                        
-                            if (isFinalResultReady(jobData.result)) {
-                                finalData = jobData.result;
-                                break;
-                            }
-                        
-                            showFinalisingMessage();
-                        }
-                        
-                        // Try /result endpoint as fallback
-                        console.log(`Trying /result endpoint...`);
-                        const resultRes = await fetch(`/result/${encodeURIComponent(LAST_JOB_ID)}`);
-                        const resultData = await resultRes.json();
-                        console.log(`Result endpoint attempt ${attempts + 1}:`, resultData);
-                        
-                        if (resultData.data && resultData.data.online_verification && resultData.data.online_verification.rows && resultData.data.online_verification.rows.length > 0) {
-                            console.log(`✅ Found ${resultData.data.online_verification.rows.length} verification results via /result endpoint.`);
-                        
-                            if (isFinalResultReady(resultData.data)) {
-                                finalData = resultData.data;
-                                break;
-                            }
-                        
-                            showFinalisingMessage();
-                        }
-                        
-                        if (resultData.result && resultData.result.online_verification && resultData.result.online_verification.rows && resultData.result.online_verification.rows.length > 0) {
-                            console.log(`✅ Found ${resultData.result.online_verification.rows.length} verification results via /result endpoint.`);
-                        
-                            if (isFinalResultReady(resultData.result)) {
-                                finalData = resultData.result;
-                                break;
-                            }
-                        
-                            showFinalisingMessage();
-                        }
-                        
-                    } catch (e) {
-                        console.error("Final fetch error:", e);
-                    }
-                    
-                    attempts++;
-                    if (attempts < maxAttempts && !finalData) {
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                    }
-                }
-                
-                if (finalData && isFinalResultReady(finalData)) {
-                    console.log(`🎉 Rendering complete results...`);
-                    renderAll(finalData);
-                    showFinalReadyMessage(finalData);
-                    console.log("Full results rendered successfully");
-                } else {
-                    console.error("Could not retrieve verification results after multiple attempts");
-                    setStatus("Verification complete but results are still loading. Please wait a moment and refresh the page.", "warn");
-                    
-                    // Set a timer to auto-refresh the results after 5 seconds
-                    setTimeout(async () => {
-                        console.log("Auto-retry fetching results...");
-                        try {
-                            const retryRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
-                            const retryData = await retryRes.json();
-                            if (retryData.result && retryData.result.online_verification && retryData.result.online_verification.rows) {
-                                renderAll(retryData.result);
-                                setStatus(`Verification complete! ${retryData.result.online_verification.rows.length} references verified.`, "good");
-                            }
-                        } catch (e) {
-                            console.error("Auto-retry failed:", e);
-                        }
-                    }, 5000);
-                }
-                
+
                 return;
             }
+
+            renderVerify(result);
+
+            if (resultState === "finalising" || progress >= total) {
+                updateProgress(
+                    resultTotal,
+                    resultTotal,
+                    "processing",
+                    `Finalising tables: Recovery and Claim Support are being prepared...`
+                );
+                showFinalisingMessage();
+                return;
+            }
+
+            updateProgress(
+                resultProgress,
+                resultTotal || rows,
+                "processing",
+                `Verifying references: ${resultProgress}/${resultTotal || rows}. Partial results loaded...`
+            );
+
+            setStatus(
+                `Verification in progress: ${resultProgress}/${resultTotal || rows}. Partial results loaded.`,
+                "warn"
+            );
+
+            return;
         }
-        
+
+        if (state === "finalising") {
+            updateProgress(
+                total,
+                total,
+                "processing",
+                "Finalising tables: Recovery and Claim Support are being prepared..."
+            );
+            showFinalisingMessage();
+            return;
+        }
+
+        if (state === "completed" && finalTablesReady) {
+            updateProgress(total, total, "completed", `✅ Complete! ${total}/${total}`);
+            setStatus("Verification complete. Loading final tables...", "good");
+            return;
+        }
+
+        updateProgress(
+            progress,
+            total,
+            "processing",
+            total > 0
+                ? `Verifying references: ${progress}/${total}`
+                : "Starting verification..."
+        );
+
+        setStatus(
+            total > 0
+                ? `Verification in progress: ${progress}/${total}`
+                : "Verification is starting...",
+            "warn"
+        );
+
     } catch (err) {
         console.error("Polling error:", err);
-        stopPolling();   // ✅ prevent broken loop
+
+        // Do not stop polling on one temporary network/server error.
+        setStatus("Temporary polling issue. Still checking verification status...", "warn");
     }
 }
 
@@ -1634,7 +1570,10 @@ function startPolling() {
         return;
     }
 
+    POLL_ATTEMPT_COUNT = 0;
+
     console.log("🚀 STARTING POLLING...");
+    fetchStatus();
     POLL_TIMER = setInterval(fetchStatus, 1000);
 }
 function stopPolling() {
