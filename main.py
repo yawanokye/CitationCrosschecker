@@ -2770,99 +2770,100 @@ async def verify_online(job_id: str = Form(...)):
 
 @app.get("/online/status")
 def online_status(job_id: str):
-    job = load_job_record_fresh(job_id)
+    try:
+        job = load_job_record_fresh(job_id)
 
-    if not job:
-        return JSONResponse(
-            status_code=404,
-            content={
-                "error": "Job not found",
-                "job_id": job_id,
-                "message": f"No job found with ID {job_id}",
-                "timestamp": now()
-            }
-        )
+        if not job:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Job not found",
+                    "job_id": job_id,
+                    "message": f"No job found with ID {job_id}",
+                    "timestamp": now()
+                }
+            )
 
-    result = job.get("result", {}) or {}
-    verification = result.get("verification") or job.get("verification") or {}
+        result = job.get("result", {}) or {}
+        verification = result.get("verification") or job.get("verification") or {}
 
-    rq_job_id = verification.get("rq_job_id") or verification.get("verification_job_id")
+        rq_job_id = verification.get("rq_job_id") or verification.get("verification_job_id")
 
-    if rq_job_id and redis_conn and verification.get("state") in {"queued", "running", "finalising"}:
-        try:
-            from rq.job import Job
+        if rq_job_id and redis_conn and verification.get("state") in {"queued", "running", "finalising"}:
+            try:
+                from rq.job import Job
 
-            rq_job = Job.fetch(rq_job_id, connection=redis_conn)
-            rq_status = rq_job.get_status(refresh=True)
+                rq_job = Job.fetch(rq_job_id, connection=redis_conn)
+                rq_status = rq_job.get_status(refresh=True)
 
-            verification["rq_status"] = rq_status
+                verification["rq_status"] = rq_status
 
-            if rq_status == "queued":
-                verification["state"] = "queued"
-                verification["message"] = "Verification job is queued and waiting for the worker"
+                if rq_status == "queued":
+                    verification["state"] = "queued"
+                    verification["message"] = "Verification job is queued and waiting for the worker"
 
-            elif rq_status in {"started", "deferred"}:
-                verification["state"] = "running"
-                verification["message"] = "Verification running"
+                elif rq_status in {"started", "deferred"}:
+                    verification["state"] = "running"
+                    verification["message"] = "Verification running"
 
-            elif rq_status == "finished":
-                # Reload once because the worker may have just written the final result
-                fresh_job = load_job_record_fresh(job_id)
-                fresh_result = (fresh_job or {}).get("result", {}) or {}
-                fresh_verification = fresh_result.get("verification") or {}
-            
-                if (
-                    fresh_verification.get("final_tables_ready") is True
-                    or fresh_result.get("final_tables_ready") is True
-                    or bool(fresh_result.get("verification_completed_at"))
-                ):
-                    result = fresh_result
-                    verification = fresh_verification or verification
-                    verification["state"] = "completed"
-                    verification["message"] = "Verification complete"
-                else:
-                    verification["state"] = "finalising"
-                    verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
+                elif rq_status == "finished":
+                    fresh_job = load_job_record_fresh(job_id)
+                    fresh_result = (fresh_job or {}).get("result", {}) or {}
+                    fresh_verification = fresh_result.get("verification") or verification
 
-            elif rq_status == "failed":
-                verification["state"] = "error"
-                verification["message"] = "Verification worker failed"
-                verification["error"] = str(rq_job.exc_info or "Unknown worker error")
-                verification["completed_at"] = now()
+                    final_tables_ready = (
+                        fresh_verification.get("final_tables_ready") is True
+                        or fresh_result.get("final_tables_ready") is True
+                        or bool(fresh_result.get("verification_completed_at"))
+                    )
 
-            update_verification_status(job_id, **verification)
+                    if final_tables_ready:
+                        result = fresh_result
+                        verification = fresh_verification
+                        verification["state"] = "completed"
+                        verification["message"] = "Verification complete"
+                    else:
+                        verification["state"] = "finalising"
+                        verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
 
-        except Exception as e:
-            verification["rq_status_error"] = str(e)
+                elif rq_status == "failed":
+                    verification["state"] = "error"
+                    verification["message"] = "Verification worker failed"
+                    verification["error"] = str(rq_job.exc_info or "Unknown worker error")
+                    verification["completed_at"] = now()
 
-    online_verification = result.get("online_verification") or {}
-    rows = online_verification.get("rows") or []
+                update_verification_status(job_id, **verification)
 
-    progress = verification.get("progress", 0)
-    total = verification.get("total", 0)
+            except Exception as e:
+                verification["rq_status_error"] = str(e)
 
-    if rows and progress < len(rows):
-        progress = len(rows)
+        online_verification = result.get("online_verification") or {}
+        rows = online_verification.get("rows") or []
 
-    if rows and not total:
-        total = len(rows)
+        progress = verification.get("progress", 0)
+        total = verification.get("total", 0)
 
-    percentage = verification.get("percentage", 0)
+        if rows and progress < len(rows):
+            progress = len(rows)
 
-    if total:
-        percentage = int((progress / max(total, 1)) * 100)
+        if rows and not total:
+            total = len(rows)
 
-        # Keep latest verification metadata inside result
+        percentage = verification.get("percentage", 0)
+
+        if total:
+            percentage = int((progress / max(total, 1)) * 100)
+
         result["verification"] = verification
-    
+
         state = verification.get("state", "idle")
-    
+
         final_tables_ready = (
             verification.get("final_tables_ready") is True
             or result.get("final_tables_ready") is True
             or bool(result.get("verification_completed_at"))
         )
-    
+
         response = {
             "job_id": job_id,
             "online": {
@@ -2883,18 +2884,13 @@ def online_status(job_id: str):
                 "results_count": verification.get("results_count", len(rows)),
                 "has_results": len(rows) > 0,
                 "final_tables_ready": final_tables_ready,
-    
-                # Extra useful diagnostics
                 "recovery_missing": len((result.get("recovery") or {}).get("missing_recovery") or []),
                 "recovery_verify": len((result.get("recovery") or {}).get("verification_recovery") or []),
                 "claim_support_rows": len(result.get("claim_support") or []),
                 "c2r_rows": len(result.get("reconciliation_intext_to_reference") or []),
             }
         }
-    
-        # Important:
-        # Send result not only when completed, but also during finalising.
-        # The browser needs this to render Recovery and Claim Support.
+
         if (
             rows
             or state in {"completed", "finalising"}
@@ -2903,8 +2899,25 @@ def online_status(job_id: str):
             or result.get("claim_support")
         ):
             response["result"] = result
-    
-        return response
+
+        return JSONResponse(content=response)
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "job_id": job_id,
+                "online": {
+                    "state": "error",
+                    "status": "error",
+                    "message": "Online status endpoint failed",
+                    "error": str(e),
+                    "progress": 0,
+                    "total": 0,
+                    "percentage": 0
+                }
+            }
+        )
 # ============================================================
 # DOCUMENT EXPORT
 # ============================================================
