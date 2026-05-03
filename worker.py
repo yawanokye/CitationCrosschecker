@@ -15,7 +15,7 @@ try:
     from engine import recover_references_for_verification
 except Exception:
     recover_references_for_verification = None
-
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from verify import verify_references_batch
@@ -367,6 +367,66 @@ def _normalise_references_for_verification(result):
             print(f"[VERIFY WORKER] Reference recovery failed: {e}")
 
     return []
+def _is_real_claim_row(row):
+    claim = str(row.get("claim") or row.get("claim_extracted") or "").strip()
+
+    if not claim:
+        return False
+
+    fallback_phrases = [
+        "Claim extraction not available",
+        "Review the cited sentence manually",
+        "Fallback row generated"
+    ]
+
+    return not any(p.lower() in claim.lower() for p in fallback_phrases)
+
+
+def _build_claim_support_safe(result, verification_rows):
+    """
+    Try the real claim-support checker, but do not allow it to block verification completion.
+    If real claim extraction fails, returns fallback review rows.
+    """
+    fallback_rows = _fallback_claim_support_rows(result, verification_rows)
+
+    executor = None
+
+    try:
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        future = executor.submit(build_claim_support_rows, result)
+        claim_rows = future.result(timeout=CLAIM_SUPPORT_TIMEOUT)
+
+        if isinstance(claim_rows, list) and claim_rows:
+            real_count = sum(1 for row in claim_rows if _is_real_claim_row(row))
+
+            if real_count > 0:
+                print(f"[VERIFY WORKER] Real claim-support rows generated: {real_count}/{len(claim_rows)}")
+
+                for row in claim_rows:
+                    row.setdefault("fallback", False)
+
+                return claim_rows
+
+        print("[VERIFY WORKER] Claim-support checker returned no real extracted claims. Using fallback rows.")
+        return fallback_rows
+
+    except FutureTimeoutError:
+        print(f"[VERIFY WORKER] Claim-support timed out after {CLAIM_SUPPORT_TIMEOUT}s. Using fallback rows.")
+        try:
+            future.cancel()
+        except Exception:
+            pass
+        return fallback_rows
+
+    except Exception as e:
+        print(f"[VERIFY WORKER] Claim-support failed: {e}. Using fallback rows.")
+        return fallback_rows
+
+    finally:
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
+
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
@@ -1741,11 +1801,13 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
         # Do not let claim-support checking block completion.
         # Use fallback claim-support rows first.
+        # Try real claim-support checking safely.
+        # If it fails or times out, fallback review rows will still be generated.
         try:
-            result["claim_support"] = _fallback_claim_support_rows(result, all_rows)
+            result["claim_support"] = _build_claim_support_safe(result, all_rows)
         except Exception as e:
-            print(f"[VERIFY WORKER] Fallback claim-support error: {e}")
-            result["claim_support"] = []
+            print(f"[VERIFY WORKER] Claim-support safe builder failed: {e}")
+            result["claim_support"] = _fallback_claim_support_rows(result, all_rows)
 
         # ACII should not block completion.
         try:
