@@ -20,7 +20,7 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from verify import verify_references_batch
 from acii import compute_acii
-from claim_checker import build_claim_support_rows
+from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
 try:
     from citation_suggester import suggest_for_unverified
@@ -42,7 +42,7 @@ redis_conn = redis.from_url(REDIS_URL)
 # ============================================================
 
 VERIFY_CHUNK_SIZE = int(os.environ.get("VERIFY_CHUNK_SIZE", "10"))
-
+CLAIM_SUPPORT_TIMEOUT = int(os.environ.get("CLAIM_SUPPORT_TIMEOUT", "120"))
 
 def now_iso():
     return datetime.utcnow().isoformat()
@@ -438,7 +438,28 @@ def _find_sentence_for_citation(sentences, citation):
 
     return ""
 
+def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3):
+    """
+    Generate alternative source suggestions safely for the Claim Support tab.
+    """
+    claim = str(claim or "").strip()
 
+    if not claim or len(claim) < 20:
+        return []
+
+    if claim.lower().startswith("claim could not be extracted"):
+        return []
+
+    try:
+        return suggest_alternative_sources_for_claim(
+            claim=claim,
+            citation=citation,
+            current_source_title=current_source_title,
+            top_k=top_k
+        ) or []
+    except Exception as e:
+        print(f"[VERIFY WORKER] Alternative source suggestion failed for {citation}: {e}")
+        return []
 def _fallback_claim_support_rows(result, verification_rows):
     """
     Claim-support fallback with real claim extraction from main_text.
@@ -508,6 +529,13 @@ def _fallback_claim_support_rows(result, verification_rows):
         if not claim:
             claim = "Claim could not be extracted automatically. Review the cited sentence manually."
 
+        alt_sources = _safe_alternative_sources(
+            claim=claim,
+            citation=citation,
+            current_source_title=matched_reference,
+            top_k=3
+        )
+        
         rows.append({
             "citation": citation,
             "claim": claim,
@@ -517,7 +545,8 @@ def _fallback_claim_support_rows(result, verification_rows):
             "support_score": 0,
             "doi": lookup.get("doi", ""),
             "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": row.get("status", lookup.get("status", ""))
+            "citation_match_status": row.get("status", lookup.get("status", "")),
+            "alternative_sources": alt_sources
         })
 
     # If c2r rows are unavailable, fall back to verification rows
@@ -547,16 +576,26 @@ def _fallback_claim_support_rows(result, verification_rows):
         if not claim:
             claim = "Claim could not be extracted automatically. Review the cited sentence manually."
 
+        source_title = row.get("matched_title") or reference or "Source title not available"
+
+        alt_sources = _safe_alternative_sources(
+            claim=claim,
+            citation=citation,
+            current_source_title=source_title,
+            top_k=3
+        )
+        
         rows.append({
             "citation": citation,
             "claim": claim,
-            "source_title": (row.get("matched_title") or reference or "Source title not available")[:250],
+            "source_title": source_title[:250],
             "matched_source": reference,
             "support_status": "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required",
             "support_score": 0,
             "doi": row.get("doi", ""),
             "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": row.get("status", "")
+            "citation_match_status": row.get("status", ""),
+            "alternative_sources": alt_sources
         })
 
     return rows
