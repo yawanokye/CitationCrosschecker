@@ -2560,11 +2560,13 @@ async def verify_online(job_id: str = Form(...)):
 
     if verification.get("state") in {"queued", "running"}:
         return {
-            "started": False,
+            "started": True,
+            "success": True,
+            "already_running": True,
             "message": "Verification already in progress",
             "job_id": job_id,
             "progress": verification.get("progress", 0),
-            "total": verification.get("total", 0),
+            "total_references": verification.get("total", 0),
             "state": verification.get("state")
         }
 
@@ -2651,11 +2653,13 @@ async def verify_online(job_id: str = Form(...)):
     )
     
     return {
+        "started": True,
         "success": True,
-        "message": "Verification re-queued successfully",
+        "message": "Verification queued successfully",
         "job_id": job_id,
         "verification_job_id": new_verification_job_id,
-        "total_references": len(refs)
+        "total_references": len(refs),
+        "state": "queued"
     }
 # ============================================================
 # STATUS POLLING
