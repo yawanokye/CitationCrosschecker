@@ -158,8 +158,8 @@ def _build_recovery_payload(result, verification_rows):
 
     for row in verification_rows or []:
         status = row.get("status", "")
-        if status not in {"needs_review", "not_found", "offline"}:
-            continue
+        if status not in {"likely", "needs_review", "not_found", "offline"}:
+               continue
 
         suggestions = (
             row.get("suggested_references")
@@ -180,7 +180,71 @@ def _build_recovery_payload(result, verification_rows):
         "verification_recovery": verification_recovery
     }
 
+def _fallback_claim_support_rows(result, verification_rows):
+    """
+    Fallback claim-support rows.
 
+    This does not claim that the source supports the claim.
+    It only ensures the Claim Support tab is populated with review-ready rows
+    when the full claim checker returns no rows.
+    """
+    rows = []
+
+    c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
+
+    for i, row in enumerate(c2r_rows, start=1):
+        citation = (
+            row.get("in_text")
+            or row.get("citation")
+            or row.get("citation_in_text")
+            or ""
+        )
+
+        matched_reference = (
+            row.get("matched_reference")
+            or row.get("reference")
+            or ""
+        )
+
+        status = row.get("status", "")
+
+        if not citation and not matched_reference:
+            continue
+
+        rows.append({
+            "citation": citation,
+            "claim": "Claim extraction not available. Review the cited sentence manually.",
+            "source_title": matched_reference[:250] if matched_reference else "Matched source not available",
+            "matched_source": matched_reference,
+            "support_status": "not_checked",
+            "support_score": 0,
+            "doi": "",
+            "note": "Fallback row generated because automated claim-support checking returned no rows.",
+            "citation_match_status": status
+        })
+
+    if rows:
+        return rows
+
+    for i, row in enumerate(verification_rows or [], start=1):
+        reference = row.get("reference") or row.get("matched_title") or row.get("title") or ""
+
+        if not reference:
+            continue
+
+        rows.append({
+            "citation": row.get("citation", ""),
+            "claim": "Claim extraction not available. Review the cited sentence manually.",
+            "source_title": row.get("matched_title") or reference[:250],
+            "matched_source": reference,
+            "support_status": "not_checked",
+            "support_score": 0,
+            "doi": row.get("doi", ""),
+            "note": "Fallback row generated from verification output.",
+            "citation_match_status": row.get("status", "")
+        })
+
+    return rows
 def _normalise_references_for_verification(result):
     refs = result.get("references_raw", []) or []
 
@@ -1538,18 +1602,34 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
         try:
             result["recovery"] = _build_recovery_payload(result, all_rows)
+        
+            if not result["recovery"].get("missing_recovery") and not result["recovery"].get("verification_recovery"):
+                result["recovery"] = {
+                    "missing_recovery": [],
+                    "verification_recovery": [],
+                    "note": "No missing citations or weak verification rows requiring recovery were detected."
+                }
+        
         except Exception as e:
             print(f"[VERIFY WORKER] Recovery error: {e}")
             result["recovery"] = {
                 "missing_recovery": [],
-                "verification_recovery": []
+                "verification_recovery": [],
+                "note": f"Recovery generation failed: {e}"
             }
 
         try:
-            result["claim_support"] = build_claim_support_rows(result)
+            claim_rows = build_claim_support_rows(result) or []
+        
+            if not claim_rows:
+                print("[VERIFY WORKER] Claim-support returned 0 rows. Using fallback rows.")
+                claim_rows = _fallback_claim_support_rows(result, all_rows)
+        
+            result["claim_support"] = claim_rows
+        
         except Exception as e:
             print(f"[VERIFY WORKER] Claim-support error: {e}")
-            result["claim_support"] = []
+            result["claim_support"] = _fallback_claim_support_rows(result, all_rows)
 
         elapsed = round(time.time() - start_time, 2)
 
