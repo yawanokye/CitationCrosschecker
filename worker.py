@@ -143,6 +143,7 @@ def _make_context_review_suggestion(row, result):
         row.get("citation")
         or row.get("in_text")
         or row.get("citation_in_text")
+        or row.get("c2r_citation")  # Added: try to get from c2r mapping
         or ""
     )
 
@@ -194,6 +195,7 @@ def _context_suggestions_for_row(row, result):
                 row.get("citation")
                 or row.get("in_text")
                 or row.get("citation_in_text")
+                or row.get("c2r_citation")
                 or ""
             )
 
@@ -230,14 +232,29 @@ def _context_suggestions_for_row(row, result):
 
     return _make_context_review_suggestion(row, result)
 
+
 def _build_recovery_payload(result, verification_rows):
     """
-    Safe recovery builder for the new worker flow.
-    It avoids depending on web-process memory and always returns UI-ready arrays.
+    Safe recovery builder with proper citation mapping from c2r rows.
     """
     missing_recovery = []
     verification_recovery = []
 
+    # Get c2r rows for citation lookup - THIS IS CRITICAL
+    c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
+    
+    # Build lookup from c2r rows for citation mapping
+    c2r_lookup = {}
+    for c2r in c2r_rows:
+        matched_ref = c2r.get("matched_reference", "")
+        in_text = c2r.get("in_text", "") or c2r.get("citation", "") or c2r.get("citation_in_text", "")
+        if matched_ref and in_text:
+            c2r_lookup[matched_ref] = in_text
+            # Also map by key parts for fuzzy matching
+            ref_key = re.sub(r"[^a-zA-Z0-9]", "", matched_ref.lower())[:100]
+            c2r_lookup[ref_key] = in_text
+
+    # Build missing recovery
     for item in result.get("missing_in_references", []) or []:
         if isinstance(item, str):
             citation = item
@@ -252,29 +269,54 @@ def _build_recovery_payload(result, verification_rows):
             "suggestions": []
         })
 
+    # Build verification recovery - use c2r lookup to find citations
     for row in verification_rows or []:
         status = row.get("status", "")
+        
+        # Only include rows that need recovery attention
         if status not in {"likely", "needs_review", "not_found", "offline"}:
-               continue
+            continue
+
+        # Try to get citation from c2r lookup first
+        matched_ref = row.get("reference", "") or row.get("original_reference", "") or ""
+        citation = ""
+        
+        if matched_ref:
+            # Direct lookup
+            citation = c2r_lookup.get(matched_ref, "")
+            
+            # Try fuzzy matching if direct lookup fails
+            if not citation:
+                ref_key = re.sub(r"[^a-zA-Z0-9]", "", matched_ref.lower())[:100]
+                citation = c2r_lookup.get(ref_key, "")
+            
+            # Try partial match
+            if not citation:
+                for ref, cite in c2r_lookup.items():
+                    if len(ref) > 20 and (matched_ref.lower() in ref.lower() or ref.lower() in matched_ref.lower()):
+                        citation = cite
+                        break
+        
+        # Also check if row already has citation info
+        if not citation:
+            citation = row.get("citation") or row.get("in_text") or row.get("citation_in_text") or ""
+
+        # Get reference title
+        reference = (
+            row.get("reference")
+            or row.get("original_reference")
+            or row.get("matched_title")
+            or row.get("title")
+            or row.get("source_title")
+            or ""
+        )
 
         suggestions = _context_suggestions_for_row(row, result)
 
         verification_recovery.append({
             "status": status,
-            "citation": (
-                row.get("citation")
-                or row.get("in_text")
-                or row.get("citation_in_text")
-                or ""
-            ),
-            "reference": (
-                row.get("reference")
-                or row.get("original_reference")
-                or row.get("matched_title")
-                or row.get("title")
-                or row.get("source_title")
-                or ""
-            ),
+            "citation": citation,
+            "reference": reference[:500] if reference else "Source title not available",
             "suggestions": suggestions
         })
 
@@ -282,6 +324,7 @@ def _build_recovery_payload(result, verification_rows):
         "missing_recovery": missing_recovery,
         "verification_recovery": verification_recovery
     }
+
 
 def _split_sentences(text):
     """
@@ -464,12 +507,12 @@ def _safe_alternative_sources(claim, citation="", current_source_title="", top_k
     except Exception as e:
         print(f"[VERIFY WORKER] Alternative source suggestion failed for {citation}: {e}")
         return []
+
+
 def _fallback_claim_support_rows(result, verification_rows):
     """
-    Claim-support fallback with real claim extraction from main_text.
-
-    It does not verify whether the source truly supports the claim.
-    It extracts the claim sentence around the citation and marks it for review.
+    Claim-support with real claim extraction from main_text.
+    Uses c2r rows for accurate citation mapping.
     """
     rows = []
 
@@ -478,33 +521,7 @@ def _fallback_claim_support_rows(result, verification_rows):
 
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
-    # Create lookup from verification rows
-    verification_lookup = {}
-
-    for row in verification_rows or []:
-        citation_key = str(
-            row.get("citation")
-            or row.get("in_text")
-            or row.get("citation_in_text")
-            or ""
-        ).strip().lower()
-
-        reference_value = (
-            row.get("reference")
-            or row.get("original_reference")
-            or row.get("matched_title")
-            or row.get("title")
-            or row.get("source_title")
-            or ""
-        )
-
-        if citation_key and citation_key not in verification_lookup:
-            verification_lookup[citation_key] = {
-                "reference": reference_value,
-                "doi": row.get("doi", ""),
-                "status": row.get("status", "")
-            }
-
+    # First, process c2r rows for complete mapping
     for row in c2r_rows:
         citation = (
             row.get("in_text")
@@ -522,87 +539,103 @@ def _fallback_claim_support_rows(result, verification_rows):
             or ""
         )
 
-        lookup = verification_lookup.get(citation.lower(), {})
+        if not citation or not matched_reference:
+            continue
 
-        if not matched_reference:
-            matched_reference = lookup.get("reference", "")
+        # Find matching verification row to get status
+        verify_info = {}
+        for vr in verification_rows:
+            ref = vr.get("reference") or vr.get("original_reference") or ""
+            if ref and (ref == matched_reference or matched_reference in ref or ref in matched_reference):
+                verify_info = vr
+                break
 
+        # Extract claim from sentence
         sentence = _find_sentence_for_citation(sentences, citation)
         claim = _extract_claim_from_sentence(sentence, citation)
 
         if not claim:
             claim = "Claim could not be extracted automatically. Review the cited sentence manually."
 
-        alt_sources = _safe_alternative_sources(
-            claim=claim,
-            citation=citation,
-            current_source_title=matched_reference,
-            top_k=3
-        )
-        
+        alt_sources = []  # Skip alternative sources during verification to avoid timeout
+        # Only add alt sources for a few rows
+        if len(rows) < MAX_ALT_SOURCES_IN_VERIFY:
+            alt_sources = _safe_alternative_sources(
+                claim=claim,
+                citation=citation,
+                current_source_title=matched_reference,
+                top_k=2
+            )
+
         rows.append({
             "citation": citation,
             "claim": claim,
             "source_title": matched_reference[:250] if matched_reference else "Matched source not available",
             "matched_source": matched_reference,
-            "support_status": "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required",
-            "support_score": 0,
-            "doi": lookup.get("doi", ""),
+            "support_status": "claim_extracted_review_required",
+            "support_score": 0.5,  # Default score for extracted claims
+            "doi": verify_info.get("doi", ""),
             "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": row.get("status", lookup.get("status", "")),
-            "alternative_sources": alt_sources
+            "citation_match_status": verify_info.get("status", "matched"),
+            "alternative_sources": alt_sources,
+            "verification_status": verify_info.get("status", "unknown")
         })
 
-    # If c2r rows are unavailable, fall back to verification rows
-    if rows:
-        return rows
+    # If no c2r rows, fall back to verification rows
+    if not rows:
+        for row in verification_rows or []:
+            citation = (
+                row.get("citation")
+                or row.get("in_text")
+                or row.get("citation_in_text")
+                or ""
+            )
 
-    for row in verification_rows or []:
-        citation = (
-            row.get("citation")
-            or row.get("in_text")
-            or row.get("citation_in_text")
-            or ""
-        )
+            reference = (
+                row.get("reference")
+                or row.get("original_reference")
+                or row.get("matched_title")
+                or row.get("title")
+                or row.get("source_title")
+                or ""
+            )
 
-        reference = (
-            row.get("reference")
-            or row.get("original_reference")
-            or row.get("matched_title")
-            or row.get("title")
-            or row.get("source_title")
-            or ""
-        )
+            if not citation:
+                continue
 
-        sentence = _find_sentence_for_citation(sentences, citation)
-        claim = _extract_claim_from_sentence(sentence, citation)
+            sentence = _find_sentence_for_citation(sentences, citation)
+            claim = _extract_claim_from_sentence(sentence, citation)
 
-        if not claim:
-            claim = "Claim could not be extracted automatically. Review the cited sentence manually."
+            if not claim:
+                claim = "Claim could not be extracted automatically. Review the cited sentence manually."
 
-        source_title = row.get("matched_title") or reference or "Source title not available"
+            source_title = row.get("matched_title") or reference or "Source title not available"
 
-        alt_sources = _safe_alternative_sources(
-            claim=claim,
-            citation=citation,
-            current_source_title=source_title,
-            top_k=3
-        )
-        
-        rows.append({
-            "citation": citation,
-            "claim": claim,
-            "source_title": source_title[:250],
-            "matched_source": reference,
-            "support_status": "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required",
-            "support_score": 0,
-            "doi": row.get("doi", ""),
-            "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": row.get("status", ""),
-            "alternative_sources": alt_sources
-        })
+            alt_sources = []
+            if len(rows) < MAX_ALT_SOURCES_IN_VERIFY:
+                alt_sources = _safe_alternative_sources(
+                    claim=claim,
+                    citation=citation,
+                    current_source_title=source_title,
+                    top_k=2
+                )
+
+            rows.append({
+                "citation": citation,
+                "claim": claim,
+                "source_title": source_title[:250],
+                "matched_source": reference,
+                "support_status": "claim_extracted_review_required",
+                "support_score": 0.5,
+                "doi": row.get("doi", ""),
+                "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
+                "citation_match_status": row.get("status", ""),
+                "alternative_sources": alt_sources,
+                "verification_status": row.get("status", "unknown")
+            })
 
     return rows
+
 
 def _normalise_references_for_verification(result):
     refs = result.get("references_raw", []) or []
@@ -624,6 +657,8 @@ def _normalise_references_for_verification(result):
             print(f"[VERIFY WORKER] Reference recovery failed: {e}")
 
     return []
+
+
 def _is_real_claim_row(row):
     claim = str(row.get("claim") or row.get("claim_extracted") or "").strip()
 
@@ -1679,6 +1714,8 @@ def dedupe_suggestions_by_priority(suggestions):
             best[original] = s
 
     return list(best.values())
+
+
 # ============================================================
 # MAIN PROCESS_DOCUMENT FUNCTION
 # ============================================================
@@ -1879,13 +1916,10 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
 # ============================================================
 # VERIFICATION WORKER FUNCTION
 # ============================================================
+
 def process_verification(job_id, style="apa", enrich_metadata=False):
     """
-    Durable online verification job.
-
-    This replaces the old verify.py daemon-thread flow.
-    It runs inside the RQ worker, persists progress after every chunk,
-    updates PostgreSQL and Redis, and builds final dashboard tables.
+    Durable online verification job with proper claim support and recovery.
     """
     print(f"🌐 Starting durable verification for job {job_id}")
 
@@ -1894,6 +1928,11 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
     try:
         result = _load_job_result(job_id)
+        
+        # Get c2r rows for citation mapping - THIS IS CRITICAL
+        c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
+        print(f"📊 Loaded {len(c2r_rows)} citation-reference pairs for job {job_id}")
+        
         refs = _normalise_references_for_verification(result)
         total = len(refs)
 
@@ -1915,14 +1954,24 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
             result["recovery"] = {
                 "missing_recovery": [],
-                "verification_recovery": [],
-                "note": "No references were available for recovery."
+                "verification_recovery": []
             }
 
             result["claim_support"] = []
 
             _save_job_result(job_id, result)
             return result
+
+        # Build c2r lookup for citation mapping during verification
+        c2r_lookup = {}
+        for c2r in c2r_rows:
+            matched_ref = c2r.get("matched_reference", "")
+            in_text = c2r.get("in_text", "") or c2r.get("citation", "") or c2r.get("citation_in_text", "")
+            if matched_ref and in_text:
+                c2r_lookup[matched_ref] = in_text
+                # Also map by key parts
+                ref_key = re.sub(r"[^a-zA-Z0-9]", "", matched_ref.lower())[:100]
+                c2r_lookup[ref_key] = in_text
 
         result = _set_verification_meta(
             result,
@@ -1969,6 +2018,16 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 enrich_metadata=enrich_metadata
             )
 
+            # Attach c2r citation to each row for recovery
+            for row in chunk_rows:
+                matched_ref = row.get("reference", "") or row.get("original_reference", "") or ""
+                if matched_ref:
+                    citation = c2r_lookup.get(matched_ref, "")
+                    if not citation:
+                        ref_key = re.sub(r"[^a-zA-Z0-9]", "", matched_ref.lower())[:100]
+                        citation = c2r_lookup.get(ref_key, "")
+                    row["c2r_citation"] = citation
+
             all_rows.extend(chunk_rows or [])
 
             progress = min(len(all_rows), total)
@@ -2003,74 +2062,61 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             "summary": summary
         }
 
-        # Build Recovery immediately using safe fallback suggestions.
+        # Build Recovery with proper citation mapping
         try:
             result["recovery"] = _build_recovery_payload(result, all_rows)
-
-            if (
-                not result["recovery"].get("missing_recovery")
-                and not result["recovery"].get("verification_recovery")
-            ):
-                result["recovery"] = {
-                    "missing_recovery": [],
-                    "verification_recovery": [
-                        {
-                            "status": r.get("status", ""),
-                            "citation": (
-                                r.get("citation")
-                                or r.get("in_text")
-                                or r.get("citation_in_text")
-                                or ""
-                            ),
-                            "reference": (
-                                r.get("reference")
-                                or r.get("original_reference")
-                                or r.get("matched_title")
-                                or r.get("title")
-                                or r.get("source_title")
-                                or ""
-                            ),
-                            "suggestions": [
-                                {
-                                    "title": "Review this source in context",
-                                    "authors": r.get("matched_authors") or r.get("authors") or "",
-                                    "year": r.get("matched_year") or r.get("year") or "",
-                                    "doi": r.get("doi") or "",
-                                    "reason": "Review whether this source supports the cited claim.",
-                                    "source": "fallback_recovery",
-                                    "confidence": 0.50
-                                }
-                            ]
-                        }
-                        for r in all_rows
-                        if r.get("status") in {"likely", "needs_review", "not_found", "offline"}
-                    ],
-                    "note": "Fallback recovery rows generated."
-                }
-
+            print(f"✅ Recovery built: {len(result['recovery'].get('missing_recovery', []))} missing, {len(result['recovery'].get('verification_recovery', []))} verification rows")
         except Exception as e:
             print(f"[VERIFY WORKER] Recovery error: {e}")
+            import traceback
+            traceback.print_exc()
             result["recovery"] = {
                 "missing_recovery": [],
                 "verification_recovery": [],
                 "note": f"Recovery generation failed: {e}"
             }
 
-       # Build claim-support rows quickly.
-       # Do not call alternative-source search inside verification.
+        # Build claim-support rows
         try:
             claim_rows = _fallback_claim_support_rows(result, all_rows)
-        
+            
+            # Add alternative sources for weak claims (limited)
+            alt_added = 0
             for row in claim_rows:
-                row.setdefault("alternative_sources", [])
-        
+                if alt_added >= MAX_ALT_SOURCES_IN_VERIFY:
+                    row.setdefault("alternative_sources", [])
+                    continue
+                
+                # Only add alternatives for weak support
+                support_status = row.get("support_status", "")
+                if support_status in {"no_evidence_found", "insufficient_evidence", "weak_or_unclear"}:
+                    claim = row.get("claim", "")
+                    citation = row.get("citation", "")
+                    current_source = row.get("source_title", "")
+                    
+                    alt_sources = _safe_alternative_sources(
+                        claim=claim,
+                        citation=citation,
+                        current_source_title=current_source,
+                        top_k=2
+                    )
+                    if alt_sources:
+                        row["alternative_sources"] = alt_sources
+                        alt_added += 1
+                    else:
+                        row.setdefault("alternative_sources", [])
+                else:
+                    row.setdefault("alternative_sources", [])
+            
             result["claim_support"] = claim_rows
-        
+            print(f"✅ Claim support built: {len(claim_rows)} rows")
         except Exception as e:
-            print(f"[VERIFY WORKER] Claim-support fallback failed: {e}")
+            print(f"[VERIFY WORKER] Claim support error: {e}")
+            import traceback
+            traceback.print_exc()
             result["claim_support"] = []
 
-        # ACII should not block completion.
+        # Compute ACII
         try:
             result["acii"] = compute_acii(result, all_rows)
         except Exception as e:
@@ -2096,7 +2142,7 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
         _save_job_result(job_id, result, status="completed")
 
-        print(f"✅ Durable verification completed for job {job_id}: {len(all_rows)} rows")
+        print(f"✅ Durable verification completed for job {job_id}: {len(all_rows)} rows verified, {len(result.get('claim_support', []))} claim rows")
         return result
 
     except Exception as e:
@@ -2112,10 +2158,14 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 "summary": _compute_verification_summary(all_rows)
             }
 
-            result.setdefault("recovery", {
-                "missing_recovery": [],
-                "verification_recovery": []
-            })
+            # Try to build recovery even on error
+            try:
+                result["recovery"] = _build_recovery_payload(result, all_rows)
+            except:
+                result["recovery"] = {
+                    "missing_recovery": [],
+                    "verification_recovery": []
+                }
 
             result.setdefault("claim_support", [])
 
@@ -2135,7 +2185,6 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
         raise
 
 
-   
 # Start the worker
 if __name__ == "__main__":
     print("🚀 Starting worker...")
