@@ -2056,35 +2056,13 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 "note": f"Recovery generation failed: {e}"
             }
 
-        # Do not let claim-support checking block completion.
+       # Build claim-support rows quickly.
+       # Do not call alternative-source search inside verification.
         try:
-            # First build fast fallback claim rows so the dashboard always gets data.
             claim_rows = _fallback_claim_support_rows(result, all_rows)
         
-            # Add alternatives only for a few rows during verification.
-            # This prevents the worker from hanging at 23/23.
-            alt_added = 0
-        
             for row in claim_rows:
-                if alt_added >= MAX_ALT_SOURCES_IN_VERIFY:
-                    row.setdefault("alternative_sources", [])
-                    continue
-        
-                claim = row.get("claim", "")
-                citation = row.get("citation", "")
-                current_source_title = row.get("source_title", "")
-        
-                alt_sources = _safe_alternative_sources(
-                    claim=claim,
-                    citation=citation,
-                    current_source_title=current_source_title,
-                    top_k=3
-                )
-        
-                row["alternative_sources"] = alt_sources
-        
-                if alt_sources:
-                    alt_added += 1
+                row.setdefault("alternative_sources", [])
         
             result["claim_support"] = claim_rows
         
