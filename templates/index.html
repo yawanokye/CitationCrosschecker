@@ -1852,7 +1852,34 @@ function renderVerify(data) {
     const btnExportVerify = $("btnExportVerify");
     if (btnExportVerify && rows.length > 0) btnExportVerify.disabled = false;
 }
+function formatSuggestionAuthors(authors) {
+    if (Array.isArray(authors)) {
+        return authors.join(", ");
+    }
 
+    if (authors && typeof authors === "object") {
+        return Object.values(authors).filter(Boolean).join(", ");
+    }
+
+    return String(authors || "");
+}
+
+function renderRecoverySuggestionItem(s) {
+    const authors = formatSuggestionAuthors(s.authors);
+    const title = s.title || s.suggested || "Untitled suggestion";
+    const year = s.year ? `(${esc(s.year)})` : "";
+    const doi = s.doi
+        ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>`
+        : "";
+
+    return `
+        <li>
+            <div><strong>${esc(title)}</strong> ${year}</div>
+            <div class="suggestion-meta">${esc(authors)}</div>
+            <div>${doi}</div>
+        </li>
+    `;
+}
 function renderRecovery(data) {
     const missingBody = $("recoveryMissingBody");
     const verifyBody = $("recoveryVerifyBody");
@@ -1871,7 +1898,7 @@ function renderRecovery(data) {
                 <div class="suggestion-box">
                     <div class="suggestion-title">💡 Suggested references</div>
                     <ul class="suggestion-list">
-                        ${suggestions.map(s => `<li><div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div><div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div><div>${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}</div></li>`).join("")}
+                         ${suggestions.map(s => renderRecoverySuggestionItem(s)).join("")}   
                     </ul>
                 </div>
             ` : `<span class="badge no_evidence_found">No evidence found</span>`;
@@ -1889,7 +1916,7 @@ function renderRecovery(data) {
                 <div class="suggestion-box">
                     <div class="suggestion-title">🔧 Context suggestions</div>
                     <ul class="suggestion-list">
-                        ${suggestions.map(s => `<li><div><strong>${esc(s.title || "Untitled")}</strong> ${s.year ? `(${esc(s.year)})` : ""}</div><div class="suggestion-meta">${esc((s.authors || []).join(", "))}</div><div>${s.doi ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>` : ""}</div></li>`).join("")}
+                        ${suggestions.map(s => renderRecoverySuggestionItem(s)).join("")}
                     </ul>
                 </div>
             ` : `<span class="badge no_evidence_found">No evidence found</span>`;
