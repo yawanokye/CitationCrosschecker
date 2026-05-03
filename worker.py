@@ -109,32 +109,10 @@ def _save_job_result(job_id, result, status=None):
         cursor.close()
         conn.close()
 
-    # Keep /result/{job_id} fresh because main.py checks Redis cache first.
     try:
         redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
     except Exception as e:
         print(f"[VERIFY WORKER] Could not refresh Redis result cache: {e}")
-
-
-    result = _set_verification_meta(
-        result,
-        state="completed",
-        progress=total,
-        total=total,
-        percentage=100,
-        results_count=len(all_rows),
-        summary=summary,
-        message=f"Verification completed for {len(all_rows)} references",
-        completed_at=now_iso(),
-        processing_time_seconds=elapsed,
-        final_tables_ready=True
-    )
-    
-    result["final_tables_ready"] = True
-    result["verification_completed_at"] = now_iso()
-    
-    _save_job_result(job_id, result, status="completed")
-
 
 def _compute_verification_summary(rows):
     rows = rows or []
