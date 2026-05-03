@@ -1361,9 +1361,33 @@ function normaliseFinalResult(result) {
 function isFinalResultReady(result) {
     if (!result) return false;
 
-    const rows = result.online_verification?.rows;
+    const rows = result.online_verification?.rows || [];
+    const verification = result.verification || {};
 
-    return Array.isArray(rows) && rows.length > 0;
+    const state = String(
+        verification.state ||
+        result.online?.state ||
+        ""
+    ).toLowerCase();
+
+    const progress = Number(verification.progress || rows.length || 0);
+    const total = Number(verification.total || 0);
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return false;
+    }
+
+    // Final only when the worker says finalising/completed
+    if (state === "finalising" || state === "completed") {
+        return true;
+    }
+
+    // Or when progress has reached the known total
+    if (total > 0 && progress >= total && rows.length >= total) {
+        return true;
+    }
+
+    return false;
 }
 
 function showFinalisingMessage() {
@@ -1427,29 +1451,48 @@ async function fetchStatus() {
         
         // Check if we have results directly in the response
         if (js.result && js.result.online_verification && js.result.online_verification.rows) {
-            const rows = js.result.online_verification.rows.length;
+            const partialResult = normaliseFinalResult(js.result);
         
-            updateProgress(rows, rows, "processing", `✅ Verification complete: ${rows}/${rows}. Finalising tables...`);
+            const rows = partialResult.online_verification.rows.length;
+            const verification = partialResult.verification || {};
+            const total = Number(verification.total || js.online?.total || rows || 0);
+            const progress = Number(verification.progress || rows || 0);
+            const state = String(verification.state || js.online?.state || "").toLowerCase();
         
-            if (isFinalResultReady(js.result)) {
-                const finalResult = normaliseFinalResult(js.result);
-            
-                updateProgress(rows, rows, "completed", `✅ Complete! ${rows}/${rows}`);
-                renderAll(finalResult);
-                showFinalReadyMessage(finalResult);
+            if (isFinalResultReady(partialResult)) {
+                updateProgress(
+                    total || rows,
+                    total || rows,
+                    "completed",
+                    `✅ Complete! ${rows}/${total || rows}`
+                );
+        
+                renderAll(partialResult);
+                showFinalReadyMessage(partialResult);
                 stopPolling();
-            
+        
                 VERIFICATION_IN_PROGRESS = false;
-            
+        
                 const btnVerify = $("btnVerify");
                 if (btnVerify) btnVerify.disabled = false;
-            
+        
                 return;
             }
-                    
-            showFinalisingMessage();
         
-            // Keep polling because Recovery and Claim Support are not populated yet.
+            // Partial rows have arrived, but verification is still running
+            renderVerify(partialResult);
+            updateProgress(
+                progress,
+                total || rows,
+                "processing",
+                `Verifying references: ${progress}/${total || rows}. Partial results loaded...`
+            );
+        
+            setStatus(
+                `Verification in progress: ${progress}/${total || rows}. Partial results loaded.`,
+                "warn"
+            );
+        
             return;
         }
         if (js.online) {
