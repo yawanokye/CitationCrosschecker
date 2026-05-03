@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CiteIntegrity | Citation Integrity Platform</title>
-    <meta name="description" content="CiteIntegrity - Professional citation integrity verification, reference validation, and manuscript readiness analysis.">
+    <title>Results Dashboard | CiteIntegrity</title>
+    <meta name="description" content="CiteIntegrity results dashboard for citation integrity, verification, recovery, claim support, and ACII review.">
 
     <style>
         :root {
@@ -23,7 +23,7 @@
             --line: #e2e8f0;
             --soft-bg: #f8fafc;
             --white: #ffffff;
-            --shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            --shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
             --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
         }
 
@@ -35,10 +35,10 @@
 
         body {
             font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            background: var(--soft-bg);
             color: var(--navy);
             line-height: 1.5;
-            min-height: 100vh;
+            font-size: 14px;
         }
 
         a {
@@ -50,13 +50,13 @@
             position: sticky;
             top: 0;
             z-index: 50;
-            background: rgba(255, 255, 255, 0.96);
+            background: rgba(255, 255, 255, 0.94);
             backdrop-filter: blur(14px);
             border-bottom: 1px solid var(--line);
         }
 
         .header-inner {
-            max-width: 1400px;
+            max-width: 1500px;
             margin: 0 auto;
             padding: 14px 24px;
             display: flex;
@@ -126,192 +126,56 @@
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1500px;
             margin: 0 auto;
-            padding: 32px 24px 48px;
+            padding: 22px 24px 48px;
         }
 
-        .hero {
-            text-align: center;
-            margin-bottom: 48px;
+        .topbar {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 18px;
+            align-items: start;
+            margin-bottom: 18px;
         }
 
-        .hero h1 {
-            font-size: clamp(36px, 5vw, 56px);
+        .page-title h1 {
+            font-size: clamp(28px, 4vw, 42px);
+            line-height: 1.1;
             font-weight: 900;
-            letter-spacing: -1.5px;
-            background: linear-gradient(135deg, var(--navy), var(--blue));
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            margin-bottom: 16px;
-        }
-
-        .hero p {
-            font-size: 18px;
-            color: var(--slate);
-            max-width: 700px;
-            margin: 0 auto;
-        }
-
-        .upload-card {
-            background: var(--white);
-            border-radius: 32px;
-            box-shadow: var(--shadow);
-            padding: 32px;
-            margin-bottom: 32px;
-            border: 1px solid var(--line);
-        }
-
-        .upload-area {
-            border: 2px dashed #cbd5e1;
-            border-radius: 24px;
-            padding: 48px 24px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            background: var(--soft-bg);
-        }
-
-        .upload-area:hover {
-            border-color: var(--green);
-            background: var(--green-soft);
-        }
-
-        .upload-area.drag-over {
-            border-color: var(--green);
-            background: var(--green-soft);
-            border-style: solid;
-        }
-
-        .upload-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-        }
-
-        .upload-title {
-            font-size: 18px;
-            font-weight: 700;
+            letter-spacing: -1px;
             margin-bottom: 8px;
         }
 
-        .upload-subtitle {
-            font-size: 14px;
+        .page-title p {
             color: var(--slate);
+            font-size: 15px;
         }
 
-        #fileInput {
-            display: none;
-        }
-
-        .file-info {
-            margin-top: 20px;
-            padding: 16px;
-            background: var(--blue-soft);
-            border-radius: 16px;
-            display: none;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-
-        .file-name {
-            font-weight: 600;
-            color: var(--blue);
-        }
-
-        .file-size {
-            font-size: 12px;
-            color: var(--slate);
-        }
-
-        .badge {
+        .status-box {
+            margin-top: 12px;
             display: inline-flex;
             align-items: center;
-            border-radius: 999px;
-            padding: 4px 12px;
-            font-size: 11px;
-            font-weight: 850;
-        }
-
-        .badge-warning {
-            background: var(--amber-soft);
-            color: #b45309;
-        }
-
-        .badge-info {
-            background: var(--blue-soft);
-            color: var(--blue);
-        }
-
-        .badge-success {
-            background: var(--green-soft);
-            color: var(--green-dark);
-        }
-
-        .badge-error {
-            background: var(--red-soft);
-            color: #b91c1c;
-        }
-
-        .options-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 20px;
-            margin-bottom: 24px;
-        }
-
-        .option-card {
-            background: var(--soft-bg);
-            border-radius: 20px;
-            padding: 16px;
-            border: 1px solid var(--line);
-        }
-
-        .option-title {
-            font-weight: 800;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
             gap: 8px;
-        }
-
-        .checkbox-label {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            margin-bottom: 10px;
-        }
-
-        .checkbox-label input {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-        }
-
-        select, .style-select {
-            width: 100%;
-            padding: 10px 12px;
-            border-radius: 12px;
-            border: 1px solid var(--line);
             background: white;
-            font-family: inherit;
-            font-size: 14px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 9px 14px;
+            box-shadow: var(--shadow-soft);
+            font-weight: 750;
+            color: var(--slate);
         }
 
-        .large-doc-warning {
-            background: #fffbeb;
-            border-left: 4px solid var(--amber);
-            padding: 16px;
-            border-radius: 16px;
-            margin: 20px 0;
-            display: none;
-        }
+        .status.good { color: var(--green-dark); }
+        .status.warn { color: #c2410c; }
+        .status.bad { color: var(--red); }
+        .status.info { color: var(--blue); }
 
-        .large-doc-warning.show {
-            display: block;
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
         }
 
         .btn {
@@ -319,14 +183,19 @@
             align-items: center;
             justify-content: center;
             gap: 8px;
-            padding: 12px 24px;
+            padding: 11px 16px;
             border-radius: 999px;
-            border: none;
+            border: 1px solid transparent;
             font-weight: 850;
-            font-size: 14px;
+            font-size: 13px;
             cursor: pointer;
             font-family: inherit;
-            transition: all 0.2s ease;
+            transition: 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
         }
 
         .btn-primary {
@@ -335,29 +204,40 @@
             box-shadow: 0 10px 22px rgba(15, 23, 42, 0.18);
         }
 
-        .btn-primary:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
-        }
-
-        .btn-primary:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        .btn-green {
+            background: linear-gradient(135deg, var(--green), var(--green-dark));
+            color: white;
+            box-shadow: 0 10px 22px rgba(25, 179, 107, 0.20);
         }
 
         .btn-secondary {
             background: white;
             color: var(--navy);
-            border: 1px solid var(--line);
+            border-color: var(--line);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--navy-soft);
+            border-color: #cbd5e1;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
         }
 
         .progress-card {
             display: none;
             background: white;
             border: 1px solid var(--line);
-            border-radius: 20px;
-            padding: 20px;
-            margin-top: 24px;
+            border-radius: 22px;
+            padding: 16px;
+            box-shadow: var(--shadow-soft);
+            margin-bottom: 18px;
         }
 
         .progress-track {
@@ -373,51 +253,332 @@
             height: 100%;
             background: linear-gradient(90deg, var(--green), var(--green-dark));
             border-radius: 999px;
-            transition: width 0.3s ease;
+            transition: width 0.25s ease;
         }
 
         .progress-text {
-            margin-top: 12px;
+            margin-top: 8px;
+            color: var(--slate);
+            font-weight: 750;
             font-size: 13px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 18px;
+            align-items: start;
+        }
+
+        .sidebar {
+            position: sticky;
+            top: 82px;
+            display: grid;
+            gap: 16px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 26px;
+            box-shadow: var(--shadow-soft);
+            padding: 20px;
+        }
+
+        .acii-card {
+            background: linear-gradient(135deg, var(--navy), #1e3a5f);
+            color: white;
+            text-align: center;
+            border: none;
+        }
+
+        .acii-score {
+            font-size: 64px;
+            line-height: 1;
+            font-weight: 950;
+            letter-spacing: -2px;
+            margin-top: 10px;
+        }
+
+        .acii-label {
+            margin-top: 8px;
+            color: rgba(255,255,255,0.84);
+            font-weight: 750;
+        }
+
+        .acii-rating {
+            display: inline-flex;
+            margin-top: 14px;
+            padding: 7px 18px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 850;
+            background: var(--blue);
+        }
+
+        .acii-rating.excellent { background: #16a34a; }
+        .acii-rating.very-good { background: #22c55e; }
+        .acii-rating.good { background: #2563eb; }
+        .acii-rating.moderate { background: #f59e0b; }
+        .acii-rating.weak { background: #f97316; }
+        .acii-rating.poor { background: #ef4444; }
+
+        .acii-rec {
+            text-align: left;
+            margin-top: 16px;
+            background: rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 14px;
+            color: rgba(255,255,255,0.9);
+            font-size: 13px;
+        }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .kpi {
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            border-radius: 18px;
+            padding: 14px;
+            text-align: center;
+        }
+
+        .kpi-value {
+            font-size: 28px;
+            font-weight: 950;
+            color: var(--navy);
+        }
+
+        .kpi-label {
+            margin-top: 4px;
+            font-size: 11px;
+            font-weight: 800;
             color: var(--slate);
         }
 
-        .status-box {
-            margin-top: 16px;
-            padding: 12px 16px;
-            border-radius: 12px;
+        .nav-tabs {
+            display: grid;
+            gap: 8px;
+        }
+
+        .tab-btn {
+            width: 100%;
+            text-align: left;
+            border: 1px solid #eef2f6;
+            background: #f8fafc;
+            border-radius: 16px;
+            padding: 12px 14px;
+            cursor: pointer;
+            font-family: inherit;
+            font-weight: 850;
+            color: var(--slate);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .tab-btn:hover {
+            background: #f0fdf4;
+            color: var(--green-dark);
+        }
+
+        .tab-btn.active {
+            background: var(--navy);
+            color: white;
+            border-color: var(--navy);
+        }
+
+        .count-pill {
+            background: rgba(100, 116, 139, 0.14);
+            color: inherit;
+            border-radius: 999px;
+            padding: 3px 8px;
+            font-size: 11px;
+        }
+
+        .main-panel {
+            min-width: 0;
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .section-title {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .section-title h2 {
+            font-size: 22px;
+            font-weight: 900;
+            letter-spacing: -0.4px;
+        }
+
+        .section-title p {
+            color: var(--slate);
+            margin-top: 4px;
             font-size: 13px;
         }
 
-        .status-box.info {
-            background: var(--blue-soft);
-            color: var(--blue);
+        .filters {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
         }
 
-        .status-box.warning {
-            background: var(--amber-soft);
-            color: #b45309;
+        .search-input, select {
+            border: 1px solid #cbd5e1;
+            background: white;
+            border-radius: 999px;
+            padding: 10px 14px;
+            font-family: inherit;
+            font-size: 13px;
+            min-width: 220px;
         }
 
-        .status-box.error {
-            background: var(--red-soft);
-            color: #b91c1c;
+        .table-wrap {
+            overflow: auto;
+            max-height: 620px;
+            border: 1px solid #eef2f6;
+            border-radius: 18px;
         }
 
-        .status-box.success {
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 780px;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 12px 14px;
+            border-bottom: 1px solid #eef2f6;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #f8fafc;
+            color: var(--navy);
+            font-size: 12px;
+            font-weight: 900;
+        }
+
+        tr:hover td {
+            background: #fcfdff;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+
+        .badge.verified,
+        .badge.matched,
+        .badge.strong_support {
             background: var(--green-soft);
             color: var(--green-dark);
         }
 
-        .result-link {
-            margin-top: 20px;
-            text-align: center;
+        .badge.likely,
+        .badge.moderate_support {
+            background: var(--amber-soft);
+            color: #b45309;
         }
 
-        .result-link a {
-            color: var(--green);
-            font-weight: 800;
-            text-decoration: underline;
+        .badge.needs_review,
+        .badge.related_evidence,
+        .badge.weak_or_unclear {
+            background: #fff7ed;
+            color: #c2410c;
+        }
+
+        .badge.not_found,
+        .badge.insufficient_evidence,
+        .badge.no_evidence_found {
+            background: var(--red-soft);
+            color: #b91c1c;
+        }
+
+        .badge.offline {
+            background: #f1f5f9;
+            color: #475569;
+        }
+
+        .doi-link {
+            color: var(--blue);
+            font-weight: 850;
+        }
+
+        .small-muted {
+            color: var(--slate);
+            font-size: 12px;
+        }
+
+        .suggestion-box {
+            border-left: 4px solid var(--green);
+            background: #f8fafc;
+            padding: 10px 12px;
+            border-radius: 12px;
+        }
+
+        .suggestion-item {
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            border-radius: 16px;
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+
+        .suggestion-item.high { border-left: 5px solid var(--green); }
+        .suggestion-item.medium { border-left: 5px solid var(--amber); }
+        .suggestion-item.low { border-left: 5px solid var(--red); }
+
+        .line-through {
+            color: var(--red);
+            text-decoration: line-through;
+        }
+
+        .suggested {
+            color: var(--green-dark);
+            font-weight: 850;
+            margin-top: 6px;
+        }
+
+        .empty {
+            padding: 26px;
+            text-align: center;
+            color: var(--slate);
+            background: #f8fafc;
+            border-radius: 18px;
+            border: 1px dashed #cbd5e1;
         }
 
         .footer {
@@ -427,7 +588,6 @@
             color: var(--slate);
             text-align: center;
             font-size: 13px;
-            margin-top: 48px;
         }
 
         .footer a {
@@ -443,13 +603,38 @@
             margin-top: 8px;
         }
 
+        @media (max-width: 1120px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                position: static;
+            }
+
+            .nav-tabs {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .topbar {
+                grid-template-columns: 1fr;
+            }
+
+            .actions {
+                justify-content: flex-start;
+            }
+        }
+
         @media (max-width: 760px) {
             .header-inner {
+                align-items: flex-start;
                 flex-wrap: wrap;
             }
+
             .mobile-toggle {
                 display: block;
             }
+
             .nav {
                 display: none;
                 width: 100%;
@@ -458,20 +643,35 @@
                 gap: 12px;
                 padding-top: 12px;
             }
+
             .nav.open {
                 display: flex;
             }
+
+            .brand-badge {
+                display: none;
+            }
+
             .container {
-                padding: 20px 16px 40px;
+                padding: 18px 16px 38px;
             }
-            .upload-card {
-                padding: 20px;
-            }
-            .options-grid {
+
+            .nav-tabs,
+            .kpi-grid {
                 grid-template-columns: 1fr;
             }
-            .btn {
+
+            .actions .btn {
                 width: 100%;
+            }
+
+            .search-input, select {
+                min-width: 100%;
+            }
+
+            .card {
+                padding: 16px;
+                border-radius: 22px;
             }
         }
     </style>
@@ -488,13 +688,14 @@
                 <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span class="brand-name">CiteIntegrity</span>
-            <span class="brand-badge">New Interface</span>
+            <span class="brand-badge">Results Dashboard</span>
         </a>
 
         <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
 
         <nav class="nav" id="mainNav">
-            <a href="/new" class="active">Home</a>
+            <a href="/new">Home</a>
+            <a href="/new/analyse">New Analysis</a>
             <a href="/privacy">Privacy</a>
             <a href="/" class="nav-cta">Old Interface</a>
         </nav>
@@ -502,344 +703,1157 @@
 </header>
 
 <main class="container">
-    <div class="hero">
-        <h1>Citation Integrity Platform</h1>
-        <p>Upload your manuscript for comprehensive citation analysis, reference verification, and ACII scoring.</p>
-    </div>
-
-    <div class="upload-card">
-        <div class="upload-area" id="uploadArea">
-            <div class="upload-icon">📄</div>
-            <div class="upload-title">Upload Manuscript</div>
-            <div class="upload-subtitle">Drag & drop or click to select (PDF, DOC, DOCX, TXT)</div>
-        </div>
-        <input type="file" id="fileInput" accept=".pdf,.doc,.docx,.txt">
-
-        <div id="fileInfo" class="file-info">
-            <div>
-                <span class="file-name" id="fileName"></span>
-                <span class="file-size" id="fileSize"></span>
+    <section class="topbar">
+        <div class="page-title">
+            <h1>Results Dashboard</h1>
+            <p>Review citation integrity, ACII score, missing citations, verification, recovery, claim support, and exportable reports.</p>
+            <div class="status-box">
+                <span>●</span>
+                <span class="status info" id="status">Loading results...</span>
             </div>
-            <button class="btn btn-secondary" id="clearFile" style="padding: 6px 12px;">Remove</button>
         </div>
 
-        <div class="options-grid">
-            <div class="option-card">
-                <div class="option-title">
-                    <span>🔍</span> Analysis Options
+        <div class="actions">
+            <button class="btn btn-green" id="btnVerify">🌐 Verify References</button>
+            <button class="btn btn-secondary" id="btnRefresh">↻ Refresh</button>
+            <button class="btn btn-outline" id="btnExportCsv">📊 CSV Report</button>
+            <button class="btn btn-outline" id="btnExportWord">📄 Word Report</button>
+
+            <select id="exportStyleSelect" title="Reference style">
+                <option value="apa7">APA 7th Edition</option>
+                <option value="apa6">APA 6th Edition</option>
+                <option value="harvard">Harvard Style</option>
+            </select>
+
+            <button class="btn btn-outline" id="btnExportRefsDocx">📄 Verified Refs DOCX</button>
+            <button class="btn btn-outline" id="btnExportRefsHtml">🌐 Verified Refs HTML</button>
+        </div>
+    </section>
+
+    <section class="progress-card" id="progressCard">
+        <div class="progress-track">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <div class="progress-text" id="progressText">Preparing...</div>
+    </section>
+
+    <section class="dashboard-grid">
+        <aside class="sidebar">
+            <div class="card acii-card">
+                <div class="small-muted" style="color: rgba(255,255,255,0.72);">Academic Citation Integrity Index</div>
+                <div class="acii-score" id="aciiScore">--</div>
+                <div class="acii-label">ACII Score</div>
+                <div class="acii-rating" id="aciiRating">Not available</div>
+                <div class="acii-rec" id="aciiRecommendation">Run analysis and verification to improve citation integrity evidence.</div>
+            </div>
+
+            <div class="card">
+                <div class="section-title" style="margin-bottom:12px;">
+                    <div>
+                        <h2 style="font-size:18px;">Summary Cards</h2>
+                        <p>Key dashboard counts.</p>
+                    </div>
                 </div>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="autoVerify" checked>
-                    <span>Auto-verify references online</span>
-                </label>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="enableClaimSupport" checked>
-                    <span>Extract and evaluate claims</span>
-                </label>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="enableSuggestions" checked>
-                    <span>Generate replacement suggestions</span>
-                </label>
+
+                <div class="kpi-grid" id="kpiGrid"></div>
             </div>
 
-            <div class="option-card">
-                <div class="option-title">
-                    <span>📚</span> Reference Style
+            <div class="card">
+                <div class="section-title" style="margin-bottom:12px;">
+                    <div>
+                        <h2 style="font-size:18px;">Sections</h2>
+                        <p>Open each result area.</p>
+                    </div>
                 </div>
-                <select id="referenceStyle">
-                    <option value="apa7">APA 7th Edition</option>
-                    <option value="apa6">APA 6th Edition</option>
-                    <option value="harvard">Harvard Style</option>
-                    <option value="ieee">IEEE Style</option>
-                    <option value="chicago">Chicago Style</option>
-                </select>
-            </div>
 
-            <div class="option-card">
-                <div class="option-title">
-                    <span>⚙️</span> Large Document Settings
+                <div class="nav-tabs">
+                    <button class="tab-btn active" data-tab="summaryPane">Summary <span class="count-pill" id="countSummary">--</span></button>
+                    <button class="tab-btn" data-tab="missingPane">Missing Citations <span class="count-pill" id="countMissing">0</span></button>
+                    <button class="tab-btn" data-tab="uncitedPane">Uncited References <span class="count-pill" id="countUncited">0</span></button>
+                    <button class="tab-btn" data-tab="c2rPane">Citations → References <span class="count-pill" id="countC2R">0</span></button>
+                    <button class="tab-btn" data-tab="r2cPane">References → Citations <span class="count-pill" id="countR2C">0</span></button>
+                    <button class="tab-btn" data-tab="verifyPane">Verification <span class="count-pill" id="countVerify">0</span></button>
+                    <button class="tab-btn" data-tab="recoveryPane">Recovery <span class="count-pill" id="countRecovery">0</span></button>
+                    <button class="tab-btn" data-tab="claimPane">Claim Support <span class="count-pill" id="countClaim">0</span></button>
+                    <button class="tab-btn" data-tab="suggestionsPane">Suggestions <span class="count-pill" id="countSuggestions">0</span></button>
                 </div>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="useChunking" checked>
-                    <span>Enable chunked processing for large docs (>100 refs)</span>
-                </label>
-                <label style="margin-top: 10px; display: block;">
-                    <span style="font-size: 12px;">Chunk size (references per batch):</span>
-                    <select id="chunkSize" style="margin-top: 5px;">
-                        <option value="50">50 (slow connection)</option>
-                        <option value="100" selected>100 (recommended)</option>
-                        <option value="200">200 (fast connection)</option>
-                        <option value="500">500 (very fast)</option>
-                    </select>
-                </label>
-                <label style="margin-top: 10px; display: block;">
-                    <span style="font-size: 12px;">Max retries per chunk:</span>
-                    <select id="maxRetries" style="margin-top: 5px;">
-                        <option value="1">1</option>
-                        <option value="2">2</option>
-                        <option value="3" selected>3</option>
-                        <option value="5">5</option>
-                    </select>
-                </label>
             </div>
-        </div>
+        </aside>
 
-        <div id="largeDocWarning" class="large-doc-warning">
-            ⚠️ <strong>Large document detected</strong> - This document contains many references. Chunked processing will be used to prevent timeout.
-        </div>
+        <section class="main-panel">
 
-        <button class="btn btn-primary" id="analyzeBtn" style="width: 100%;" disabled>
-            📊 Analyze Manuscript
-        </button>
+            <div class="tab-pane active" id="summaryPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Summary</h2>
+                            <p>Overall citation and reference health of the uploaded manuscript.</p>
+                        </div>
+                    </div>
 
-        <div id="progressCard" class="progress-card">
-            <div class="progress-track">
-                <div class="progress-bar" id="progressBar"></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr><th>Item</th><th>Value</th><th>Interpretation</th></tr>
+                            </thead>
+                            <tbody id="summaryBody"></tbody>
+                        </table>
+                    </div>
+
+                    <div class="card" id="aciiComponentsCard" style="margin-top:16px;">
+                        <div class="section-title">
+                            <div>
+                                <h2>ACII Components</h2>
+                                <p>Component-level interpretation of the citation integrity score.</p>
+                            </div>
+                        </div>
+
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr>
+                                </thead>
+                                <tbody id="aciiComponentsBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="progress-text" id="progressText">Waiting to start...</div>
-        </div>
 
-        <div id="statusBox" class="status-box" style="display: none;"></div>
+            <div class="tab-pane" id="missingPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Missing Citations</h2>
+                            <p>In-text citations that do not appear in the reference list.</p>
+                        </div>
+                    </div>
+                    <div class="filters">
+                        <input class="search-input" id="missingSearch" placeholder="Search missing citations...">
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>No.</th><th>Citation in Text</th><th>Count</th></tr></thead>
+                            <tbody id="missingBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
 
-        <div id="resultLink" class="result-link" style="display: none;">
-            <a id="resultsUrl" href="#" target="_blank">📈 View Results Dashboard →</a>
-        </div>
-    </div>
+            <div class="tab-pane" id="uncitedPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Uncited References</h2>
+                            <p>References listed in the reference section but not cited in the manuscript body.</p>
+                        </div>
+                    </div>
+                    <div class="filters">
+                        <input class="search-input" id="uncitedSearch" placeholder="Search uncited references...">
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>No.</th><th>Reference</th></tr></thead>
+                            <tbody id="uncitedBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="c2rPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Citations → References</h2>
+                            <p>Mapping of in-text citations to their matched reference entries.</p>
+                        </div>
+                    </div>
+                    <div class="filters">
+                        <input class="search-input" id="c2rSearch" placeholder="Search mappings...">
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>No.</th><th>Status</th><th>In-text Citation</th><th>Count</th><th>Matched Reference</th><th>Flags</th></tr></thead>
+                            <tbody id="c2rBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="r2cPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>References → Citations</h2>
+                            <p>How often each reference appears to be cited in the manuscript.</p>
+                        </div>
+                    </div>
+                    <div class="filters">
+                        <input class="search-input" id="r2cSearch" placeholder="Search references...">
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>No.</th><th>Times Cited</th><th>Reference</th><th>Cited By</th></tr></thead>
+                            <tbody id="r2cBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="verifyPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Online Verification</h2>
+                            <p>Reference verification results and scholarly metadata matches.</p>
+                        </div>
+                    </div>
+
+                    <div class="kpi-grid" id="verifyKpis" style="grid-template-columns: repeat(4, 1fr); margin-bottom:16px;"></div>
+
+                    <div class="filters">
+                        <input class="search-input" id="verifySearch" placeholder="Search verification rows...">
+                        <select id="verifyFilter">
+                            <option value="">All statuses</option>
+                            <option value="verified">Verified</option>
+                            <option value="likely">Likely</option>
+                            <option value="needs_review">Needs review</option>
+                            <option value="not_found">Not found</option>
+                            <option value="offline">Offline</option>
+                        </select>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th></tr></thead>
+                            <tbody id="verifyBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="recoveryPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Recovery</h2>
+                            <p>Suggestions for missing citations and unverifiable references.</p>
+                        </div>
+                    </div>
+
+                    <h3 style="margin-bottom:10px;">Missing Citation Recovery</h3>
+                    <div class="table-wrap" style="margin-bottom:20px;">
+                        <table>
+                            <thead><tr><th>No.</th><th>Citation</th><th>Count</th><th>Suggestions</th></tr></thead>
+                            <tbody id="recoveryMissingBody"></tbody>
+                        </table>
+                    </div>
+
+                    <h3 style="margin-bottom:10px;">Needs Review / Not Found Recovery</h3>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>No.</th><th>Status</th><th>Citation</th><th>Reference</th><th>Context Suggestions</th></tr></thead>
+                            <tbody id="recoveryVerifyBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="claimPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Claim Support</h2>
+                            <p>Claim-to-source support review for cited statements.</p>
+                        </div>
+                    </div>
+                    <div class="filters">
+                        <input class="search-input" id="claimSearch" placeholder="Search claims...">
+                        <select id="claimFilter">
+                            <option value="">All support statuses</option>
+                            <option value="strong_support">Strong support</option>
+                            <option value="moderate_support">Moderate support</option>
+                            <option value="related_evidence">Related evidence</option>
+                            <option value="weak_or_unclear">Weak or unclear</option>
+                            <option value="insufficient_evidence">Insufficient evidence</option>
+                        </select>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th></tr></thead>
+                            <tbody id="claimBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="suggestionsPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Suggestions</h2>
+                            <p>Citation and reference suggestions returned by the analysis engine.</p>
+                        </div>
+                    </div>
+                    <div id="suggestionsContent"></div>
+                </div>
+            </div>
+
+        </section>
+    </section>
 </main>
 
 <footer class="footer">
     <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
     <div class="footer-links">
-        <a href="/new">New Interface</a>
+        <a href="/new">New Landing Page</a>
+        <a href="/new/analyse">New Analysis</a>
         <a href="/privacy">Privacy Policy</a>
-        <a href="/">Classic Interface</a>
+        <a href="/">Old Interface</a>
     </div>
 </footer>
 
 <script>
-document.addEventListener("DOMContentLoaded", function() {
+document.addEventListener("DOMContentLoaded", function () {
     "use strict";
 
-    // DOM Elements
-    const uploadArea = document.getElementById("uploadArea");
-    const fileInput = document.getElementById("fileInput");
-    const fileInfo = document.getElementById("fileInfo");
-    const fileNameSpan = document.getElementById("fileName");
-    const fileSizeSpan = document.getElementById("fileSize");
-    const clearFileBtn = document.getElementById("clearFile");
-    const analyzeBtn = document.getElementById("analyzeBtn");
-    const progressCard = document.getElementById("progressCard");
-    const progressBar = document.getElementById("progressBar");
-    const progressText = document.getElementById("progressText");
-    const statusBox = document.getElementById("statusBox");
-    const resultLink = document.getElementById("resultLink");
-    const resultsUrl = document.getElementById("resultsUrl");
-    const largeDocWarning = document.getElementById("largeDocWarning");
-    const autoVerify = document.getElementById("autoVerify");
-    const enableClaimSupport = document.getElementById("enableClaimSupport");
-    const enableSuggestions = document.getElementById("enableSuggestions");
-    const referenceStyle = document.getElementById("referenceStyle");
-    const useChunking = document.getElementById("useChunking");
-    const chunkSizeSelect = document.getElementById("chunkSize");
-    const maxRetriesSelect = document.getElementById("maxRetries");
+    const JOB_ID = "{{ job_id }}";
+    const AUTO_VERIFY = "{{ auto_verify | default('false') }}" === "true";
 
-    let selectedFile = null;
-    let currentJobId = null;
+    const $ = (id) => document.getElementById(id);
 
-    // File upload handlers
-    uploadArea.addEventListener("click", () => fileInput.click());
-    uploadArea.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        uploadArea.classList.add("drag-over");
-    });
-    uploadArea.addEventListener("dragleave", () => {
-        uploadArea.classList.remove("drag-over");
-    });
-    uploadArea.addEventListener("drop", (e) => {
-        e.preventDefault();
-        uploadArea.classList.remove("drag-over");
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            handleFileSelect(files[0]);
-        }
-    });
+    // ======================== UPDATED CONFIG ========================
+    const CONFIG = {
+        MAX_VERIFY_DISPLAY: 600,
+        MAX_CLAIM_DISPLAY: 500,
+        MAX_RECOVERY_DISPLAY: 500,
+        POLL_INTERVAL: 2500,
+        MAX_FINAL_ATTEMPTS: 180,
+        FINAL_RETRY_DELAY: 3000,
+        MAX_STATUS_ERRORS: 12
+    };
 
-    fileInput.addEventListener("change", (e) => {
-        if (e.target.files.length > 0) {
-            handleFileSelect(e.target.files[0]);
-        }
-    });
+    let latestResults = null;
+    let pollingTimer = null;
+    let verificationInProgress = false;
+    let finalisingCount = 0;
 
-    clearFileBtn.addEventListener("click", () => {
-        selectedFile = null;
-        fileInput.value = "";
-        fileInfo.style.display = "none";
-        analyzeBtn.disabled = true;
-        largeDocWarning.classList.remove("show");
-        currentJobId = null;
-        resultLink.style.display = "none";
-    });
+    let progressHighWater = 0;
+    let lastKnownProgress = 0;
+    let lastKnownTotal = 0;
+    let statusErrorCount = 0;
+    let finalFetchRunning = false;
+    let partialFinalRendered = false;
+    // ================================================================
 
-    function handleFileSelect(file) {
-        selectedFile = file;
-        fileNameSpan.textContent = file.name;
-        fileSizeSpan.textContent = `(${(file.size / 1024 / 1024).toFixed(2)} MB)`;
-        fileInfo.style.display = "flex";
-        analyzeBtn.disabled = false;
-        currentJobId = null;
-        resultLink.style.display = "none";
-        
-        // Show warning for large files
-        if (file.size > 5 * 1024 * 1024) {
-            largeDocWarning.classList.add("show");
-            largeDocWarning.innerHTML = "⚠️ <strong>Large file detected</strong> - Documents over 5MB may take longer to process. Chunked verification is recommended.";
-        } else {
-            largeDocWarning.classList.remove("show");
-        }
+    function esc(value) {
+        return String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;");
     }
 
-    function setStatus(message, type = "info") {
-        statusBox.textContent = message;
-        statusBox.className = `status-box ${type}`;
-        statusBox.style.display = "block";
-        console.log(`[Status ${type}]:`, message);
+    function toNum(value, fallback = 0) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : fallback;
     }
 
-    function updateProgress(percent, text) {
-        const safePercent = Math.max(0, Math.min(100, percent));
-        progressBar.style.width = `${safePercent}%`;
-        progressText.textContent = text || "";
-        progressCard.style.display = "block";
+    function setStatus(message, tone = "info") {
+        const status = $("status");
+        if (!status) return;
+        status.className = `status ${tone}`;
+        status.textContent = message || "";
+        console.log("[Status]", message);
     }
 
-    async function analyzeDocument() {
-        if (!selectedFile) {
-            setStatus("Please select a file first.", "error");
+    // ======================== NEW PROGRESS HELPERS ========================
+    function resetProgress(text = "Preparing...") {
+        progressHighWater = 0;
+        lastKnownProgress = 0;
+        lastKnownTotal = 0;
+        statusErrorCount = 0;
+
+        const card = $("progressCard");
+        const bar = $("progressBar");
+        const progressText = $("progressText");
+
+        if (card) card.style.display = "block";
+        if (bar) bar.style.width = "0%";
+        if (progressText) progressText.textContent = text;
+    }
+
+    function showProgress(percent, text, options = {}) {
+        const card = $("progressCard");
+        const bar = $("progressBar");
+        const progressText = $("progressText");
+
+        let safePercent = Number(percent);
+        if (!Number.isFinite(safePercent)) safePercent = progressHighWater;
+
+        safePercent = Math.max(0, Math.min(100, safePercent));
+
+        if (!options.allowBackward) {
+            safePercent = Math.max(progressHighWater, safePercent);
+        }
+
+        progressHighWater = safePercent;
+
+        if (card) card.style.display = "block";
+        if (bar) bar.style.width = `${safePercent}%`;
+        if (progressText) progressText.textContent = text || "";
+    }
+
+    function hideProgress(delay = 3500) {
+        const card = $("progressCard");
+        setTimeout(() => {
+            if (!verificationInProgress && card) {
+                card.style.display = "none";
+            }
+        }, delay);
+    }
+    // ======================================================================
+
+    function formatBadge(status) {
+        const clean = String(status || "offline").toLowerCase();
+        return `<span class="badge ${esc(clean)}">${esc(status || "offline")}</span>`;
+    }
+
+    function normalizeDoiUrl(doi) {
+        if (!doi) return "";
+        const clean = String(doi).trim().replace(/^https?:\/\/doi\.org\//i, "");
+        return `https://doi.org/${encodeURIComponent(clean)}`;
+    }
+
+    function setCount(id, count) {
+        const el = $(id);
+        if (el) el.textContent = count ?? 0;
+    }
+
+    function getACIIRating(score) {
+        score = Number(score);
+        if (!Number.isFinite(score)) return { text: "Not available", className: "offline" };
+        if (score >= 90) return { text: "Excellent", className: "excellent" };
+        if (score >= 80) return { text: "Very Good", className: "very-good" };
+        if (score >= 70) return { text: "Good", className: "good" };
+        if (score >= 60) return { text: "Moderate", className: "moderate" };
+        if (score >= 50) return { text: "Weak", className: "weak" };
+        return { text: "Poor", className: "poor" };
+    }
+
+    function normalizeData(payload) {
+        const base = payload?.result || payload?.data || payload || {};
+        const s = base.summary || {};
+
+        return {
+            ...base,
+            summary: {
+                in_text_citations_found: toNum(s.in_text_citations_found ?? base.in_text_citations_found ?? base.intext_count ?? 0),
+                reference_entries_found: toNum(s.reference_entries_found ?? base.reference_entries_found ?? base.references_raw?.length ?? 0),
+                missing_in_references: toNum(s.missing_in_references ?? base.missing_in_references?.length ?? 0),
+                uncited_references: toNum(s.uncited_references ?? base.uncited_references?.length ?? 0),
+                match_rate: toNum(s.match_rate ?? base.match_rate ?? 0)
+            }
+        };
+    }
+
+    // --------------------- FINAL READINESS HELPERS ---------------------
+    function hasVerificationRows(result) {
+        return Array.isArray(result?.online_verification?.rows) &&
+               result.online_verification.rows.length > 0;
+    }
+
+    function hasRecoveryPayload(result) {
+        return !!result?.recovery &&
+            (
+                Array.isArray(result.recovery.missing_recovery) ||
+                Array.isArray(result.recovery.verification_recovery)
+            );
+    }
+
+    function hasClaimPayload(result) {
+        return Array.isArray(result?.claim_support);
+    }
+
+    function isFinalReady(result) {
+        return hasVerificationRows(result) &&
+               hasRecoveryPayload(result) &&
+               hasClaimPayload(result);
+    }
+
+    function hydrateFinalDefaults(result) {
+        if (!result) return result;
+
+        if (!result.online_verification) {
+            result.online_verification = { rows: [], summary: {} };
+        }
+
+        if (!result.recovery) {
+            result.recovery = {
+                missing_recovery: [],
+                verification_recovery: []
+            };
+        }
+
+        if (!Array.isArray(result.recovery.missing_recovery)) {
+            result.recovery.missing_recovery = [];
+        }
+
+        if (!Array.isArray(result.recovery.verification_recovery)) {
+            result.recovery.verification_recovery = [];
+        }
+
+        if (!Array.isArray(result.claim_support)) {
+            result.claim_support = [];
+        }
+
+        return result;
+    }
+
+    async function fetchJsonNoCache(url) {
+        const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`, {
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        return await response.json();
+    }
+
+    function handleStatusPollingError(error) {
+        statusErrorCount += 1;
+
+        console.warn(`Temporary polling error ${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS}:`, error);
+
+        if (statusErrorCount < CONFIG.MAX_STATUS_ERRORS) {
+            showProgress(
+                Math.max(progressHighWater, 6),
+                `Temporary connection issue. Still checking verification status... (${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS})`
+            );
+            setStatus("Still checking verification status. The server may be busy with a large reference list.", "warn");
             return;
         }
 
-        const formData = new FormData();
-        formData.append("file", selectedFile);
-        formData.append("reference_style", referenceStyle.value);
-        formData.append("auto_verify", autoVerify.checked);
-        formData.append("claim_support", enableClaimSupport.checked);
-        formData.append("suggestions", enableSuggestions.checked);
-        formData.append("use_chunking", useChunking.checked);
-        formData.append("chunk_size", chunkSizeSelect.value);
-        formData.append("max_retries", maxRetriesSelect.value);
+        setStatus("Verification status could not be checked repeatedly. The backend may still be running. Use Refresh in a moment.", "bad");
+        finishVerification(false);
+    }
 
-        analyzeBtn.disabled = true;
-        analyzeBtn.textContent = "⏳ Uploading and Processing...";
-        progressCard.style.display = "block";
-        updateProgress(5, "Uploading manuscript...");
-        setStatus("Uploading and analyzing manuscript...", "info");
+    // --------------------- RENDER FUNCTIONS ---------------------
+    function getUniqueCitationsWithCount(rows) {
+        const map = new Map();
+        (rows || []).forEach(row => {
+            const cite = row.in_text || row.citation || row.citation_in_text || "";
+            const matched = row.matched_reference || "";
+            const status = row.status || "";
+            const flags = row.flags || "";
+            const key = `${cite.toLowerCase()}|${matched}|${status}|${flags}`;
+            if (map.has(key)) {
+                map.get(key).count += 1;
+            } else {
+                map.set(key, {
+                    citation: cite,
+                    matched_reference: matched,
+                    status,
+                    flags,
+                    count: row.count || 1
+                });
+            }
+        });
+        return Array.from(map.values());
+    }
+
+    function renderAll(rawData) {
+        if (!rawData) return;
+        const data = hydrateFinalDefaults(normalizeData(rawData));
+        data.job_id = data.job_id || JOB_ID;
+        latestResults = data;
+        window.latestResults = data;
+
+        renderACII(data);
+        renderKpis(data);
+        renderSummary(data);
+        renderMissing(data);
+        renderUncited(data);
+        renderC2R(data);
+        renderR2C(data);
+        renderVerification(data);
+        renderRecovery(data);
+        renderClaimSupport(data);
+        renderSuggestions(data);
+        updateCounts(data);
+    }
+
+    function renderACII(data) {
+        const acii = data.acii || {};
+        const score = acii.ACII ?? acii.score ?? "--";
+        const scoreEl = $("aciiScore");
+        const ratingEl = $("aciiRating");
+        const recEl = $("aciiRecommendation");
+        if (scoreEl) scoreEl.textContent = score;
+        const rating = getACIIRating(score);
+        if (ratingEl) {
+            ratingEl.textContent = rating.text;
+            ratingEl.className = `acii-rating ${rating.className}`;
+        }
+        if (recEl) {
+            const recs = acii.recommendations || {};
+            let html = "";
+            if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
+            if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
+            if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
+            if (recs.priority) html += `<div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.18);">🎯 ${esc(recs.priority)}</div>`;
+            recEl.innerHTML = html || "Review missing citations, uncited references, verification gaps, and claim-support issues to improve citation integrity.";
+        }
+    }
+
+    function renderKpis(data) {
+        const s = data.summary || {};
+        const ovRows = data.online_verification?.rows || [];
+        const claimRows = data.claim_support || [];
+        const rec = data.recovery || {};
+        const kpis = [
+            ["In-text citations", s.in_text_citations_found],
+            ["References", s.reference_entries_found],
+            ["Missing citations", s.missing_in_references],
+            ["Uncited references", s.uncited_references],
+            ["Match rate", `${s.match_rate}%`],
+            ["Verified rows", ovRows.length],
+            ["Recovery rows", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length],
+            ["Claim rows", claimRows.length]
+        ];
+        const grid = $("kpiGrid");
+        if (!grid) return;
+        grid.innerHTML = kpis.map(([label, value]) => `
+            <div class="kpi">
+                <div class="kpi-value">${esc(value)}</div>
+                <div class="kpi-label">${esc(label)}</div>
+            </div>
+        `).join("");
+    }
+
+    function renderSummary(data) {
+        const s = data.summary || {};
+        const body = $("summaryBody");
+        if (!body) return;
+        body.innerHTML = `
+            <tr><td>In-text citation occurrences</td><td><strong>${esc(s.in_text_citations_found)}</strong></td><td>Total citation occurrences extracted from the manuscript.</td></tr>
+            <tr><td>Reference entries found</td><td><strong>${esc(s.reference_entries_found)}</strong></td><td>Total reference entries detected in the reference list.</td></tr>
+            <tr><td>Missing citations</td><td><strong style="color:#b91c1c;">${esc(s.missing_in_references)}</strong></td><td>Citations in the text that need corresponding references.</td></tr>
+            <tr><td>Uncited references</td><td><strong style="color:#c2410c;">${esc(s.uncited_references)}</strong></td><td>References listed but not cited in the manuscript body.</td></tr>
+            <tr><td>Match rate</td><td><strong>${esc(s.match_rate)}%</strong></td><td>Estimated citation-reference reconciliation rate.</td></tr>
+        `;
+        const components = data.acii?.components || {};
+        const compBody = $("aciiComponentsBody");
+        if (compBody) {
+            const rows = Object.entries(components);
+            if (!rows.length) {
+                compBody.innerHTML = `<tr><td colspan="4"><div class="empty">ACII components are not available yet.</div></td></tr>`;
+            } else {
+                compBody.innerHTML = rows.map(([name, item]) => `
+                    <tr>
+                        <td>${esc(name.replaceAll("_", " "))}</td>
+                        <td><strong>${esc(item?.score ?? "--")}</strong></td>
+                        <td>${esc(item?.category ?? "--")}</td>
+                        <td>${esc(item?.remark ?? "--")}</td>
+                    </tr>
+                `).join("");
+            }
+        }
+    }
+
+    function renderMissing(data) { /* unchanged, omitted for brevity but identical to original logic */ 
+        const rows = data.missing_in_references || [];
+        const body = $("missingBody");
+        if (!body) return;
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="3"><div class="empty">No missing citations detected.</div></td></tr>`; return; }
+        body.innerHTML = rows.map((row, i) => {
+            const citation = typeof row === "string" ? row : (row.citation_in_text || row.citation || row.in_text || "");
+            const count = typeof row === "string" ? "" : (row.count_in_text || row.count || 1);
+            return `<tr><td>${i+1}</td><td>${esc(citation)}</td><td>${esc(count)}</td></tr>`;
+        }).join("");
+    }
+
+    function renderUncited(data) { 
+        const rows = data.uncited_references || [];
+        const body = $("uncitedBody");
+        if (!body) return;
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="2"><div class="empty">No uncited references detected.</div></td></tr>`; return; }
+        body.innerHTML = rows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.reference || row)}</td></tr>`).join("");
+    }
+
+    function renderC2R(data) {
+        const raw = data.reconciliation_intext_to_reference || [];
+        const rows = getUniqueCitationsWithCount(raw);
+        const body = $("c2rBody");
+        if (!body) return;
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="6"><div class="empty">No citation-reference mapping available.</div></td></tr>`; return; }
+        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "not_found")}</td><td>${esc(row.citation)}</td><td>${esc(row.count)}</td><td>${esc(row.matched_reference || "")}</td><td>${esc(row.flags || "")}</td></tr>`).join("");
+    }
+
+    function renderR2C(data) {
+        const rows = data.reconciliation_reference_to_intext || [];
+        const body = $("r2cBody");
+        if (!body) return;
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="4"><div class="empty">No reference-citation mapping available.</div></td></tr>`; return; }
+        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td><strong>${esc(row.times_cited ?? 0)}</strong></td><td>${esc(row.reference || "")}</td><td>${esc((row.cited_by || []).slice(0, 8).join("; "))}</td></tr>`).join("");
+    }
+
+    function renderVerification(data) {
+        const ov = data.online_verification || {};
+        const rows = ov.rows || [];
+        const summary = ov.summary || {};
+        const body = $("verifyBody");
+        const kpis = $("verifyKpis");
+        if (kpis) {
+            const items = [
+                ["Verified", summary.verified ?? rows.filter(r => r.status === "verified").length],
+                ["Likely", summary.likely ?? rows.filter(r => r.status === "likely").length],
+                ["Needs review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
+                ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length]
+            ];
+            kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
+        }
+        if (!body) return;
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="8"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
+        body.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((row, i) => {
+            const doi = row.doi || "";
+            const doiHtml = doi ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a><div class="small-muted">${esc(doi)}</div>` : "—";
+            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td></tr>`;
+        }).join("");
+    }
+
+    function renderSuggestionList(suggestions) {
+        if (!suggestions || !suggestions.length) return `<span class="badge no_evidence_found">No evidence found</span>`;
+        return `<div class="suggestion-box">${suggestions.slice(0, 4).map((s, i) => {
+            const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
+            const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
+            return `<div style="margin-bottom:10px;"><strong>${i+1}. ${esc(s.title || s.suggested || "Untitled suggestion")}</strong><div class="small-muted">${esc(authors)} ${s.year ? "(" + esc(s.year) + ")" : ""}</div>${doi}</div>`;
+        }).join("")}</div>`;
+    }
+
+    function renderRecovery(data) {
+        const rec = data.recovery || {};
+        const missingRows = rec.missing_recovery || [];
+        const verifyRows = rec.verification_recovery || [];
+        const missingBody = $("recoveryMissingBody");
+        const verifyBody = $("recoveryVerifyBody");
+
+        if (missingBody) {
+            if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
+            else {
+                const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
+                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
+            }
+        }
+
+        if (verifyBody) {
+            if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
+            else {
+                const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
+                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
+            }
+        }
+    }
+
+    function renderClaimSupport(data) {
+        const rows = data.claim_support || [];
+        const body = $("claimBody");
+        if (!body) return;
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`; return; }
+        const visibleRows = rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY);
+        body.innerHTML = visibleRows.map((row, i) => {
+            const doi = row.doi || "";
+            const doiHtml = doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
+            const sourceTitle = row.source_title || row.matched_title || "No source title available";
+            return `<tr data-status="${esc(row.support_status || "")}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.claim || "No evidence found")}</td><td>${esc(sourceTitle)}${doiHtml}</td><td>${formatBadge(row.support_status || "offline")}</td><td>${esc(row.support_score ?? 0)}</td></tr>`;
+        }).join("");
+        if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
+    }
+
+    function getSuggestions(data) {
+        if (data.autofix?.suggestions) return data.autofix.suggestions;
+        if (data.suggestions) return data.suggestions;
+        if (data.autofix?.citations || data.autofix?.references) return data.autofix;
+        return { citations: [], references: [] };
+    }
+
+    function renderSuggestions(data) {
+        const content = $("suggestionsContent");
+        if (!content) return;
+        const suggestions = getSuggestions(data);
+        const items = [...(suggestions.citations || []), ...(suggestions.references || [])];
+        if (!items.length) { content.innerHTML = `<div class="empty">No suggestions were returned. This may mean no fixable citation issues were detected, or suggestions were not enabled during upload.</div>`; return; }
+        content.innerHTML = `<div style="margin-bottom:16px;" class="small-muted">Total suggestions: <strong>${items.length}</strong></div>${items.slice(0, 500).map((s, i) => {
+            const confidence = Number(s.confidence || 0);
+            const level = confidence >= 0.85 ? "high" : confidence >= 0.7 ? "medium" : "low";
+            return `<div class="suggestion-item ${level}"><div><strong>${i+1}. ${esc(s.issue_type || s.type || "Suggestion")}</strong></div><div class="line-through">Original: ${esc(s.original || s.citation || "")}</div><div class="suggested">Suggested: ${esc(s.suggested || s.title || "Review required")}</div><div class="small-muted" style="margin-top:8px;">Reason: ${esc(s.reason || "Citation/reference issue detected.")}${confidence ? ` | Confidence: ${Math.round(confidence * 100)}%` : ""}</div></div>`;
+        }).join("")}`;
+    }
+
+    function updateCounts(data) {
+        const rec = data.recovery || {};
+        const suggestions = getSuggestions(data);
+        const suggestionCount = (suggestions.citations || []).length + (suggestions.references || []).length;
+        setCount("countSummary", "OK");
+        setCount("countMissing", data.missing_in_references?.length || 0);
+        setCount("countUncited", data.uncited_references?.length || 0);
+        setCount("countC2R", data.reconciliation_intext_to_reference?.length || 0);
+        setCount("countR2C", data.reconciliation_reference_to_intext?.length || 0);
+        setCount("countVerify", data.online_verification?.rows?.length || 0);
+        setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
+        setCount("countClaim", data.claim_support?.length || 0);
+        setCount("countSuggestions", suggestionCount);
+    }
+
+    // --------------------- VERIFICATION API ---------------------
+    async function startVerification() {
+        if (!JOB_ID) { setStatus("No job ID found.", "bad"); return; }
+        if (verificationInProgress) { setStatus("Verification already in progress.", "warn"); return; }
+
+        verificationInProgress = true;
+        finalisingCount = 0;
+        finalFetchRunning = false;
+        partialFinalRendered = false;
+
+        resetProgress("Starting online verification...");
+        showProgress(2, "Starting online verification...");
+        setStatus("Starting online verification...", "info");
+
+        const btn = $("btnVerify");
+        if (btn) btn.disabled = true;
+
+        const formData = new FormData();
+        formData.append("job_id", JOB_ID);
 
         try {
-            const response = await fetch("/analyze", {
-                method: "POST",
-                body: formData
-            });
+            const res = await fetch("/verify-online", { method: "POST", body: formData });
+            const js = await res.json();
+            console.log("Verify response:", js);
 
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.detail || data.error || "Analysis failed");
+            if (js.completed === true) {
+                setStatus("Verification already completed. Loading final dashboard tables...", "good");
+                showProgress(96, "Verification already completed. Loading final tables...");
+                await fetchFinalResultWithRetry();
+                return;
             }
 
-            currentJobId = data.job_id;
-            
-            updateProgress(30, "Initial analysis complete. Starting verification...");
-            setStatus(`Analysis complete! Job ID: ${currentJobId}. Starting verification...`, "success");
+            if (js.started === true) {
+                const total = Number(js.total_references || 0);
+                lastKnownTotal = total;
+                setStatus(total ? `Verification started: 0/${total}` : "Verification started.", "info");
+                showProgress(4, total ? `Verification started: 0/${total}` : "Verification started. Waiting for reference count...");
+                startPollingStatus();
+                return;
+            }
 
-            // Start polling for results
-            await pollForResults(currentJobId);
-
+            setStatus(js.message || "Verification could not start.", "warn");
+            showProgress(progressHighWater, js.message || "Verification could not start.");
+            verificationInProgress = false;
+            if (btn) btn.disabled = false;
         } catch (error) {
-            console.error("Analysis error:", error);
-            setStatus(`Error: ${error.message}`, "error");
-            updateProgress(0, "Analysis failed.");
-            analyzeBtn.disabled = false;
-            analyzeBtn.textContent = "📊 Analyze Manuscript";
+            console.error(error);
+            setStatus("Verification error: " + error.message, "bad");
+            verificationInProgress = false;
+            if (btn) btn.disabled = false;
         }
     }
 
-    async function pollForResults(jobId, maxAttempts = 180, interval = 2000) {
-        let attempts = 0;
-        let isLargeDoc = false;
+    function startPollingStatus() {
+        stopPollingStatus();
+        statusErrorCount = 0;
+        fetchVerificationStatus();
+        pollingTimer = setInterval(() => fetchVerificationStatus(), CONFIG.POLL_INTERVAL);
+    }
 
-        while (attempts < maxAttempts) {
-            try {
-                const response = await fetch(`/job/${jobId}`);
-                const data = await response.json();
+    function stopPollingStatus() {
+        if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; }
+    }
 
-                if (data.status === "completed") {
-                    updateProgress(100, "Analysis complete!");
-                    setStatus("✅ Analysis complete! Redirecting to results...", "success");
-                    
-                    resultsUrl.href = `/result/${jobId}`;
-                    resultLink.style.display = "block";
-                    
-                    // Auto-redirect after 2 seconds
-                    setTimeout(() => {
-                        window.location.href = `/result/${jobId}`;
-                    }, 2000);
-                    
-                    analyzeBtn.disabled = false;
-                    analyzeBtn.textContent = "📊 Analyze Another Document";
+    async function fetchVerificationStatus() {
+        try {
+            const js = await fetchJsonNoCache(`/online/status?job_id=${encodeURIComponent(JOB_ID)}`);
+            statusErrorCount = 0;
+            console.log("Online status:", js);
+
+            if (js.result && hasVerificationRows(js.result)) {
+                const result = js.result;
+                const rows = result.online_verification.rows || [];
+                latestResults = hydrateFinalDefaults(result);
+                window.latestResults = latestResults;
+
+                if (isFinalReady(result)) {
+                    renderAll(hydrateFinalDefaults(result));
+                    showProgress(100, `Verification complete. ${rows.length} references verified.`);
+                    setStatus(`Results ready. ${rows.length} references verified and ${(result.claim_support || []).length} claim-support rows populated.`, "good");
+                    finishVerification(true);
                     return;
-                    
-                } else if (data.status === "failed") {
-                    throw new Error(data.error || "Analysis failed");
-                } else if (data.status === "processing") {
-                    const progress = data.progress || 0;
-                    const message = data.message || "Processing...";
-                    
-                    // Detect large document from progress message
-                    if (!isLargeDoc && progress > 0 && progress < 50) {
-                        isLargeDoc = true;
-                        if (useChunking.checked) {
-                            setStatus("Large document detected. Using chunked verification to prevent timeout.", "info");
-                        }
-                    }
-                    
-                    const percent = 30 + Math.floor(progress * 0.6);
-                    updateProgress(percent, message);
-                    setStatus(message, "info");
                 }
-                
-                attempts++;
-                await new Promise(resolve => setTimeout(resolve, interval));
-                
-            } catch (error) {
-                console.error("Polling error:", error);
-                if (attempts >= maxAttempts - 5) {
-                    throw error;
+
+                if (!partialFinalRendered) {
+                    renderVerification(hydrateFinalDefaults(result));
+                    updateCounts(hydrateFinalDefaults(result));
+                    partialFinalRendered = true;
                 }
-                await new Promise(resolve => setTimeout(resolve, interval * 2));
+
+                showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
+                setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
+                if (!finalFetchRunning) fetchFinalResultWithRetry();
+                return;
             }
+
+            const online = js.online || js.verification || js;
+            const state = String(online.state || online.status || "running").toLowerCase();
+            let progress = Number(online.progress || 0);
+            let total = Number(online.total || 0);
+            if (total > 0) lastKnownTotal = Math.max(lastKnownTotal, total);
+            if (progress > 0) lastKnownProgress = Math.max(lastKnownProgress, progress);
+            total = lastKnownTotal || total;
+            progress = Math.max(lastKnownProgress, progress);
+
+            if (state === "completed") {
+                showProgress(96, total ? `Verification complete: ${total}/${total}. Loading dashboard tables...` : "Verification complete. Loading dashboard tables...");
+                setStatus("Verification complete. Loading final dashboard tables...", "good");
+                if (!finalFetchRunning) await fetchFinalResultWithRetry();
+                return;
+            }
+
+            if (state === "error" || state === "failed") {
+                setStatus(online.message || online.error || "Verification failed.", "bad");
+                finishVerification(false);
+                return;
+            }
+
+            let percent;
+            if (total > 0) {
+                percent = Math.round((progress / total) * 92);
+                percent = Math.min(94, Math.max(4, percent));
+            } else {
+                percent = Math.max(progressHighWater, 6);
+            }
+            const message = total ? `Verifying references: ${progress}/${total}. Large documents may take several minutes.` : "Verification running. Waiting for reference count...";
+            showProgress(percent, message);
+            setStatus(total ? `Verification in progress: ${progress}/${total}` : "Verification in progress...", "info");
+        } catch (error) {
+            handleStatusPollingError(error);
         }
-        
-        throw new Error("Processing timeout. Please try again or contact support.");
     }
 
-    analyzeBtn.addEventListener("click", analyzeDocument);
+    async function fetchFinalResultWithRetry() {
+        if (finalFetchRunning) return null;
+        finalFetchRunning = true;
+        stopPollingStatus();
 
-    // Mobile menu toggle
-    const mobileToggle = document.getElementById("mobileToggle");
-    const mainNav = document.getElementById("mainNav");
-    if (mobileToggle && mainNav) {
-        mobileToggle.addEventListener("click", () => mainNav.classList.toggle("open"));
+        for (let attempt = 1; attempt <= CONFIG.MAX_FINAL_ATTEMPTS; attempt++) {
+            try {
+                let bestResult = null;
+                try {
+                    const jobData = await fetchJsonNoCache(`/job/${encodeURIComponent(JOB_ID)}`);
+                    if (jobData.result) bestResult = jobData.result;
+                } catch (e) { console.warn(e); }
+                if (!bestResult) {
+                    try {
+                        const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}`);
+                        bestResult = resultData.data || resultData.result || null;
+                    } catch (e) { console.warn(e); }
+                }
+                if (bestResult) {
+                    const hydrated = hydrateFinalDefaults(bestResult);
+                    latestResults = hydrated;
+                    window.latestResults = hydrated;
+                    const rows = hydrated.online_verification?.rows || [];
+                    const claimRows = hydrated.claim_support || [];
+                    if (isFinalReady(bestResult)) {
+                        renderAll(hydrated);
+                        showProgress(100, `Complete. ${rows.length} references verified.`);
+                        setStatus(`Results ready. ${rows.length} references verified and ${claimRows.length} claim-support rows populated.`, "good");
+                        finishVerification(true);
+                        finalFetchRunning = false;
+                        return hydrated;
+                    }
+                    if (hasVerificationRows(bestResult) && !partialFinalRendered) {
+                        renderAll(hydrated);
+                        partialFinalRendered = true;
+                    }
+                }
+                const percent = Math.min(99, 96 + Math.floor(attempt / 45));
+                showProgress(percent, `Finalising Recovery and Claim Support tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
+                setStatus("Verification is complete. Waiting for Recovery and Claim Support tables to populate...", "warn");
+            } catch (error) {
+                console.error("Final fetch error:", error);
+                showProgress(Math.max(progressHighWater, 96), `Still waiting for final tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
+            }
+            await new Promise(resolve => setTimeout(resolve, CONFIG.FINAL_RETRY_DELAY));
+        }
+
+        if (latestResults) {
+            const hydrated = hydrateFinalDefaults(latestResults);
+            renderAll(hydrated);
+            const rows = hydrated.online_verification?.rows?.length || 0;
+            const claimRows = hydrated.claim_support?.length || 0;
+            setStatus(`Verification results loaded, but Recovery or Claim Support may still be incomplete. ${rows} references verified and ${claimRows} claim-support rows currently available.`, "warn");
+            showProgress(100, "Verification results loaded. Some final tables may still need refresh.");
+        } else {
+            setStatus("Verification completed, but final results could not be loaded. Please refresh in a moment.", "warn");
+        }
+        finishVerification(true);
+        finalFetchRunning = false;
+        return latestResults;
     }
 
-    // Check if we have a stored job from URL param
-    const urlParams = new URLSearchParams(window.location.search);
-    const resumeJobId = urlParams.get("job");
-    if (resumeJobId) {
-        currentJobId = resumeJobId;
-        resultLink.style.display = "block";
-        resultsUrl.href = `/result/${resumeJobId}`;
-        setStatus(`Found existing job. Click below to view results.`, "info");
+    function finishVerification(keepProgressVisible = true) {
+        stopPollingStatus();
+        verificationInProgress = false;
+        finalFetchRunning = false;
+        const btn = $("btnVerify");
+        if (btn) btn.disabled = false;
+        if (!keepProgressVisible) hideProgress();
     }
+
+    async function loadExistingResult(showMessage = true) {
+        if (!JOB_ID) { setStatus("No job ID found in URL.", "bad"); return null; }
+        try {
+            if (showMessage) setStatus("Loading results...", "info");
+            const res = await fetch(`/result/${encodeURIComponent(JOB_ID)}`);
+            const js = await res.json();
+            if (js.status === "completed") {
+                const result = js.data || js.result;
+                renderAll(result);
+                setStatus("Results loaded.", "good");
+                return result;
+            }
+            if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
+                setStatus(js.message || "Results are still processing. Refreshing shortly...", "warn");
+                showProgress(35, "Waiting for analysis result...");
+                setTimeout(() => loadExistingResult(false), 2500);
+                return null;
+            }
+            if (js.status === "failed" || js.status === "error") { setStatus(js.error || "Analysis failed.", "bad"); return null; }
+            setStatus(js.error || "Result not found.", "bad");
+            return null;
+        } catch (error) {
+            console.error(error);
+            setStatus("Could not load results: " + error.message, "bad");
+            return null;
+        }
+    }
+
+    function exportCSV() { /* simplified but functional */
+        if (!latestResults) { alert("No data to export."); return; }
+        const s = latestResults.summary || {};
+        const missing = latestResults.missing_in_references || [];
+        const uncited = latestResults.uncited_references || [];
+        const verifyRows = latestResults.online_verification?.rows || [];
+        const claimRows = latestResults.claim_support || [];
+        const lines = [`"CiteIntegrity Report","${new Date().toLocaleString()}"`,`"Job ID","${JOB_ID}"`,"",`"Metric","Value"`,`"In-text citations","${s.in_text_citations_found}"`,`"References","${s.reference_entries_found}"`,`"Missing citations","${s.missing_in_references}"`,`"Uncited references","${s.uncited_references}"`,`"Match rate","${s.match_rate}%"`,`"Verification rows","${verifyRows.length}"`,`"Claim support rows","${claimRows.length}"`,"",`"Missing Citations"`];
+        missing.forEach(item => lines.push(`"${esc((item.citation_in_text || item.citation || item).toString()).replaceAll('"', '""')}"`));
+        lines.push("",`"Uncited References"`);
+        uncited.forEach(item => lines.push(`"${esc((item.reference || item).toString()).replaceAll('"', '""')}"`));
+        downloadBlob(lines.join("\n"), `citeintegrity_report_${JOB_ID.slice(0, 8)}.csv`, "text/csv");
+    }
+
+    function exportWord() {
+        if (!latestResults) { alert("No data to export."); return; }
+        const s = latestResults.summary || {};
+        const acii = latestResults.acii || {};
+        const missing = latestResults.missing_in_references || [];
+        const uncited = latestResults.uncited_references || [];
+        const verifyRows = latestResults.online_verification?.rows || [];
+        const claimRows = latestResults.claim_support || [];
+        const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head><body><h1>CiteIntegrity Results Report</h1><p><strong>Generated:</strong> ${new Date().toLocaleString()}</p><p><strong>Job ID:</strong> ${esc(JOB_ID)}</p><h2>Summary</h2><table border="1" cellpadding="6"><tr><th>Metric</th><th>Value</th></tr><tr><td>In-text citations</td><td>${esc(s.in_text_citations_found)}</td></tr><tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr><tr><td>Missing citations</td><td>${esc(s.missing_in_references)}</td></tr><tr><td>Uncited references</td><td>${esc(s.uncited_references)}</td></tr><tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr><tr><td>Verification rows</td><td>${verifyRows.length}</td></tr><tr><td>Claim-support rows</td><td>${claimRows.length}</td></tr></table><h2>ACII Score</h2><p><strong>${esc(acii.ACII ?? "--")}</strong></p><h2>Missing Citations</h2><ol>${missing.map(m => `<li>${esc(m.citation_in_text || m.citation || m)}</li>`).join("")}</ol><h2>Uncited References</h2><ol>${uncited.map(u => `<li>${esc(u.reference || u)}</li>`).join("")}</ol><h2>Verification Summary</h2><p>Total verification rows: ${verifyRows.length}</p><h2>Claim Support Summary</h2><p>Total claim-support rows: ${claimRows.length}</p></body></html>`;
+        downloadBlob(html, `citeintegrity_report_${JOB_ID.slice(0, 8)}.doc`, "application/msword");
+    }
+
+    function downloadBlob(content, filename, type) {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    async function exportVerifiedReferences(formatType) {
+        const style = $("exportStyleSelect")?.value || "apa7";
+        const formData = new FormData();
+        formData.append("job_id", JOB_ID);
+        formData.append("style", style);
+        formData.append("format_type", formatType);
+        try {
+            setStatus(`Exporting verified references as ${formatType.toUpperCase()}...`, "info");
+            const res = await fetch("/export-references", { method: "POST", body: formData });
+            if (!res.ok) throw new Error("Export failed.");
+            const blob = await res.blob();
+            const filename = `citeintegrity_references_${JOB_ID.slice(0, 8)}.${formatType === "docx" ? "docx" : "html"}`;
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            setStatus("Verified references exported successfully.", "good");
+        } catch (error) { setStatus("Export failed: " + error.message, "bad"); }
+    }
+
+    function setupTabs() {
+        document.querySelectorAll(".tab-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const target = btn.dataset.tab;
+                document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+                document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+                btn.classList.add("active");
+                const pane = $(target);
+                if (pane) pane.classList.add("active");
+            });
+        });
+    }
+
+    function setupFilters() { /* simplified but retains search & filter */
+        ["missingSearch","uncitedSearch","c2rSearch","r2cSearch","verifySearch","claimSearch"].forEach(id => {
+            const input = $(id);
+            if (!input) return;
+            const bodyId = id.replace("Search", "Body");
+            input.addEventListener("input", () => {
+                const q = input.value.toLowerCase();
+                const body = $(bodyId);
+                if(body) body.querySelectorAll("tr").forEach(row => row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none");
+            });
+        });
+        const verifyFilter = $("verifyFilter");
+        if(verifyFilter) verifyFilter.addEventListener("change", () => { const body=$("verifyBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !verifyFilter.value || (row.dataset.status === verifyFilter.value) ? "" : "none"); });
+        const claimFilter = $("claimFilter");
+        if(claimFilter) claimFilter.addEventListener("change", () => { const body=$("claimBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !claimFilter.value || (row.dataset.status === claimFilter.value) ? "" : "none"); });
+    }
+
+    function setupActions() {
+        $("btnVerify")?.addEventListener("click", startVerification);
+        $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
+        $("btnExportCsv")?.addEventListener("click", exportCSV);
+        $("btnExportWord")?.addEventListener("click", exportWord);
+        $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
+        $("btnExportRefsHtml")?.addEventListener("click", () => exportVerifiedReferences("html"));
+        const mobileToggle = $("mobileToggle");
+        const mainNav = $("mainNav");
+        if(mobileToggle && mainNav) mobileToggle.addEventListener("click", () => mainNav.classList.toggle("open"));
+    }
+
+    async function init() {
+        setupTabs();
+        setupFilters();
+        setupActions();
+        await loadExistingResult(true);
+        if (AUTO_VERIFY && (!latestResults?.online_verification?.rows?.length)) startVerification();
+        console.log("[CiteIntegrity] Results dashboard ready for job:", JOB_ID);
+    }
+
+    init();
 });
 </script>
 </body>
