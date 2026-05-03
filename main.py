@@ -1063,12 +1063,10 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
-    # prefer in-memory because it contains verification state
     with _lock:
         if job_id in _store:
             return _store[job_id]
 
-    # fallback to PostgreSQL
     if DATABASE_URL:
         try:
             conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -1084,68 +1082,52 @@ def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
             if not row:
                 return None
 
-            result = row["result"]
+            result = row["result"] or {}
             if isinstance(result, str):
                 result = json.loads(result)
 
-            # Check if there's a verification job ID in the result
-            verification_job_id = result.get("verification_job_id")
-            verification_state = "idle"
-            verification_progress = 0
-            verification_total = 0
-            verification_percentage = 0
-            
-            # If verification_job_id exists, get its status from verify.py
-            if verification_job_id:
-                try:
-                    from verify import get_verification_status
-                    verify_status = get_verification_status(verification_job_id)
-                    if verify_status:
-                        verification_state = verify_status.get("status", "idle")
-                        verification_progress = verify_status.get("progress", 0)
-                        verification_total = verify_status.get("total", 0)
-                        verification_percentage = verify_status.get("percentage", 0)
-                        print(f"[DEBUG] Loaded verification state for {verification_job_id}: {verification_progress}/{verification_total}")
-                except Exception as e:
-                    print(f"[DEBUG] Could not get verification status: {e}")
+            verification = result.get("verification", {}) or {}
+            online_verification = result.get("online_verification", {}) or {}
+            rows = online_verification.get("rows", []) or []
 
-        
-            # Check if online verification results exist
-            online_verification = result.get("online_verification", {})
-            if online_verification.get("rows"):
-                verification_state = "completed"
-                verification_total = len(online_verification.get("rows", []))
-                verification_progress = verification_total
-                verification_percentage = 100
-            
-            # Build the job record
+            if rows and verification.get("state") != "completed":
+                verification.update({
+                    "state": "completed",
+                    "progress": len(rows),
+                    "total": len(rows),
+                    "percentage": 100,
+                    "results_count": len(rows),
+                    "summary": online_verification.get("summary", {})
+                })
+
             job_record = {
                 "job_id": job_id,
                 "status": row["status"],
-                "result": result or {},
+                "result": result,
                 "error": row["error"],
                 "verification": {
-                    "state": verification_state,
-                    "progress": verification_progress,
-                    "total": verification_total,
-                    "percentage": verification_percentage,
-                    "message": "",
-                    "verification_job_id": verification_job_id,
-                    "started_at": result.get("verification_started_at"),
-                    "completed_at": result.get("verification_completed_at"),
+                    "state": verification.get("state", "idle"),
+                    "progress": verification.get("progress", 0),
+                    "total": verification.get("total", 0),
+                    "percentage": verification.get("percentage", 0),
+                    "message": verification.get("message", ""),
+                    "verification_job_id": verification.get("verification_job_id"),
+                    "rq_job_id": verification.get("rq_job_id"),
+                    "rq_status": verification.get("rq_status"),
+                    "started_at": verification.get("started_at"),
+                    "completed_at": verification.get("completed_at"),
+                    "last_heartbeat": verification.get("last_heartbeat"),
+                    "error": verification.get("error"),
                     "summary": online_verification.get("summary", {}),
-                    "results_count": len(online_verification.get("rows", []))
+                    "results_count": len(rows)
                 }
             }
-            
-            # Store in memory for future requests
+
             with _lock:
                 _store[job_id] = job_record
-            
-            print(f"[DEBUG] Loaded job {job_id} from PostgreSQL with verification state: {verification_state} ({verification_progress}/{verification_total})")
-            
+
             return job_record
-            
+
         except Exception as e:
             print(f"load_job_record DB error: {e}")
             import traceback
@@ -2642,57 +2624,38 @@ async def verify_online(job_id: str = Form(...)):
 
     if not verification_queue:
         raise HTTPException(500, "Verification queue not initialized")
-
-    verification_job_id = f"verify:{job_id}:{uuid.uuid4().hex[:8]}"
-
+    
+    new_verification_job_id = f"verify:{job_id}:{uuid.uuid4().hex[:8]}"
+    
     update_verification_status(
         job_id,
-        verification_job_id=verification_job_id,
-        rq_job_id=verification_job_id,
+        verification_job_id=new_verification_job_id,
+        rq_job_id=new_verification_job_id,
         state="queued",
         total=len(refs),
         progress=0,
         percentage=0,
         started_at=now(),
-        message="Verification queued"
+        message="Verification re-queued"
     )
-
-    try:
-        verification_queue.enqueue(
-            "worker.process_verification",
-            job_id,
-            "apa",
-            False,
-            job_id=verification_job_id,
-            job_timeout=10800,
-            result_ttl=86400,
-            failure_ttl=86400
-        )
-
-        print(f"[VERIFY ONLINE] Queued durable verification job {verification_job_id} for {job_id}")
-
-    except Exception as q_error:
-        update_verification_status(
-            job_id,
-            state="error",
-            message=f"Failed to queue verification: {q_error}",
-            error=str(q_error)
-        )
-        raise HTTPException(500, f"Failed to queue verification: {q_error}")
-
-    try:
-        stats_tracker.add_verification(job_id, len(refs), success=True)
-    except Exception as stats_error:
-        print(f"[VERIFY ONLINE] Stats error: {stats_error}")
-
+    
+    verification_queue.enqueue(
+        "worker.process_verification",
+        job_id,
+        "apa",
+        False,
+        job_id=new_verification_job_id,
+        job_timeout=10800,
+        result_ttl=86400,
+        failure_ttl=86400
+    )
+    
     return {
-        "started": True,
+        "success": True,
+        "message": "Verification re-queued successfully",
         "job_id": job_id,
-        "verification_job_id": verification_job_id,
-        "total_references": len(refs),
-        "estimated_time_seconds": len(refs) * 4,
-        "estimated_time_formatted": format_time(len(refs) * 4),
-        "message": "Verification queued. Check /online/status for progress."
+        "verification_job_id": new_verification_job_id,
+        "total_references": len(refs)
     }
 # ============================================================
 # STATUS POLLING
