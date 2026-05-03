@@ -1603,15 +1603,8 @@ async function fetchStatus() {
                             const retryRes = await fetch(`/job/${encodeURIComponent(LAST_JOB_ID)}`);
                             const retryData = await retryRes.json();
                             if (retryData.result && retryData.result.online_verification && retryData.result.online_verification.rows) {
-                                const retryResult = normaliseFinalResult(retryData.result);
-                            
-                                if (isFinalResultReady(retryResult)) {
-                                    renderAll(retryResult);
-                                    showFinalReadyMessage(retryResult);
-                                } else {
-                                    showFinalisingMessage();
-                                    if (!POLL_TIMER) startPolling();
-                                }
+                                renderAll(retryData.result);
+                                setStatus(`Verification complete! ${retryData.result.online_verification.rows.length} references verified.`, "good");
                             }
                         } catch (e) {
                             console.error("Auto-retry failed:", e);
