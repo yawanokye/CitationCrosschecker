@@ -133,6 +133,101 @@ def _compute_verification_summary(rows):
         "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
     }
 
+def _make_context_review_suggestion(row, result):
+    """
+    Always returns at least one UI-ready context suggestion.
+    This prevents the Recovery tab from showing an empty Context Suggestions column.
+    """
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or ""
+    )
+
+    status = row.get("status", "")
+
+    return [{
+        "title": "Review this source in context",
+        "year": row.get("matched_year") or row.get("year") or "",
+        "authors": row.get("matched_authors") or row.get("authors") or "",
+        "doi": row.get("doi") or "",
+        "reason": (
+            f"This reference has verification status '{status}'. "
+            "Review the cited sentence and confirm that the source supports the claim."
+        ),
+        "suggested": reference[:250] if reference else "Review the matched reference manually.",
+        "confidence": 0.50,
+        "source": "context_review_fallback",
+        "citation": citation,
+        "reference": reference
+    }]
+
+
+def _context_suggestions_for_row(row, result):
+    """
+    Try to generate context-aware suggestions. If that fails, return a safe fallback.
+    """
+    existing = (
+        row.get("suggested_references")
+        or row.get("correction_suggestions")
+        or row.get("suggestions")
+        or []
+    )
+
+    if existing:
+        return existing
+
+    if suggest_for_unverified:
+        try:
+            citation = (
+                row.get("citation")
+                or row.get("in_text")
+                or row.get("citation_in_text")
+                or ""
+            )
+
+            reference = (
+                row.get("reference")
+                or row.get("original_reference")
+                or row.get("matched_title")
+                or row.get("title")
+                or row.get("source_title")
+                or ""
+            )
+
+            main_text = result.get("main_text", "")
+
+            # Try common signatures safely
+            try:
+                suggestions = suggest_for_unverified(
+                    citation=citation,
+                    reference=reference,
+                    context=main_text,
+                    top_k=3
+                )
+            except TypeError:
+                try:
+                    suggestions = suggest_for_unverified(reference, main_text, top_k=3)
+                except TypeError:
+                    suggestions = suggest_for_unverified(reference, main_text)
+
+            if suggestions:
+                return suggestions
+
+        except Exception as e:
+            print(f"[VERIFY WORKER] Context suggestion failed: {e}")
+
+    return _make_context_review_suggestion(row, result)
 
 def _build_recovery_payload(result, verification_rows):
     """
@@ -161,17 +256,24 @@ def _build_recovery_payload(result, verification_rows):
         if status not in {"likely", "needs_review", "not_found", "offline"}:
                continue
 
-        suggestions = (
-            row.get("suggested_references")
-            or row.get("correction_suggestions")
-            or row.get("suggestions")
-            or []
-        )
+        suggestions = _context_suggestions_for_row(row, result)
 
         verification_recovery.append({
             "status": status,
-            "citation": row.get("citation", ""),
-            "reference": row.get("reference", ""),
+            "citation": (
+                row.get("citation")
+                or row.get("in_text")
+                or row.get("citation_in_text")
+                or ""
+            ),
+            "reference": (
+                row.get("reference")
+                or row.get("original_reference")
+                or row.get("matched_title")
+                or row.get("title")
+                or row.get("source_title")
+                or ""
+            ),
             "suggestions": suggestions
         })
 
