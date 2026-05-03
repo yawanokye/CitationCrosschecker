@@ -1374,11 +1374,12 @@ function isFinalResultReady(result) {
         return false;
     }
 
-    // IMPORTANT:
-    // Do not stop at "finalising".
-    // Finalising means verification rows are ready,
-    // but Recovery and Claim Support may still be building.
-    return state === "completed";
+    const finalTablesReady =
+        verification.final_tables_ready === true ||
+        result.final_tables_ready === true ||
+        Boolean(result.verification_completed_at);
+
+    return state === "completed" && finalTablesReady;
 }
 function showFinalisingMessage() {
     setStatus(
