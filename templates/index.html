@@ -1439,6 +1439,13 @@ async function fetchStatus() {
         const js = await res.json();
         console.log("📡 STATUS RESPONSE:", js);
         
+        // Backend returned JSON null. Do not crash polling.
+        if (!js) {
+            console.warn("Empty /online/status response. Polling will continue.");
+            setStatus("Waiting for verification status...", "warn");
+            return;
+        }
+        
         // Check if we have results directly in the response
         if (js.result && js.result.online_verification && js.result.online_verification.rows) {
             const partialResult = normaliseFinalResult(js.result);
