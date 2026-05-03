@@ -1374,14 +1374,12 @@ function isFinalResultReady(result) {
         return false;
     }
 
-    const finalTablesReady =
-        verification.final_tables_ready === true ||
-        result.final_tables_ready === true ||
-        Boolean(result.verification_completed_at);
-
-    return state === "completed" && finalTablesReady;
+    // IMPORTANT:
+    // Do not stop at "finalising".
+    // Finalising means verification rows are ready,
+    // but Recovery and Claim Support may still be building.
+    return state === "completed";
 }
-
 function showFinalisingMessage() {
     setStatus(
         "Verification complete. Preparing Recovery and Claim Support results. Please wait...",
