@@ -2522,12 +2522,14 @@ async def get_result(job_id: str):
 
 @app.get("/job/{job_id}")
 def get_job_endpoint(job_id: str):
-    job = load_job_record(job_id)
+    job = load_job_record_fresh(job_id)
     if not job:
         return {"status": "not_found"}
+
     return {
         "status": job.get("status", "unknown"),
-        "result": job.get("result")
+        "result": job.get("result"),
+        "verification": job.get("verification", {})
     }
 # ============================================================
 # AUTO-FIX ENDPOINTS
@@ -2804,8 +2806,12 @@ def online_status(job_id: str):
                 verification["message"] = "Verification running"
 
             elif rq_status == "finished":
-                verification["state"] = "completed"
-                verification["message"] = "Verification worker finished"
+                if verification.get("final_tables_ready") is True:
+                    verification["state"] = "completed"
+                    verification["message"] = "Verification complete"
+                else:
+                    verification["state"] = "finalising"
+                    verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
 
             elif rq_status == "failed":
                 verification["state"] = "error"
