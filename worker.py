@@ -12,6 +12,17 @@ from rq import Worker, Queue, Connection
 from engine import run_crosscheck_with_autofix
 
 try:
+    from engine import recover_references_for_verification
+except Exception:
+    recover_references_for_verification = None
+
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+from verify import verify_references_batch
+from acii import compute_acii
+from claim_checker import build_claim_support_rows
+
+try:
     from citation_suggester import suggest_for_unverified
 except Exception:
     suggest_for_unverified = None
@@ -26,7 +37,170 @@ if not REDIS_URL or not DATABASE_URL:
 # Connect to Redis
 redis_conn = redis.from_url(REDIS_URL)
 
+# ============================================================
+# DURABLE VERIFICATION HELPERS
+# ============================================================
 
+VERIFY_CHUNK_SIZE = int(os.environ.get("VERIFY_CHUNK_SIZE", "10"))
+
+
+def now_iso():
+    return datetime.utcnow().isoformat()
+
+
+def _safe_json_loads(value):
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _load_job_result(job_id):
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            raise Exception(f"Job {job_id} not found")
+
+        return _safe_json_loads(row["result"])
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _save_job_result(job_id, result, status=None):
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
+    try:
+        if status:
+            cursor.execute(
+                """
+                UPDATE jobs
+                SET result = %s::jsonb,
+                    status = %s,
+                    completed_at = CASE WHEN %s = 'completed' THEN NOW() ELSE completed_at END
+                WHERE job_id = %s
+                """,
+                (json.dumps(result), status, status, job_id)
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE jobs
+                SET result = %s::jsonb
+                WHERE job_id = %s
+                """,
+                (json.dumps(result), job_id)
+            )
+
+        conn.commit()
+
+    finally:
+        cursor.close()
+        conn.close()
+
+    # Keep /result/{job_id} fresh because main.py checks Redis cache first.
+    try:
+        redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+    except Exception as e:
+        print(f"[VERIFY WORKER] Could not refresh Redis result cache: {e}")
+
+
+def _set_verification_meta(result, **kwargs):
+    verification = result.get("verification") or {}
+    verification.update({k: v for k, v in kwargs.items() if v is not None})
+    result["verification"] = verification
+    return result
+
+
+def _compute_verification_summary(rows):
+    rows = rows or []
+    return {
+        "total": len(rows),
+        "verified": sum(1 for r in rows if r and r.get("status") == "verified"),
+        "likely": sum(1 for r in rows if r and r.get("status") == "likely"),
+        "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
+        "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
+    }
+
+
+def _build_recovery_payload(result, verification_rows):
+    """
+    Safe recovery builder for the new worker flow.
+    It avoids depending on web-process memory and always returns UI-ready arrays.
+    """
+    missing_recovery = []
+    verification_recovery = []
+
+    for item in result.get("missing_in_references", []) or []:
+        if isinstance(item, str):
+            citation = item
+            count = 1
+        else:
+            citation = item.get("citation_in_text") or item.get("citation") or item.get("in_text") or ""
+            count = item.get("count_in_text") or item.get("count") or 1
+
+        missing_recovery.append({
+            "citation": citation,
+            "count": count,
+            "suggestions": []
+        })
+
+    for row in verification_rows or []:
+        status = row.get("status", "")
+        if status not in {"needs_review", "not_found", "offline"}:
+            continue
+
+        suggestions = (
+            row.get("suggested_references")
+            or row.get("correction_suggestions")
+            or row.get("suggestions")
+            or []
+        )
+
+        verification_recovery.append({
+            "status": status,
+            "citation": row.get("citation", ""),
+            "reference": row.get("reference", ""),
+            "suggestions": suggestions
+        })
+
+    return {
+        "missing_recovery": missing_recovery,
+        "verification_recovery": verification_recovery
+    }
+
+
+def _normalise_references_for_verification(result):
+    refs = result.get("references_raw", []) or []
+
+    if refs:
+        return refs
+
+    if recover_references_for_verification:
+        try:
+            recovered = recover_references_for_verification(
+                result.get("main_text", ""),
+                style_hint="apa"
+            )
+            if recovered:
+                result["references_raw"] = recovered
+                result.setdefault("summary", {})["reference_entries_found"] = len(recovered)
+                return recovered
+        except Exception as e:
+            print(f"[VERIFY WORKER] Reference recovery failed: {e}")
+
+    return []
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
@@ -1219,7 +1393,186 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         
         raise e
 
+# ============================================================
+# VERIFICATION WORKER FUNCTION
+# ============================================================
 
+def process_verification(job_id, style="apa", enrich_metadata=False):
+    """
+    Durable online verification job.
+
+    This replaces the old verify.py daemon-thread flow.
+    It runs inside the RQ worker, persists progress after every chunk,
+    updates PostgreSQL and Redis, and builds final dashboard tables.
+    """
+    print(f"🌐 Starting durable verification for job {job_id}")
+
+    start_time = time.time()
+    all_rows = []
+
+    try:
+        result = _load_job_result(job_id)
+        refs = _normalise_references_for_verification(result)
+        total = len(refs)
+
+        if not total:
+            result = _set_verification_meta(
+                result,
+                state="idle",
+                progress=0,
+                total=0,
+                percentage=0,
+                message=result.get("reference_detection_message", "No references extracted"),
+                completed_at=now_iso()
+            )
+            result["online_verification"] = {
+                "rows": [],
+                "summary": _compute_verification_summary([])
+            }
+            result["recovery"] = {
+                "missing_recovery": [],
+                "verification_recovery": []
+            }
+            result["claim_support"] = []
+            _save_job_result(job_id, result)
+            return result
+
+        result = _set_verification_meta(
+            result,
+            state="running",
+            progress=0,
+            total=total,
+            percentage=0,
+            message=f"Verification started for {total} references",
+            started_at=now_iso(),
+            completed_at=None,
+            error=None
+        )
+        result["online_verification"] = {
+            "rows": [],
+            "summary": _compute_verification_summary([])
+        }
+        _save_job_result(job_id, result)
+
+        chunks = [
+            refs[i:i + VERIFY_CHUNK_SIZE]
+            for i in range(0, total, VERIFY_CHUNK_SIZE)
+        ]
+
+        print(f"🌐 Verification split into {len(chunks)} chunks of {VERIFY_CHUNK_SIZE}")
+
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            print(f"🌐 Verifying chunk {chunk_index}/{len(chunks)} with {len(chunk)} refs")
+
+            chunk_rows = verify_references_batch(
+                chunk,
+                style=style,
+                use_crossref=True,
+                use_openalex=False,
+                job_id=None,
+                enrich_metadata=enrich_metadata
+            )
+
+            all_rows.extend(chunk_rows or [])
+
+            progress = min(len(all_rows), total)
+            percentage = int((progress / total) * 100) if total else 0
+            summary = _compute_verification_summary(all_rows)
+
+            result["online_verification"] = {
+                "rows": all_rows,
+                "summary": summary
+            }
+
+            result = _set_verification_meta(
+                result,
+                state="running",
+                progress=progress,
+                total=total,
+                percentage=percentage,
+                message=f"Verifying references: {progress}/{total}",
+                last_heartbeat=now_iso(),
+                chunks_completed=chunk_index,
+                chunks_total=len(chunks)
+            )
+
+            _save_job_result(job_id, result)
+
+            print(f"🌐 Persisted verification progress {progress}/{total}")
+
+        summary = _compute_verification_summary(all_rows)
+
+        result["online_verification"] = {
+            "rows": all_rows,
+            "summary": summary
+        }
+
+        try:
+            result["acii"] = compute_acii(result, all_rows)
+        except Exception as e:
+            print(f"[VERIFY WORKER] ACII error: {e}")
+            result["acii"] = {"error": str(e)}
+
+        try:
+            result["recovery"] = _build_recovery_payload(result, all_rows)
+        except Exception as e:
+            print(f"[VERIFY WORKER] Recovery error: {e}")
+            result["recovery"] = {
+                "missing_recovery": [],
+                "verification_recovery": []
+            }
+
+        try:
+            result["claim_support"] = build_claim_support_rows(result)
+        except Exception as e:
+            print(f"[VERIFY WORKER] Claim-support error: {e}")
+            result["claim_support"] = []
+
+        elapsed = round(time.time() - start_time, 2)
+
+        result = _set_verification_meta(
+            result,
+            state="completed",
+            progress=total,
+            total=total,
+            percentage=100,
+            results_count=len(all_rows),
+            summary=summary,
+            message=f"Verification completed for {len(all_rows)} references",
+            completed_at=now_iso(),
+            processing_time_seconds=elapsed
+        )
+
+        result["verification_completed_at"] = now_iso()
+
+        _save_job_result(job_id, result, status="completed")
+
+        print(f"✅ Durable verification completed for job {job_id}: {len(all_rows)} rows")
+        return result
+
+    except Exception as e:
+        print(f"❌ Durable verification failed for job {job_id}: {e}")
+        import traceback
+        traceback.print_exc()
+
+        try:
+            result = _load_job_result(job_id)
+            result = _set_verification_meta(
+                result,
+                state="error",
+                message=str(e),
+                error=str(e),
+                completed_at=now_iso()
+            )
+            result.setdefault("online_verification", {
+                "rows": all_rows,
+                "summary": _compute_verification_summary(all_rows)
+            })
+            _save_job_result(job_id, result)
+        except Exception as db_error:
+            print(f"[VERIFY WORKER] Could not persist verification error: {db_error}")
+
+        raise
 # Start the worker
 if __name__ == "__main__":
     print("🚀 Starting worker...")
@@ -1227,11 +1580,13 @@ if __name__ == "__main__":
     print(f"💾 PostgreSQL: {'Connected' if DATABASE_URL else 'NOT SET'}")
     
     with Connection(redis_conn):
-        queue = Queue("document_processing", connection=redis_conn)
-        print(f"📌 Queue name: {queue.name}")
-        print(f"📌 Jobs waiting: {queue.count}")
-
-        worker = Worker(["document_processing"], connection=redis_conn)
+        document_queue = Queue("document_processing", connection=redis_conn)
+        verification_queue = Queue("verification", connection=redis_conn)
+    
+        print(f"📌 Document queue: {document_queue.name}, jobs waiting: {document_queue.count}")
+        print(f"📌 Verification queue: {verification_queue.name}, jobs waiting: {verification_queue.count}")
+    
+        worker = Worker(["document_processing", "verification"], connection=redis_conn)
 
         print("✅ Worker ready, waiting for jobs...")
         print("📋 Detection scenarios enabled:")
