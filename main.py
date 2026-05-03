@@ -1134,7 +1134,85 @@ def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
             traceback.print_exc()
 
     return None
+def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Fresh loader for polling endpoints.
+    It avoids stale _store data and reads the latest result from Redis/PostgreSQL.
+    """
 
+    result = None
+    status = None
+    error = None
+
+    # 1. Try Redis result cache first
+    if redis_conn:
+        try:
+            cached = redis_conn.get(f"result:{job_id}")
+            if cached:
+                result = json.loads(cached)
+                status = result.get("status") or "completed"
+        except Exception as e:
+            print(f"[FRESH LOAD] Redis read failed for {job_id}: {e}")
+
+    # 2. Fall back to PostgreSQL
+    if result is None and DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT status, result, error FROM jobs WHERE job_id = %s",
+                (job_id,)
+            )
+
+            row = cursor.fetchone()
+
+            cursor.close()
+            conn.close()
+
+            if not row:
+                return None
+
+            status = row.get("status")
+            error = row.get("error")
+            result = row.get("result") or {}
+
+            if isinstance(result, str):
+                result = json.loads(result)
+
+        except Exception as e:
+            print(f"[FRESH LOAD] PostgreSQL read failed for {job_id}: {e}")
+            return None
+
+    if result is None:
+        return None
+
+    verification = result.get("verification", {}) or {}
+    online_verification = result.get("online_verification", {}) or {}
+    rows = online_verification.get("rows", []) or []
+
+    # Use actual rows as progress fallback
+    if rows and verification.get("progress", 0) < len(rows):
+        verification["progress"] = len(rows)
+        verification["results_count"] = len(rows)
+
+    if rows and not verification.get("total"):
+        verification["total"] = len(rows)
+
+    if verification.get("total"):
+        verification["percentage"] = int(
+            (verification.get("progress", 0) / max(verification.get("total", 1), 1)) * 100
+        )
+
+    result["verification"] = verification
+
+    return {
+        "job_id": job_id,
+        "status": status,
+        "result": result,
+        "error": error,
+        "verification": verification
+    }
 def store_result(result):
     job_id = uuid.uuid4().hex
 
@@ -2034,20 +2112,43 @@ async def retry_stuck_verification(job_id: str):
     if not refs:
         return {"error": "No references to verify"}
     
-    new_verification_job_id = submit_verification(refs, style="apa", enrich_metadata=False)
-    update_verification_status(job_id, 
+    new_verification_job_id = f"verify:{job_id}:{uuid.uuid4().hex[:8]}"
+    if not verification_queue:
+        raise HTTPException(500, "Verification queue not initialized")
+    
+    update_verification_status(
+        job_id,
         verification_job_id=new_verification_job_id,
-        state="running",
+        rq_job_id=new_verification_job_id,
+        state="queued",
+        total=len(refs),
         progress=0,
-        started_at=now()
+        percentage=0,
+        started_at=now(),
+        message="Verification re-queued"
     )
-    start_progress_sync(job_id, new_verification_job_id)
+    
+    verification_queue.enqueue(
+        "worker.process_verification",
+        job_id,
+        "apa",
+        False,
+        job_id=new_verification_job_id,
+        job_timeout=10800,
+        result_ttl=86400,
+        failure_ttl=86400
+    )
     
     return {
+        "started": True,
         "success": True,
         "old_verification_job_id": verification_job_id,
         "new_verification_job_id": new_verification_job_id,
-        "message": "Verification restarted"
+        "verification_job_id": new_verification_job_id,
+        "job_id": job_id,
+        "total_references": len(refs),
+        "state": "queued",
+        "message": "Verification re-queued successfully"
     }
 @app.get("/debug/verification-data/{job_id}")
 async def debug_verification_data(job_id: str):
@@ -2665,13 +2766,9 @@ async def verify_online(job_id: str = Form(...)):
 # STATUS POLLING
 # ============================================================
 
-# ============================================================
-# STATUS POLLING
-# ============================================================
-
 @app.get("/online/status")
 def online_status(job_id: str):
-    job = load_job_record(job_id)
+    job = load_job_record_fresh(job_id)
 
     if not job:
         return JSONResponse(
@@ -2685,14 +2782,8 @@ def online_status(job_id: str):
         )
 
     result = job.get("result", {}) or {}
-    verification = (
-        result.get("verification")
-        or job.get("verification")
-        or {}
-    )
+    verification = result.get("verification") or job.get("verification") or {}
 
-    # Optional RQ status check.
-    # This helps detect failed/stopped verification worker jobs.
     rq_job_id = verification.get("rq_job_id") or verification.get("verification_job_id")
 
     if rq_job_id and redis_conn and verification.get("state") in {"queued", "running"}:
@@ -2704,38 +2795,59 @@ def online_status(job_id: str):
 
             verification["rq_status"] = rq_status
 
-            if rq_status == "failed":
+            if rq_status == "queued":
+                verification["state"] = "queued"
+                verification["message"] = "Verification job is queued and waiting for the worker"
+
+            elif rq_status in {"started", "deferred"}:
+                verification["state"] = "running"
+                verification["message"] = "Verification running"
+
+            elif rq_status == "finished":
+                verification["state"] = "completed"
+                verification["message"] = "Verification worker finished"
+
+            elif rq_status == "failed":
                 verification["state"] = "error"
                 verification["message"] = "Verification worker failed"
                 verification["error"] = str(rq_job.exc_info or "Unknown worker error")
                 verification["completed_at"] = now()
 
-                update_verification_status(job_id, **verification)
-
-            elif rq_status == "started" and verification.get("state") == "queued":
-                verification["state"] = "running"
-                verification["message"] = "Verification running"
-                update_verification_status(job_id, **verification)
+            update_verification_status(job_id, **verification)
 
         except Exception as e:
-            # Do not fail the status endpoint just because RQ lookup failed.
             verification["rq_status_error"] = str(e)
 
     online_verification = result.get("online_verification") or {}
     rows = online_verification.get("rows") or []
+
+    progress = verification.get("progress", 0)
+    total = verification.get("total", 0)
+
+    if rows and progress < len(rows):
+        progress = len(rows)
+
+    if rows and not total:
+        total = len(rows)
+
+    percentage = verification.get("percentage", 0)
+
+    if total:
+        percentage = int((progress / max(total, 1)) * 100)
 
     response = {
         "job_id": job_id,
         "online": {
             "state": verification.get("state", "idle"),
             "status": verification.get("state", "idle"),
-            "progress": verification.get("progress", 0),
-            "total": verification.get("total", 0),
-            "percentage": verification.get("percentage", 0),
+            "progress": progress,
+            "total": total,
+            "percentage": percentage,
             "message": verification.get("message", ""),
             "verification_job_id": verification.get("verification_job_id"),
             "rq_job_id": verification.get("rq_job_id"),
             "rq_status": verification.get("rq_status"),
+            "rq_status_error": verification.get("rq_status_error"),
             "error": verification.get("error"),
             "started_at": verification.get("started_at"),
             "completed_at": verification.get("completed_at"),
@@ -2744,8 +2856,6 @@ def online_status(job_id: str):
         }
     }
 
-    # Return partial or final result whenever rows exist.
-    # This lets new_results.html populate progressively for large jobs.
     if rows or verification.get("state") == "completed":
         response["result"] = result
 
