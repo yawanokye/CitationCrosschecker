@@ -995,7 +995,6 @@
                             <p>Citation and reference suggestions returned by the analysis engine.</p>
                         </div>
                     </div>
-
                     <div id="suggestionsContent"></div>
                 </div>
             </div>
@@ -1023,16 +1022,29 @@ document.addEventListener("DOMContentLoaded", function () {
 
     const $ = (id) => document.getElementById(id);
 
+    // ======================== UPDATED CONFIG ========================
     const CONFIG = {
-        MAX_VERIFY_DISPLAY: 1000,
-        POLL_INTERVAL: 1500,
-        MAX_FINAL_ATTEMPTS: 40
+        MAX_VERIFY_DISPLAY: 600,
+        MAX_CLAIM_DISPLAY: 500,
+        MAX_RECOVERY_DISPLAY: 500,
+        POLL_INTERVAL: 2500,
+        MAX_FINAL_ATTEMPTS: 180,
+        FINAL_RETRY_DELAY: 3000,
+        MAX_STATUS_ERRORS: 12
     };
 
     let latestResults = null;
     let pollingTimer = null;
     let verificationInProgress = false;
     let finalisingCount = 0;
+
+    let progressHighWater = 0;
+    let lastKnownProgress = 0;
+    let lastKnownTotal = 0;
+    let statusErrorCount = 0;
+    let finalFetchRunning = false;
+    let partialFinalRendered = false;
+    // ================================================================
 
     function esc(value) {
         return String(value ?? "")
@@ -1054,22 +1066,52 @@ document.addEventListener("DOMContentLoaded", function () {
         console.log("[Status]", message);
     }
 
-    function showProgress(percent, text) {
+    // ======================== NEW PROGRESS HELPERS ========================
+    function resetProgress(text = "Preparing...") {
+        progressHighWater = 0;
+        lastKnownProgress = 0;
+        lastKnownTotal = 0;
+        statusErrorCount = 0;
+
         const card = $("progressCard");
         const bar = $("progressBar");
         const progressText = $("progressText");
 
         if (card) card.style.display = "block";
-        if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        if (bar) bar.style.width = "0%";
+        if (progressText) progressText.textContent = text;
+    }
+
+    function showProgress(percent, text, options = {}) {
+        const card = $("progressCard");
+        const bar = $("progressBar");
+        const progressText = $("progressText");
+
+        let safePercent = Number(percent);
+        if (!Number.isFinite(safePercent)) safePercent = progressHighWater;
+
+        safePercent = Math.max(0, Math.min(100, safePercent));
+
+        if (!options.allowBackward) {
+            safePercent = Math.max(progressHighWater, safePercent);
+        }
+
+        progressHighWater = safePercent;
+
+        if (card) card.style.display = "block";
+        if (bar) bar.style.width = `${safePercent}%`;
         if (progressText) progressText.textContent = text || "";
     }
 
-    function hideProgress(delay = 2500) {
+    function hideProgress(delay = 3500) {
         const card = $("progressCard");
         setTimeout(() => {
-            if (card) card.style.display = "none";
+            if (!verificationInProgress && card) {
+                card.style.display = "none";
+            }
         }, delay);
     }
+    // ======================================================================
 
     function formatBadge(status) {
         const clean = String(status || "offline").toLowerCase();
@@ -1114,17 +1156,98 @@ document.addEventListener("DOMContentLoaded", function () {
         };
     }
 
+    // --------------------- FINAL READINESS HELPERS ---------------------
+    function hasVerificationRows(result) {
+        return Array.isArray(result?.online_verification?.rows) &&
+               result.online_verification.rows.length > 0;
+    }
+
+    function hasRecoveryPayload(result) {
+        return !!result?.recovery &&
+            (
+                Array.isArray(result.recovery.missing_recovery) ||
+                Array.isArray(result.recovery.verification_recovery)
+            );
+    }
+
+    function hasClaimPayload(result) {
+        return Array.isArray(result?.claim_support);
+    }
+
+    function isFinalReady(result) {
+        return hasVerificationRows(result) &&
+               hasRecoveryPayload(result) &&
+               hasClaimPayload(result);
+    }
+
+    function hydrateFinalDefaults(result) {
+        if (!result) return result;
+
+        if (!result.online_verification) {
+            result.online_verification = { rows: [], summary: {} };
+        }
+
+        if (!result.recovery) {
+            result.recovery = {
+                missing_recovery: [],
+                verification_recovery: []
+            };
+        }
+
+        if (!Array.isArray(result.recovery.missing_recovery)) {
+            result.recovery.missing_recovery = [];
+        }
+
+        if (!Array.isArray(result.recovery.verification_recovery)) {
+            result.recovery.verification_recovery = [];
+        }
+
+        if (!Array.isArray(result.claim_support)) {
+            result.claim_support = [];
+        }
+
+        return result;
+    }
+
+    async function fetchJsonNoCache(url) {
+        const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`, {
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        return await response.json();
+    }
+
+    function handleStatusPollingError(error) {
+        statusErrorCount += 1;
+
+        console.warn(`Temporary polling error ${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS}:`, error);
+
+        if (statusErrorCount < CONFIG.MAX_STATUS_ERRORS) {
+            showProgress(
+                Math.max(progressHighWater, 6),
+                `Temporary connection issue. Still checking verification status... (${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS})`
+            );
+            setStatus("Still checking verification status. The server may be busy with a large reference list.", "warn");
+            return;
+        }
+
+        setStatus("Verification status could not be checked repeatedly. The backend may still be running. Use Refresh in a moment.", "bad");
+        finishVerification(false);
+    }
+
+    // --------------------- RENDER FUNCTIONS ---------------------
     function getUniqueCitationsWithCount(rows) {
         const map = new Map();
-
         (rows || []).forEach(row => {
             const cite = row.in_text || row.citation || row.citation_in_text || "";
             const matched = row.matched_reference || "";
             const status = row.status || "";
             const flags = row.flags || "";
-
             const key = `${cite.toLowerCase()}|${matched}|${status}|${flags}`;
-
             if (map.has(key)) {
                 map.get(key).count += 1;
             } else {
@@ -1137,14 +1260,12 @@ document.addEventListener("DOMContentLoaded", function () {
                 });
             }
         });
-
         return Array.from(map.values());
     }
 
     function renderAll(rawData) {
         if (!rawData) return;
-
-        const data = normalizeData(rawData);
+        const data = hydrateFinalDefaults(normalizeData(rawData));
         data.job_id = data.job_id || JOB_ID;
         latestResults = data;
         window.latestResults = data;
@@ -1166,28 +1287,22 @@ document.addEventListener("DOMContentLoaded", function () {
     function renderACII(data) {
         const acii = data.acii || {};
         const score = acii.ACII ?? acii.score ?? "--";
-
         const scoreEl = $("aciiScore");
         const ratingEl = $("aciiRating");
         const recEl = $("aciiRecommendation");
-
         if (scoreEl) scoreEl.textContent = score;
-
         const rating = getACIIRating(score);
         if (ratingEl) {
             ratingEl.textContent = rating.text;
             ratingEl.className = `acii-rating ${rating.className}`;
         }
-
         if (recEl) {
             const recs = acii.recommendations || {};
             let html = "";
-
             if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
             if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
             if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
             if (recs.priority) html += `<div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.18);">🎯 ${esc(recs.priority)}</div>`;
-
             recEl.innerHTML = html || "Review missing citations, uncited references, verification gaps, and claim-support issues to improve citation integrity.";
         }
     }
@@ -1197,7 +1312,6 @@ document.addEventListener("DOMContentLoaded", function () {
         const ovRows = data.online_verification?.rows || [];
         const claimRows = data.claim_support || [];
         const rec = data.recovery || {};
-
         const kpis = [
             ["In-text citations", s.in_text_citations_found],
             ["References", s.reference_entries_found],
@@ -1208,10 +1322,8 @@ document.addEventListener("DOMContentLoaded", function () {
             ["Recovery rows", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length],
             ["Claim rows", claimRows.length]
         ];
-
         const grid = $("kpiGrid");
         if (!grid) return;
-
         grid.innerHTML = kpis.map(([label, value]) => `
             <div class="kpi">
                 <div class="kpi-value">${esc(value)}</div>
@@ -1224,7 +1336,6 @@ document.addEventListener("DOMContentLoaded", function () {
         const s = data.summary || {};
         const body = $("summaryBody");
         if (!body) return;
-
         body.innerHTML = `
             <tr><td>In-text citation occurrences</td><td><strong>${esc(s.in_text_citations_found)}</strong></td><td>Total citation occurrences extracted from the manuscript.</td></tr>
             <tr><td>Reference entries found</td><td><strong>${esc(s.reference_entries_found)}</strong></td><td>Total reference entries detected in the reference list.</td></tr>
@@ -1232,72 +1343,43 @@ document.addEventListener("DOMContentLoaded", function () {
             <tr><td>Uncited references</td><td><strong style="color:#c2410c;">${esc(s.uncited_references)}</strong></td><td>References listed but not cited in the manuscript body.</td></tr>
             <tr><td>Match rate</td><td><strong>${esc(s.match_rate)}%</strong></td><td>Estimated citation-reference reconciliation rate.</td></tr>
         `;
-
-        renderACIIComponents(data);
-    }
-
-    function renderACIIComponents(data) {
-        const body = $("aciiComponentsBody");
-        if (!body) return;
-
         const components = data.acii?.components || {};
-        const rows = Object.entries(components);
-
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="4"><div class="empty">ACII components are not available yet.</div></td></tr>`;
-            return;
+        const compBody = $("aciiComponentsBody");
+        if (compBody) {
+            const rows = Object.entries(components);
+            if (!rows.length) {
+                compBody.innerHTML = `<tr><td colspan="4"><div class="empty">ACII components are not available yet.</div></td></tr>`;
+            } else {
+                compBody.innerHTML = rows.map(([name, item]) => `
+                    <tr>
+                        <td>${esc(name.replaceAll("_", " "))}</td>
+                        <td><strong>${esc(item?.score ?? "--")}</strong></td>
+                        <td>${esc(item?.category ?? "--")}</td>
+                        <td>${esc(item?.remark ?? "--")}</td>
+                    </tr>
+                `).join("");
+            }
         }
-
-        body.innerHTML = rows.map(([name, item]) => `
-            <tr>
-                <td>${esc(name.replaceAll("_", " "))}</td>
-                <td><strong>${esc(item?.score ?? "--")}</strong></td>
-                <td>${esc(item?.category ?? "--")}</td>
-                <td>${esc(item?.remark ?? "--")}</td>
-            </tr>
-        `).join("");
     }
 
-    function renderMissing(data) {
+    function renderMissing(data) { /* unchanged, omitted for brevity but identical to original logic */ 
         const rows = data.missing_in_references || [];
         const body = $("missingBody");
         if (!body) return;
-
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="3"><div class="empty">No missing citations detected.</div></td></tr>`;
-            return;
-        }
-
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="3"><div class="empty">No missing citations detected.</div></td></tr>`; return; }
         body.innerHTML = rows.map((row, i) => {
             const citation = typeof row === "string" ? row : (row.citation_in_text || row.citation || row.in_text || "");
             const count = typeof row === "string" ? "" : (row.count_in_text || row.count || 1);
-
-            return `
-                <tr>
-                    <td>${i + 1}</td>
-                    <td>${esc(citation)}</td>
-                    <td>${esc(count)}</td>
-                </tr>
-            `;
+            return `<tr><td>${i+1}</td><td>${esc(citation)}</td><td>${esc(count)}</td></tr>`;
         }).join("");
     }
 
-    function renderUncited(data) {
+    function renderUncited(data) { 
         const rows = data.uncited_references || [];
         const body = $("uncitedBody");
         if (!body) return;
-
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="2"><div class="empty">No uncited references detected.</div></td></tr>`;
-            return;
-        }
-
-        body.innerHTML = rows.map((row, i) => `
-            <tr>
-                <td>${i + 1}</td>
-                <td>${esc(row.reference || row)}</td>
-            </tr>
-        `).join("");
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="2"><div class="empty">No uncited references detected.</div></td></tr>`; return; }
+        body.innerHTML = rows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.reference || row)}</td></tr>`).join("");
     }
 
     function renderC2R(data) {
@@ -1305,42 +1387,16 @@ document.addEventListener("DOMContentLoaded", function () {
         const rows = getUniqueCitationsWithCount(raw);
         const body = $("c2rBody");
         if (!body) return;
-
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="6"><div class="empty">No citation-reference mapping available.</div></td></tr>`;
-            return;
-        }
-
-        body.innerHTML = rows.slice(0, 1500).map((row, i) => `
-            <tr>
-                <td>${i + 1}</td>
-                <td>${formatBadge(row.status || "not_found")}</td>
-                <td>${esc(row.citation)}</td>
-                <td>${esc(row.count)}</td>
-                <td>${esc(row.matched_reference || "")}</td>
-                <td>${esc(row.flags || "")}</td>
-            </tr>
-        `).join("");
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="6"><div class="empty">No citation-reference mapping available.</div></td></tr>`; return; }
+        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "not_found")}</td><td>${esc(row.citation)}</td><td>${esc(row.count)}</td><td>${esc(row.matched_reference || "")}</td><td>${esc(row.flags || "")}</td></tr>`).join("");
     }
 
     function renderR2C(data) {
         const rows = data.reconciliation_reference_to_intext || [];
         const body = $("r2cBody");
         if (!body) return;
-
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="4"><div class="empty">No reference-citation mapping available.</div></td></tr>`;
-            return;
-        }
-
-        body.innerHTML = rows.slice(0, 1500).map((row, i) => `
-            <tr>
-                <td>${i + 1}</td>
-                <td><strong>${esc(row.times_cited ?? 0)}</strong></td>
-                <td>${esc(row.reference || "")}</td>
-                <td>${esc((row.cited_by || []).slice(0, 8).join("; "))}</td>
-            </tr>
-        `).join("");
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="4"><div class="empty">No reference-citation mapping available.</div></td></tr>`; return; }
+        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td><strong>${esc(row.times_cited ?? 0)}</strong></td><td>${esc(row.reference || "")}</td><td>${esc((row.cited_by || []).slice(0, 8).join("; "))}</td></tr>`).join("");
     }
 
     function renderVerification(data) {
@@ -1349,7 +1405,6 @@ document.addEventListener("DOMContentLoaded", function () {
         const summary = ov.summary || {};
         const body = $("verifyBody");
         const kpis = $("verifyKpis");
-
         if (kpis) {
             const items = [
                 ["Verified", summary.verified ?? rows.filter(r => r.status === "verified").length],
@@ -1357,101 +1412,48 @@ document.addEventListener("DOMContentLoaded", function () {
                 ["Needs review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
                 ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length]
             ];
-
-            kpis.innerHTML = items.map(([label, value]) => `
-                <div class="kpi">
-                    <div class="kpi-value">${esc(value)}</div>
-                    <div class="kpi-label">${esc(label)}</div>
-                </div>
-            `).join("");
+            kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
-
         if (!body) return;
-
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="8"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`;
-            return;
-        }
-
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="8"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
         body.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((row, i) => {
             const doi = row.doi || "";
-            const doiHtml = doi
-                ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a><div class="small-muted">${esc(doi)}</div>`
-                : "—";
-
-            return `
-                <tr data-status="${esc(row.status || "")}">
-                    <td>${i + 1}</td>
-                    <td>${formatBadge(row.status || "offline")}</td>
-                    <td>${esc(row.source || "—")}</td>
-                    <td>${esc(row.score ?? "—")}</td>
-                    <td>${doiHtml}</td>
-                    <td>${esc(row.matched_year || row.year || "—")}</td>
-                    <td>${esc(row.matched_authors || row.authors || "—")}</td>
-                    <td>${esc(row.matched_title || row.title || row.reference || "—")}</td>
-                </tr>
-            `;
+            const doiHtml = doi ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a><div class="small-muted">${esc(doi)}</div>` : "—";
+            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td></tr>`;
         }).join("");
     }
 
     function renderSuggestionList(suggestions) {
-        if (!suggestions || !suggestions.length) {
-            return `<span class="badge no_evidence_found">No evidence found</span>`;
-        }
-
-        return `
-            <div class="suggestion-box">
-                ${suggestions.slice(0, 4).map((s, i) => {
-                    const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
-                    const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
-                    return `
-                        <div style="margin-bottom:10px;">
-                            <strong>${i + 1}. ${esc(s.title || s.suggested || "Untitled suggestion")}</strong>
-                            <div class="small-muted">${esc(authors)} ${s.year ? "(" + esc(s.year) + ")" : ""}</div>
-                            ${doi}
-                        </div>
-                    `;
-                }).join("")}
-            </div>
-        `;
+        if (!suggestions || !suggestions.length) return `<span class="badge no_evidence_found">No evidence found</span>`;
+        return `<div class="suggestion-box">${suggestions.slice(0, 4).map((s, i) => {
+            const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
+            const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
+            return `<div style="margin-bottom:10px;"><strong>${i+1}. ${esc(s.title || s.suggested || "Untitled suggestion")}</strong><div class="small-muted">${esc(authors)} ${s.year ? "(" + esc(s.year) + ")" : ""}</div>${doi}</div>`;
+        }).join("")}</div>`;
     }
 
     function renderRecovery(data) {
         const rec = data.recovery || {};
         const missingRows = rec.missing_recovery || [];
         const verifyRows = rec.verification_recovery || [];
-
         const missingBody = $("recoveryMissingBody");
         const verifyBody = $("recoveryVerifyBody");
 
         if (missingBody) {
-            if (!missingRows.length) {
-                missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`;
-            } else {
-                missingBody.innerHTML = missingRows.map((row, i) => `
-                    <tr>
-                        <td>${i + 1}</td>
-                        <td>${esc(row.citation || "")}</td>
-                        <td>${esc(row.count ?? 1)}</td>
-                        <td>${renderSuggestionList(row.suggestions || [])}</td>
-                    </tr>
-                `).join("");
+            if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
+            else {
+                const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
+                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
             }
         }
 
         if (verifyBody) {
-            if (!verifyRows.length) {
-                verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`;
-            } else {
-                verifyBody.innerHTML = verifyRows.map((row, i) => `
-                    <tr>
-                        <td>${i + 1}</td>
-                        <td>${formatBadge(row.status || "offline")}</td>
-                        <td>${esc(row.citation || "")}</td>
-                        <td>${esc(row.reference || "")}</td>
-                        <td>${renderSuggestionList(row.suggestions || [])}</td>
-                    </tr>
-                `).join("");
+            if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
+            else {
+                const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
+                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
             }
         }
     }
@@ -1460,28 +1462,15 @@ document.addEventListener("DOMContentLoaded", function () {
         const rows = data.claim_support || [];
         const body = $("claimBody");
         if (!body) return;
-
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`;
-            return;
-        }
-
-        body.innerHTML = rows.map((row, i) => {
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`; return; }
+        const visibleRows = rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY);
+        body.innerHTML = visibleRows.map((row, i) => {
             const doi = row.doi || "";
             const doiHtml = doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
             const sourceTitle = row.source_title || row.matched_title || "No source title available";
-
-            return `
-                <tr data-status="${esc(row.support_status || "")}">
-                    <td>${i + 1}</td>
-                    <td>${esc(row.citation || "")}</td>
-                    <td>${esc(row.claim || "No evidence found")}</td>
-                    <td>${esc(sourceTitle)}${doiHtml}</td>
-                    <td>${formatBadge(row.support_status || "offline")}</td>
-                    <td>${esc(row.support_score ?? 0)}</td>
-                </tr>
-            `;
+            return `<tr data-status="${esc(row.support_status || "")}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.claim || "No evidence found")}</td><td>${esc(sourceTitle)}${doiHtml}</td><td>${formatBadge(row.support_status || "offline")}</td><td>${esc(row.support_score ?? 0)}</td></tr>`;
         }).join("");
+        if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
     }
 
     function getSuggestions(data) {
@@ -1494,47 +1483,20 @@ document.addEventListener("DOMContentLoaded", function () {
     function renderSuggestions(data) {
         const content = $("suggestionsContent");
         if (!content) return;
-
         const suggestions = getSuggestions(data);
-        const items = [
-            ...(suggestions.citations || []),
-            ...(suggestions.references || [])
-        ];
-
-        if (!items.length) {
-            content.innerHTML = `<div class="empty">No suggestions were returned. This may mean no fixable citation issues were detected, or suggestions were not enabled during upload.</div>`;
-            return;
-        }
-
-        content.innerHTML = `
-            <div style="margin-bottom:16px;" class="small-muted">
-                Total suggestions: <strong>${items.length}</strong>
-            </div>
-
-            ${items.slice(0, 500).map((s, i) => {
-                const confidence = Number(s.confidence || 0);
-                const level = confidence >= 0.85 ? "high" : confidence >= 0.7 ? "medium" : "low";
-
-                return `
-                    <div class="suggestion-item ${level}">
-                        <div><strong>${i + 1}. ${esc(s.issue_type || s.type || "Suggestion")}</strong></div>
-                        <div class="line-through">Original: ${esc(s.original || s.citation || "")}</div>
-                        <div class="suggested">Suggested: ${esc(s.suggested || s.title || "Review required")}</div>
-                        <div class="small-muted" style="margin-top:8px;">
-                            Reason: ${esc(s.reason || "Citation/reference issue detected.")}
-                            ${confidence ? ` | Confidence: ${Math.round(confidence * 100)}%` : ""}
-                        </div>
-                    </div>
-                `;
-            }).join("")}
-        `;
+        const items = [...(suggestions.citations || []), ...(suggestions.references || [])];
+        if (!items.length) { content.innerHTML = `<div class="empty">No suggestions were returned. This may mean no fixable citation issues were detected, or suggestions were not enabled during upload.</div>`; return; }
+        content.innerHTML = `<div style="margin-bottom:16px;" class="small-muted">Total suggestions: <strong>${items.length}</strong></div>${items.slice(0, 500).map((s, i) => {
+            const confidence = Number(s.confidence || 0);
+            const level = confidence >= 0.85 ? "high" : confidence >= 0.7 ? "medium" : "low";
+            return `<div class="suggestion-item ${level}"><div><strong>${i+1}. ${esc(s.issue_type || s.type || "Suggestion")}</strong></div><div class="line-through">Original: ${esc(s.original || s.citation || "")}</div><div class="suggested">Suggested: ${esc(s.suggested || s.title || "Review required")}</div><div class="small-muted" style="margin-top:8px;">Reason: ${esc(s.reason || "Citation/reference issue detected.")}${confidence ? ` | Confidence: ${Math.round(confidence * 100)}%` : ""}</div></div>`;
+        }).join("")}`;
     }
 
     function updateCounts(data) {
         const rec = data.recovery || {};
         const suggestions = getSuggestions(data);
         const suggestionCount = (suggestions.citations || []).length + (suggestions.references || []).length;
-
         setCount("countSummary", "OK");
         setCount("countMissing", data.missing_in_references?.length || 0);
         setCount("countUncited", data.uncited_references?.length || 0);
@@ -1546,110 +1508,51 @@ document.addEventListener("DOMContentLoaded", function () {
         setCount("countSuggestions", suggestionCount);
     }
 
-    async function loadExistingResult(showMessage = true) {
-        if (!JOB_ID) {
-            setStatus("No job ID found in URL.", "bad");
-            return null;
-        }
-
-        try {
-            if (showMessage) setStatus("Loading results...", "info");
-
-            const res = await fetch(`/result/${encodeURIComponent(JOB_ID)}`);
-            const js = await res.json();
-
-            if (js.status === "completed") {
-                const result = js.data || js.result;
-                renderAll(result);
-                setStatus("Results loaded.", "good");
-                return result;
-            }
-
-            if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
-                setStatus(js.message || "Results are still processing. Refreshing shortly...", "warn");
-                showProgress(35, "Waiting for analysis result...");
-                setTimeout(() => loadExistingResult(false), 2500);
-                return null;
-            }
-
-            if (js.status === "failed" || js.status === "error") {
-                setStatus(js.error || "Analysis failed.", "bad");
-                return null;
-            }
-
-            setStatus(js.error || "Result not found.", "bad");
-            return null;
-
-        } catch (error) {
-            console.error(error);
-            setStatus("Could not load results: " + error.message, "bad");
-            return null;
-        }
-    }
-
-    function isFinalReady(result) {
-        const hasVerification = Array.isArray(result?.online_verification?.rows) && result.online_verification.rows.length > 0;
-        const hasRecovery = result?.recovery && (
-            Array.isArray(result.recovery.missing_recovery) ||
-            Array.isArray(result.recovery.verification_recovery)
-        );
-        const hasClaim = Array.isArray(result?.claim_support);
-
-        return hasVerification && hasRecovery && hasClaim;
-    }
-
+    // --------------------- VERIFICATION API ---------------------
     async function startVerification() {
-        if (!JOB_ID) {
-            setStatus("No job ID found.", "bad");
-            return;
-        }
-
-        if (verificationInProgress) {
-            setStatus("Verification already in progress.", "warn");
-            return;
-        }
+        if (!JOB_ID) { setStatus("No job ID found.", "bad"); return; }
+        if (verificationInProgress) { setStatus("Verification already in progress.", "warn"); return; }
 
         verificationInProgress = true;
         finalisingCount = 0;
+        finalFetchRunning = false;
+        partialFinalRendered = false;
+
+        resetProgress("Starting online verification...");
+        showProgress(2, "Starting online verification...");
+        setStatus("Starting online verification...", "info");
 
         const btn = $("btnVerify");
         if (btn) btn.disabled = true;
-
-        showProgress(3, "Starting online verification...");
-        setStatus("Starting online verification...", "info");
 
         const formData = new FormData();
         formData.append("job_id", JOB_ID);
 
         try {
-            const res = await fetch("/verify-online", {
-                method: "POST",
-                body: formData
-            });
-
+            const res = await fetch("/verify-online", { method: "POST", body: formData });
             const js = await res.json();
             console.log("Verify response:", js);
 
             if (js.completed === true) {
-                setStatus("Verification already completed. Loading final results...", "good");
-                showProgress(100, "Verification already completed.");
+                setStatus("Verification already completed. Loading final dashboard tables...", "good");
+                showProgress(96, "Verification already completed. Loading final tables...");
                 await fetchFinalResultWithRetry();
                 return;
             }
 
             if (js.started === true) {
-                const total = js.total_references || 0;
-                setStatus(`Verification started: 0/${total}`, "info");
-                showProgress(5, `Verification started: 0/${total}`);
+                const total = Number(js.total_references || 0);
+                lastKnownTotal = total;
+                setStatus(total ? `Verification started: 0/${total}` : "Verification started.", "info");
+                showProgress(4, total ? `Verification started: 0/${total}` : "Verification started. Waiting for reference count...");
                 startPollingStatus();
                 return;
             }
 
             setStatus(js.message || "Verification could not start.", "warn");
-            showProgress(0, js.message || "Verification could not start.");
+            showProgress(progressHighWater, js.message || "Verification could not start.");
             verificationInProgress = false;
             if (btn) btn.disabled = false;
-
         } catch (error) {
             console.error(error);
             setStatus("Verification error: " + error.message, "bad");
@@ -1660,223 +1563,206 @@ document.addEventListener("DOMContentLoaded", function () {
 
     function startPollingStatus() {
         stopPollingStatus();
-        pollingTimer = setInterval(fetchVerificationStatus, CONFIG.POLL_INTERVAL);
+        statusErrorCount = 0;
         fetchVerificationStatus();
+        pollingTimer = setInterval(() => fetchVerificationStatus(), CONFIG.POLL_INTERVAL);
     }
 
     function stopPollingStatus() {
-        if (pollingTimer) {
-            clearInterval(pollingTimer);
-            pollingTimer = null;
-        }
+        if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; }
     }
 
     async function fetchVerificationStatus() {
         try {
-            const res = await fetch(`/online/status?job_id=${encodeURIComponent(JOB_ID)}`);
-            const js = await res.json();
+            const js = await fetchJsonNoCache(`/online/status?job_id=${encodeURIComponent(JOB_ID)}`);
+            statusErrorCount = 0;
             console.log("Online status:", js);
 
-            if (js.result) {
+            if (js.result && hasVerificationRows(js.result)) {
                 const result = js.result;
-                const rows = result.online_verification?.rows || [];
+                const rows = result.online_verification.rows || [];
+                latestResults = hydrateFinalDefaults(result);
+                window.latestResults = latestResults;
 
-                if (rows.length) {
-                    renderAll(result);
-
-                    if (isFinalReady(result)) {
-                        showProgress(100, `Verification complete: ${rows.length}/${rows.length}`);
-                        setStatus(`Results ready. ${rows.length} references verified and ${(result.claim_support || []).length} claim-support rows populated.`, "good");
-                        finishVerification();
-                        return;
-                    }
-
-                    finalisingCount += 1;
-                    showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
-                    setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
-
-                    if (finalisingCount > CONFIG.MAX_FINAL_ATTEMPTS) {
-                        finishVerification();
-                    }
-
+                if (isFinalReady(result)) {
+                    renderAll(hydrateFinalDefaults(result));
+                    showProgress(100, `Verification complete. ${rows.length} references verified.`);
+                    setStatus(`Results ready. ${rows.length} references verified and ${(result.claim_support || []).length} claim-support rows populated.`, "good");
+                    finishVerification(true);
                     return;
                 }
+
+                if (!partialFinalRendered) {
+                    renderVerification(hydrateFinalDefaults(result));
+                    updateCounts(hydrateFinalDefaults(result));
+                    partialFinalRendered = true;
+                }
+
+                showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
+                setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
+                if (!finalFetchRunning) fetchFinalResultWithRetry();
+                return;
             }
 
             const online = js.online || js.verification || js;
-            const state = online.state || online.status || "running";
-            const progress = Number(online.progress || 0);
-            const total = Number(online.total || 0);
-            const percent = total > 0 ? Math.round((progress / total) * 100) : 8;
+            const state = String(online.state || online.status || "running").toLowerCase();
+            let progress = Number(online.progress || 0);
+            let total = Number(online.total || 0);
+            if (total > 0) lastKnownTotal = Math.max(lastKnownTotal, total);
+            if (progress > 0) lastKnownProgress = Math.max(lastKnownProgress, progress);
+            total = lastKnownTotal || total;
+            progress = Math.max(lastKnownProgress, progress);
 
             if (state === "completed") {
-                showProgress(100, `Verification complete: ${progress || total}/${total}`);
+                showProgress(96, total ? `Verification complete: ${total}/${total}. Loading dashboard tables...` : "Verification complete. Loading dashboard tables...");
                 setStatus("Verification complete. Loading final dashboard tables...", "good");
-                await fetchFinalResultWithRetry();
+                if (!finalFetchRunning) await fetchFinalResultWithRetry();
                 return;
             }
 
-            if (state === "error") {
+            if (state === "error" || state === "failed") {
                 setStatus(online.message || online.error || "Verification failed.", "bad");
-                finishVerification();
+                finishVerification(false);
                 return;
             }
 
-            showProgress(percent, total ? `Verifying references: ${progress}/${total}` : "Starting verification...");
+            let percent;
+            if (total > 0) {
+                percent = Math.round((progress / total) * 92);
+                percent = Math.min(94, Math.max(4, percent));
+            } else {
+                percent = Math.max(progressHighWater, 6);
+            }
+            const message = total ? `Verifying references: ${progress}/${total}. Large documents may take several minutes.` : "Verification running. Waiting for reference count...";
+            showProgress(percent, message);
             setStatus(total ? `Verification in progress: ${progress}/${total}` : "Verification in progress...", "info");
-
         } catch (error) {
-            console.error(error);
-            setStatus("Verification polling error: " + error.message, "bad");
-            finishVerification();
+            handleStatusPollingError(error);
         }
     }
 
     async function fetchFinalResultWithRetry() {
+        if (finalFetchRunning) return null;
+        finalFetchRunning = true;
+        stopPollingStatus();
+
         for (let attempt = 1; attempt <= CONFIG.MAX_FINAL_ATTEMPTS; attempt++) {
             try {
-                const jobRes = await fetch(`/job/${encodeURIComponent(JOB_ID)}`);
-                const jobData = await jobRes.json();
-
-                if (jobData.result) {
-                    renderAll(jobData.result);
-
-                    if (isFinalReady(jobData.result)) {
-                        const rows = jobData.result.online_verification?.rows?.length || 0;
-                        showProgress(100, `Complete. ${rows} references verified.`);
-                        setStatus(`Results ready. ${rows} references verified and ${(jobData.result.claim_support || []).length} claim-support rows populated.`, "good");
-                        finishVerification();
-                        return jobData.result;
+                let bestResult = null;
+                try {
+                    const jobData = await fetchJsonNoCache(`/job/${encodeURIComponent(JOB_ID)}`);
+                    if (jobData.result) bestResult = jobData.result;
+                } catch (e) { console.warn(e); }
+                if (!bestResult) {
+                    try {
+                        const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}`);
+                        bestResult = resultData.data || resultData.result || null;
+                    } catch (e) { console.warn(e); }
+                }
+                if (bestResult) {
+                    const hydrated = hydrateFinalDefaults(bestResult);
+                    latestResults = hydrated;
+                    window.latestResults = hydrated;
+                    const rows = hydrated.online_verification?.rows || [];
+                    const claimRows = hydrated.claim_support || [];
+                    if (isFinalReady(bestResult)) {
+                        renderAll(hydrated);
+                        showProgress(100, `Complete. ${rows.length} references verified.`);
+                        setStatus(`Results ready. ${rows.length} references verified and ${claimRows.length} claim-support rows populated.`, "good");
+                        finishVerification(true);
+                        finalFetchRunning = false;
+                        return hydrated;
+                    }
+                    if (hasVerificationRows(bestResult) && !partialFinalRendered) {
+                        renderAll(hydrated);
+                        partialFinalRendered = true;
                     }
                 }
-
-                const resultRes = await fetch(`/result/${encodeURIComponent(JOB_ID)}`);
-                const resultData = await resultRes.json();
-                const result = resultData.data || resultData.result;
-
-                if (result) {
-                    renderAll(result);
-
-                    if (isFinalReady(result)) {
-                        const rows = result.online_verification?.rows?.length || 0;
-                        showProgress(100, `Complete. ${rows} references verified.`);
-                        setStatus(`Results ready. ${rows} references verified and ${(result.claim_support || []).length} claim-support rows populated.`, "good");
-                        finishVerification();
-                        return result;
-                    }
-                }
-
-                showProgress(96, `Finalising dashboard tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
-                setStatus("Verification complete. Waiting for Recovery and Claim Support tables...", "warn");
-
+                const percent = Math.min(99, 96 + Math.floor(attempt / 45));
+                showProgress(percent, `Finalising Recovery and Claim Support tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
+                setStatus("Verification is complete. Waiting for Recovery and Claim Support tables to populate...", "warn");
             } catch (error) {
                 console.error("Final fetch error:", error);
+                showProgress(Math.max(progressHighWater, 96), `Still waiting for final tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
             }
-
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await new Promise(resolve => setTimeout(resolve, CONFIG.FINAL_RETRY_DELAY));
         }
 
-        setStatus("Verification completed, but some final tables may still be loading. Refresh in a moment.", "warn");
-        finishVerification();
-        return null;
+        if (latestResults) {
+            const hydrated = hydrateFinalDefaults(latestResults);
+            renderAll(hydrated);
+            const rows = hydrated.online_verification?.rows?.length || 0;
+            const claimRows = hydrated.claim_support?.length || 0;
+            setStatus(`Verification results loaded, but Recovery or Claim Support may still be incomplete. ${rows} references verified and ${claimRows} claim-support rows currently available.`, "warn");
+            showProgress(100, "Verification results loaded. Some final tables may still need refresh.");
+        } else {
+            setStatus("Verification completed, but final results could not be loaded. Please refresh in a moment.", "warn");
+        }
+        finishVerification(true);
+        finalFetchRunning = false;
+        return latestResults;
     }
 
-    function finishVerification() {
+    function finishVerification(keepProgressVisible = true) {
         stopPollingStatus();
         verificationInProgress = false;
-
+        finalFetchRunning = false;
         const btn = $("btnVerify");
         if (btn) btn.disabled = false;
-
-        hideProgress();
+        if (!keepProgressVisible) hideProgress();
     }
 
-    function exportCSV() {
-        if (!latestResults) {
-            alert("No data to export.");
-            return;
+    async function loadExistingResult(showMessage = true) {
+        if (!JOB_ID) { setStatus("No job ID found in URL.", "bad"); return null; }
+        try {
+            if (showMessage) setStatus("Loading results...", "info");
+            const res = await fetch(`/result/${encodeURIComponent(JOB_ID)}`);
+            const js = await res.json();
+            if (js.status === "completed") {
+                const result = js.data || js.result;
+                renderAll(result);
+                setStatus("Results loaded.", "good");
+                return result;
+            }
+            if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
+                setStatus(js.message || "Results are still processing. Refreshing shortly...", "warn");
+                showProgress(35, "Waiting for analysis result...");
+                setTimeout(() => loadExistingResult(false), 2500);
+                return null;
+            }
+            if (js.status === "failed" || js.status === "error") { setStatus(js.error || "Analysis failed.", "bad"); return null; }
+            setStatus(js.error || "Result not found.", "bad");
+            return null;
+        } catch (error) {
+            console.error(error);
+            setStatus("Could not load results: " + error.message, "bad");
+            return null;
         }
+    }
 
+    function exportCSV() { /* simplified but functional */
+        if (!latestResults) { alert("No data to export."); return; }
         const s = latestResults.summary || {};
         const missing = latestResults.missing_in_references || [];
         const uncited = latestResults.uncited_references || [];
         const verifyRows = latestResults.online_verification?.rows || [];
         const claimRows = latestResults.claim_support || [];
-
-        const lines = [];
-        lines.push(`"CiteIntegrity Report","${new Date().toLocaleString()}"`);
-        lines.push(`"Job ID","${JOB_ID}"`);
-        lines.push("");
-        lines.push(`"Metric","Value"`);
-        lines.push(`"In-text citations","${s.in_text_citations_found}"`);
-        lines.push(`"References","${s.reference_entries_found}"`);
-        lines.push(`"Missing citations","${s.missing_in_references}"`);
-        lines.push(`"Uncited references","${s.uncited_references}"`);
-        lines.push(`"Match rate","${s.match_rate}%"`);
-        lines.push(`"Verification rows","${verifyRows.length}"`);
-        lines.push(`"Claim support rows","${claimRows.length}"`);
-        lines.push("");
-        lines.push(`"Missing Citations"`);
+        const lines = [`"CiteIntegrity Report","${new Date().toLocaleString()}"`,`"Job ID","${JOB_ID}"`,"",`"Metric","Value"`,`"In-text citations","${s.in_text_citations_found}"`,`"References","${s.reference_entries_found}"`,`"Missing citations","${s.missing_in_references}"`,`"Uncited references","${s.uncited_references}"`,`"Match rate","${s.match_rate}%"`,`"Verification rows","${verifyRows.length}"`,`"Claim support rows","${claimRows.length}"`,"",`"Missing Citations"`];
         missing.forEach(item => lines.push(`"${esc((item.citation_in_text || item.citation || item).toString()).replaceAll('"', '""')}"`));
-        lines.push("");
-        lines.push(`"Uncited References"`);
+        lines.push("",`"Uncited References"`);
         uncited.forEach(item => lines.push(`"${esc((item.reference || item).toString()).replaceAll('"', '""')}"`));
-
         downloadBlob(lines.join("\n"), `citeintegrity_report_${JOB_ID.slice(0, 8)}.csv`, "text/csv");
     }
 
     function exportWord() {
-        if (!latestResults) {
-            alert("No data to export.");
-            return;
-        }
-
+        if (!latestResults) { alert("No data to export."); return; }
         const s = latestResults.summary || {};
         const acii = latestResults.acii || {};
         const missing = latestResults.missing_in_references || [];
         const uncited = latestResults.uncited_references || [];
         const verifyRows = latestResults.online_verification?.rows || [];
         const claimRows = latestResults.claim_support || [];
-
-        const html = `
-            <!DOCTYPE html>
-            <html>
-            <head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head>
-            <body>
-                <h1>CiteIntegrity Results Report</h1>
-                <p><strong>Generated:</strong> ${new Date().toLocaleString()}</p>
-                <p><strong>Job ID:</strong> ${esc(JOB_ID)}</p>
-
-                <h2>Summary</h2>
-                <table border="1" cellpadding="6" cellspacing="0">
-                    <tr><th>Metric</th><th>Value</th></tr>
-                    <tr><td>In-text citations</td><td>${esc(s.in_text_citations_found)}</td></tr>
-                    <tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr>
-                    <tr><td>Missing citations</td><td>${esc(s.missing_in_references)}</td></tr>
-                    <tr><td>Uncited references</td><td>${esc(s.uncited_references)}</td></tr>
-                    <tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr>
-                    <tr><td>Verification rows</td><td>${verifyRows.length}</td></tr>
-                    <tr><td>Claim-support rows</td><td>${claimRows.length}</td></tr>
-                </table>
-
-                <h2>ACII Score</h2>
-                <p><strong>${esc(acii.ACII ?? "--")}</strong></p>
-
-                <h2>Missing Citations</h2>
-                <ol>${missing.map(m => `<li>${esc(m.citation_in_text || m.citation || m)}</li>`).join("")}</ol>
-
-                <h2>Uncited References</h2>
-                <ol>${uncited.map(u => `<li>${esc(u.reference || u)}</li>`).join("")}</ol>
-
-                <h2>Verification Summary</h2>
-                <p>Total verification rows: ${verifyRows.length}</p>
-
-                <h2>Claim Support Summary</h2>
-                <p>Total claim-support rows: ${claimRows.length}</p>
-            </body>
-            </html>
-        `;
-
+        const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head><body><h1>CiteIntegrity Results Report</h1><p><strong>Generated:</strong> ${new Date().toLocaleString()}</p><p><strong>Job ID:</strong> ${esc(JOB_ID)}</p><h2>Summary</h2><table border="1" cellpadding="6"><tr><th>Metric</th><th>Value</th></tr><tr><td>In-text citations</td><td>${esc(s.in_text_citations_found)}</td></tr><tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr><tr><td>Missing citations</td><td>${esc(s.missing_in_references)}</td></tr><tr><td>Uncited references</td><td>${esc(s.uncited_references)}</td></tr><tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr><tr><td>Verification rows</td><td>${verifyRows.length}</td></tr><tr><td>Claim-support rows</td><td>${claimRows.length}</td></tr></table><h2>ACII Score</h2><p><strong>${esc(acii.ACII ?? "--")}</strong></p><h2>Missing Citations</h2><ol>${missing.map(m => `<li>${esc(m.citation_in_text || m.citation || m)}</li>`).join("")}</ol><h2>Uncited References</h2><ol>${uncited.map(u => `<li>${esc(u.reference || u)}</li>`).join("")}</ol><h2>Verification Summary</h2><p>Total verification rows: ${verifyRows.length}</p><h2>Claim Support Summary</h2><p>Total claim-support rows: ${claimRows.length}</p></body></html>`;
         downloadBlob(html, `citeintegrity_report_${JOB_ID.slice(0, 8)}.doc`, "application/msword");
     }
 
@@ -1894,32 +1780,16 @@ document.addEventListener("DOMContentLoaded", function () {
 
     async function exportVerifiedReferences(formatType) {
         const style = $("exportStyleSelect")?.value || "apa7";
-
         const formData = new FormData();
         formData.append("job_id", JOB_ID);
         formData.append("style", style);
         formData.append("format_type", formatType);
-
         try {
             setStatus(`Exporting verified references as ${formatType.toUpperCase()}...`, "info");
-
-            const res = await fetch("/export-references", {
-                method: "POST",
-                body: formData
-            });
-
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.detail || err.message || "Export failed.");
-            }
-
+            const res = await fetch("/export-references", { method: "POST", body: formData });
+            if (!res.ok) throw new Error("Export failed.");
             const blob = await res.blob();
-            const contentDisposition = res.headers.get("Content-Disposition") || "";
-            let filename = `citeintegrity_references_${JOB_ID.slice(0, 8)}.${formatType === "docx" ? "docx" : "html"}`;
-
-            const match = contentDisposition.match(/filename=([^;]+)/);
-            if (match) filename = match[1].replaceAll('"', "");
-
+            const filename = `citeintegrity_references_${JOB_ID.slice(0, 8)}.${formatType === "docx" ? "docx" : "html"}`;
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
@@ -1928,23 +1798,16 @@ document.addEventListener("DOMContentLoaded", function () {
             a.click();
             a.remove();
             URL.revokeObjectURL(url);
-
             setStatus("Verified references exported successfully.", "good");
-
-        } catch (error) {
-            console.error(error);
-            setStatus("Export failed: " + error.message, "bad");
-        }
+        } catch (error) { setStatus("Export failed: " + error.message, "bad"); }
     }
 
     function setupTabs() {
         document.querySelectorAll(".tab-btn").forEach(btn => {
             btn.addEventListener("click", () => {
                 const target = btn.dataset.tab;
-
                 document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
                 document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
-
                 btn.classList.add("active");
                 const pane = $(target);
                 if (pane) pane.classList.add("active");
@@ -1952,56 +1815,21 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     }
 
-    function setupFilters() {
-        setupTextFilter("missingSearch", "missingBody");
-        setupTextFilter("uncitedSearch", "uncitedBody");
-        setupTextFilter("c2rSearch", "c2rBody");
-        setupTextFilter("r2cSearch", "r2cBody");
-        setupTextFilter("verifySearch", "verifyBody");
-        setupTextFilter("claimSearch", "claimBody");
-
+    function setupFilters() { /* simplified but retains search & filter */
+        ["missingSearch","uncitedSearch","c2rSearch","r2cSearch","verifySearch","claimSearch"].forEach(id => {
+            const input = $(id);
+            if (!input) return;
+            const bodyId = id.replace("Search", "Body");
+            input.addEventListener("input", () => {
+                const q = input.value.toLowerCase();
+                const body = $(bodyId);
+                if(body) body.querySelectorAll("tr").forEach(row => row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none");
+            });
+        });
         const verifyFilter = $("verifyFilter");
-        if (verifyFilter) {
-            verifyFilter.addEventListener("change", () => {
-                filterRowsByStatus("verifyBody", verifyFilter.value);
-            });
-        }
-
+        if(verifyFilter) verifyFilter.addEventListener("change", () => { const body=$("verifyBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !verifyFilter.value || (row.dataset.status === verifyFilter.value) ? "" : "none"); });
         const claimFilter = $("claimFilter");
-        if (claimFilter) {
-            claimFilter.addEventListener("change", () => {
-                filterRowsByStatus("claimBody", claimFilter.value);
-            });
-        }
-    }
-
-    function setupTextFilter(inputId, bodyId) {
-        const input = $(inputId);
-        const body = $(bodyId);
-
-        if (!input || !body) return;
-
-        input.addEventListener("input", () => {
-            const q = input.value.toLowerCase();
-
-            body.querySelectorAll("tr").forEach(row => {
-                row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none";
-            });
-        });
-    }
-
-    function filterRowsByStatus(bodyId, status) {
-        const body = $(bodyId);
-        if (!body) return;
-
-        body.querySelectorAll("tr").forEach(row => {
-            if (!status) {
-                row.style.display = "";
-                return;
-            }
-
-            row.style.display = row.dataset.status === status ? "" : "none";
-        });
+        if(claimFilter) claimFilter.addEventListener("change", () => { const body=$("claimBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !claimFilter.value || (row.dataset.status === claimFilter.value) ? "" : "none"); });
     }
 
     function setupActions() {
@@ -2011,32 +1839,22 @@ document.addEventListener("DOMContentLoaded", function () {
         $("btnExportWord")?.addEventListener("click", exportWord);
         $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
         $("btnExportRefsHtml")?.addEventListener("click", () => exportVerifiedReferences("html"));
-
         const mobileToggle = $("mobileToggle");
         const mainNav = $("mainNav");
-        if (mobileToggle && mainNav) {
-            mobileToggle.addEventListener("click", () => mainNav.classList.toggle("open"));
-        }
+        if(mobileToggle && mainNav) mobileToggle.addEventListener("click", () => mainNav.classList.toggle("open"));
     }
 
     async function init() {
         setupTabs();
         setupFilters();
         setupActions();
-
         await loadExistingResult(true);
-
-        if (AUTO_VERIFY) {
-            const hasRows = latestResults?.online_verification?.rows?.length > 0;
-            if (!hasRows) startVerification();
-        }
-
+        if (AUTO_VERIFY && (!latestResults?.online_verification?.rows?.length)) startVerification();
         console.log("[CiteIntegrity] Results dashboard ready for job:", JOB_ID);
     }
 
     init();
 });
 </script>
-
 </body>
 </html>
