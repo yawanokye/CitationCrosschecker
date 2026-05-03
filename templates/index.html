@@ -1329,25 +1329,41 @@ document.querySelectorAll(".tab").forEach(tab => {
         if (pane) pane.classList.add("active");
     });
 });
+function normaliseFinalResult(result) {
+    if (!result) return result;
+
+    if (!result.online_verification) {
+        result.online_verification = { rows: [], summary: {} };
+    }
+
+    if (!result.recovery) {
+        result.recovery = {
+            missing_recovery: [],
+            verification_recovery: []
+        };
+    }
+
+    if (!Array.isArray(result.recovery.missing_recovery)) {
+        result.recovery.missing_recovery = [];
+    }
+
+    if (!Array.isArray(result.recovery.verification_recovery)) {
+        result.recovery.verification_recovery = [];
+    }
+
+    if (!Array.isArray(result.claim_support)) {
+        result.claim_support = [];
+    }
+
+    return result;
+}
+
 function isFinalResultReady(result) {
     if (!result) return false;
 
-    const verificationRows =
-        result.online_verification &&
-        Array.isArray(result.online_verification.rows) &&
-        result.online_verification.rows.length > 0;
+    const rows = result.online_verification?.rows;
 
-    const hasRecovery =
-        result.recovery &&
-        (
-            Array.isArray(result.recovery.missing_recovery) ||
-            Array.isArray(result.recovery.verification_recovery)
-        );
-
-    const hasClaimSupport =
-        Array.isArray(result.claim_support);
-
-    return verificationRows && hasRecovery && hasClaimSupport;
+    return Array.isArray(rows) && rows.length > 0;
 }
 
 function showFinalisingMessage() {
@@ -1416,19 +1432,21 @@ async function fetchStatus() {
             updateProgress(rows, rows, "processing", `✅ Verification complete: ${rows}/${rows}. Finalising tables...`);
         
             if (isFinalResultReady(js.result)) {
+                const finalResult = normaliseFinalResult(js.result);
+            
                 updateProgress(rows, rows, "completed", `✅ Complete! ${rows}/${rows}`);
-                renderAll(js.result);
-                showFinalReadyMessage(js.result);
+                renderAll(finalResult);
+                showFinalReadyMessage(finalResult);
                 stopPolling();
-        
+            
                 VERIFICATION_IN_PROGRESS = false;
-        
+            
                 const btnVerify = $("btnVerify");
                 if (btnVerify) btnVerify.disabled = false;
-        
+            
                 return;
             }
-        
+                    
             showFinalisingMessage();
         
             // Keep polling because Recovery and Claim Support are not populated yet.
