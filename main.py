@@ -2806,23 +2806,23 @@ def online_status(job_id: str):
                 verification["message"] = "Verification running"
 
             elif rq_status == "finished":
-            # Reload once because the worker may have just written the final result
-            fresh_job = load_job_record_fresh(job_id)
-            fresh_result = (fresh_job or {}).get("result", {}) or {}
-            fresh_verification = fresh_result.get("verification") or {}
-        
-            if (
-                fresh_verification.get("final_tables_ready") is True
-                or fresh_result.get("final_tables_ready") is True
-                or bool(fresh_result.get("verification_completed_at"))
-            ):
-                result = fresh_result
-                verification = fresh_verification or verification
-                verification["state"] = "completed"
-                verification["message"] = "Verification complete"
-            else:
-                verification["state"] = "finalising"
-                verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
+                # Reload once because the worker may have just written the final result
+                fresh_job = load_job_record_fresh(job_id)
+                fresh_result = (fresh_job or {}).get("result", {}) or {}
+                fresh_verification = fresh_result.get("verification") or {}
+            
+                if (
+                    fresh_verification.get("final_tables_ready") is True
+                    or fresh_result.get("final_tables_ready") is True
+                    or bool(fresh_result.get("verification_completed_at"))
+                ):
+                    result = fresh_result
+                    verification = fresh_verification or verification
+                    verification["state"] = "completed"
+                    verification["message"] = "Verification complete"
+                else:
+                    verification["state"] = "finalising"
+                    verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
 
             elif rq_status == "failed":
                 verification["state"] = "error"
