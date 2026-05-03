@@ -1562,7 +1562,6 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
 # ============================================================
 # VERIFICATION WORKER FUNCTION
 # ============================================================
-
 def process_verification(job_id, style="apa", enrich_metadata=False):
     """
     Durable online verification job.
@@ -1591,15 +1590,20 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 message=result.get("reference_detection_message", "No references extracted"),
                 completed_at=now_iso()
             )
+
             result["online_verification"] = {
                 "rows": [],
                 "summary": _compute_verification_summary([])
             }
+
             result["recovery"] = {
                 "missing_recovery": [],
-                "verification_recovery": []
+                "verification_recovery": [],
+                "note": "No references were available for recovery."
             }
+
             result["claim_support"] = []
+
             _save_job_result(job_id, result)
             return result
 
@@ -1614,10 +1618,19 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             completed_at=None,
             error=None
         )
+
         result["online_verification"] = {
             "rows": [],
             "summary": _compute_verification_summary([])
         }
+
+        result["recovery"] = {
+            "missing_recovery": [],
+            "verification_recovery": []
+        }
+
+        result["claim_support"] = []
+
         _save_job_result(job_id, result)
 
         chunks = [
@@ -1672,46 +1685,52 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             "rows": all_rows,
             "summary": summary
         }
-        
-        # Save verification results first so the UI never hangs waiting
-        result.setdefault("recovery", {
-            "missing_recovery": [],
-            "verification_recovery": []
-        })
-        
-        if not isinstance(result.get("claim_support"), list):
-            result["claim_support"] = []
-        
-        result = _set_verification_meta(
-            result,
-            state="finalising",
-            progress=total,
-            total=total,
-            percentage=96,
-            results_count=len(all_rows),
-            summary=summary,
-            message="Verification complete. Finalising Recovery and Claim Support tables.",
-            last_heartbeat=now_iso()
-        )
-        
-        _save_job_result(job_id, result)
-        
-        try:
-            result["acii"] = compute_acii(result, all_rows)
-        except Exception as e:
-            print(f"[VERIFY WORKER] ACII error: {e}")
-            result["acii"] = {"error": str(e)}
 
+        # Build Recovery immediately using safe fallback suggestions.
         try:
             result["recovery"] = _build_recovery_payload(result, all_rows)
-        
-            if not result["recovery"].get("missing_recovery") and not result["recovery"].get("verification_recovery"):
+
+            if (
+                not result["recovery"].get("missing_recovery")
+                and not result["recovery"].get("verification_recovery")
+            ):
                 result["recovery"] = {
                     "missing_recovery": [],
-                    "verification_recovery": [],
-                    "note": "No missing citations or weak verification rows requiring recovery were detected."
+                    "verification_recovery": [
+                        {
+                            "status": r.get("status", ""),
+                            "citation": (
+                                r.get("citation")
+                                or r.get("in_text")
+                                or r.get("citation_in_text")
+                                or ""
+                            ),
+                            "reference": (
+                                r.get("reference")
+                                or r.get("original_reference")
+                                or r.get("matched_title")
+                                or r.get("title")
+                                or r.get("source_title")
+                                or ""
+                            ),
+                            "suggestions": [
+                                {
+                                    "title": "Review this source in context",
+                                    "authors": r.get("matched_authors") or r.get("authors") or "",
+                                    "year": r.get("matched_year") or r.get("year") or "",
+                                    "doi": r.get("doi") or "",
+                                    "reason": "Review whether this source supports the cited claim.",
+                                    "source": "fallback_recovery",
+                                    "confidence": 0.50
+                                }
+                            ]
+                        }
+                        for r in all_rows
+                        if r.get("status") in {"likely", "needs_review", "not_found", "offline"}
+                    ],
+                    "note": "Fallback recovery rows generated."
                 }
-        
+
         except Exception as e:
             print(f"[VERIFY WORKER] Recovery error: {e}")
             result["recovery"] = {
@@ -1720,18 +1739,20 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 "note": f"Recovery generation failed: {e}"
             }
 
+        # Do not let claim-support checking block completion.
+        # Use fallback claim-support rows first.
         try:
-            claim_rows = build_claim_support_rows(result) or []
-        
-            if not claim_rows:
-                print("[VERIFY WORKER] Claim-support returned 0 rows. Using fallback rows.")
-                claim_rows = _fallback_claim_support_rows(result, all_rows)
-        
-            result["claim_support"] = claim_rows
-        
-        except Exception as e:
-            print(f"[VERIFY WORKER] Claim-support error: {e}")
             result["claim_support"] = _fallback_claim_support_rows(result, all_rows)
+        except Exception as e:
+            print(f"[VERIFY WORKER] Fallback claim-support error: {e}")
+            result["claim_support"] = []
+
+        # ACII should not block completion.
+        try:
+            result["acii"] = compute_acii(result, all_rows)
+        except Exception as e:
+            print(f"[VERIFY WORKER] ACII error: {e}")
+            result["acii"] = {"error": str(e)}
 
         elapsed = round(time.time() - start_time, 2)
 
@@ -1762,6 +1783,19 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
         try:
             result = _load_job_result(job_id)
+
+            result["online_verification"] = {
+                "rows": all_rows,
+                "summary": _compute_verification_summary(all_rows)
+            }
+
+            result.setdefault("recovery", {
+                "missing_recovery": [],
+                "verification_recovery": []
+            })
+
+            result.setdefault("claim_support", [])
+
             result = _set_verification_meta(
                 result,
                 state="error",
@@ -1769,15 +1803,16 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 error=str(e),
                 completed_at=now_iso()
             )
-            result.setdefault("online_verification", {
-                "rows": all_rows,
-                "summary": _compute_verification_summary(all_rows)
-            })
+
             _save_job_result(job_id, result)
+
         except Exception as db_error:
             print(f"[VERIFY WORKER] Could not persist verification error: {db_error}")
 
         raise
+
+
+   
 # Start the worker
 if __name__ == "__main__":
     print("🚀 Starting worker...")
