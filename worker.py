@@ -42,7 +42,8 @@ redis_conn = redis.from_url(REDIS_URL)
 # ============================================================
 
 VERIFY_CHUNK_SIZE = int(os.environ.get("VERIFY_CHUNK_SIZE", "10"))
-CLAIM_SUPPORT_TIMEOUT = int(os.environ.get("CLAIM_SUPPORT_TIMEOUT", "120"))
+CLAIM_SUPPORT_TIMEOUT = int(os.environ.get("CLAIM_SUPPORT_TIMEOUT", "60"))
+MAX_ALT_SOURCES_IN_VERIFY = int(os.environ.get("MAX_ALT_SOURCES_IN_VERIFY", "5"))
 
 def now_iso():
     return datetime.utcnow().isoformat()
@@ -440,7 +441,10 @@ def _find_sentence_for_citation(sentences, citation):
 
 def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3):
     """
-    Generate alternative source suggestions safely for the Claim Support tab.
+    Generate alternative source suggestions safely.
+
+    During the main verification job, keep this very limited so the worker
+    reaches state='completed' and the dashboard populates.
     """
     claim = str(claim or "").strip()
 
@@ -2053,14 +2057,40 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             }
 
         # Do not let claim-support checking block completion.
-        # Use fallback claim-support rows first.
-        # Try real claim-support checking safely.
-        # If it fails or times out, fallback review rows will still be generated.
         try:
-            result["claim_support"] = _build_claim_support_safe(result, all_rows)
+            # First build fast fallback claim rows so the dashboard always gets data.
+            claim_rows = _fallback_claim_support_rows(result, all_rows)
+        
+            # Add alternatives only for a few rows during verification.
+            # This prevents the worker from hanging at 23/23.
+            alt_added = 0
+        
+            for row in claim_rows:
+                if alt_added >= MAX_ALT_SOURCES_IN_VERIFY:
+                    row.setdefault("alternative_sources", [])
+                    continue
+        
+                claim = row.get("claim", "")
+                citation = row.get("citation", "")
+                current_source_title = row.get("source_title", "")
+        
+                alt_sources = _safe_alternative_sources(
+                    claim=claim,
+                    citation=citation,
+                    current_source_title=current_source_title,
+                    top_k=3
+                )
+        
+                row["alternative_sources"] = alt_sources
+        
+                if alt_sources:
+                    alt_added += 1
+        
+            result["claim_support"] = claim_rows
+        
         except Exception as e:
-            print(f"[VERIFY WORKER] Claim-support safe builder failed: {e}")
-            result["claim_support"] = _fallback_claim_support_rows(result, all_rows)
+            print(f"[VERIFY WORKER] Claim-support fallback failed: {e}")
+            result["claim_support"] = []
 
         # ACII should not block completion.
         try:
