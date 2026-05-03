@@ -2374,7 +2374,7 @@ async function runOnlineVerification() {
         console.log("VERIFY RESPONSE:", js);
 
         // ✅ MATCH BACKEND FORMAT
-        if (js.started === true) {
+        if (js.started === true || js.success === true || js.state === "queued" || js.state === "running") {
             // 🔥 FIXED: Show total immediately
             const total = js.total_references || 0;
             updateProgress(0, total, "processing", `Verification started: 0/${total}`);
