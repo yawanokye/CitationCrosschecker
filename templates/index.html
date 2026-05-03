@@ -1370,24 +1370,15 @@ function isFinalResultReady(result) {
         ""
     ).toLowerCase();
 
-    const progress = Number(verification.progress || rows.length || 0);
-    const total = Number(verification.total || 0);
-
     if (!Array.isArray(rows) || rows.length === 0) {
         return false;
     }
 
-    // Final only when the worker says finalising/completed
-    if (state === "finalising" || state === "completed") {
-        return true;
-    }
-
-    // Or when progress has reached the known total
-    if (total > 0 && progress >= total && rows.length >= total) {
-        return true;
-    }
-
-    return false;
+    // IMPORTANT:
+    // Do not stop at "finalising".
+    // Finalising means verification rows are ready,
+    // but Recovery and Claim Support may still be building.
+    return state === "completed";
 }
 
 function showFinalisingMessage() {
