@@ -1506,7 +1506,30 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             "rows": all_rows,
             "summary": summary
         }
-
+        
+        # Save verification results first so the UI never hangs waiting
+        result.setdefault("recovery", {
+            "missing_recovery": [],
+            "verification_recovery": []
+        })
+        
+        if not isinstance(result.get("claim_support"), list):
+            result["claim_support"] = []
+        
+        result = _set_verification_meta(
+            result,
+            state="finalising",
+            progress=total,
+            total=total,
+            percentage=96,
+            results_count=len(all_rows),
+            summary=summary,
+            message="Verification complete. Finalising Recovery and Claim Support tables.",
+            last_heartbeat=now_iso()
+        )
+        
+        _save_job_result(job_id, result)
+        
         try:
             result["acii"] = compute_acii(result, all_rows)
         except Exception as e:
