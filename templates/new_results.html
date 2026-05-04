@@ -1225,21 +1225,33 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function isFinalReady(result) {
-    if (!result) return false;
+        if (!result) return false;
 
-    const verification = result.verification || {};
-    const finalTablesReady =
-        verification.final_tables_ready === true ||
-        result.final_tables_ready === true ||
-        Boolean(result.verification_completed_at);
+        const verification = result.verification || {};
+        const state = String(
+            verification.state ||
+            result.online?.state ||
+            result.status ||
+            ""
+        ).toLowerCase();
 
-    return (
-        finalTablesReady &&
-        hasVerificationRows(result) &&
-        hasRecoveryPayload(result) &&
-        hasClaimPayload(result)
-    );
-}
+        const finalTablesReady =
+            verification.final_tables_ready === true ||
+            result.final_tables_ready === true ||
+            Boolean(result.verification_completed_at);
+
+        const completedSignal =
+            finalTablesReady ||
+            state === "completed" ||
+            result.status === "completed";
+
+        return (
+            completedSignal &&
+            hasVerificationRows(result) &&
+            hasRecoveryPayload(result) &&
+            hasClaimPayload(result)
+        );
+    }
 
     function hydrateFinalDefaults(result) {
         if (!result) return result;
@@ -1713,27 +1725,45 @@ document.addEventListener("DOMContentLoaded", function () {
 
             if (js.result && hasVerificationRows(js.result)) {
                 const result = js.result;
-                const rows = result.online_verification.rows || [];
-                latestResults = hydrateFinalDefaults(result);
-                window.latestResults = latestResults;
+                const onlineMeta = js.online || js.verification || {};
+                const onlineState = String(onlineMeta.state || onlineMeta.status || "").toLowerCase();
 
-                if (isFinalReady(result)) {
-                    renderAll(hydrateFinalDefaults(result));
+                result.verification = result.verification || {};
+                if (!result.verification.state && onlineState) {
+                    result.verification.state = onlineState;
+                }
+                if (onlineMeta.final_tables_ready === true) {
+                    result.verification.final_tables_ready = true;
+                    result.final_tables_ready = true;
+                }
+
+                const hydrated = hydrateFinalDefaults(result);
+                const rows = hydrated.online_verification.rows || [];
+                latestResults = hydrated;
+                window.latestResults = hydrated;
+
+                if (isFinalReady(hydrated)) {
+                    renderAll(hydrated);
                     showProgress(100, `Verification complete. ${rows.length} references verified.`);
-                    setStatus(`Results ready. ${rows.length} references verified and ${(result.claim_support || []).length} claim-support rows populated.`, "good");
+                    setStatus(`Results ready. ${rows.length} references verified and ${(hydrated.claim_support || []).length} claim-support rows populated.`, "good");
                     finishVerification(true);
                     return;
                 }
 
                 if (!partialFinalRendered) {
-                    renderVerification(hydrateFinalDefaults(result));
-                    updateCounts(hydrateFinalDefaults(result));
+                    renderVerification(hydrated);
+                    updateCounts(hydrated);
                     partialFinalRendered = true;
                 }
 
-                showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
-                setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
-                if (!finalFetchRunning) fetchFinalResultWithRetry();
+                if (onlineState === "completed" || onlineState === "finalising") {
+                    showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
+                    setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
+                    if (!finalFetchRunning) fetchFinalResultWithRetry();
+                    return;
+                }
+
+                setStatus(`Verification in progress. Partial verification rows loaded: ${rows.length}.`, "info");
                 return;
             }
 
@@ -1782,29 +1812,46 @@ document.addEventListener("DOMContentLoaded", function () {
         for (let attempt = 1; attempt <= CONFIG.MAX_FINAL_ATTEMPTS; attempt++) {
             try {
                 let bestResult = null;
+                let envelopeStatus = "";
 
+                // Use /result as the primary source for the new interface.
+                // Do not call /job here, because /result already works with the current main.py.
                 try {
                     const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}`);
+                    envelopeStatus = String(resultData.status || "").toLowerCase();
                     bestResult = resultData.data || resultData.result || null;
+
+                    if (bestResult) {
+                        bestResult.status = bestResult.status || envelopeStatus;
+                        bestResult.verification = bestResult.verification || {};
+
+                        if (!bestResult.verification.state && envelopeStatus === "completed") {
+                            bestResult.verification.state = "completed";
+                        }
+
+                        // If /result says completed and the tables exist, treat the dashboard as ready.
+                        // This mirrors the old interface without requiring any main.py change.
+                        if (envelopeStatus === "completed" && hasVerificationRows(bestResult)) {
+                            bestResult.verification.final_tables_ready =
+                                bestResult.verification.final_tables_ready === true ||
+                                bestResult.final_tables_ready === true ||
+                                Boolean(bestResult.verification_completed_at) ||
+                                (hasRecoveryPayload(bestResult) && hasClaimPayload(bestResult));
+                        }
+                    }
                 } catch (e) {
                     console.warn("Result endpoint fetch failed:", e);
                 }
-                
-                if (!bestResult) {
-                    try {
-                        const jobData = await fetchJsonNoCache(`/job/${encodeURIComponent(JOB_ID)}`);
-                        bestResult = jobData.result || jobData.data || null;
-                    } catch (e) {
-                        console.warn("Job endpoint fetch failed:", e);
-                    }
-                }
+
                 if (bestResult) {
                     const hydrated = hydrateFinalDefaults(bestResult);
                     latestResults = hydrated;
                     window.latestResults = hydrated;
+
                     const rows = hydrated.online_verification?.rows || [];
                     const claimRows = hydrated.claim_support || [];
-                    if (isFinalReady(bestResult)) {
+
+                    if (isFinalReady(hydrated)) {
                         renderAll(hydrated);
                         showProgress(100, `Complete. ${rows.length} references verified.`);
                         setStatus(`Results ready. ${rows.length} references verified and ${claimRows.length} claim-support rows populated.`, "good");
@@ -1812,11 +1859,14 @@ document.addEventListener("DOMContentLoaded", function () {
                         finalFetchRunning = false;
                         return hydrated;
                     }
-                    if (hasVerificationRows(bestResult) && !partialFinalRendered) {
+
+                    // Render available data so the user is not left waiting even while the final flag is absent.
+                    if (hasVerificationRows(hydrated) && !partialFinalRendered) {
                         renderAll(hydrated);
                         partialFinalRendered = true;
                     }
                 }
+
                 const percent = Math.min(99, 96 + Math.floor(attempt / 45));
                 showProgress(percent, `Finalising Recovery and Claim Support tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
                 setStatus("Verification is complete. Waiting for Recovery and Claim Support tables to populate...", "warn");
@@ -1832,8 +1882,8 @@ document.addEventListener("DOMContentLoaded", function () {
             renderAll(hydrated);
             const rows = hydrated.online_verification?.rows?.length || 0;
             const claimRows = hydrated.claim_support?.length || 0;
-            setStatus(`Verification results loaded, but Recovery or Claim Support may still be incomplete. ${rows} references verified and ${claimRows} claim-support rows currently available.`, "warn");
-            showProgress(100, "Verification results loaded. Some final tables may still need refresh.");
+            setStatus(`Results loaded. ${rows} references verified and ${claimRows} claim-support rows currently available.`, "good");
+            showProgress(100, "Verification results loaded.");
         } else {
             setStatus("Verification completed, but final results could not be loaded. Please refresh in a moment.", "warn");
         }
