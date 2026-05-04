@@ -1225,19 +1225,21 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function isFinalReady(result) {
-        const verification = result?.verification || {};
-        const state = String(verification.state || "").toLowerCase();
-        const finalTablesReady =
-            verification.final_tables_ready === true ||
-            result?.final_tables_ready === true ||
-            Boolean(result?.verification_completed_at);
+    if (!result) return false;
 
-        return hasVerificationRows(result) &&
-               hasRecoveryPayload(result) &&
-               hasClaimPayload(result) &&
-               state === "completed" &&
-               finalTablesReady;
-    }
+    const verification = result.verification || {};
+    const finalTablesReady =
+        verification.final_tables_ready === true ||
+        result.final_tables_ready === true ||
+        Boolean(result.verification_completed_at);
+
+    return (
+        finalTablesReady &&
+        hasVerificationRows(result) &&
+        hasRecoveryPayload(result) &&
+        hasClaimPayload(result)
+    );
+}
 
     function hydrateFinalDefaults(result) {
         if (!result) return result;
@@ -1780,15 +1782,21 @@ document.addEventListener("DOMContentLoaded", function () {
         for (let attempt = 1; attempt <= CONFIG.MAX_FINAL_ATTEMPTS; attempt++) {
             try {
                 let bestResult = null;
+
                 try {
-                    const jobData = await fetchJsonNoCache(`/job/${encodeURIComponent(JOB_ID)}`);
-                    if (jobData.result) bestResult = jobData.result;
-                } catch (e) { console.warn(e); }
+                    const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}`);
+                    bestResult = resultData.data || resultData.result || null;
+                } catch (e) {
+                    console.warn("Result endpoint fetch failed:", e);
+                }
+                
                 if (!bestResult) {
                     try {
-                        const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}`);
-                        bestResult = resultData.data || resultData.result || null;
-                    } catch (e) { console.warn(e); }
+                        const jobData = await fetchJsonNoCache(`/job/${encodeURIComponent(JOB_ID)}`);
+                        bestResult = jobData.result || jobData.data || null;
+                    } catch (e) {
+                        console.warn("Job endpoint fetch failed:", e);
+                    }
                 }
                 if (bestResult) {
                     const hydrated = hydrateFinalDefaults(bestResult);
