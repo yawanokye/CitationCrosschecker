@@ -569,29 +569,10 @@ def _find_sentence_for_citation(sentences, citation):
 
 def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3):
     """
-    Generate alternative source suggestions safely.
-
-    During the main verification job, keep this very limited so the worker
-    reaches state='completed' and the dashboard populates.
+    Do not run alternative-source lookup inside the main verification job.
+    It is too slow for large documents. Run it later as a separate enrichment job.
     """
-    claim = str(claim or "").strip()
-
-    if not claim or len(claim) < 20:
-        return []
-
-    if claim.lower().startswith("claim could not be extracted"):
-        return []
-
-    try:
-        return suggest_alternative_sources_for_claim(
-            claim=claim,
-            citation=citation,
-            current_source_title=current_source_title,
-            top_k=top_k
-        ) or []
-    except Exception as e:
-        print(f"[VERIFY WORKER] Alternative source suggestion failed for {citation}: {e}")
-        return []
+    return []
 
 def _basic_keyword_overlap_score(claim, source_title):
     """Small fallback score when only a title is available."""
