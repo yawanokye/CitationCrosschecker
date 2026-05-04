@@ -23,9 +23,15 @@ from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
 try:
-    from citation_suggester import suggest_for_unverified
+    from claim_support_scorer import score_claim_support
+except Exception:
+    score_claim_support = None
+
+try:
+    from citation_suggester import suggest_for_unverified, suggest_from_context
 except Exception:
     suggest_for_unverified = None
+    suggest_from_context = None
 # Get connection strings
 REDIS_URL = os.environ.get("REDIS_URL")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -144,10 +150,11 @@ def _compute_verification_summary(rows):
         "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
     }
 
-def _make_context_review_suggestion(row, result):
+def _fallback_recovery_suggestions(row, result, target=3):
     """
-    Always returns at least one UI-ready context suggestion.
-    This prevents the Recovery tab from showing an empty Context Suggestions column.
+    Return three review-ready suggestions when online lookup cannot generate
+    three concrete alternatives. This keeps the Recovery UI populated while
+    making clear that these are human-review prompts, not automatic fixes.
     """
     citation = (
         row.get("citation")
@@ -166,27 +173,129 @@ def _make_context_review_suggestion(row, result):
     )
 
     status = row.get("status", "")
+    year = row.get("matched_year") or row.get("year") or ""
+    authors = row.get("matched_authors") or row.get("authors") or ""
+    doi = row.get("doi") or ""
 
-    return [{
-        "title": "Review this source in context",
-        "year": row.get("matched_year") or row.get("year") or "",
-        "authors": row.get("matched_authors") or row.get("authors") or "",
-        "doi": row.get("doi") or "",
-        "reason": (
-            f"This reference has verification status '{status}'. "
-            "Review the cited sentence and confirm that the source supports the claim."
-        ),
-        "suggested": reference[:250] if reference else "Review the matched reference manually.",
-        "confidence": 0.50,
-        "source": "context_review_fallback",
+    fallback = [
+        {
+            "title": "Check citation-source fit",
+            "year": year,
+            "authors": authors,
+            "doi": doi,
+            "reason": (
+                f"This reference has verification status '{status}'. "
+                "Compare the cited sentence with the matched source before accepting it."
+            ),
+            "suggested": reference[:250] if reference else "Review the matched reference manually.",
+            "confidence": 0.50,
+            "source": "context_review_fallback",
+            "citation": citation,
+            "reference": reference,
+        },
+        {
+            "title": "Verify author, year, and DOI metadata",
+            "year": year,
+            "authors": authors,
+            "doi": doi,
+            "reason": "Confirm that the author names, publication year, title, and DOI belong to the same source.",
+            "suggested": reference[:250] if reference else "Search the reference title manually in Crossref, OpenAlex, or Google Scholar.",
+            "confidence": 0.45,
+            "source": "metadata_review_fallback",
+            "citation": citation,
+            "reference": reference,
+        },
+        {
+            "title": "Confirm claim support",
+            "year": year,
+            "authors": authors,
+            "doi": doi,
+            "reason": "Read the cited sentence and confirm that the source actually supports the claim, not only that the source exists.",
+            "suggested": "Review the cited sentence against the source abstract, findings, or full text.",
+            "confidence": 0.40,
+            "source": "claim_support_review_fallback",
+            "citation": citation,
+            "reference": reference,
+        },
+    ]
+
+    return fallback[:target]
+
+
+def _normalise_recovery_suggestion(item, row, result):
+    """Convert different suggestion shapes into one UI-friendly shape."""
+    if not isinstance(item, dict):
+        item = {"title": str(item)}
+
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or item.get("citation")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or item.get("reference")
+        or ""
+    )
+
+    return {
+        "title": item.get("title") or item.get("suggested_title") or item.get("source_title") or "Suggested source for review",
+        "year": item.get("year") or item.get("matched_year") or row.get("year") or row.get("matched_year") or "",
+        "authors": item.get("authors") or item.get("matched_authors") or row.get("authors") or row.get("matched_authors") or "",
+        "doi": item.get("doi") or row.get("doi") or "",
+        "reason": item.get("reason") or item.get("match_note") or "Review this suggestion before making changes.",
+        "suggested": item.get("suggested") or item.get("reference") or item.get("title") or reference[:250],
+        "confidence": item.get("confidence") or item.get("relevance") or item.get("score") or 0.50,
+        "source": item.get("source") or item.get("type") or "context_lookup",
         "citation": citation,
-        "reference": reference
-    }]
+        "reference": reference,
+    }
+
+
+def _dedupe_and_pad_suggestions(suggestions, row, result, target=3):
+    """Deduplicate lookup suggestions and pad to three review-ready items."""
+    clean = []
+    seen = set()
+
+    for item in suggestions or []:
+        norm = _normalise_recovery_suggestion(item, row, result)
+        key = (
+            str(norm.get("doi") or "").lower().strip(),
+            str(norm.get("title") or norm.get("suggested") or "").lower().strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(norm)
+        if len(clean) >= target:
+            return clean[:target]
+
+    for item in _fallback_recovery_suggestions(row, result, target=target):
+        key = (
+            str(item.get("doi") or "").lower().strip(),
+            str(item.get("title") or item.get("suggested") or "").lower().strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(item)
+        if len(clean) >= target:
+            break
+
+    return clean[:target]
 
 
 def _context_suggestions_for_row(row, result):
     """
-    Try to generate context-aware suggestions. If that fails, return a safe fallback.
+    Generate up to three context/reference suggestions for Recovery.
+    Uses citation context first, then reference correction lookup, then safe fallback prompts.
     """
     existing = (
         row.get("suggested_references")
@@ -196,49 +305,58 @@ def _context_suggestions_for_row(row, result):
     )
 
     if existing:
-        return existing
+        return _dedupe_and_pad_suggestions(existing, row, result, target=3)
 
-    if suggest_for_unverified:
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or ""
+    )
+
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+    context = ""
+
+    try:
+        sentences = _split_sentences(main_text)
+        context = _find_sentence_for_citation(sentences, citation)
+    except Exception:
+        context = ""
+
+    if not context and main_text:
+        context = main_text[:1500]
+
+    suggestions = []
+
+    if suggest_from_context and context:
         try:
-            citation = (
-                row.get("citation")
-                or row.get("in_text")
-                or row.get("citation_in_text")
-                or ""
-            )
-
-            reference = (
-                row.get("reference")
-                or row.get("original_reference")
-                or row.get("matched_title")
-                or row.get("title")
-                or row.get("source_title")
-                or ""
-            )
-
-            main_text = result.get("main_text", "")
-
-            # Try common signatures safely
-            try:
-                suggestions = suggest_for_unverified(
+            suggestions.extend(
+                suggest_from_context(
+                    context=context,
                     citation=citation,
-                    reference=reference,
-                    context=main_text,
-                    top_k=3
-                )
-            except TypeError:
-                try:
-                    suggestions = suggest_for_unverified(reference, main_text, top_k=3)
-                except TypeError:
-                    suggestions = suggest_for_unverified(reference, main_text)
-
-            if suggestions:
-                return suggestions
-
+                    top_k=3,
+                ) or []
+            )
         except Exception as e:
-            print(f"[VERIFY WORKER] Context suggestion failed: {e}")
+            print(f"[VERIFY WORKER] Context lookup failed: {e}")
 
-    return _make_context_review_suggestion(row, result)
+    if suggest_for_unverified and reference:
+        try:
+            # Correct signature in citation_suggester.py: suggest_for_unverified(ref, top_k=3)
+            suggestions.extend(suggest_for_unverified(reference, top_k=3) or [])
+        except Exception as e:
+            print(f"[VERIFY WORKER] Reference suggestion failed: {e}")
+
+    return _dedupe_and_pad_suggestions(suggestions, row, result, target=3)
 
 def _build_recovery_payload(result, verification_rows):
     """
@@ -474,6 +592,131 @@ def _safe_alternative_sources(claim, citation="", current_source_title="", top_k
     except Exception as e:
         print(f"[VERIFY WORKER] Alternative source suggestion failed for {citation}: {e}")
         return []
+
+def _basic_keyword_overlap_score(claim, source_title):
+    """Small fallback score when only a title is available."""
+    stop = {
+        "this", "that", "with", "from", "using", "used", "study", "analysis",
+        "method", "approach", "results", "paper", "research", "journal", "review",
+        "effect", "effects", "relationship", "role", "model", "models", "findings",
+    }
+    claim_words = set(re.findall(r"[a-z]{4,}", str(claim or "").lower())) - stop
+    title_words = set(re.findall(r"[a-z]{4,}", str(source_title or "").lower())) - stop
+
+    if not claim_words or not title_words:
+        return 0
+
+    overlap = claim_words & title_words
+    if not overlap:
+        return 0
+
+    return min(40, 10 + (len(overlap) * 10))
+
+
+def _score_claim_support_for_worker(claim, source_title):
+    """
+    Score claim support even in fallback mode.
+    Uses the main scorer when available and a conservative title-overlap fallback otherwise.
+    """
+    claim = str(claim or "").strip()
+    source_title = str(source_title or "").strip()
+
+    empty = {
+        "score": 0,
+        "status": "manual_review_required",
+        "title_overlap": 0,
+        "abstract_overlap": 0,
+        "keyword_overlap": 0,
+        "direction_overlap": 0,
+        "relation_overlap": 0,
+        "partial_support": False,
+        "concept_matches": [],
+        "score_explanation": "No usable claim or source title was available for scoring.",
+        "evidence_used": "none",
+    }
+
+    if not claim or not source_title or source_title.lower().startswith(("matched source not available", "source title not available", "no source found")):
+        return empty
+
+    if score_claim_support:
+        try:
+            support = score_claim_support(
+                claim=claim,
+                source_title=source_title,
+                source_abstract="",
+                source_concepts=[],
+                source_metadata={},
+            ) or {}
+
+            score = int(support.get("score", 0) or 0)
+            if score > 0:
+                support.setdefault("evidence_used", "title_only")
+                support.setdefault("score_explanation", "Worker fallback used title-only support scoring.")
+                return support
+
+        except Exception as e:
+            print(f"[VERIFY WORKER] Title-only claim scoring failed: {e}")
+
+    score = _basic_keyword_overlap_score(claim, source_title)
+
+    if score > 0:
+        return {
+            "score": score,
+            "status": "title_overlap_review_required",
+            "title_overlap": score,
+            "abstract_overlap": 0,
+            "keyword_overlap": score,
+            "direction_overlap": 0,
+            "relation_overlap": 0,
+            "partial_support": score >= 30,
+            "concept_matches": [],
+            "score_explanation": "Conservative title-keyword overlap score. Human review is still required.",
+            "evidence_used": "title_keyword_overlap",
+        }
+
+    return {
+        **empty,
+        "status": "insufficient_title_overlap",
+        "score_explanation": "The extracted claim and source title had no meaningful keyword overlap.",
+        "evidence_used": "title_only",
+    }
+
+
+def _enhance_claim_support_scores(rows):
+    """Fill zero scores when a claim and source title allow conservative title-only scoring."""
+    enhanced = []
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        current_score = int(row.get("support_score", 0) or 0)
+        if current_score <= 0:
+            source_title = (
+                row.get("source_title")
+                or row.get("matched_source")
+                or row.get("reference")
+                or ""
+            )
+            support = _score_claim_support_for_worker(row.get("claim", ""), source_title)
+
+            if int(support.get("score", 0) or 0) > 0:
+                row["support_score"] = support.get("score", 0)
+                row["support_status"] = support.get("status", row.get("support_status", "manual_review_required"))
+                row["evidence_used"] = support.get("evidence_used", "title_only")
+                row["title_overlap"] = support.get("title_overlap", row.get("title_overlap", 0))
+                row["abstract_overlap"] = support.get("abstract_overlap", row.get("abstract_overlap", 0))
+                row["keyword_overlap"] = support.get("keyword_overlap", row.get("keyword_overlap", 0))
+                row["direction_overlap"] = support.get("direction_overlap", row.get("direction_overlap", 0))
+                row["relation_overlap"] = support.get("relation_overlap", row.get("relation_overlap", 0))
+                row["partial_support"] = support.get("partial_support", row.get("partial_support", False))
+                row["concept_matches"] = support.get("concept_matches", row.get("concept_matches", []))
+                row["score_explanation"] = support.get("score_explanation", row.get("score_explanation", ""))
+
+        enhanced.append(row)
+
+    return enhanced
+
 def _fallback_claim_support_rows(result, verification_rows):
     """
     Claim-support fallback with real claim extraction from main_text.
@@ -549,14 +792,25 @@ def _fallback_claim_support_rows(result, verification_rows):
             current_source_title=matched_reference,
             top_k=3
         )
+
+        support = _score_claim_support_for_worker(claim, matched_reference)
         
         rows.append({
             "citation": citation,
             "claim": claim,
             "source_title": matched_reference[:250] if matched_reference else "Matched source not available",
             "matched_source": matched_reference,
-            "support_status": "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required",
-            "support_score": 0,
+            "support_status": support.get("status", "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required"),
+            "support_score": support.get("score", 0),
+            "evidence_used": support.get("evidence_used", "title_only"),
+            "title_overlap": support.get("title_overlap", 0),
+            "abstract_overlap": support.get("abstract_overlap", 0),
+            "keyword_overlap": support.get("keyword_overlap", 0),
+            "direction_overlap": support.get("direction_overlap", 0),
+            "relation_overlap": support.get("relation_overlap", 0),
+            "partial_support": support.get("partial_support", False),
+            "concept_matches": support.get("concept_matches", []),
+            "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
             "doi": lookup.get("doi", ""),
             "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
             "citation_match_status": row.get("status", lookup.get("status", "")),
@@ -598,14 +852,25 @@ def _fallback_claim_support_rows(result, verification_rows):
             current_source_title=source_title,
             top_k=3
         )
+
+        support = _score_claim_support_for_worker(claim, source_title)
         
         rows.append({
             "citation": citation,
             "claim": claim,
             "source_title": source_title[:250],
             "matched_source": reference,
-            "support_status": "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required",
-            "support_score": 0,
+            "support_status": support.get("status", "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required"),
+            "support_score": support.get("score", 0),
+            "evidence_used": support.get("evidence_used", "title_only"),
+            "title_overlap": support.get("title_overlap", 0),
+            "abstract_overlap": support.get("abstract_overlap", 0),
+            "keyword_overlap": support.get("keyword_overlap", 0),
+            "direction_overlap": support.get("direction_overlap", 0),
+            "relation_overlap": support.get("relation_overlap", 0),
+            "partial_support": support.get("partial_support", False),
+            "concept_matches": support.get("concept_matches", []),
+            "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
             "doi": row.get("doi", ""),
             "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
             "citation_match_status": row.get("status", ""),
@@ -673,10 +938,10 @@ def _build_claim_support_safe(result, verification_rows):
                 for row in claim_rows:
                     row.setdefault("fallback", False)
 
-                return claim_rows
+                return _enhance_claim_support_scores(claim_rows)
 
         print("[VERIFY WORKER] Claim-support checker returned no real extracted claims. Using fallback rows.")
-        return fallback_rows
+        return _enhance_claim_support_scores(fallback_rows)
 
     except FutureTimeoutError:
         print(f"[VERIFY WORKER] Claim-support timed out after {CLAIM_SUPPORT_TIMEOUT}s. Using fallback rows.")
@@ -684,11 +949,11 @@ def _build_claim_support_safe(result, verification_rows):
             future.cancel()
         except Exception:
             pass
-        return fallback_rows
+        return _enhance_claim_support_scores(fallback_rows)
 
     except Exception as e:
         print(f"[VERIFY WORKER] Claim-support failed: {e}. Using fallback rows.")
-        return fallback_rows
+        return _enhance_claim_support_scores(fallback_rows)
 
     finally:
         if executor:
@@ -2055,17 +2320,7 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                                 or r.get("source_title")
                                 or ""
                             ),
-                            "suggestions": [
-                                {
-                                    "title": "Review this source in context",
-                                    "authors": r.get("matched_authors") or r.get("authors") or "",
-                                    "year": r.get("matched_year") or r.get("year") or "",
-                                    "doi": r.get("doi") or "",
-                                    "reason": "Review whether this source supports the cited claim.",
-                                    "source": "fallback_recovery",
-                                    "confidence": 0.50
-                                }
-                            ]
+                            "suggestions": _fallback_recovery_suggestions(r, result, target=3)
                         }
                         for r in all_rows
                         if r.get("status") in {"likely", "needs_review", "not_found", "offline"}
@@ -2081,10 +2336,10 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 "note": f"Recovery generation failed: {e}"
             }
 
-       # Build claim-support rows quickly.
-       # Do not call alternative-source search inside verification.
+       # Build claim-support rows with scoring.
+       # Uses the real checker first, then a safe title-only fallback so scores are not forced to zero.
         try:
-            claim_rows = _fallback_claim_support_rows(result, all_rows)
+            claim_rows = _build_claim_support_safe(result, all_rows)
         
             for row in claim_rows:
                 row.setdefault("alternative_sources", [])
@@ -2092,8 +2347,8 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             result["claim_support"] = claim_rows
         
         except Exception as e:
-            print(f"[VERIFY WORKER] Claim-support fallback failed: {e}")
-            result["claim_support"] = []
+            print(f"[VERIFY WORKER] Claim-support scoring failed: {e}")
+            result["claim_support"] = _enhance_claim_support_scores(_fallback_claim_support_rows(result, all_rows))
 
         # ACII should not block completion.
         try:
