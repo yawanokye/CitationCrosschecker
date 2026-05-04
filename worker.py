@@ -114,6 +114,25 @@ def _save_job_result(job_id, result, status=None):
     except Exception as e:
         print(f"[VERIFY WORKER] Could not refresh Redis result cache: {e}")
 
+def _set_verification_meta(result, **kwargs):
+    """
+    Update verification metadata inside the result object.
+
+    This helper is required by process_verification() for running,
+    finalising, completed, and error states.
+    """
+    if result is None:
+        result = {}
+
+    verification = result.get("verification") or {}
+
+    for key, value in kwargs.items():
+        if value is not None:
+            verification[key] = value
+
+    result["verification"] = verification
+    return result
+
 def _compute_verification_summary(rows):
     rows = rows or []
     return {
@@ -1891,13 +1910,17 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
         if not total:
             result = _set_verification_meta(
                 result,
-                state="idle",
+                state="completed",
                 progress=0,
                 total=0,
-                percentage=0,
+                percentage=100,
                 message=result.get("reference_detection_message", "No references extracted"),
-                completed_at=now_iso()
+                completed_at=now_iso(),
+                final_tables_ready=True
             )
+
+            result["final_tables_ready"] = True
+            result["verification_completed_at"] = now_iso()
 
             result["online_verification"] = {
                 "rows": [],
@@ -2091,9 +2114,11 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             summary=summary,
             message=f"Verification completed for {len(all_rows)} references",
             completed_at=now_iso(),
-            processing_time_seconds=elapsed
+            processing_time_seconds=elapsed,
+            final_tables_ready=True
         )
 
+        result["final_tables_ready"] = True
         result["verification_completed_at"] = now_iso()
 
         _save_job_result(job_id, result, status="completed")
