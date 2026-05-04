@@ -581,6 +581,56 @@
             border: 1px dashed #cbd5e1;
         }
 
+
+        .alt-source-box {
+            margin-top: 10px;
+            padding: 10px 12px;
+            border: 1px solid #dbeafe;
+            border-left: 4px solid var(--blue);
+            border-radius: 14px;
+            background: #f8fbff;
+            font-size: 12px;
+        }
+
+        .alt-source-box summary {
+            cursor: pointer;
+            font-weight: 850;
+            color: #1e3a5f;
+        }
+
+        .alt-source-note {
+            margin: 8px 0 10px 0;
+            color: var(--slate);
+            line-height: 1.4;
+        }
+
+        .alt-source-item {
+            padding: 8px;
+            margin-top: 8px;
+            border-radius: 10px;
+            background: white;
+            border: 1px solid #eef2f6;
+        }
+
+        .alt-source-title {
+            font-weight: 850;
+            color: var(--navy);
+            margin-bottom: 4px;
+        }
+
+        .alt-source-meta {
+            color: var(--slate);
+            font-size: 11px;
+            margin-bottom: 3px;
+        }
+
+        .claim-note {
+            margin-top: 8px;
+            color: var(--slate);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
         .footer {
             border-top: 1px solid var(--line);
             background: white;
@@ -1175,9 +1225,18 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function isFinalReady(result) {
+        const verification = result?.verification || {};
+        const state = String(verification.state || "").toLowerCase();
+        const finalTablesReady =
+            verification.final_tables_ready === true ||
+            result?.final_tables_ready === true ||
+            Boolean(result?.verification_completed_at);
+
         return hasVerificationRows(result) &&
                hasRecoveryPayload(result) &&
-               hasClaimPayload(result);
+               hasClaimPayload(result) &&
+               state === "completed" &&
+               finalTablesReady;
     }
 
     function hydrateFinalDefaults(result) {
@@ -1423,12 +1482,73 @@ document.addEventListener("DOMContentLoaded", function () {
         }).join("");
     }
 
+    function csvCell(value) {
+        return `"${String(value ?? "").replaceAll('"', '""')}"`;
+    }
+
+    function reportText(value) {
+        return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    function getClaimText(row) {
+        return row.claim || row.claim_extracted || row.extracted_claim || row.context || "No evidence found";
+    }
+
+    function getSourceTitle(row) {
+        return row.source_title || row.matched_source || row.matched_title || row.title || "No source title available";
+    }
+
+    function getSupportScore(row) {
+        const score = row.support_score ?? row.score ?? row.supportScore ?? 0;
+        const numeric = Number(score);
+        return Number.isFinite(numeric) ? numeric : score;
+    }
+
+    function getSupportStatus(row) {
+        return row.support_status || row.status || "offline";
+    }
+
+    function renderAlternativeSources(row) {
+        const alternatives = row.alternative_sources || row.alternativeSources || [];
+        if (!Array.isArray(alternatives) || !alternatives.length) return "";
+
+        const items = alternatives.slice(0, 3).map((src, index) => {
+            const title = src.title || src.suggested || "Untitled source";
+            const year = src.year || "Year not available";
+            const authors = Array.isArray(src.authors) ? src.authors.join(", ") : (src.authors || "Authors not available");
+            const relevance = src.relevance ?? src.confidence ?? src.score ?? "Not scored";
+            const doi = src.doi || "";
+            const doiHtml = doi
+                ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a>`
+                : `<span class="small-muted">DOI not available</span>`;
+
+            return `
+                <div class="alt-source-item">
+                    <div class="alt-source-title">${index + 1}. ${esc(title)}</div>
+                    <div class="alt-source-meta"><strong>Authors:</strong> ${esc(authors)}</div>
+                    <div class="alt-source-meta"><strong>Year:</strong> ${esc(year)}</div>
+                    <div class="alt-source-meta"><strong>Relevance:</strong> ${esc(relevance)}</div>
+                    <div>${doiHtml}</div>
+                </div>
+            `;
+        }).join("");
+
+        return `
+            <details class="alt-source-box">
+                <summary>Possible alternative supporting sources</summary>
+                <p class="alt-source-note">These are review-only suggestions. Confirm the source before using it.</p>
+                ${items}
+            </details>
+        `;
+    }
+
     function renderSuggestionList(suggestions) {
         if (!suggestions || !suggestions.length) return `<span class="badge no_evidence_found">No evidence found</span>`;
-        return `<div class="suggestion-box">${suggestions.slice(0, 4).map((s, i) => {
+        return `<div class="suggestion-box">${suggestions.slice(0, 3).map((s, i) => {
             const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
             const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
-            return `<div style="margin-bottom:10px;"><strong>${i+1}. ${esc(s.title || s.suggested || "Untitled suggestion")}</strong><div class="small-muted">${esc(authors)} ${s.year ? "(" + esc(s.year) + ")" : ""}</div>${doi}</div>`;
+            const reason = s.reason ? `<div class="small-muted">${esc(s.reason)}</div>` : "";
+            return `<div style="margin-bottom:10px;"><strong>${i+1}. ${esc(s.title || s.suggested || "Untitled suggestion")}</strong><div class="small-muted">${esc(authors)} ${s.year ? "(" + esc(s.year) + ")" : ""}</div>${reason}${doi}</div>`;
         }).join("")}</div>`;
     }
 
@@ -1462,15 +1582,26 @@ document.addEventListener("DOMContentLoaded", function () {
         const rows = data.claim_support || [];
         const body = $("claimBody");
         if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`; return; }
+        if (!rows.length) {
+            body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`;
+            return;
+        }
+
         const visibleRows = rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY);
         body.innerHTML = visibleRows.map((row, i) => {
             const doi = row.doi || "";
             const doiHtml = doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
-            const sourceTitle = row.source_title || row.matched_title || "No source title available";
-            return `<tr data-status="${esc(row.support_status || "")}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.claim || "No evidence found")}</td><td>${esc(sourceTitle)}${doiHtml}</td><td>${formatBadge(row.support_status || "offline")}</td><td>${esc(row.support_score ?? 0)}</td></tr>`;
+            const sourceTitle = getSourceTitle(row);
+            const note = row.note ? `<div class="claim-note">${esc(row.note)}</div>` : "";
+            const alternatives = renderAlternativeSources(row);
+            const score = getSupportScore(row);
+            const status = getSupportStatus(row);
+            return `<tr data-status="${esc(status)}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(getClaimText(row))}</td><td>${esc(sourceTitle)}${doiHtml}${note}${alternatives}</td><td>${formatBadge(status)}</td><td>${esc(score)}</td></tr>`;
         }).join("");
-        if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
+
+        if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) {
+            body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
+        }
     }
 
     function getSuggestions(data) {
@@ -1740,29 +1871,156 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    function exportCSV() { /* simplified but functional */
+    function exportCSV() {
         if (!latestResults) { alert("No data to export."); return; }
+
         const s = latestResults.summary || {};
+        const acii = latestResults.acii || {};
         const missing = latestResults.missing_in_references || [];
         const uncited = latestResults.uncited_references || [];
+        const c2rRows = latestResults.reconciliation_intext_to_reference || [];
+        const r2cRows = latestResults.reconciliation_reference_to_intext || [];
         const verifyRows = latestResults.online_verification?.rows || [];
+        const rec = latestResults.recovery || {};
+        const recoveryMissing = rec.missing_recovery || [];
+        const recoveryVerify = rec.verification_recovery || [];
         const claimRows = latestResults.claim_support || [];
-        const lines = [`"CiteIntegrity Report","${new Date().toLocaleString()}"`,`"Job ID","${JOB_ID}"`,"",`"Metric","Value"`,`"In-text citations","${s.in_text_citations_found}"`,`"References","${s.reference_entries_found}"`,`"Missing citations","${s.missing_in_references}"`,`"Uncited references","${s.uncited_references}"`,`"Match rate","${s.match_rate}%"`,`"Verification rows","${verifyRows.length}"`,`"Claim support rows","${claimRows.length}"`,"",`"Missing Citations"`];
-        missing.forEach(item => lines.push(`"${esc((item.citation_in_text || item.citation || item).toString()).replaceAll('"', '""')}"`));
-        lines.push("",`"Uncited References"`);
-        uncited.forEach(item => lines.push(`"${esc((item.reference || item).toString()).replaceAll('"', '""')}"`));
+
+        const lines = [];
+        lines.push(`${csvCell("CiteIntegrity Report")},${csvCell(new Date().toLocaleString())}`);
+        lines.push(`${csvCell("Job ID")},${csvCell(JOB_ID)}`);
+        lines.push("");
+
+        lines.push(`${csvCell("Metric")},${csvCell("Value")}`);
+        lines.push(`${csvCell("In-text citations")},${csvCell(s.in_text_citations_found)}`);
+        lines.push(`${csvCell("References")},${csvCell(s.reference_entries_found)}`);
+        lines.push(`${csvCell("Missing citations")},${csvCell(s.missing_in_references)}`);
+        lines.push(`${csvCell("Uncited references")},${csvCell(s.uncited_references)}`);
+        lines.push(`${csvCell("Match rate")},${csvCell((s.match_rate ?? "") + "%")}`);
+        lines.push(`${csvCell("ACII")},${csvCell(acii.ACII ?? acii.score ?? "")}`);
+        lines.push(`${csvCell("Verification rows")},${csvCell(verifyRows.length)}`);
+        lines.push(`${csvCell("Recovery rows")},${csvCell(recoveryMissing.length + recoveryVerify.length)}`);
+        lines.push(`${csvCell("Claim support rows")},${csvCell(claimRows.length)}`);
+
+        lines.push("", csvCell("Missing Citations"));
+        lines.push(`${csvCell("No.")},${csvCell("Citation")},${csvCell("Count")}`);
+        missing.forEach((item, i) => lines.push(`${csvCell(i+1)},${csvCell(item.citation_in_text || item.citation || item)},${csvCell(item.count || item.count_in_text || 1)}`));
+
+        lines.push("", csvCell("Uncited References"));
+        lines.push(`${csvCell("No.")},${csvCell("Reference")}`);
+        uncited.forEach((item, i) => lines.push(`${csvCell(i+1)},${csvCell(item.reference || item)}`));
+
+        lines.push("", csvCell("Citations to References"));
+        lines.push(`${csvCell("No.")},${csvCell("Status")},${csvCell("Citation")},${csvCell("Count")},${csvCell("Matched Reference")},${csvCell("Flags")}`);
+        c2rRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.in_text || row.citation)},${csvCell(row.count || 1)},${csvCell(row.matched_reference || row.reference)},${csvCell(row.flags || row.issue || "")}`));
+
+        lines.push("", csvCell("References to Citations"));
+        lines.push(`${csvCell("No.")},${csvCell("Times Cited")},${csvCell("Reference")},${csvCell("Cited By")}`);
+        r2cRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.times_cited || row.count || 0)},${csvCell(row.reference || "")},${csvCell(Array.isArray(row.cited_by) ? row.cited_by.join("; ") : (row.cited_by || ""))}`));
+
+        lines.push("", csvCell("Online Verification"));
+        lines.push(`${csvCell("No.")},${csvCell("Status")},${csvCell("Source")},${csvCell("Score")},${csvCell("DOI")},${csvCell("Year")},${csvCell("Authors")},${csvCell("Matched Title")}`);
+        verifyRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.source)},${csvCell(row.score)},${csvCell(row.doi)},${csvCell(row.matched_year || row.year)},${csvCell(row.matched_authors || row.authors)},${csvCell(row.matched_title || row.title || row.reference)}`));
+
+        lines.push("", csvCell("Recovery, Missing Citation"));
+        lines.push(`${csvCell("No.")},${csvCell("Citation")},${csvCell("Count")},${csvCell("Suggestions")}`);
+        recoveryMissing.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.citation)},${csvCell(row.count || 1)},${csvCell((row.suggestions || []).map(s => s.title || s.suggested || "").join(" | "))}`));
+
+        lines.push("", csvCell("Recovery, Needs Review or Not Found"));
+        lines.push(`${csvCell("No.")},${csvCell("Status")},${csvCell("Citation")},${csvCell("Reference")},${csvCell("Context Suggestions")}`);
+        recoveryVerify.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.citation)},${csvCell(row.reference)},${csvCell((row.suggestions || []).map(s => s.title || s.suggested || "").join(" | "))}`));
+
+        lines.push("", csvCell("Claim Support"));
+        lines.push(`${csvCell("No.")},${csvCell("Citation")},${csvCell("Claim")},${csvCell("Matched Source")},${csvCell("Support Status")},${csvCell("Score")},${csvCell("Note")},${csvCell("Alternative Sources")}`);
+        claimRows.forEach((row, i) => {
+            const alternatives = (row.alternative_sources || []).map(src => `${src.title || src.suggested || "Untitled"} (${src.year || ""})`).join(" | ");
+            lines.push(`${csvCell(i+1)},${csvCell(row.citation)},${csvCell(getClaimText(row))},${csvCell(getSourceTitle(row))},${csvCell(getSupportStatus(row))},${csvCell(getSupportScore(row))},${csvCell(row.note || "")},${csvCell(alternatives)}`);
+        });
+
         downloadBlob(lines.join("\n"), `citeintegrity_report_${JOB_ID.slice(0, 8)}.csv`, "text/csv");
     }
 
     function exportWord() {
         if (!latestResults) { alert("No data to export."); return; }
+
         const s = latestResults.summary || {};
         const acii = latestResults.acii || {};
         const missing = latestResults.missing_in_references || [];
         const uncited = latestResults.uncited_references || [];
+        const c2rRows = latestResults.reconciliation_intext_to_reference || [];
         const verifyRows = latestResults.online_verification?.rows || [];
+        const rec = latestResults.recovery || {};
+        const recoveryMissing = rec.missing_recovery || [];
+        const recoveryVerify = rec.verification_recovery || [];
         const claimRows = latestResults.claim_support || [];
-        const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head><body><h1>CiteIntegrity Results Report</h1><p><strong>Generated:</strong> ${new Date().toLocaleString()}</p><p><strong>Job ID:</strong> ${esc(JOB_ID)}</p><h2>Summary</h2><table border="1" cellpadding="6"><tr><th>Metric</th><th>Value</th></tr><tr><td>In-text citations</td><td>${esc(s.in_text_citations_found)}</td></tr><tr><td>References</td><td>${esc(s.reference_entries_found)}</td></tr><tr><td>Missing citations</td><td>${esc(s.missing_in_references)}</td></tr><tr><td>Uncited references</td><td>${esc(s.uncited_references)}</td></tr><tr><td>Match rate</td><td>${esc(s.match_rate)}%</td></tr><tr><td>Verification rows</td><td>${verifyRows.length}</td></tr><tr><td>Claim-support rows</td><td>${claimRows.length}</td></tr></table><h2>ACII Score</h2><p><strong>${esc(acii.ACII ?? "--")}</strong></p><h2>Missing Citations</h2><ol>${missing.map(m => `<li>${esc(m.citation_in_text || m.citation || m)}</li>`).join("")}</ol><h2>Uncited References</h2><ol>${uncited.map(u => `<li>${esc(u.reference || u)}</li>`).join("")}</ol><h2>Verification Summary</h2><p>Total verification rows: ${verifyRows.length}</p><h2>Claim Support Summary</h2><p>Total claim-support rows: ${claimRows.length}</p></body></html>`;
+
+        const tableStyle = `border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:11pt;`;
+        const cellStyle = `border:1px solid #cccccc;padding:6px;vertical-align:top;`;
+        const thStyle = `border:1px solid #cccccc;padding:6px;background:#f1f5f9;text-align:left;`;
+
+        const verificationTable = verifyRows.length ? `
+            <table style="${tableStyle}">
+                <tr><th style="${thStyle}">No.</th><th style="${thStyle}">Status</th><th style="${thStyle}">Score</th><th style="${thStyle}">DOI</th><th style="${thStyle}">Matched Title</th></tr>
+                ${verifyRows.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.score)}</td><td style="${cellStyle}">${reportText(r.doi)}</td><td style="${cellStyle}">${reportText(r.matched_title || r.title || r.reference)}</td></tr>`).join("")}
+            </table>` : `<p>No online verification rows available.</p>`;
+
+        const recoveryTable = `
+            <h3>Missing Citation Recovery</h3>
+            ${recoveryMissing.length ? `<table style="${tableStyle}"><tr><th style="${thStyle}">No.</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Count</th><th style="${thStyle}">Suggestions</th></tr>${recoveryMissing.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.citation)}</td><td style="${cellStyle}">${reportText(r.count || 1)}</td><td style="${cellStyle}">${reportText((r.suggestions || []).map(x => x.title || x.suggested || "").join("; "))}</td></tr>`).join("")}</table>` : `<p>No missing citation recovery rows available.</p>`}
+            <h3>Needs Review / Not Found Recovery</h3>
+            ${recoveryVerify.length ? `<table style="${tableStyle}"><tr><th style="${thStyle}">No.</th><th style="${thStyle}">Status</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Reference</th><th style="${thStyle}">Context Suggestions</th></tr>${recoveryVerify.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.citation)}</td><td style="${cellStyle}">${reportText(r.reference)}</td><td style="${cellStyle}">${reportText((r.suggestions || []).map(x => x.title || x.suggested || "").join("; "))}</td></tr>`).join("")}</table>` : `<p>No verification recovery rows available.</p>`}
+        `;
+
+        const claimTable = claimRows.length ? `
+            <table style="${tableStyle}">
+                <tr><th style="${thStyle}">No.</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Claim</th><th style="${thStyle}">Matched Source</th><th style="${thStyle}">Support Status</th><th style="${thStyle}">Score</th><th style="${thStyle}">Alternative Sources</th></tr>
+                ${claimRows.map((r, i) => {
+                    const alternatives = (r.alternative_sources || []).map(src => `${src.title || src.suggested || "Untitled"} (${src.year || ""})`).join("; ");
+                    return `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.citation)}</td><td style="${cellStyle}">${reportText(getClaimText(r))}</td><td style="${cellStyle}">${reportText(getSourceTitle(r))}</td><td style="${cellStyle}">${reportText(getSupportStatus(r))}</td><td style="${cellStyle}">${reportText(getSupportScore(r))}</td><td style="${cellStyle}">${reportText(alternatives)}</td></tr>`;
+                }).join("")}
+            </table>` : `<p>No claim-support rows available.</p>`;
+
+        const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head>
+<body style="font-family:Arial,sans-serif;color:#0f172a;">
+<h1>CiteIntegrity Results Report</h1>
+<p><strong>Generated:</strong> ${reportText(new Date().toLocaleString())}</p>
+<p><strong>Job ID:</strong> ${reportText(JOB_ID)}</p>
+
+<h2>Summary</h2>
+<table style="${tableStyle}">
+<tr><th style="${thStyle}">Metric</th><th style="${thStyle}">Value</th></tr>
+<tr><td style="${cellStyle}">In-text citations</td><td style="${cellStyle}">${reportText(s.in_text_citations_found)}</td></tr>
+<tr><td style="${cellStyle}">References</td><td style="${cellStyle}">${reportText(s.reference_entries_found)}</td></tr>
+<tr><td style="${cellStyle}">Missing citations</td><td style="${cellStyle}">${reportText(s.missing_in_references)}</td></tr>
+<tr><td style="${cellStyle}">Uncited references</td><td style="${cellStyle}">${reportText(s.uncited_references)}</td></tr>
+<tr><td style="${cellStyle}">Match rate</td><td style="${cellStyle}">${reportText(s.match_rate)}%</td></tr>
+<tr><td style="${cellStyle}">ACII</td><td style="${cellStyle}">${reportText(acii.ACII ?? acii.score ?? "--")}</td></tr>
+<tr><td style="${cellStyle}">Verification rows</td><td style="${cellStyle}">${verifyRows.length}</td></tr>
+<tr><td style="${cellStyle}">Recovery rows</td><td style="${cellStyle}">${recoveryMissing.length + recoveryVerify.length}</td></tr>
+<tr><td style="${cellStyle}">Claim-support rows</td><td style="${cellStyle}">${claimRows.length}</td></tr>
+</table>
+
+<h2>Missing Citations</h2>
+<ol>${missing.map(m => `<li>${reportText(m.citation_in_text || m.citation || m)}</li>`).join("")}</ol>
+
+<h2>Uncited References</h2>
+<ol>${uncited.map(u => `<li>${reportText(u.reference || u)}</li>`).join("")}</ol>
+
+<h2>Citations to References</h2>
+${c2rRows.length ? `<table style="${tableStyle}"><tr><th style="${thStyle}">No.</th><th style="${thStyle}">Status</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Matched Reference</th></tr>${c2rRows.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.in_text || r.citation)}</td><td style="${cellStyle}">${reportText(r.matched_reference || r.reference)}</td></tr>`).join("")}</table>` : `<p>No citation-to-reference mapping rows available.</p>`}
+
+<h2>Online Verification</h2>
+${verificationTable}
+
+<h2>Recovery</h2>
+${recoveryTable}
+
+<h2>Claim Support</h2>
+${claimTable}
+</body></html>`;
+
         downloadBlob(html, `citeintegrity_report_${JOB_ID.slice(0, 8)}.doc`, "application/msword");
     }
 
