@@ -51,6 +51,19 @@ VERIFY_CHUNK_SIZE = int(os.environ.get("VERIFY_CHUNK_SIZE", "10"))
 CLAIM_SUPPORT_TIMEOUT = int(os.environ.get("CLAIM_SUPPORT_TIMEOUT", "60"))
 MAX_ALT_SOURCES_IN_VERIFY = int(os.environ.get("MAX_ALT_SOURCES_IN_VERIFY", "5"))
 
+# Commercial performance controls
+# Keep the main verification path fast and predictable. Deep Crossref/OpenAlex
+# lookups should run only in the deep_enrichment queue unless deliberately enabled.
+def _env_flag(name, default="0"):
+    return str(os.environ.get(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+DEEP_LOOKUPS_IN_VERIFY = _env_flag("DEEP_LOOKUPS_IN_VERIFY", "0")
+RUN_REAL_CLAIM_CHECK_IN_VERIFY = _env_flag("RUN_REAL_CLAIM_CHECK_IN_VERIFY", "0")
+ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY = _env_flag("ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY", "1")
+DEEP_ENRICHMENT_LIMIT = int(os.environ.get("DEEP_ENRICHMENT_LIMIT", "80"))
+DEEP_LOOKUP_TOP_K = int(os.environ.get("DEEP_LOOKUP_TOP_K", "3"))
+DEEP_ENRICHMENT_BATCH_SAVE = int(os.environ.get("DEEP_ENRICHMENT_BATCH_SAVE", "10"))
+
 def now_iso():
     return datetime.utcnow().isoformat()
 
@@ -292,10 +305,11 @@ def _dedupe_and_pad_suggestions(suggestions, row, result, target=3):
     return clean[:target]
 
 
-def _context_suggestions_for_row(row, result):
+def _lookup_context_suggestions_for_row(row, result, target=3):
     """
-    Generate up to three context/reference suggestions for Recovery.
-    Uses citation context first, then reference correction lookup, then safe fallback prompts.
+    Slower deep lookup path for context/reference suggestions.
+    This may call Crossref/OpenAlex through citation_suggester, so it should be used
+    only in the deep_enrichment queue or when DEEP_LOOKUPS_IN_VERIFY is explicitly enabled.
     """
     existing = (
         row.get("suggested_references")
@@ -305,7 +319,7 @@ def _context_suggestions_for_row(row, result):
     )
 
     if existing:
-        return _dedupe_and_pad_suggestions(existing, row, result, target=3)
+        return _dedupe_and_pad_suggestions(existing, row, result, target=target)
 
     citation = (
         row.get("citation")
@@ -343,20 +357,41 @@ def _context_suggestions_for_row(row, result):
                 suggest_from_context(
                     context=context,
                     citation=citation,
-                    top_k=3,
+                    top_k=target,
                 ) or []
             )
         except Exception as e:
-            print(f"[VERIFY WORKER] Context lookup failed: {e}")
+            print(f"[DEEP ENRICHMENT] Context lookup failed: {e}")
 
     if suggest_for_unverified and reference:
         try:
-            # Correct signature in citation_suggester.py: suggest_for_unverified(ref, top_k=3)
-            suggestions.extend(suggest_for_unverified(reference, top_k=3) or [])
+            suggestions.extend(suggest_for_unverified(reference, top_k=target) or [])
         except Exception as e:
-            print(f"[VERIFY WORKER] Reference suggestion failed: {e}")
+            print(f"[DEEP ENRICHMENT] Reference suggestion failed: {e}")
 
-    return _dedupe_and_pad_suggestions(suggestions, row, result, target=3)
+    return _dedupe_and_pad_suggestions(suggestions, row, result, target=target)
+
+
+def _context_suggestions_for_row(row, result):
+    """
+    Fast Recovery Lite path for the main verification job.
+    By default, this never calls Crossref/OpenAlex. It returns existing suggestions
+    if already present, otherwise three review-ready fallback prompts.
+    """
+    existing = (
+        row.get("suggested_references")
+        or row.get("correction_suggestions")
+        or row.get("suggestions")
+        or []
+    )
+
+    if existing:
+        return _dedupe_and_pad_suggestions(existing, row, result, target=3)
+
+    if not DEEP_LOOKUPS_IN_VERIFY:
+        return _fallback_recovery_suggestions(row, result, target=3)
+
+    return _lookup_context_suggestions_for_row(row, result, target=3)
 
 def _build_recovery_payload(result, verification_rows):
     """
@@ -567,12 +602,33 @@ def _find_sentence_for_citation(sentences, citation):
 
     return ""
 
-def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3):
+def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3, allow_external=False):
     """
-    Do not run alternative-source lookup inside the main verification job.
-    It is too slow for large documents. Run it later as a separate enrichment job.
+    Alternative-source lookup is expensive. In the main verification job it is
+    disabled by default so Recovery and Claim Support can populate quickly.
+    Set allow_external=True only from the deep_enrichment queue.
     """
-    return []
+    if not (allow_external or DEEP_LOOKUPS_IN_VERIFY):
+        return []
+
+    claim = str(claim or "").strip()
+
+    if not claim or len(claim) < 20:
+        return []
+
+    if claim.lower().startswith("claim could not be extracted"):
+        return []
+
+    try:
+        return suggest_alternative_sources_for_claim(
+            claim=claim,
+            citation=citation,
+            current_source_title=current_source_title,
+            top_k=top_k
+        ) or []
+    except Exception as e:
+        print(f"[DEEP ENRICHMENT] Alternative source suggestion failed for {citation}: {e}")
+        return []
 
 def _basic_keyword_overlap_score(claim, source_title):
     """Small fallback score when only a title is available."""
@@ -897,10 +953,14 @@ def _is_real_claim_row(row):
 
 def _build_claim_support_safe(result, verification_rows):
     """
-    Try the real claim-support checker, but do not allow it to block verification completion.
-    If real claim extraction fails, returns fallback review rows.
+    Claim Support Lite for the main verification job.
+    By default, this returns fast fallback rows with title-only scoring.
+    The slower full claim checker should run in deep_enrichment, not here.
     """
     fallback_rows = _fallback_claim_support_rows(result, verification_rows)
+
+    if not RUN_REAL_CLAIM_CHECK_IN_VERIFY:
+        return _enhance_claim_support_scores(fallback_rows)
 
     executor = None
 
@@ -2132,6 +2192,174 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         
         raise e
 
+
+# ============================================================
+# COMMERCIAL DEEP ENRICHMENT JOB
+# ============================================================
+
+def _enqueue_deep_enrichment(job_id, style="apa"):
+    """Queue expensive enrichment after the usable dashboard is already ready."""
+    if not ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY:
+        return None
+
+    try:
+        deep_queue = Queue("deep_enrichment", connection=redis_conn)
+        rq_job = deep_queue.enqueue(
+            "worker.process_deep_enrichment",
+            job_id,
+            style,
+            job_timeout=10800,
+            result_ttl=86400,
+            failure_ttl=86400,
+        )
+        print(f"[DEEP ENRICHMENT] Queued enrichment job {rq_job.id} for {job_id}")
+        return rq_job.id
+    except Exception as e:
+        print(f"[DEEP ENRICHMENT] Could not queue enrichment for {job_id}: {e}")
+        return None
+
+
+def _set_enrichment_meta(result, **kwargs):
+    if result is None:
+        result = {}
+
+    enrichment = result.get("enrichment") or {}
+    for key, value in kwargs.items():
+        if value is not None:
+            enrichment[key] = value
+
+    result["enrichment"] = enrichment
+    return result
+
+
+def process_deep_enrichment(job_id, style="apa", limit=None):
+    """
+    Expensive background enrichment. This runs after the dashboard is already usable.
+    It adds deep Recovery suggestions and alternative claim-support sources without
+    blocking verification completion.
+    """
+    print(f"[DEEP ENRICHMENT] Starting for job {job_id}")
+    start_time = time.time()
+    limit = int(limit or DEEP_ENRICHMENT_LIMIT)
+
+    result = _load_job_result(job_id)
+    result = _set_enrichment_meta(
+        result,
+        state="running",
+        message="Advanced Recovery and Claim Support enrichment is running.",
+        started_at=now_iso(),
+        deep_recovery_ready=False,
+        deep_claim_support_ready=False,
+        progress=0,
+        total=0,
+    )
+    _save_job_result(job_id, result, status="completed")
+
+    recovery = result.get("recovery") or {"missing_recovery": [], "verification_recovery": []}
+    verification_rows = (result.get("online_verification") or {}).get("rows") or []
+    recovery_rows = recovery.get("verification_recovery") or []
+    claim_rows = result.get("claim_support") or []
+
+    total_work = min(len(recovery_rows), limit) + min(len(claim_rows), limit)
+    done = 0
+    result = _set_enrichment_meta(result, total=total_work, progress=done)
+    _save_job_result(job_id, result, status="completed")
+
+    # Build lookup for richer recovery suggestions.
+    verify_lookup = {}
+    for row in verification_rows:
+        key = (
+            str(row.get("citation") or row.get("in_text") or row.get("citation_in_text") or "").strip().lower(),
+            str(row.get("reference") or row.get("original_reference") or row.get("matched_title") or row.get("title") or row.get("source_title") or "").strip().lower(),
+        )
+        verify_lookup[key] = row
+
+    for idx, rec in enumerate(recovery_rows[:limit], start=1):
+        citation = str(rec.get("citation") or "").strip().lower()
+        reference = str(rec.get("reference") or "").strip().lower()
+        source_row = verify_lookup.get((citation, reference)) or rec
+
+        try:
+            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
+            rec["deep_suggestions"] = deep_suggestions
+            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _fallback_recovery_suggestions(source_row, result, target=3)
+            rec["enriched"] = True
+        except Exception as e:
+            rec["enriched"] = False
+            rec["enrichment_error"] = str(e)
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            recovery["verification_recovery"] = recovery_rows
+            result["recovery"] = recovery
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    recovery["verification_recovery"] = recovery_rows
+    recovery["deep_recovery_ready"] = True
+    result["recovery"] = recovery
+    result = _set_enrichment_meta(
+        result,
+        deep_recovery_ready=True,
+        progress=done,
+        message="Deep Recovery enrichment completed. Enriching Claim Support alternatives...",
+        last_heartbeat=now_iso(),
+    )
+    _save_job_result(job_id, result, status="completed")
+
+    for idx, row in enumerate(claim_rows[:limit], start=1):
+        claim = row.get("claim") or row.get("claim_extracted") or ""
+        citation = row.get("citation") or ""
+        source_title = row.get("source_title") or row.get("matched_source") or ""
+
+        try:
+            row["alternative_sources"] = _safe_alternative_sources(
+                claim=claim,
+                citation=citation,
+                current_source_title=source_title,
+                top_k=DEEP_LOOKUP_TOP_K,
+                allow_external=True,
+            )
+            row["enriched"] = True
+        except Exception as e:
+            row["alternative_sources"] = row.get("alternative_sources") or []
+            row["enriched"] = False
+            row["enrichment_error"] = str(e)
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            result["claim_support"] = claim_rows
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    result["claim_support"] = claim_rows
+    elapsed = round(time.time() - start_time, 2)
+    result = _set_enrichment_meta(
+        result,
+        state="completed",
+        progress=total_work,
+        total=total_work,
+        percentage=100,
+        deep_recovery_ready=True,
+        deep_claim_support_ready=True,
+        message="Advanced enrichment completed.",
+        completed_at=now_iso(),
+        processing_time_seconds=elapsed,
+    )
+    _save_job_result(job_id, result, status="completed")
+    print(f"[DEEP ENRICHMENT] Completed for {job_id} in {elapsed}s")
+    return result
+
 # ============================================================
 # VERIFICATION WORKER FUNCTION
 # ============================================================
@@ -2357,6 +2585,27 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
         result["final_tables_ready"] = True
         result["verification_completed_at"] = now_iso()
 
+        result["finalise"] = {
+            "state": "completed",
+            "recovery_lite_ready": True,
+            "claim_lite_ready": True,
+            "completed_at": now_iso()
+        }
+
+        deep_job_id = _enqueue_deep_enrichment(job_id, style=style)
+        result = _set_enrichment_meta(
+            result,
+            state="queued" if deep_job_id else "not_queued",
+            rq_job_id=deep_job_id,
+            deep_recovery_ready=False,
+            deep_claim_support_ready=False,
+            message=(
+                "Advanced enrichment queued. Recovery Lite and Claim Support Lite are ready."
+                if deep_job_id else
+                "Advanced enrichment not queued. Recovery Lite and Claim Support Lite are ready."
+            )
+        )
+
         _save_job_result(job_id, result, status="completed")
 
         print(f"✅ Durable verification completed for job {job_id}: {len(all_rows)} rows")
@@ -2408,11 +2657,13 @@ if __name__ == "__main__":
     with Connection(redis_conn):
         document_queue = Queue("document_processing", connection=redis_conn)
         verification_queue = Queue("verification", connection=redis_conn)
+        deep_enrichment_queue = Queue("deep_enrichment", connection=redis_conn)
     
         print(f"📌 Document queue: {document_queue.name}, jobs waiting: {document_queue.count}")
         print(f"📌 Verification queue: {verification_queue.name}, jobs waiting: {verification_queue.count}")
+        print(f"📌 Deep enrichment queue: {deep_enrichment_queue.name}, jobs waiting: {deep_enrichment_queue.count}")
     
-        worker = Worker(["document_processing", "verification"], connection=redis_conn)
+        worker = Worker(["document_processing", "verification", "deep_enrichment"], connection=redis_conn)
 
         print("✅ Worker ready, waiting for jobs...")
         print("📋 Detection scenarios enabled:")
