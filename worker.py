@@ -393,6 +393,85 @@ def _context_suggestions_for_row(row, result):
 
     return _lookup_context_suggestions_for_row(row, result, target=3)
 
+
+def _context_suggestions_for_missing_citation(citation, result, count=1, target=3):
+    """
+    Fast Recovery Lite suggestions for in-text citations that are missing from
+    the reference list. These are instant review prompts, not external lookups.
+    Deep source suggestions can be added later by process_deep_enrichment().
+    """
+    citation = str(citation or "").strip()
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+
+    context = ""
+    claim = ""
+
+    try:
+        sentences = _split_sentences(main_text)
+        context = _find_sentence_for_citation(sentences, citation)
+        claim = _extract_claim_from_sentence(context, citation)
+    except Exception:
+        context = ""
+        claim = ""
+
+    if not context and main_text:
+        # Give the reviewer useful context without doing expensive search.
+        context = main_text[:500]
+
+    if not claim:
+        claim = "Claim could not be extracted automatically. Review the cited sentence manually."
+
+    return [
+        {
+            "title": "Add the missing reference entry",
+            "authors": "",
+            "year": extract_year_from_text(citation) or "",
+            "doi": "",
+            "reason": (
+                f"The in-text citation '{citation}' appears in the manuscript "
+                "but no matching reference-list entry was found. Add the full reference if the citation is valid."
+            ),
+            "suggested": f"Create a full reference-list entry for {citation}.",
+            "confidence": 0.70,
+            "source": "missing_reference_recovery_lite",
+            "citation": citation,
+            "claim": claim,
+            "context": context,
+            "count": count,
+        },
+        {
+            "title": "Check author and year spelling",
+            "authors": "",
+            "year": extract_year_from_text(citation) or "",
+            "doi": "",
+            "reason": (
+                "The citation may be unmatched because of a spelling, author-order, suffix, "
+                "or year difference between the in-text citation and the reference list."
+            ),
+            "suggested": "Compare the author name, publication year, suffix letters such as 2020a/2020b, and punctuation with the reference list.",
+            "confidence": 0.60,
+            "source": "metadata_check_recovery_lite",
+            "citation": citation,
+            "claim": claim,
+            "context": context,
+            "count": count,
+        },
+        {
+            "title": "Confirm the cited claim before adding the source",
+            "authors": "",
+            "year": extract_year_from_text(citation) or "",
+            "doi": "",
+            "reason": "A missing reference should not be added mechanically. Confirm that the source supports the cited claim.",
+            "suggested": claim if claim and not claim.startswith("Claim could not") else "Review the sentence containing the citation and confirm the source supports the claim.",
+            "confidence": 0.55,
+            "source": "claim_context_recovery_lite",
+            "citation": citation,
+            "claim": claim,
+            "context": context,
+            "count": count,
+        },
+    ][:target]
+
 def _build_recovery_payload(result, verification_rows):
     """
     Safe recovery builder for the new worker flow.
@@ -412,7 +491,12 @@ def _build_recovery_payload(result, verification_rows):
         missing_recovery.append({
             "citation": citation,
             "count": count,
-            "suggestions": []
+            "suggestions": _context_suggestions_for_missing_citation(
+                citation=citation,
+                result=result,
+                count=count,
+                target=3
+            )
         })
 
     for row in verification_rows or []:
@@ -2257,12 +2341,51 @@ def process_deep_enrichment(job_id, style="apa", limit=None):
 
     recovery = result.get("recovery") or {"missing_recovery": [], "verification_recovery": []}
     verification_rows = (result.get("online_verification") or {}).get("rows") or []
+    missing_rows = recovery.get("missing_recovery") or []
     recovery_rows = recovery.get("verification_recovery") or []
     claim_rows = result.get("claim_support") or []
 
-    total_work = min(len(recovery_rows), limit) + min(len(claim_rows), limit)
+    total_work = min(len(missing_rows), limit) + min(len(recovery_rows), limit) + min(len(claim_rows), limit)
     done = 0
     result = _set_enrichment_meta(result, total=total_work, progress=done)
+    _save_job_result(job_id, result, status="completed")
+
+    # Enrich missing in-text citation recovery rows first. These rows have no
+    # matched reference, so the deep lookup relies mainly on the citation context.
+    for idx, rec in enumerate(missing_rows[:limit], start=1):
+        citation = str(rec.get("citation") or "").strip()
+        source_row = {
+            "citation": citation,
+            "in_text": citation,
+            "reference": "",
+            "status": "missing_reference",
+            "suggestions": rec.get("suggestions") or [],
+        }
+
+        try:
+            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
+            rec["deep_suggestions"] = deep_suggestions
+            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
+            rec["enriched"] = True
+        except Exception as e:
+            rec["suggestions"] = rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
+            rec["enriched"] = False
+            rec["enrichment_error"] = str(e)
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            recovery["missing_recovery"] = missing_rows
+            result["recovery"] = recovery
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    recovery["missing_recovery"] = missing_rows
+    result["recovery"] = recovery
     _save_job_result(job_id, result, status="completed")
 
     # Build lookup for richer recovery suggestions.
