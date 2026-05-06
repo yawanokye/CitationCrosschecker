@@ -54,6 +54,8 @@ VERIFY_TITLE_ROWS = int(os.getenv("VERIFY_TITLE_ROWS", "5"))
 VERIFY_OPENALEX_ROWS = int(os.getenv("VERIFY_OPENALEX_ROWS", "5"))
 VERIFY_SINGLE_REF_TIMEOUT = int(os.getenv("VERIFY_SINGLE_REF_TIMEOUT", str(max(6, API_TIMEOUT + 2))))
 VERIFY_RETRY_BACKOFF_SECONDS = float(os.getenv("VERIFY_RETRY_BACKOFF_SECONDS", "1"))
+VERIFY_FORCE_OPENALEX_FALLBACK = _env_flag("VERIFY_FORCE_OPENALEX_FALLBACK", "1")
+VERIFY_AUTHOR_GATE_FOR_VERIFIED_ONLY = _env_flag("VERIFY_AUTHOR_GATE_FOR_VERIFIED_ONLY", "1")
 # ============================================================
 # PROGRESS TRACKING (Lightweight)
 # ============================================================
@@ -468,6 +470,15 @@ _STOP_WORDS = {
     "john", "sons", "inc", "editorial", "publisher", "page",
 }
 
+# Extra query stopwords used only when building API search queries.
+# These words are common in scholarly titles but often reduce Crossref/OpenAlex precision.
+_QUERY_STOP_WORDS = _STOP_WORDS | {
+    "approach", "model", "models", "evidence", "article", "method", "methods",
+    "based", "case", "empirical", "impact", "impacts", "role", "roles",
+    "determinants", "perspective", "framework", "assessment", "evaluation",
+    "effects", "relationship", "relationships", "moderating", "mediating",
+}
+
 _STYLE_ALIASES = {
     "apa": "apa",
     "harvard": "apa",
@@ -728,11 +739,14 @@ def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
 # ---------------------------------------------------------
 
 def _significant_title_words(title: str, limit: int = 6) -> List[str]:
-    words = re.findall(r"[A-Za-z]{3,}", title or "")
+    title = re.sub(r"[^A-Za-z0-9\s]", " ", title or "")
+    title = re.sub(r"\s+", " ", title).strip()
+
+    words = re.findall(r"[A-Za-z]{3,}", title)
     out = []
     for w in words:
         wl = w.lower()
-        if wl in _STOP_WORDS:
+        if wl in _QUERY_STOP_WORDS:
             continue
         out.append(wl)
     return out[:limit]
@@ -746,16 +760,26 @@ def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
     doi = fields.get("doi", "") or ""
     title = fields.get("title", "") or ""
 
-    title_words = _significant_title_words(title, limit=7)
-    title_only = " ".join(title_words[:6]).strip()
+    # Normalise title before sending it to Crossref/OpenAlex.
+    # This improves retrieval without changing the original displayed reference.
+    title = re.sub(r"[^A-Za-z0-9\s]", " ", title)
+    title = re.sub(r"\s+", " ", title).strip()
+
+    title_words = _significant_title_words(title, limit=10)
+    title_only = " ".join(title_words[:7]).strip()
 
     query_parts: List[str] = []
 
     if authors:
         query_parts.extend(authors[:2])
 
-    if title_words:
-        query_parts.extend(title_words[:5])
+    important_words = [
+        w for w in title_words
+        if len(w) > 3 and w.lower() not in _QUERY_STOP_WORDS
+    ]
+
+    if important_words:
+        query_parts.extend(important_words[:7])
 
     if year:
         query_parts.append(year)
@@ -763,7 +787,10 @@ def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
     query = " ".join(query_parts).strip()
 
     if not query:
-        raw_words = re.findall(r"[A-Za-z]{3,}", ref or "")
+        raw_words = [
+            w.lower() for w in re.findall(r"[A-Za-z]{3,}", ref or "")
+            if w.lower() not in _QUERY_STOP_WORDS
+        ]
         query = " ".join(raw_words[:10] + ([year] if year else []))
 
     return query, authors, year, doi, title_only
@@ -1256,17 +1283,19 @@ def _verify_single_reference(
 
         should_do_general_search = not (VERIFY_STOP_ON_STRONG_MATCH and bool(candidates))
 
+        openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+
         # Stage 1: small, bounded candidate search.
         if should_do_general_search and use_crossref and query:
             candidates.extend(_query_crossref(query, rows=VERIFY_CROSSREF_ROWS))
-        if should_do_general_search and use_openalex and query:
+        if should_do_general_search and openalex_allowed and query:
             candidates.extend(_query_openalex(query, rows=VERIFY_OPENALEX_ROWS))
 
         # If no candidates from query, try one small title-only search.
         if not candidates and title_only:
             if use_crossref:
                 candidates.extend(_query_crossref_title_only(title_only, rows=VERIFY_TITLE_ROWS))
-            if use_openalex:
+            if openalex_allowed:
                 candidates.extend(_query_openalex_title_only(title_only, rows=VERIFY_TITLE_ROWS))
 
         best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
@@ -1286,9 +1315,12 @@ def _verify_single_reference(
             author_overlap = int(best_meta.get("author_overlap", 0))
             
             if ref_has_authors and cand_has_authors and author_overlap == 0:
-                status = "needs_review"
                 best_meta["author_mismatch_flag"] = 1
                 best_meta["match_note"] = "Author mismatch"
+                # Do not automatically destroy retrieval gains.
+                # Downgrade only verified matches by default. Likely/needs_review already signal uncertainty.
+                if (not VERIFY_AUTHOR_GATE_FOR_VERIFIED_ONLY) or status == "verified":
+                    status = "needs_review"
             else:
                 best_meta["author_mismatch_flag"] = 0
                 best_meta["match_note"] = ""
@@ -1302,7 +1334,7 @@ def _verify_single_reference(
                     if title_only:
                         deep_candidates.extend(_query_crossref_title_only(title_only, rows=VERIFY_TITLE_ROWS))
 
-                if use_openalex and query:
+                if openalex_allowed and query:
                     deep_candidates.extend(_query_openalex(query, rows=VERIFY_OPENALEX_ROWS))
                     if title_only:
                         deep_candidates.extend(_query_openalex_title_only(title_only, rows=VERIFY_TITLE_ROWS))
