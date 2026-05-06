@@ -27,17 +27,33 @@ MAILTO = (
 # TIMEOUT SETTINGS - ADDED FOR LARGE REFERENCE SETS
 # ============================================================
 
-# Timeout settings (in seconds)
-API_TIMEOUT = 60  # Increased from 60 to 120 seconds per API call
-VERIFICATION_TIMEOUT = None  # No timeout for the overall verification
-WORKER_THREADS = 3  # Reduce to 2 workers to avoid rate limiting and memory issues
-RETRY_ATTEMPTS = 2  # Increase retries for failed API calls
-BATCH_DELAY = 0.3  # Increase delay between references to avoid rate limits
+# Commercial fast-verification settings.
+# These defaults avoid one weak reference holding a whole job for minutes.
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
-# NEW: Chunk processing for large reference sets
-CHUNK_SIZE = 25  # Process references in chunks of 50
-CHUNK_DELAY = 1  # Delay between chunks to allow system to recover
-MAX_RETRIES_PER_REFERENCE = 2  # Retry failed references up to 3 times
+API_TIMEOUT = int(os.getenv("VERIFY_REQUEST_TIMEOUT", "4"))
+VERIFICATION_TIMEOUT = None
+WORKER_THREADS = int(os.getenv("VERIFY_INNER_THREADS", "2"))
+RETRY_ATTEMPTS = int(os.getenv("VERIFY_RETRY_ATTEMPTS", "1"))
+BATCH_DELAY = float(os.getenv("VERIFY_BATCH_DELAY", "0"))
+
+# Chunk processing for large reference sets
+CHUNK_SIZE = int(os.getenv("VERIFY_INTERNAL_CHUNK_SIZE", "10"))
+CHUNK_DELAY = float(os.getenv("VERIFY_CHUNK_DELAY", "0"))
+MAX_RETRIES_PER_REFERENCE = int(os.getenv("VERIFY_MAX_RETRIES_PER_REFERENCE", "1"))
+
+# Fast-skip and fallback controls
+VERIFY_SKIP_WEAK_TITLE = _env_flag("VERIFY_SKIP_WEAK_TITLE", "1")
+VERIFY_MIN_TITLE_WORDS = int(os.getenv("VERIFY_MIN_TITLE_WORDS", "4"))
+VERIFY_STOP_ON_STRONG_MATCH = _env_flag("VERIFY_STOP_ON_STRONG_MATCH", "1")
+VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "0")
+VERIFY_RETRY_FAILED = _env_flag("VERIFY_RETRY_FAILED", "0")
+VERIFY_CROSSREF_ROWS = int(os.getenv("VERIFY_CROSSREF_ROWS", "5"))
+VERIFY_TITLE_ROWS = int(os.getenv("VERIFY_TITLE_ROWS", "5"))
+VERIFY_OPENALEX_ROWS = int(os.getenv("VERIFY_OPENALEX_ROWS", "5"))
+VERIFY_SINGLE_REF_TIMEOUT = int(os.getenv("VERIFY_SINGLE_REF_TIMEOUT", str(max(6, API_TIMEOUT + 2))))
+VERIFY_RETRY_BACKOFF_SECONDS = float(os.getenv("VERIFY_RETRY_BACKOFF_SECONDS", "1"))
 # ============================================================
 # PROGRESS TRACKING (Lightweight)
 # ============================================================
@@ -494,11 +510,13 @@ def _norm_text(s: str) -> str:
 
 
 def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
-    """Get JSON from URL with configurable timeout"""
+    """Get JSON from URL with short, commercial-safe timeout and limited retry."""
     if timeout is None:
         timeout = API_TIMEOUT
-    
-    for attempt in range(3):  # Add retry loop
+
+    attempts = max(1, RETRY_ATTEMPTS)
+
+    for attempt in range(attempts):
         try:
             headers = {
                 "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
@@ -507,25 +525,20 @@ def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None)
             r = requests.get(url, params=params, timeout=timeout, headers=headers)
             if r.status_code == 200:
                 return r.json()
-            elif r.status_code == 429:  # Rate limited
-                wait_time = (attempt + 1) * 5
-                print(f"[DEBUG] Rate limited, waiting {wait_time} seconds...")
-                time.sleep(wait_time)
-                continue
-            else:
+            if r.status_code == 429:
+                # Do not hold the job for long API backoffs. Mark the row for review instead.
+                print("[DEBUG] API rate limited. Skipping this lookup quickly.")
                 return None
+            return None
         except requests.exceptions.Timeout:
-            print(f"[DEBUG] Timeout on attempt {attempt + 1}, retrying...")
-            if attempt < 2:
-                time.sleep(2)
-                continue
-            return None
+            print(f"[DEBUG] API timeout after {timeout}s on attempt {attempt + 1}/{attempts}")
+            if attempt < attempts - 1 and VERIFY_RETRY_BACKOFF_SECONDS > 0:
+                time.sleep(VERIFY_RETRY_BACKOFF_SECONDS)
         except Exception as e:
-            print(f"[DEBUG] API request failed: {e}")
-            if attempt < 2:
-                time.sleep(2)
-                continue
-            return None
+            print(f"[DEBUG] API request failed quickly: {e}")
+            if attempt < attempts - 1 and VERIFY_RETRY_BACKOFF_SECONDS > 0:
+                time.sleep(VERIFY_RETRY_BACKOFF_SECONDS)
+
     return None
 
 
@@ -712,6 +725,41 @@ def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
     return query, authors, year, doi, title_only
 
 
+def _significant_word_count(text: str) -> int:
+    """Count significant title/query words for fast-skip decisions."""
+    return len(_significant_title_words(text or "", limit=20))
+
+
+def _make_fast_review_row(
+    ref: str,
+    style: str,
+    query: str = "",
+    authors: Optional[List[str]] = None,
+    reason: str = "Reference is too incomplete for reliable fast online verification.",
+) -> Dict[str, Any]:
+    """Return quickly for weak references instead of forcing slow online searches."""
+    return {
+        "reference": ref,
+        "style": style,
+        "status": "needs_review",
+        "source": "fast_skip",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "title_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "query_used": query,
+        "author": ", ".join(authors or []),
+        "author_mismatch_flag": 0,
+        "match_note": reason,
+        "error": reason,
+    }
+
+
 # ---------------------------------------------------------
 # Candidate extraction
 # ---------------------------------------------------------
@@ -789,7 +837,9 @@ def _query_crossref_by_doi(doi: str) -> List[Dict[str, Any]]:
     return [{"source": "crossref", "item": data["message"]}]
 
 
-def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
+def _query_crossref(query: str, rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_CROSSREF_ROWS
     if not query:
         return []
     url = "https://api.crossref.org/works"
@@ -806,7 +856,9 @@ def _query_crossref(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     return [{"source": "crossref", "item": it} for it in items]
 
 
-def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
+def _query_crossref_title_only(title_query: str, rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_TITLE_ROWS
     if not title_query:
         return []
     url = "https://api.crossref.org/works"
@@ -823,7 +875,9 @@ def _query_crossref_title_only(title_query: str, rows: int = 12) -> List[Dict[st
     return [{"source": "crossref", "item": it} for it in items]
 
 
-def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
+def _query_openalex(query: str, rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_OPENALEX_ROWS
     if not query:
         return []
     url = "https://api.openalex.org/works"
@@ -835,7 +889,9 @@ def _query_openalex(query: str, rows: int = 10) -> List[Dict[str, Any]]:
     return [{"source": "openalex", "item": it} for it in items]
 
 
-def _query_openalex_title_only(title_query: str, rows: int = 12) -> List[Dict[str, Any]]:
+def _query_openalex_title_only(title_query: str, rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_TITLE_ROWS
     if not title_query:
         return []
     url = "https://api.openalex.org/works"
@@ -1119,25 +1175,40 @@ def _verify_single_reference(
         "match_note": "",
     }
 
+    # Fast commercial skip: no DOI and weak title/query should not trigger slow online searches.
+    if VERIFY_SKIP_WEAK_TITLE and not ref_doi and _significant_word_count(title_only or ref_title) < VERIFY_MIN_TITLE_WORDS:
+        row = _make_fast_review_row(
+            ref,
+            style,
+            query=query,
+            authors=ref_authors,
+            reason="No DOI and too few significant title words for reliable fast verification.",
+        )
+        row["status"] = _normalize_verify_status(row.get("status"))
+        _cache_set(cache_key, row)
+        return row
+
     candidates: List[Dict[str, Any]] = []
 
     try:
-        # DOI-first shortcut
+        # DOI-first shortcut. If DOI returns candidates, avoid extra broad searches unless enabled later.
         if ref_doi and use_crossref:
             candidates.extend(_query_crossref_by_doi(ref_doi))
 
-        # stage 1
-        if use_crossref and query:
-            candidates.extend(_query_crossref(query, rows=10))
-        if use_openalex and query:
-            candidates.extend(_query_openalex(query, rows=10))
+        should_do_general_search = not (VERIFY_STOP_ON_STRONG_MATCH and bool(candidates))
 
-        # If no candidates from query, try title-only search
+        # Stage 1: small, bounded candidate search.
+        if should_do_general_search and use_crossref and query:
+            candidates.extend(_query_crossref(query, rows=VERIFY_CROSSREF_ROWS))
+        if should_do_general_search and use_openalex and query:
+            candidates.extend(_query_openalex(query, rows=VERIFY_OPENALEX_ROWS))
+
+        # If no candidates from query, try one small title-only search.
         if not candidates and title_only:
             if use_crossref:
-                candidates.extend(_query_crossref_title_only(title_only, rows=8))
+                candidates.extend(_query_crossref_title_only(title_only, rows=VERIFY_TITLE_ROWS))
             if use_openalex:
-                candidates.extend(_query_openalex_title_only(title_only, rows=8))
+                candidates.extend(_query_openalex_title_only(title_only, rows=VERIFY_TITLE_ROWS))
 
         best, best_meta = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, candidates)
 
@@ -1163,19 +1234,19 @@ def _verify_single_reference(
                 best_meta["author_mismatch_flag"] = 0
                 best_meta["match_note"] = ""
 
-            # deep fallback only for weak cases
-            if status in {"needs_review", "not_found"}:
+            # Deep fallback is expensive. It is disabled by default for commercial speed.
+            if VERIFY_DEEP_FALLBACK and status in {"needs_review", "not_found"}:
                 deep_candidates = list(candidates)
 
                 if use_crossref and query:
-                    deep_candidates.extend(_query_crossref(query, rows=20))
+                    deep_candidates.extend(_query_crossref(query, rows=VERIFY_CROSSREF_ROWS))
                     if title_only:
-                        deep_candidates.extend(_query_crossref_title_only(title_only, rows=15))
+                        deep_candidates.extend(_query_crossref_title_only(title_only, rows=VERIFY_TITLE_ROWS))
 
                 if use_openalex and query:
-                    deep_candidates.extend(_query_openalex(query, rows=20))
+                    deep_candidates.extend(_query_openalex(query, rows=VERIFY_OPENALEX_ROWS))
                     if title_only:
-                        deep_candidates.extend(_query_openalex_title_only(title_only, rows=15))
+                        deep_candidates.extend(_query_openalex_title_only(title_only, rows=VERIFY_TITLE_ROWS))
 
                 best2, best_meta2 = _best_candidate(ref_title, ref_authors, ref_year, ref_doi, deep_candidates)
                 if best2:
@@ -1293,7 +1364,7 @@ def verify_references_batch(
         
         # Use a timeout for the entire chunk
         chunk_start_time = time.time()
-        chunk_timeout = len(chunk) * (API_TIMEOUT / 2) + 300  # Add 5 minute buffer
+        chunk_timeout = max(VERIFY_SINGLE_REF_TIMEOUT * max(1, len(chunk)), API_TIMEOUT + 2)
         
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {}
@@ -1340,7 +1411,7 @@ def verify_references_batch(
                     continue
                 
                 try:
-                    result = future.result(timeout=60)  # 60 second timeout per reference
+                    result = future.result(timeout=VERIFY_SINGLE_REF_TIMEOUT)
                     rows[idx] = result
                     completed_count += 1
                     
@@ -1398,19 +1469,20 @@ def verify_references_batch(
             print(f"[DEBUG] Waiting {CHUNK_DELAY} seconds before next chunk...")
             time.sleep(CHUNK_DELAY)
     
-    # Retry failed references
-    if failed_references:
+    # Retry failed references only when explicitly enabled.
+    if VERIFY_RETRY_FAILED and failed_references:
         print(f"[DEBUG] Retrying {len(failed_references)} failed references...")
         
         for retry_idx, (original_idx, ref) in enumerate(failed_references):
-            wait_time = min(30, (retry_idx + 1) * 5)
+            wait_time = min(5, (retry_idx + 1) * VERIFY_RETRY_BACKOFF_SECONDS)
             print(f"[DEBUG] Waiting {wait_time}s before retry {retry_idx + 1}")
-            time.sleep(wait_time)
+            if wait_time > 0:
+                time.sleep(wait_time)
             
             try:
                 result = _verify_single_reference_with_retry(
                     ref, normalized_style, use_crossref, use_openalex, enrich_metadata,
-                    max_retries=2
+                    max_retries=MAX_RETRIES_PER_REFERENCE
                 )
                 all_rows[original_idx] = result
                 print(f"[DEBUG] Successfully retried reference {retry_idx + 1}")
@@ -1438,7 +1510,7 @@ def _verify_single_reference_with_retry(
     use_crossref: bool, 
     use_openalex: bool,
     enrich_metadata: bool = False,
-    max_retries: int = 3,
+    max_retries: int = MAX_RETRIES_PER_REFERENCE,
 ) -> Dict[str, Any]:
     """Single reference verification with retry logic"""
     last_error = None
@@ -1446,9 +1518,10 @@ def _verify_single_reference_with_retry(
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                wait_time = min(30, attempt * 10)  # Cap at 30 seconds
+                wait_time = min(5, attempt * VERIFY_RETRY_BACKOFF_SECONDS)
                 print(f"[DEBUG] Retry attempt {attempt + 1}/{max_retries} for reference: {ref[:100]}... (waiting {wait_time}s)")
-                time.sleep(wait_time)
+                if wait_time > 0:
+                    time.sleep(wait_time)
             
             result = _verify_single_reference(
                 ref, style, use_crossref, use_openalex, enrich_metadata
