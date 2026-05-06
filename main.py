@@ -2474,11 +2474,15 @@ async def verify(
 # ============================================================
 
 @app.get("/result/{job_id}")
-async def get_result(job_id: str):
-    """Get job status and result"""
+async def get_result(job_id: str, fresh: int = 0):
+    """Get job status and result.
+
+    Use fresh=1 when the browser is polling for enrichment updates, so
+    PostgreSQL is read directly instead of returning a possibly stale Redis value.
+    """
     
-    # Check Redis cache first
-    if redis_conn:
+    # Check Redis cache first unless a fresh PostgreSQL read is requested
+    if redis_conn and not fresh:
         cached = redis_conn.get(f"result:{job_id}")
         if cached:
             try:
