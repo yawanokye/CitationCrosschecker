@@ -1041,20 +1041,20 @@ def _classify(
     # -------------------------------------------------
 
     if title_score >= 82:
-    return "likely"
+        return "likely"
 
     if score >= 80:
-    return "likely"
+        return "likely"
 
     # -------------------------------------------------
     # 3. NEEDS REVIEW (SUSPICIOUS / PARTIAL MATCH)
     # -------------------------------------------------
 
     if title_score >= 68:
-    return "needs_review"
+        return "needs_review"
 
     if score >= 55:
-    return "needs_review"
+        return "needs_review"
 
     # DOI exists but title mismatch → suspicious
     if doi_match:
