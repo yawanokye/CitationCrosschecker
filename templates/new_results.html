@@ -1094,6 +1094,9 @@ document.addEventListener("DOMContentLoaded", function () {
     let statusErrorCount = 0;
     let finalFetchRunning = false;
     let partialFinalRendered = false;
+    let enrichmentPollTimer = null;
+    let enrichmentPollCount = 0;
+    const MAX_ENRICHMENT_POLLS = 80;
     // ================================================================
 
     function esc(value) {
@@ -1355,6 +1358,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderClaimSupport(data);
         renderSuggestions(data);
         updateCounts(data);
+        maybeStartEnrichmentPolling(data);
     }
 
     function renderACII(data) {
@@ -1892,6 +1896,77 @@ document.addEventListener("DOMContentLoaded", function () {
         return latestResults;
     }
 
+
+    function getEnrichmentState(result) {
+        return String(result?.enrichment?.state || "").toLowerCase();
+    }
+
+    function maybeStartEnrichmentPolling(result) {
+        const state = getEnrichmentState(result);
+        if (!["queued", "running"].includes(state)) return;
+        if (enrichmentPollTimer) return;
+
+        enrichmentPollCount = 0;
+        setStatus("Results ready. Advanced enrichment is running in the background.", "good");
+
+        enrichmentPollTimer = setInterval(async () => {
+            enrichmentPollCount += 1;
+
+            if (enrichmentPollCount > MAX_ENRICHMENT_POLLS) {
+                clearInterval(enrichmentPollTimer);
+                enrichmentPollTimer = null;
+                setStatus("Results ready. Advanced enrichment is still running. Refresh later to update enriched suggestions.", "warn");
+                return;
+            }
+
+            try {
+                const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}?fresh=1`);
+                const freshResult = resultData.data || resultData.result || null;
+                if (!freshResult) return;
+
+                const hydrated = hydrateFinalDefaults(freshResult);
+                latestResults = hydrated;
+                window.latestResults = hydrated;
+
+                const enrichment = hydrated.enrichment || {};
+                const freshState = String(enrichment.state || "").toLowerCase();
+
+                if (freshState === "completed") {
+                    renderAll(hydrated);
+                    clearInterval(enrichmentPollTimer);
+                    enrichmentPollTimer = null;
+                    setStatus("Results ready. Advanced enrichment completed.", "good");
+                    return;
+                }
+
+                if (freshState === "error" || freshState === "failed") {
+                    clearInterval(enrichmentPollTimer);
+                    enrichmentPollTimer = null;
+                    setStatus("Results ready. Advanced enrichment could not complete.", "warn");
+                    return;
+                }
+
+                if (freshState === "running" || freshState === "queued") {
+                    const progress = enrichment.progress ?? "";
+                    const total = enrichment.total ?? "";
+                    const msg = progress && total
+                        ? `Results ready. Advanced enrichment running: ${progress}/${total}.`
+                        : "Results ready. Advanced enrichment is running in the background.";
+                    setStatus(msg, "good");
+                }
+            } catch (e) {
+                console.warn("Enrichment polling issue:", e);
+            }
+        }, 12000);
+    }
+
+    function stopEnrichmentPolling() {
+        if (enrichmentPollTimer) {
+            clearInterval(enrichmentPollTimer);
+            enrichmentPollTimer = null;
+        }
+    }
+
     function finishVerification(keepProgressVisible = true) {
         stopPollingStatus();
         verificationInProgress = false;
@@ -1905,8 +1980,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!JOB_ID) { setStatus("No job ID found in URL.", "bad"); return null; }
         try {
             if (showMessage) setStatus("Loading results...", "info");
-            const res = await fetch(`/result/${encodeURIComponent(JOB_ID)}`);
-            const js = await res.json();
+            const js = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}?fresh=1`);
             if (js.status === "completed") {
                 const result = js.data || js.result;
                 renderAll(result);
