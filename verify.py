@@ -1039,53 +1039,60 @@ def _classify(
     author_overlap: int = 0,
 ) -> str:
 
-    # -------------------------------------------------
-    # 1. DOI MATCH RULES
-    # -------------------------------------------------
+    # -----------------------------------------
+    # 1. DOI MATCHES
+    # -----------------------------------------
 
-    # DOI + reasonable title agreement
-    if doi_match and title_score >= 70:
+    # DOI + decent title
+    if doi_match and title_score >= 65:
         return "verified"
 
-    # DOI exists but title agreement is weak
-    if doi_match and title_score < 70:
-        return "needs_review"
+    # DOI exists but weak title
+    if doi_match:
+        return "likely"
 
-    # -------------------------------------------------
-    # 2. VERIFIED WITHOUT DOI
-    # -------------------------------------------------
+    # -----------------------------------------
+    # 2. STRONG VERIFIED
+    # -----------------------------------------
 
-    # Strong title + year agreement
-    if title_score >= 88 and year_match:
+    # Very strong title + year
+    if title_score >= 90 and year_match:
         return "verified"
 
-    # Very strong title + at least one author agreement
-    if title_score >= 90 and author_overlap >= 1:
+    # Strong title + author agreement
+    if title_score >= 85 and author_overlap >= 1:
         return "verified"
 
-    # -------------------------------------------------
+    # Strong overall score
+    if score >= 88:
+        return "verified"
+
+    # -----------------------------------------
     # 3. LIKELY
-    # -------------------------------------------------
+    # -----------------------------------------
 
-    if title_score >= 78:
+    if title_score >= 75:
         return "likely"
 
-    if score >= 78:
+    if score >= 72:
         return "likely"
 
-    # -------------------------------------------------
+    if title_score >= 68 and author_overlap >= 1:
+        return "likely"
+
+    # -----------------------------------------
     # 4. NEEDS REVIEW
-    # -------------------------------------------------
+    # -----------------------------------------
 
-    if title_score >= 65:
+    if title_score >= 58:
         return "needs_review"
 
-    if score >= 52:
+    if score >= 45:
         return "needs_review"
 
-    # -------------------------------------------------
+    # -----------------------------------------
     # 5. NOT FOUND
-    # -------------------------------------------------
+    # -----------------------------------------
 
     return "not_found"
 
