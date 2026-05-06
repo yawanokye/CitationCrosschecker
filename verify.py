@@ -620,32 +620,76 @@ def _extract_authors_from_left(left: str) -> List[str]:
     return _dedupe_preserve(cleaned)[:4]
 
 
+def _clean_title_guess(title: str) -> str:
+    """
+    Clean extracted reference title before online verification.
+    Removes DOI, URL, page, volume, and retrieval noise that weaken Crossref/OpenAlex matching.
+    """
+    title = _safe_strip(title)
+
+    if not title:
+        return ""
+
+    title = re.sub(r"https?://\S+", "", title, flags=re.I)
+    title = re.sub(r"\bdoi\s*:?\s*\S+", "", title, flags=re.I)
+    title = re.sub(r"\bhttps?://doi\.org/\S+", "", title, flags=re.I)
+    title = re.sub(r"\b(pp?|pages?)\.?\s*\d+[\-–—]?\d*", "", title, flags=re.I)
+    title = re.sub(r"\bvol\.?\s*\d+", "", title, flags=re.I)
+    title = re.sub(r"\bno\.?\s*\d+", "", title, flags=re.I)
+    title = re.sub(r"\bissue\.?\s*\d+", "", title, flags=re.I)
+    title = re.sub(r"\bretrieved\s+from\b.*$", "", title, flags=re.I)
+    title = re.sub(r"\bavailable\s+at\b.*$", "", title, flags=re.I)
+    title = re.sub(r"\s+", " ", title).strip(" .,:;\"'")
+
+    return title
+
+
 def _extract_title_guess(ref: str, year: str) -> str:
     ref_clean = _strip_leading_numbering(ref)
 
     if year:
-        parts = re.split(rf"[\(\[]?\s*{re.escape(year)}\s*[\)\]]?", ref_clean, maxsplit=1, flags=re.I)
+        parts = re.split(
+            rf"[\(\[]?\s*{re.escape(year)}\s*[\)\]]?",
+            ref_clean,
+            maxsplit=1,
+            flags=re.I
+        )
+
         if len(parts) >= 2:
             right = parts[1].strip(" .,:;")
+
             if right:
-                title = re.split(r"\.\s+(?:In|Journal|Proceedings|Vol|No|pp\.?|https?://|doi)", right, maxsplit=1, flags=re.I)[0]
-                title = title.strip(" .,:;\"'")
+                title = re.split(
+                    r"\.\s+(?:In|Journal|Proceedings|Vol|No|pp\.?|pages?|https?://|doi|Retrieved|Available)",
+                    right,
+                    maxsplit=1,
+                    flags=re.I
+                )[0]
+
+                title = _clean_title_guess(title)
+
                 if len(title) >= 6:
                     return title
 
     m = re.search(r'["“](.+?)["”]', ref_clean)
     if m:
-        title = m.group(1).strip()
+        title = _clean_title_guess(m.group(1))
+
         if len(title) >= 6:
             return title
 
     bits = [b.strip() for b in ref_clean.split(".") if b.strip()]
-    if len(bits) >= 2:
-        for b in bits[1:3]:
-            if len(b) >= 6 and not _YEAR_RE.search(b):
-                return b
 
-    return ref_clean[:180]
+    if len(bits) >= 2:
+        for b in bits[1:4]:
+            if len(b) >= 6 and not _YEAR_RE.search(b):
+                title = _clean_title_guess(b)
+
+                if len(title) >= 6:
+                    return title
+
+    title = _clean_title_guess(ref_clean[:180])
+    return title
 
 
 def _extract_common_fields(ref: str) -> Dict[str, Any]:
@@ -711,7 +755,7 @@ def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
         query_parts.extend(authors[:2])
 
     if title_words:
-        query_parts.extend(title_words)
+        query_parts.extend(title_words[:5])
 
     if year:
         query_parts.append(year)
@@ -918,9 +962,11 @@ def _score(
     ref_title = _norm_text(ref_title)
     cand_title = _norm_text(cand_title)
 
-    token_score = fuzz.token_set_ratio(ref_title, cand_title) if ref_title and cand_title else 0
+    token_score = fuzz.token_sort_ratio(ref_title, cand_title) if ref_title and cand_title else 0
+    set_score = fuzz.token_set_ratio(ref_title, cand_title) if ref_title and cand_title else 0
     partial_score = fuzz.partial_ratio(ref_title, cand_title) if ref_title and cand_title else 0
-    title_score = int((token_score * 0.7) + (partial_score * 0.3))
+    
+    title_score = int((token_score * 0.45) + (set_score * 0.35) + (partial_score * 0.20))
 
     if ref_authors and cand_authors:
         ref_author_set = set(ref_authors)
@@ -941,7 +987,13 @@ def _score(
     
     year_match = 1 if ref_year and cand_year and ref_year[:4] == cand_year[:4] else 0
     
-    score = (title_score * 0.6) + (author_similarity * 0.3) + (year_match * 10)
+    score = (title_score * 0.65) + (author_similarity * 0.25) + (year_match * 10)
+
+    if author_overlap >= 1:
+        score += 5
+    
+    if author_overlap >= 2:
+        score += 8
 
     return {
         "score": int(score),
@@ -960,6 +1012,18 @@ def _classify(
     author_overlap: int = 0,
 ) -> str:
 
+     # -------------------------------------------------
+    # 1. DOI MATCH RULES
+    # -------------------------------------------------
+
+    # DOI + reasonable title agreement
+    if doi_match and title_score >= 70:
+        return "verified"
+
+    # DOI but weak title agreement
+    if doi_match and title_score < 70:
+        return "needs_review"
+    
     # -------------------------------------------------
     # 1. STRICT VERIFIED (IDENTITY ONLY)
     # -------------------------------------------------
@@ -969,28 +1033,28 @@ def _classify(
         return "verified"
 
     # Near-exact title match (independent of DOI)
-    if title_score >= 100:
+    if title_score >= 92 and year_match:
         return "verified"
 
     # -------------------------------------------------
     # 2. LIKELY (STRONG BUT NOT EXACT)
     # -------------------------------------------------
 
-    if title_score >= 85:
-        return "likely"
+    if title_score >= 82:
+    return "likely"
 
-    if score >= 85:
-        return "likely"
+    if score >= 80:
+    return "likely"
 
     # -------------------------------------------------
     # 3. NEEDS REVIEW (SUSPICIOUS / PARTIAL MATCH)
     # -------------------------------------------------
 
-    if title_score >= 75:
-        return "needs_review"
+    if title_score >= 68:
+    return "needs_review"
 
-    if score >= 60:
-        return "needs_review"
+    if score >= 55:
+    return "needs_review"
 
     # DOI exists but title mismatch → suspicious
     if doi_match:
