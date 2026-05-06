@@ -1072,20 +1072,20 @@ def _classify(
     # -----------------------------------------
 
     if title_score >= 75:
-        return "likely"
+        return "LIKELY"
 
     if score >= 72:
-        return "likely"
+        return "verified"
 
     if title_score >= 68 and author_overlap >= 1:
-        return "likely"
+        return "verified"
 
     # -----------------------------------------
     # 4. NEEDS REVIEW
     # -----------------------------------------
 
     if title_score >= 58:
-        return "needs_review"
+        return "LIKELY"
 
     if score >= 45:
         return "needs_review"
