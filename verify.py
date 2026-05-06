@@ -1012,7 +1012,7 @@ def _classify(
     author_overlap: int = 0,
 ) -> str:
 
-     # -------------------------------------------------
+    # -------------------------------------------------
     # 1. DOI MATCH RULES
     # -------------------------------------------------
 
@@ -1020,52 +1020,47 @@ def _classify(
     if doi_match and title_score >= 70:
         return "verified"
 
-    # DOI but weak title agreement
+    # DOI exists but title agreement is weak
     if doi_match and title_score < 70:
         return "needs_review"
-    
+
     # -------------------------------------------------
-    # 1. STRICT VERIFIED (IDENTITY ONLY)
+    # 2. VERIFIED WITHOUT DOI
     # -------------------------------------------------
 
-    # DOI must agree with strong title
-    if doi_match and title_score >= 80:
+    # Strong title + year agreement
+    if title_score >= 88 and year_match:
         return "verified"
 
-    # Near-exact title match (independent of DOI)
-    if title_score >= 92 and year_match:
+    # Very strong title + at least one author agreement
+    if title_score >= 90 and author_overlap >= 1:
         return "verified"
 
     # -------------------------------------------------
-    # 2. LIKELY (STRONG BUT NOT EXACT)
+    # 3. LIKELY
     # -------------------------------------------------
 
-    if title_score >= 82:
+    if title_score >= 78:
         return "likely"
 
-    if score >= 80:
+    if score >= 78:
         return "likely"
 
     # -------------------------------------------------
-    # 3. NEEDS REVIEW (SUSPICIOUS / PARTIAL MATCH)
+    # 4. NEEDS REVIEW
     # -------------------------------------------------
 
-    if title_score >= 68:
+    if title_score >= 65:
         return "needs_review"
 
-    if score >= 55:
-        return "needs_review"
-
-    # DOI exists but title mismatch → suspicious
-    if doi_match:
+    if score >= 52:
         return "needs_review"
 
     # -------------------------------------------------
-    # 4. NOT FOUND
+    # 5. NOT FOUND
     # -------------------------------------------------
 
     return "not_found"
-    
 
 # ---------------------------------------------------------
 # Candidate selection
