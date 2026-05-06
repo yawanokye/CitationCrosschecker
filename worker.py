@@ -4,6 +4,7 @@ import sys
 import json
 import re
 import time
+import hashlib
 import redis
 import psycopg2
 from collections import Counter
@@ -15,7 +16,7 @@ try:
     from engine import recover_references_for_verification
 except Exception:
     recover_references_for_verification = None
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from verify import verify_references_batch
@@ -63,6 +64,16 @@ ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY = _env_flag("ENQUEUE_DEEP_ENRICHMENT_AFTER_
 DEEP_ENRICHMENT_LIMIT = int(os.environ.get("DEEP_ENRICHMENT_LIMIT", "80"))
 DEEP_LOOKUP_TOP_K = int(os.environ.get("DEEP_LOOKUP_TOP_K", "3"))
 DEEP_ENRICHMENT_BATCH_SAVE = int(os.environ.get("DEEP_ENRICHMENT_BATCH_SAVE", "10"))
+
+# Fast verification controls
+# Parallel mode verifies individual references concurrently inside each chunk.
+# This is the main speed lever for reducing 10-reference jobs from about a minute
+# to a few seconds, subject to Crossref/OpenAlex latency and rate limits.
+VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
+VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_CACHE_TTL", "604800"))  # 7 days
+VERIFY_USE_CACHE = _env_flag("VERIFY_USE_CACHE", "1")
+VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
+
 
 def now_iso():
     return datetime.utcnow().isoformat()
@@ -162,6 +173,127 @@ def _compute_verification_summary(rows):
         "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
         "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
     }
+
+
+def _reference_cache_key(ref, style="apa", enrich_metadata=False):
+    """Stable Redis cache key for a reference verification result."""
+    raw = json.dumps({
+        "reference": str(ref or "").strip(),
+        "style": style,
+        "enrich_metadata": bool(enrich_metadata),
+    }, sort_keys=True)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"verify:v2:{digest}"
+
+
+def _make_offline_verification_row(ref, error="Verification failed or timed out"):
+    """Create a safe row if a single-reference verification fails."""
+    return {
+        "status": "offline",
+        "reference": ref,
+        "original_reference": ref,
+        "source": "worker_parallel_fallback",
+        "score": 0,
+        "title_score": 0,
+        "doi": "",
+        "year": "",
+        "authors": "",
+        "matched_title": "",
+        "message": error,
+        "error": error,
+    }
+
+
+def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
+    """
+    Verify one reference with Redis caching.
+
+    The existing verify_references_batch() is reused for correctness, but it is
+    called with a single reference so many references can be processed in
+    parallel by _verify_chunk_parallel().
+    """
+    cache_key = _reference_cache_key(ref, style=style, enrich_metadata=enrich_metadata)
+
+    if VERIFY_USE_CACHE:
+        try:
+            cached = redis_conn.get(cache_key)
+            if cached:
+                row = json.loads(cached)
+                if isinstance(row, dict):
+                    row.setdefault("cache_hit", True)
+                    return row
+        except Exception as e:
+            print(f"[VERIFY CACHE] Cache read failed: {e}")
+
+    try:
+        rows = verify_references_batch(
+            [ref],
+            style=style,
+            use_crossref=True,
+            use_openalex=False,
+            job_id=None,
+            enrich_metadata=enrich_metadata
+        ) or []
+
+        row = rows[0] if rows else _make_offline_verification_row(ref, "No verification row returned")
+        if isinstance(row, dict):
+            row.setdefault("reference", ref)
+            row.setdefault("original_reference", ref)
+            row.setdefault("cache_hit", False)
+
+        if VERIFY_USE_CACHE and isinstance(row, dict):
+            try:
+                redis_conn.setex(cache_key, VERIFY_CACHE_TTL, json.dumps(row))
+            except Exception as e:
+                print(f"[VERIFY CACHE] Cache write failed: {e}")
+
+        return row
+
+    except Exception as e:
+        return _make_offline_verification_row(ref, str(e))
+
+
+def _verify_chunk_parallel(chunk, style="apa", enrich_metadata=False):
+    """
+    Verify a chunk concurrently while preserving input order.
+
+    If parallel mode is disabled or there is only one reference, it falls back
+    to the existing batch verifier.
+    """
+    chunk = list(chunk or [])
+
+    if not chunk:
+        return []
+
+    if not VERIFY_PARALLEL_MODE or VERIFY_PARALLEL_WORKERS <= 1 or len(chunk) == 1:
+        rows = verify_references_batch(
+            chunk,
+            style=style,
+            use_crossref=True,
+            use_openalex=False,
+            job_id=None,
+            enrich_metadata=enrich_metadata
+        ) or []
+        return rows
+
+    max_workers = max(1, min(VERIFY_PARALLEL_WORKERS, len(chunk)))
+    ordered_rows = [None] * len(chunk)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(_verify_single_reference_cached, ref, style, enrich_metadata): i
+            for i, ref in enumerate(chunk)
+        }
+
+        for future in as_completed(future_map):
+            i = future_map[future]
+            ref = chunk[i]
+            try:
+                ordered_rows[i] = future.result()
+            except Exception as e:
+                ordered_rows[i] = _make_offline_verification_row(ref, str(e))
+
+    return [r for r in ordered_rows if r is not None]
 
 def _fallback_recovery_suggestions(row, result, target=3):
     """
@@ -2566,16 +2698,14 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
         ]
 
         print(f"🌐 Verification split into {len(chunks)} chunks of {VERIFY_CHUNK_SIZE}")
+        print(f"⚡ Parallel verification: {VERIFY_PARALLEL_MODE}, workers={VERIFY_PARALLEL_WORKERS}, cache={VERIFY_USE_CACHE}")
 
         for chunk_index, chunk in enumerate(chunks, start=1):
             print(f"🌐 Verifying chunk {chunk_index}/{len(chunks)} with {len(chunk)} refs")
 
-            chunk_rows = verify_references_batch(
+            chunk_rows = _verify_chunk_parallel(
                 chunk,
                 style=style,
-                use_crossref=True,
-                use_openalex=False,
-                job_id=None,
                 enrich_metadata=enrich_metadata
             )
 
