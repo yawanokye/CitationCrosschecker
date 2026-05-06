@@ -2088,9 +2088,8 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
     print(f"🔥 Processing job {job_id}: {filename}")
     print(f"📋 enable_autofix flag received: {enable_autofix}")
     
-    # FORCE AUTOFIX TO TRUE
-    enable_autofix = True
-    print(f"📋 FORCED enable_autofix to: {enable_autofix}")
+    enable_autofix = bool(enable_autofix)
+    print(f"📋 Using enable_autofix: {enable_autofix}")
     
     # Load file from Redis
     file_content = redis_conn.get(f"file:{job_id}")
@@ -2118,7 +2117,7 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
             filename=filename,
             style=style,
             verify_online=False,
-            enable_autofix=True
+            enable_autofix=enable_autofix
         )
 
         print("🔍 === RESULT DEBUG ===")
@@ -2776,19 +2775,18 @@ if __name__ == "__main__":
     print("🚀 Starting worker...")
     print(f"📊 Redis: {REDIS_URL[:50]}..." if REDIS_URL else "📊 Redis: NOT SET")
     print(f"💾 PostgreSQL: {'Connected' if DATABASE_URL else 'NOT SET'}")
-    
-    with Connection(redis_conn):
-        document_queue = Queue("document_processing", connection=redis_conn)
-        verification_queue = Queue("verification", connection=redis_conn)
-        deep_enrichment_queue = Queue("deep_enrichment", connection=redis_conn)
-    
-        print(f"📌 Document queue: {document_queue.name}, jobs waiting: {document_queue.count}")
-        print(f"📌 Verification queue: {verification_queue.name}, jobs waiting: {verification_queue.count}")
-        print(f"📌 Deep enrichment queue: {deep_enrichment_queue.name}, jobs waiting: {deep_enrichment_queue.count}")
-    
-        worker = Worker(["document_processing", "verification", "deep_enrichment"], connection=redis_conn)
 
-        print("✅ Worker ready, waiting for jobs...")
+    queue_env = os.environ.get("WORKER_QUEUES", "document_processing,verification")
+    queues_to_listen = [q.strip() for q in queue_env.split(",") if q.strip()]
+
+    with Connection(redis_conn):
+        for queue_name in queues_to_listen:
+            q = Queue(queue_name, connection=redis_conn)
+            print(f"📌 Queue: {q.name}, jobs waiting: {q.count}")
+
+        worker = Worker(queues_to_listen, connection=redis_conn)
+
+        print(f"✅ Worker ready, listening to: {queues_to_listen}")
         print("📋 Detection scenarios enabled:")
         print("   Scenario 1: Year mismatches")
         print("   Scenario 2: Author name mismatches")
