@@ -4754,3 +4754,326 @@ try:
                 __all__.append(name)
 except Exception:
     pass
+
+# ============================================================
+# RECALL-BOOST QUERY OVERRIDE
+# Added to improve verified counts in ultra-fast mode without returning to the
+# very slow all-database strategy. Public API is unchanged.
+# ============================================================
+
+VERIFY_RECALL_BOOST_MODE = _env_flag("VERIFY_RECALL_BOOST_MODE", "1")
+VERIFY_RECALL_MAX_API_CALLS = int(os.getenv("VERIFY_RECALL_MAX_API_CALLS", "5"))
+VERIFY_RECALL_CROSSREF_TEXT_QUERIES = int(os.getenv("VERIFY_RECALL_CROSSREF_TEXT_QUERIES", "3"))
+VERIFY_RECALL_OPENALEX_TEXT_QUERIES = int(os.getenv("VERIFY_RECALL_OPENALEX_TEXT_QUERIES", "2"))
+VERIFY_RECALL_FALLBACK_QUERIES = int(os.getenv("VERIFY_RECALL_FALLBACK_QUERIES", "1"))
+VERIFY_RECALL_ROWS = int(os.getenv("VERIFY_RECALL_ROWS", "5"))
+VERIFY_RECALL_PROMOTE_STRONG_LIKELY = _env_flag("VERIFY_RECALL_PROMOTE_STRONG_LIKELY", "1")
+
+
+def _recall_best_meta(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    try:
+        _best, meta, _alts = _best_candidate(fields, candidates)
+        return meta or {}
+    except Exception:
+        return {}
+
+
+def _recall_is_verified_like(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
+    """Stop early only when the current candidates are strong enough to verify."""
+    if not candidates:
+        return False
+    meta = _recall_best_meta(fields, candidates)
+    if not meta:
+        return False
+
+    title_score = int(meta.get("title_score", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    source_agreement = int(meta.get("source_agreement", 1))
+
+    if meta.get("doi_match"):
+        return True
+    if title_score >= 90 and year_delta <= 1 and (author_overlap >= 1 or author_similarity >= 70 or journal_score >= 65):
+        return True
+    if title_score >= 88 and year_match and source_agreement >= 2:
+        return True
+    if title_score >= 86 and year_match and journal_score >= 75:
+        return True
+    return False
+
+
+def _recall_query_name(q: Dict[str, Any]) -> str:
+    return _safe_strip(q.get("name", ""))
+
+
+def _recall_select_crossref_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Recall-preserving Crossref order.
+    Uses full reference plus compact title-author/year forms. This fixes the
+    ultra-fast problem where one weak full-reference query could miss a valid item.
+    """
+    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
+    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
+    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
+
+    preferred = [
+        "crossref_full_bibliographic",
+        "crossref_rich_bibliographic",
+        "crossref_title_author_year",
+        "crossref_title_journal_year",
+    ]
+    selected: List[Dict[str, Any]] = []
+    for name in preferred:
+        for q in text_queries:
+            if _recall_query_name(q) == name and q not in selected:
+                selected.append(q)
+                break
+        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
+            break
+
+    for q in text_queries:
+        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
+            break
+        if q not in selected:
+            selected.append(q)
+
+    return doi_queries + selected[:VERIFY_RECALL_CROSSREF_TEXT_QUERIES]
+
+
+def _recall_select_openalex_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
+    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
+    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
+    preferred = ["openalex_title_year", "openalex_title_journal", "openalex_title_only"]
+
+    selected: List[Dict[str, Any]] = []
+    for name in preferred:
+        for q in text_queries:
+            if _recall_query_name(q) == name and q not in selected:
+                selected.append(q)
+                break
+        if len(selected) >= VERIFY_RECALL_OPENALEX_TEXT_QUERIES:
+            break
+
+    for q in text_queries:
+        if len(selected) >= VERIFY_RECALL_OPENALEX_TEXT_QUERIES:
+            break
+        if q not in selected:
+            selected.append(q)
+
+    return doi_queries + selected[:VERIFY_RECALL_OPENALEX_TEXT_QUERIES]
+
+
+def _recall_select_fallback_queries(queries: List[Dict[str, Any]], fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Type-aware fallback. Unlike the earlier ultra-fast selector, this can still
+    run one fallback when Crossref/OpenAlex returned weak candidates.
+    """
+    if not queries or VERIFY_RECALL_FALLBACK_QUERIES <= 0:
+        return []
+    if _recall_is_verified_like(fields, candidates):
+        return []
+
+    flags = fields.get("reference_type_flags", {}) or {}
+    source_order: List[str] = []
+
+    if fields.get("doi"):
+        source_order.extend(["datacite", "semantic_scholar"])
+    if flags.get("looks_health") or fields.get("pmid") or fields.get("pmcid"):
+        source_order.extend(["pubmed", "europepmc"])
+    if flags.get("looks_book") or fields.get("isbn"):
+        source_order.extend(["google_books", "open_library"])
+    if flags.get("looks_education"):
+        source_order.append("eric")
+    if flags.get("looks_arxiv") or fields.get("arxiv_id"):
+        source_order.append("arxiv")
+    if flags.get("looks_dataset_repo"):
+        source_order.extend(["datacite", "core"])
+
+    # Generic scholarly fallback only when enabled and candidates are still poor.
+    if VERIFY_USE_SEMANTIC_SCHOLAR and not _ultra_candidate_is_useful(fields, candidates, likely_threshold=75):
+        source_order.append("semantic_scholar")
+
+    selected: List[Dict[str, Any]] = []
+    seen_sources = set()
+    for source in source_order:
+        if source in seen_sources or not _source_enabled(source):
+            continue
+        seen_sources.add(source)
+        for q in sorted(queries, key=lambda x: x.get("priority", 99)):
+            if q.get("source") == source:
+                selected.append(q)
+                break
+        if len(selected) >= VERIFY_RECALL_FALLBACK_QUERIES:
+            break
+    return selected
+
+
+def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """
+    Recall-boost query runner.
+    Target: restore high verified counts while staying fast.
+    Normal upper budget: DOI + 3 Crossref text queries + 1 OpenAlex/fallback.
+    """
+    candidates: List[Dict[str, Any]] = []
+    query_used: List[str] = []
+    query_strategy: List[str] = []
+    fields = plan.get("fields", {}) or {}
+    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+    api_calls = 0
+    max_calls = max(1, VERIFY_RECALL_MAX_API_CALLS if VERIFY_RECALL_BOOST_MODE else VERIFY_ULTRA_MAX_API_CALLS_PER_REF)
+
+    def budget_left() -> bool:
+        return api_calls < max_calls
+
+    # 1. Crossref first. Do not rely on only one full-reference query.
+    for q in _recall_select_crossref_queries(plan.get("crossref_queries", [])):
+        if not use_crossref or not budget_left():
+            break
+        name = q.get("name", "crossref")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_crossref_by_doi(q.get("doi", ""))
+            else:
+                res = _query_crossref_bibliographic(
+                    q.get("query_bibliographic", ""),
+                    query_author=q.get("query_author", ""),
+                    rows=min(max(3, int(q.get("rows", VERIFY_CROSSREF_ROWS))), max(3, VERIFY_RECALL_ROWS)),
+                    query_name=name,
+                )
+            api_calls += 1
+            if res:
+                candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
+            if _recall_is_verified_like(fields, candidates):
+                return _dedupe_candidates(candidates), query_used, query_strategy
+        except Exception as exc:
+            print(f"[DEBUG] Recall Crossref query failed for {name}: {exc}")
+
+    # 2. OpenAlex is no longer skipped just because Crossref returned weak candidates.
+    for q in _recall_select_openalex_queries(plan.get("openalex_queries", [])):
+        if not openalex_allowed or not budget_left():
+            break
+        name = q.get("name", "openalex")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_openalex_by_doi(q.get("doi", ""))
+            else:
+                res = _query_openalex_search(
+                    q.get("search", ""),
+                    rows=min(max(3, int(q.get("rows", VERIFY_OPENALEX_ROWS))), max(3, VERIFY_RECALL_ROWS)),
+                    publication_year=q.get("publication_year", ""),
+                    query_name=name,
+                )
+            api_calls += 1
+            if res:
+                candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("search") or "")
+            if _recall_is_verified_like(fields, candidates):
+                return _dedupe_candidates(candidates), query_used, query_strategy
+        except Exception as exc:
+            print(f"[DEBUG] Recall OpenAlex query failed for {name}: {exc}")
+
+    # 3. One type-specific fallback when the match is still weak.
+    if VERIFY_MULTISOURCE_FALLBACK and budget_left():
+        for q in _recall_select_fallback_queries(plan.get("fallback_queries", []), fields, candidates):
+            if not budget_left():
+                break
+            source = q.get("source", "")
+            if not _source_enabled(source):
+                continue
+            try:
+                res = _run_fallback_query(q, fields)
+                api_calls += 1
+                if res:
+                    candidates.extend(res)
+                query_strategy.append(q.get("name", source))
+                query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
+                if _recall_is_verified_like(fields, candidates):
+                    break
+            except Exception as exc:
+                print(f"[DEBUG] Recall fallback failed for {q.get('name', source)}: {exc}")
+
+    return _dedupe_candidates(candidates), query_used, query_strategy
+
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Balanced recall classifier.
+    This is less pessimistic than the previous ultra-fast gate, but still requires
+    bibliographic support before promoting a match to verified.
+    """
+    title_score = int(meta.get("title_score", 0))
+    score = int(meta.get("score", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    doi_match = bool(meta.get("doi_match"))
+    source_agreement = int(meta.get("source_agreement", 1))
+    retracted = bool(meta.get("is_retracted"))
+
+    has_ref_authors = bool(ref_fields.get("authors"))
+    has_cand_authors = bool(meta.get("authors"))
+    has_author_conflict = bool(has_ref_authors and has_cand_authors and author_overlap == 0)
+    has_ref_journal = bool(ref_fields.get("journal"))
+
+    author_ok = author_overlap >= 1 or author_similarity >= 72 or not has_ref_authors or not has_cand_authors
+    year_ok = year_match == 1 or year_delta <= 1
+    journal_ok = journal_score >= 68 or not has_ref_journal
+    cross_source_ok = source_agreement >= 2
+
+    if retracted:
+        return "needs_review", "Matched record appears to be retracted and needs manual review."
+
+    if doi_match:
+        if title_score >= 60 or year_match or author_overlap >= 1:
+            return "verified", "Exact DOI match with acceptable title, year, or author support."
+        if title_score >= 45:
+            return "likely", "DOI matches, but title evidence is weak."
+        return "needs_review", "DOI matches, but title evidence conflicts with the reference."
+
+    # Do not let imperfect author extraction block strong title/year/journal evidence.
+    if has_author_conflict:
+        if title_score >= 94 and year_ok and (journal_score >= 60 or cross_source_ok):
+            return "verified", "Very strong title and year evidence despite author-name extraction mismatch."
+        if title_score >= 88 and year_ok and journal_score >= 70:
+            return "verified", "Strong title, year and journal evidence despite author-name extraction mismatch."
+        if title_score >= 82 and year_ok:
+            return "likely", "Strong title and year evidence, but author names do not overlap."
+        if title_score >= 70:
+            return "needs_review", "Possible match found, but author names do not overlap."
+        return "not_found", "Candidates were found, but author and title evidence were too weak."
+
+    if title_score >= 92 and year_ok and (author_ok or journal_ok or cross_source_ok):
+        return "verified", "Very strong title match with supporting year and bibliographic evidence."
+
+    if title_score >= 88 and year_ok and (author_overlap >= 1 or author_similarity >= 65 or journal_score >= 60 or cross_source_ok):
+        return "verified", "Strong title match with year and author, journal, or cross-source support."
+
+    if VERIFY_RECALL_PROMOTE_STRONG_LIKELY and title_score >= 86 and year_match and (author_ok or journal_score >= 65 or cross_source_ok):
+        return "verified", "Strong title and year evidence promoted under recall-boost verification."
+
+    if score >= 86 and title_score >= 84 and year_ok and (author_ok or journal_ok or cross_source_ok):
+        return "verified", "High composite score with title, year and supporting evidence."
+
+    if title_score >= 82 and year_ok and (author_ok or journal_ok or cross_source_ok):
+        return "likely", "Good title and year evidence, but not enough support for verified."
+
+    if title_score >= 78 and (year_ok or author_overlap >= 1 or journal_score >= 70):
+        return "likely", "Moderate-to-strong bibliographic evidence."
+
+    if score >= 72 and title_score >= 72:
+        return "likely", "Moderate composite evidence from retrieved metadata."
+
+    if title_score >= 62 or score >= 50:
+        return "needs_review", "Possible match found, but evidence is insufficient for automatic verification."
+
+    return "not_found", "No reliable metadata match found after recall-boost queries."
+
