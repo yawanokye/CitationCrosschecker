@@ -1038,51 +1038,80 @@ def _classify(
     year_match: int,
     author_overlap: int = 0,
 ) -> str:
+    """
+    Commercial-grade classification rule.
+
+    Principle:
+    - Retrieval should be broad.
+    - Verification should be strict.
+    - Do not mark weak title matches as verified.
+    - Do not verify on score alone unless title, author, or year evidence supports it.
+    """
+
+    title_score = int(title_score or 0)
+    score = int(score or 0)
+    year_match = int(year_match or 0)
+    author_overlap = int(author_overlap or 0)
 
     # -----------------------------------------
-    # 1. DOI MATCHES
+    # 1. DOI MATCH
     # -----------------------------------------
-
-    # DOI + decent title
-    if doi_match and title_score >= 65:
-        return "verified"
-
-    # DOI exists but weak title
+    # DOI is strong evidence, but still guard against obvious title mismatch.
     if doi_match:
-        return "likely"
+        if title_score >= 70:
+            return "verified"
+        if title_score >= 50:
+            return "likely"
+        return "needs_review"
 
     # -----------------------------------------
-    # 2. STRONG VERIFIED
+    # 2. VERIFIED
     # -----------------------------------------
-
-    # Very strong title + year
-    if title_score >= 90 and year_match:
+    # Very strong title + year support.
+    if title_score >= 92 and year_match == 1:
         return "verified"
 
-    # Strong title + author agreement
-    if title_score >= 85 and author_overlap >= 1:
+    # Strong title + author support.
+    if title_score >= 88 and author_overlap >= 1:
         return "verified"
 
-    # Strong overall score
-    if score >= 88:
+    # Strong title + both year and author support.
+    if title_score >= 85 and year_match == 1 and author_overlap >= 1:
+        return "verified"
+
+    # High combined score, but still requires title strength and at least one external support.
+    if score >= 90 and title_score >= 85 and (year_match == 1 or author_overlap >= 1):
         return "verified"
 
     # -----------------------------------------
     # 3. LIKELY
     # -----------------------------------------
+    # Strong title but missing author or year support.
+    if title_score >= 85:
+        return "likely"
 
-    if title_score >= 75:
-        return "LIKELY"
+    # Moderate title with year or author support.
+    if title_score >= 78 and (year_match == 1 or author_overlap >= 1):
+        return "likely"
 
-    if score >= 72:
-        return "verified"
-
-    if title_score >= 68 and author_overlap >= 1:
-        return "verified"
+    # Good combined score, but not enough for verified.
+    if score >= 75 and title_score >= 75:
+        return "likely"
 
     # -----------------------------------------
     # 4. NEEDS REVIEW
     # -----------------------------------------
+    # Candidate exists but evidence is incomplete or weak.
+    if title_score >= 60:
+        return "needs_review"
+
+    if score >= 50:
+        return "needs_review"
+
+    # -----------------------------------------
+    # 5. NOT FOUND
+    # -----------------------------------------
+    return "not_found"
 
     if title_score >= 58:
         return "LIKELY"
