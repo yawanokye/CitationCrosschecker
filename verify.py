@@ -2788,3 +2788,1166 @@ def _get_top_suggestions(
             "confidence": "related",
         })
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
+
+# ============================================================
+# COMMERCIAL MULTI-SOURCE FAST FALLBACK OVERRIDES
+# Added to preserve the existing verify.py structure while adding
+# adaptive DataCite, PubMed, Europe PMC, Semantic Scholar, Google Books,
+# Open Library, ERIC, arXiv, CORE and DOAJ support.
+# ============================================================
+
+# Keep defaults fast. Extra sources run adaptively only when Crossref/OpenAlex
+# do not already give a strong match, or when the reference type clearly needs them.
+VERIFY_MULTISOURCE_FALLBACK = _env_flag("VERIFY_MULTISOURCE_FALLBACK", "1")
+VERIFY_MULTISOURCE_ONLY_WHEN_WEAK = _env_flag("VERIFY_MULTISOURCE_ONLY_WHEN_WEAK", "1")
+VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES = int(os.getenv("VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES", "3"))
+VERIFY_SPECIAL_ROWS = int(os.getenv("VERIFY_SPECIAL_ROWS", "3"))
+VERIFY_SPECIAL_TIMEOUT = int(os.getenv("VERIFY_SPECIAL_TIMEOUT", str(API_TIMEOUT)))
+VERIFY_MULTISOURCE_DEBUG = _env_flag("VERIFY_MULTISOURCE_DEBUG", "0")
+
+VERIFY_USE_DATACITE = _env_flag("VERIFY_USE_DATACITE", "1")
+VERIFY_USE_EUROPEPMC = _env_flag("VERIFY_USE_EUROPEPMC", "1")
+VERIFY_USE_PUBMED = _env_flag("VERIFY_USE_PUBMED", "1")
+VERIFY_USE_SEMANTIC_SCHOLAR = _env_flag("VERIFY_USE_SEMANTIC_SCHOLAR", "1")
+VERIFY_USE_GOOGLE_BOOKS = _env_flag("VERIFY_USE_GOOGLE_BOOKS", "1")
+VERIFY_USE_OPEN_LIBRARY = _env_flag("VERIFY_USE_OPEN_LIBRARY", "1")
+VERIFY_USE_ERIC = _env_flag("VERIFY_USE_ERIC", "1")
+VERIFY_USE_ARXIV = _env_flag("VERIFY_USE_ARXIV", "1")
+VERIFY_USE_CORE = _env_flag("VERIFY_USE_CORE", "0")
+VERIFY_USE_DOAJ = _env_flag("VERIFY_USE_DOAJ", "0")
+
+SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+GOOGLE_BOOKS_API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY", "").strip()
+NCBI_API_KEY = os.getenv("NCBI_API_KEY", "").strip()
+CORE_API_KEY = os.getenv("CORE_API_KEY", "").strip()
+DOAJ_API_KEY = os.getenv("DOAJ_API_KEY", "").strip()
+
+_ISBN_RE = re.compile(r"\b(?:ISBN(?:-1[03])?:?\s*)?((?:97[89][\- ]?)?(?:\d[\- ]?){9}[\dXx])\b")
+_PMID_RE = re.compile(r"\bPMID\s*:?\s*(\d{4,12})\b", re.I)
+_PMCID_RE = re.compile(r"\bPMC\s*:?\s*(\d{4,12})\b", re.I)
+_ARXIV_RE = re.compile(r"\barXiv\s*:?\s*([a-z\-]+/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?\b", re.I)
+
+
+def _debug_multisource(message: str) -> None:
+    if VERIFY_MULTISOURCE_DEBUG:
+        print(f"[DEBUG][MULTISOURCE] {message}")
+
+
+def _clean_identifier(value: str) -> str:
+    return re.sub(r"[^0-9Xx]", "", _safe_strip(value))
+
+
+def _extract_isbn(ref: str) -> str:
+    for m in _ISBN_RE.finditer(ref or ""):
+        candidate = _clean_identifier(m.group(1))
+        if len(candidate) in {10, 13}:
+            return candidate.upper()
+    return ""
+
+
+def _extract_pmid(ref: str) -> str:
+    m = _PMID_RE.search(ref or "")
+    return m.group(1) if m else ""
+
+
+def _extract_pmcid(ref: str) -> str:
+    m = _PMCID_RE.search(ref or "")
+    return f"PMC{m.group(1)}" if m else ""
+
+
+def _extract_arxiv_id(ref: str) -> str:
+    m = _ARXIV_RE.search(ref or "")
+    return m.group(1) if m else ""
+
+
+def _reference_text_blob(fields: Dict[str, Any]) -> str:
+    return " ".join(
+        _safe_strip(fields.get(k, ""))
+        for k in ["title", "journal", "source", "container_title", "type"]
+    ).lower()
+
+
+def _reference_type_flags(ref: str, fields: Dict[str, Any]) -> Dict[str, bool]:
+    blob = f"{ref} {_reference_text_blob(fields)}".lower()
+    isbn = _extract_isbn(ref)
+    pmid = _extract_pmid(ref)
+    pmcid = _extract_pmcid(ref)
+    arxiv_id = _extract_arxiv_id(ref)
+    doi = _normalise_doi(fields.get("doi", ""))
+
+    health_terms = {
+        "medicine", "medical", "clinical", "patient", "patients", "nursing", "health",
+        "public health", "biomedical", "cancer", "therapy", "disease", "hospital",
+        "lancet", "bmj", "jama", "nejm", "pubmed", "pmid", "pmc", "epidemiology",
+    }
+    education_terms = {
+        "education", "teaching", "learning", "curriculum", "student", "students",
+        "teacher", "teachers", "school", "schools", "higher education", "distance education",
+        "pedagogy", "educational", "classroom", "eric",
+    }
+    book_terms = {
+        "edition", "publisher", "press", "isbn", "book", "chapter", "handbook", "textbook",
+        "routledge", "sage", "wiley", "springer", "cambridge", "oxford", "palgrave",
+    }
+    dataset_terms = {
+        "dataset", "data set", "figshare", "zenodo", "dryad", "osf", "repository",
+        "thesis", "dissertation", "report", "working paper", "preprint", "conference paper",
+    }
+    arxiv_terms = {
+        "arxiv", "preprint", "machine learning", "computer science", "physics", "mathematics",
+        "statistics", "quantitative finance", "neural", "deep learning",
+    }
+
+    def contains_any(words):
+        return any(w in blob for w in words)
+
+    return {
+        "has_doi": bool(doi),
+        "has_isbn": bool(isbn),
+        "has_pmid": bool(pmid),
+        "has_pmcid": bool(pmcid),
+        "has_arxiv": bool(arxiv_id),
+        "looks_health": bool(pmid or pmcid or contains_any(health_terms)),
+        "looks_education": contains_any(education_terms),
+        "looks_book": bool(isbn or contains_any(book_terms)) and not bool(doi and fields.get("journal")),
+        "looks_dataset_repo": contains_any(dataset_terms),
+        "looks_arxiv": bool(arxiv_id or contains_any(arxiv_terms)),
+    }
+
+
+def _first_author_from_fields(fields: Dict[str, Any]) -> str:
+    authors = fields.get("authors", []) or []
+    return authors[0] if authors else ""
+
+
+def _title_query_from_fields(fields: Dict[str, Any], max_words: int = 10) -> str:
+    title = _clean_query_text(fields.get("title", "") or "")
+    words = _significant_title_words(title, limit=max_words + 4)
+    return " ".join(words[:max_words]).strip() or title[:180]
+
+
+def _generic_metadata_query(fields: Dict[str, Any], include_journal: bool = True) -> str:
+    parts = [
+        _title_query_from_fields(fields, 10),
+        fields.get("journal", "") if include_journal else "",
+        fields.get("year", ""),
+        _first_author_from_fields(fields),
+    ]
+    return _clean_query_text(" ".join([p for p in parts if p]))
+
+
+def _safe_get_text(url: str, params: Optional[dict] = None, timeout: int = None, headers: Optional[dict] = None) -> str:
+    if timeout is None:
+        timeout = VERIFY_SPECIAL_TIMEOUT
+    try:
+        base_headers = {"User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})"}
+        if headers:
+            base_headers.update(headers)
+        r = requests.get(url, params=params, timeout=timeout, headers=base_headers)
+        if r.status_code == 200:
+            return r.text
+        if r.status_code == 429:
+            _debug_multisource(f"Rate limited by {url}")
+        return ""
+    except Exception as exc:
+        _debug_multisource(f"Text request failed for {url}: {exc}")
+        return ""
+
+
+# ---------------------------
+# Additional source queries
+# ---------------------------
+
+def _query_datacite_by_doi(doi: str) -> List[Dict[str, Any]]:
+    doi = _normalise_doi(doi)
+    if not doi:
+        return []
+    url = f"https://api.datacite.org/dois/{doi}"
+    data = _safe_get_json(url, timeout=VERIFY_SPECIAL_TIMEOUT)
+    item = (data or {}).get("data")
+    return [{"source": "datacite", "query_name": "datacite_doi_exact", "item": item}] if item else []
+
+
+def _query_datacite_search(query: str, rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    query = _safe_strip(query)
+    if not query:
+        return []
+    url = "https://api.datacite.org/dois"
+    params = {"query": query, "page[size]": rows}
+    data = _safe_get_json(url, params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+    items = (data or {}).get("data", [])
+    return [{"source": "datacite", "query_name": "datacite_search", "item": it} for it in items]
+
+
+def _query_semantic_scholar_by_doi(doi: str) -> List[Dict[str, Any]]:
+    doi = _normalise_doi(doi)
+    if not doi:
+        return []
+    url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
+    headers = {"x-api-key": SEMANTIC_SCHOLAR_API_KEY} if SEMANTIC_SCHOLAR_API_KEY else None
+    params = {"fields": "title,year,authors,venue,journal,externalIds,url,publicationTypes,isOpenAccess"}
+    data = _safe_get_json(url, params=params, timeout=VERIFY_SPECIAL_TIMEOUT) if not headers else _safe_get_json_with_headers(url, params=params, headers=headers)
+    return [{"source": "semantic_scholar", "query_name": "semantic_scholar_doi_exact", "item": data}] if data and data.get("title") else []
+
+
+def _safe_get_json_with_headers(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
+    if timeout is None:
+        timeout = VERIFY_SPECIAL_TIMEOUT
+    try:
+        base_headers = {
+            "User-Agent": f"CitationCrosschecker/2.0 (mailto:{MAILTO})",
+            "Accept": "application/json",
+        }
+        if headers:
+            base_headers.update(headers)
+        r = requests.get(url, params=params, timeout=timeout, headers=base_headers)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 429:
+            _debug_multisource(f"Rate limited by {url}")
+        return None
+    except Exception as exc:
+        _debug_multisource(f"JSON request failed for {url}: {exc}")
+        return None
+
+
+def _query_semantic_scholar_search(query: str, rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    query = _safe_strip(query)
+    if not query:
+        return []
+    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    headers = {"x-api-key": SEMANTIC_SCHOLAR_API_KEY} if SEMANTIC_SCHOLAR_API_KEY else None
+    params = {
+        "query": query,
+        "limit": rows,
+        "fields": "title,year,authors,venue,journal,externalIds,url,publicationTypes,isOpenAccess",
+    }
+    data = _safe_get_json_with_headers(url, params=params, headers=headers)
+    items = (data or {}).get("data", [])
+    return [{"source": "semantic_scholar", "query_name": "semantic_scholar_search", "item": it} for it in items]
+
+
+def _query_europepmc(query: str, rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    query = _safe_strip(query)
+    if not query:
+        return []
+    url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+    params = {"query": query, "format": "json", "pageSize": rows}
+    data = _safe_get_json(url, params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+    items = ((data or {}).get("resultList") or {}).get("result", [])
+    return [{"source": "europepmc", "query_name": "europepmc_search", "item": it} for it in items]
+
+
+def _query_pubmed(fields: Dict[str, Any], rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    pmid = _extract_pmid(fields.get("reference", ""))
+    title = fields.get("title", "")
+    year = fields.get("year", "")
+    author = _first_author_from_fields(fields)
+
+    if pmid:
+        ids = [pmid]
+    else:
+        title_q = _title_query_from_fields(fields, 8)
+        if not title_q:
+            return []
+        term_parts = [f"{title_q}[Title]"]
+        if author:
+            term_parts.append(f"{author}[Author]")
+        if year:
+            term_parts.append(f"{year}[Date - Publication]")
+        term = " AND ".join(term_parts)
+        params = {"db": "pubmed", "term": term, "retmode": "json", "retmax": rows, "tool": "CitationCrosschecker"}
+        if MAILTO:
+            params["email"] = MAILTO
+        if NCBI_API_KEY:
+            params["api_key"] = NCBI_API_KEY
+        data = _safe_get_json("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+        ids = ((data or {}).get("esearchresult") or {}).get("idlist", [])
+
+    if not ids:
+        return []
+    params = {"db": "pubmed", "id": ",".join(ids[:rows]), "retmode": "json", "tool": "CitationCrosschecker"}
+    if MAILTO:
+        params["email"] = MAILTO
+    if NCBI_API_KEY:
+        params["api_key"] = NCBI_API_KEY
+    data = _safe_get_json("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi", params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+    result = (data or {}).get("result", {})
+    out = []
+    for uid in result.get("uids", []):
+        item = result.get(uid)
+        if item:
+            item["uid"] = uid
+            out.append({"source": "pubmed", "query_name": "pubmed_esummary", "item": item})
+    return out
+
+
+def _query_google_books(fields: Dict[str, Any], rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    isbn = fields.get("isbn", "")
+    title = fields.get("title", "")
+    author = _first_author_from_fields(fields)
+    if isbn:
+        q = f"isbn:{isbn}"
+    elif title:
+        q = f"intitle:{title}"
+        if author:
+            q += f" inauthor:{author}"
+    else:
+        return []
+    params = {"q": q, "maxResults": rows, "printType": "books"}
+    if GOOGLE_BOOKS_API_KEY:
+        params["key"] = GOOGLE_BOOKS_API_KEY
+    data = _safe_get_json("https://www.googleapis.com/books/v1/volumes", params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+    items = (data or {}).get("items", [])
+    return [{"source": "google_books", "query_name": "google_books_search", "item": it} for it in items]
+
+
+def _query_open_library(fields: Dict[str, Any], rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    isbn = fields.get("isbn", "")
+    title = fields.get("title", "")
+    author = _first_author_from_fields(fields)
+    params: Dict[str, Any] = {"limit": rows}
+    if isbn:
+        params["isbn"] = isbn
+    elif title:
+        params["title"] = title
+        if author:
+            params["author"] = author
+    else:
+        return []
+    data = _safe_get_json("https://openlibrary.org/search.json", params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+    items = (data or {}).get("docs", [])
+    return [{"source": "open_library", "query_name": "open_library_search", "item": it} for it in items]
+
+
+def _query_eric(fields: Dict[str, Any], rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    query = _generic_metadata_query(fields, include_journal=False)
+    if not query:
+        return []
+    params = {"search": query, "format": "json", "rows": rows}
+    data = _safe_get_json("https://api.ies.ed.gov/eric/", params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+    items = (data or {}).get("response", {}).get("docs", []) or (data or {}).get("docs", []) or []
+    return [{"source": "eric", "query_name": "eric_search", "item": it} for it in items]
+
+
+def _query_arxiv(fields: Dict[str, Any], rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    arxiv_id = fields.get("arxiv_id", "")
+    title = _title_query_from_fields(fields, 8)
+    if arxiv_id:
+        params = {"id_list": arxiv_id, "max_results": rows}
+    elif title:
+        params = {"search_query": f"ti:{title}", "start": 0, "max_results": rows, "sortBy": "relevance"}
+    else:
+        return []
+    xml_text = _safe_get_text("https://export.arxiv.org/api/query", params=params, timeout=VERIFY_SPECIAL_TIMEOUT)
+    if not xml_text:
+        return []
+    try:
+        import xml.etree.ElementTree as ET
+        ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+        root = ET.fromstring(xml_text)
+        out = []
+        for entry in root.findall("atom:entry", ns):
+            title_el = entry.find("atom:title", ns)
+            published_el = entry.find("atom:published", ns)
+            doi_el = entry.find("arxiv:doi", ns)
+            id_el = entry.find("atom:id", ns)
+            journal_el = entry.find("arxiv:journal_ref", ns)
+            authors = []
+            for au in entry.findall("atom:author", ns):
+                name_el = au.find("atom:name", ns)
+                if name_el is not None and name_el.text:
+                    authors.append(name_el.text)
+            item = {
+                "title": _safe_strip(title_el.text if title_el is not None else ""),
+                "year": _safe_strip((published_el.text or "")[:4] if published_el is not None else ""),
+                "doi": _safe_strip(doi_el.text if doi_el is not None else ""),
+                "url": _safe_strip(id_el.text if id_el is not None else ""),
+                "journal": _safe_strip(journal_el.text if journal_el is not None else ""),
+                "authors": authors,
+                "type": "preprint",
+            }
+            if item["title"]:
+                out.append({"source": "arxiv", "query_name": "arxiv_query", "item": item})
+        return out
+    except Exception as exc:
+        _debug_multisource(f"arXiv XML parse failed: {exc}")
+        return []
+
+
+def _query_core(fields: Dict[str, Any], rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    if not CORE_API_KEY:
+        return []
+    query = _generic_metadata_query(fields, include_journal=False)
+    if not query:
+        return []
+    headers = {"Authorization": f"Bearer {CORE_API_KEY}"}
+    # CORE v3 search endpoint. If an installation uses a different CORE contract,
+    # this fails fast and quietly because CORE is an optional fallback.
+    data = _safe_get_json_with_headers(
+        "https://api.core.ac.uk/v3/search/works",
+        params={"q": query, "limit": rows},
+        headers=headers,
+        timeout=VERIFY_SPECIAL_TIMEOUT,
+    )
+    items = (data or {}).get("results", [])
+    return [{"source": "core", "query_name": "core_search", "item": it} for it in items]
+
+
+def _query_doaj(fields: Dict[str, Any], rows: int = None) -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_SPECIAL_ROWS
+    # DOAJ is used only as a journal/article validation fallback. It is disabled
+    # by default to avoid adding latency and because public API contracts may vary.
+    query = _generic_metadata_query(fields, include_journal=True)
+    if not query:
+        return []
+    headers = {"Authorization": f"Bearer {DOAJ_API_KEY}"} if DOAJ_API_KEY else None
+    data = _safe_get_json_with_headers(
+        f"https://doaj.org/api/search/articles/{requests.utils.quote(query)}",
+        params={"pageSize": rows},
+        headers=headers,
+        timeout=VERIFY_SPECIAL_TIMEOUT,
+    )
+    items = (data or {}).get("results", [])
+    return [{"source": "doaj", "query_name": "doaj_article_search", "item": it} for it in items]
+
+
+# ---------------------------
+# Query plan and candidate normalisation
+# ---------------------------
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    fields = _extract_fields_by_style(ref, style)
+    fields["reference"] = ref
+    fields["isbn"] = _extract_isbn(ref)
+    fields["pmid"] = _extract_pmid(ref)
+    fields["pmcid"] = _extract_pmcid(ref)
+    fields["arxiv_id"] = _extract_arxiv_id(ref)
+
+    authors = fields.get("authors", []) or []
+    first_author = authors[0] if authors else ""
+    year = fields.get("year", "") or ""
+    doi = _normalise_doi(fields.get("doi", "") or "")
+    title = _clean_query_text(fields.get("title", "") or "")
+    journal = _clean_query_text(fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", "") or "")
+    volume = _clean_query_text(fields.get("volume", "") or "")
+    issue = _clean_query_text(fields.get("issue", "") or "")
+    pages = _clean_query_text(fields.get("pages", "") or fields.get("page", "") or "")
+    clean_ref = _clean_query_text(ref)
+
+    title_words = _significant_title_words(title, limit=14)
+    title_key = " ".join(title_words[:10]).strip()
+    title_short = " ".join(title_words[:7]).strip()
+    bibliographic_rich = " ".join([p for p in [title, journal, year, volume, issue, pages] if p]).strip()
+
+    crossref_queries: List[Dict[str, Any]] = []
+    openalex_queries: List[Dict[str, Any]] = []
+    fallback_queries: List[Dict[str, Any]] = []
+
+    if doi:
+        crossref_queries.append({"name": "crossref_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+        openalex_queries.append({"name": "openalex_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+        fallback_queries.append({"name": "datacite_doi_exact", "source": "datacite", "mode": "doi_exact", "priority": 10})
+        fallback_queries.append({"name": "semantic_scholar_doi_exact", "source": "semantic_scholar", "mode": "doi_exact", "priority": 11})
+
+    if clean_ref:
+        crossref_queries.append({
+            "name": "crossref_full_bibliographic",
+            "mode": "bibliographic",
+            "query_bibliographic": clean_ref,
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 2,
+        })
+
+    if bibliographic_rich:
+        crossref_queries.append({
+            "name": "crossref_rich_bibliographic",
+            "mode": "bibliographic",
+            "query_bibliographic": bibliographic_rich,
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 3,
+        })
+
+    if title_key:
+        crossref_queries.append({
+            "name": "crossref_title_author_year",
+            "mode": "bibliographic",
+            "query_bibliographic": " ".join([title_key, year]).strip(),
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 4,
+        })
+
+    if title_key and journal:
+        crossref_queries.append({
+            "name": "crossref_title_journal_year",
+            "mode": "bibliographic",
+            "query_bibliographic": " ".join([title_key, journal, year]).strip(),
+            "query_author": "",
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 5,
+        })
+
+    if title_key and year:
+        openalex_queries.append({
+            "name": "openalex_title_year",
+            "mode": "search",
+            "search": title_key,
+            "publication_year": year,
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 6,
+        })
+
+    if title_key and journal:
+        openalex_queries.append({
+            "name": "openalex_title_journal",
+            "mode": "search",
+            "search": f"{title_key} {journal}",
+            "publication_year": year,
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 7,
+        })
+
+    if title_short:
+        openalex_queries.append({
+            "name": "openalex_title_only",
+            "mode": "search",
+            "search": title_short,
+            "publication_year": "",
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 8,
+        })
+
+    flags = _reference_type_flags(ref, fields)
+    if title_key:
+        if flags["looks_dataset_repo"]:
+            fallback_queries.append({"name": "datacite_search", "source": "datacite", "mode": "search", "priority": 20})
+        if flags["looks_health"]:
+            fallback_queries.append({"name": "pubmed_search", "source": "pubmed", "mode": "search", "priority": 21})
+            fallback_queries.append({"name": "europepmc_search", "source": "europepmc", "mode": "search", "priority": 22})
+        if flags["looks_book"]:
+            fallback_queries.append({"name": "google_books_search", "source": "google_books", "mode": "search", "priority": 23})
+            fallback_queries.append({"name": "open_library_search", "source": "open_library", "mode": "search", "priority": 24})
+        if flags["looks_education"]:
+            fallback_queries.append({"name": "eric_search", "source": "eric", "mode": "search", "priority": 25})
+        if flags["looks_arxiv"]:
+            fallback_queries.append({"name": "arxiv_query", "source": "arxiv", "mode": "search", "priority": 26})
+        fallback_queries.append({"name": "semantic_scholar_search", "source": "semantic_scholar", "mode": "search", "priority": 30})
+        if flags["looks_dataset_repo"]:
+            fallback_queries.append({"name": "core_search", "source": "core", "mode": "search", "priority": 31})
+        if journal:
+            fallback_queries.append({"name": "doaj_article_search", "source": "doaj", "mode": "search", "priority": 35})
+
+    fields.update({
+        "first_author": first_author,
+        "doi": doi,
+        "title": title,
+        "journal": journal,
+        "volume": volume,
+        "issue": issue,
+        "pages": pages,
+        "title_key": title_key,
+        "title_short": title_short,
+        "reference_type_flags": flags,
+    })
+
+    return {
+        "reference": ref,
+        "style": style,
+        "fields": fields,
+        "crossref_queries": crossref_queries,
+        "openalex_queries": openalex_queries,
+        "fallback_queries": fallback_queries,
+    }
+
+
+def _candidate_authors_from_names(names: List[str]) -> List[str]:
+    out = []
+    for name in names or []:
+        name = _safe_strip(name)
+        if not name:
+            continue
+        surname = re.sub(r"[^a-z'\-]", "", name.split()[-1].lower())
+        if surname:
+            out.append(surname)
+    return _dedupe_preserve(out)
+
+
+def _candidate_fields(cand: Dict[str, Any]) -> Dict[str, Any]:
+    src = cand.get("source")
+    item = cand.get("item") or {}
+    sources = cand.get("sources") or [src]
+
+    if src == "crossref":
+        title_list = item.get("title") or []
+        container_list = item.get("container-title") or item.get("short-container-title") or []
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(item.get("DOI", "")),
+            "title": _safe_strip(title_list[0]) if title_list else "",
+            "year": _crossref_year(item),
+            "authors": _extract_crossref_authors(item),
+            "journal": _safe_strip(container_list[0]) if container_list else "",
+            "volume": _safe_strip(item.get("volume", "")),
+            "issue": _safe_strip(item.get("issue", "")),
+            "pages": _safe_strip(item.get("page", "") or item.get("article-number", "")),
+            "publisher": _safe_strip(item.get("publisher", "")),
+            "type": _safe_strip(item.get("type", "")),
+            "url": _safe_strip(item.get("URL", "")),
+            "is_retracted": bool(item.get("relation", {}).get("is-retracted-by") or item.get("relation", {}).get("retracts")),
+        }
+
+    if src == "openalex":
+        host = item.get("primary_location", {}).get("source", {}) if isinstance(item.get("primary_location"), dict) else {}
+        biblio = item.get("biblio") or {}
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(_safe_strip(item.get("doi", "")).replace("https://doi.org/", "")),
+            "title": _safe_strip(item.get("title") or item.get("display_name")),
+            "year": _safe_strip(item.get("publication_year")),
+            "authors": _extract_openalex_authors(item),
+            "journal": _safe_strip(host.get("display_name", "")),
+            "volume": _safe_strip(biblio.get("volume", "")),
+            "issue": _safe_strip(biblio.get("issue", "")),
+            "pages": _safe_strip(biblio.get("first_page", "") or biblio.get("last_page", "")),
+            "publisher": _safe_strip(host.get("host_organization_name", "")),
+            "type": _safe_strip(item.get("type", "")),
+            "url": _safe_strip(item.get("id", "")),
+            "is_retracted": bool(item.get("is_retracted")),
+        }
+
+    if src == "datacite":
+        attrs = item.get("attributes", item)
+        titles = attrs.get("titles") or []
+        creators = attrs.get("creators") or []
+        container = attrs.get("container") or {}
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(attrs.get("doi") or item.get("id", "")),
+            "title": _safe_strip((titles[0] or {}).get("title", "") if titles else attrs.get("title", "")),
+            "year": _safe_strip(attrs.get("publicationYear", "")),
+            "authors": _candidate_authors_from_names([c.get("name", "") for c in creators if isinstance(c, dict)]),
+            "journal": _safe_strip(container.get("title", "") if isinstance(container, dict) else ""),
+            "volume": _safe_strip(container.get("volume", "") if isinstance(container, dict) else ""),
+            "issue": _safe_strip(container.get("issue", "") if isinstance(container, dict) else ""),
+            "pages": _safe_strip(container.get("firstPage", "") if isinstance(container, dict) else ""),
+            "publisher": _safe_strip(attrs.get("publisher", "")),
+            "type": _safe_strip(attrs.get("types", {}).get("resourceTypeGeneral", "") if isinstance(attrs.get("types"), dict) else ""),
+            "url": _safe_strip(attrs.get("url", "")),
+            "is_retracted": False,
+        }
+
+    if src == "semantic_scholar":
+        journal = item.get("journal") if isinstance(item.get("journal"), dict) else {}
+        ext = item.get("externalIds") or {}
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(ext.get("DOI", "")),
+            "title": _safe_strip(item.get("title", "")),
+            "year": _safe_strip(item.get("year", "")),
+            "authors": _candidate_authors_from_names([a.get("name", "") for a in item.get("authors", []) if isinstance(a, dict)]),
+            "journal": _safe_strip(journal.get("name", "") or item.get("venue", "")),
+            "volume": _safe_strip(journal.get("volume", "")),
+            "issue": "",
+            "pages": _safe_strip(journal.get("pages", "")),
+            "publisher": "",
+            "type": ", ".join(item.get("publicationTypes") or []),
+            "url": _safe_strip(item.get("url", "")),
+            "is_retracted": False,
+        }
+
+    if src == "europepmc":
+        author_string = _safe_strip(item.get("authorString", ""))
+        authors = [a.strip() for a in re.split(r",| and ", author_string) if a.strip()]
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(item.get("doi", "")),
+            "title": _safe_strip(item.get("title", "")),
+            "year": _safe_strip(item.get("pubYear", "") or item.get("firstPublicationDate", "")[:4]),
+            "authors": _candidate_authors_from_names(authors),
+            "journal": _safe_strip(item.get("journalTitle", "")),
+            "volume": _safe_strip(item.get("journalVolume", "")),
+            "issue": _safe_strip(item.get("issue", "")),
+            "pages": _safe_strip(item.get("pageInfo", "")),
+            "publisher": "",
+            "type": _safe_strip(item.get("pubType", "")),
+            "url": _safe_strip(item.get("fullTextUrlList", {}).get("fullTextUrl", [{}])[0].get("url", "") if isinstance(item.get("fullTextUrlList"), dict) else ""),
+            "is_retracted": _safe_strip(item.get("isRetracted", "")).lower() == "yes",
+        }
+
+    if src == "pubmed":
+        articleids = item.get("articleids") or []
+        doi = ""
+        for aid in articleids:
+            if aid.get("idtype") == "doi":
+                doi = aid.get("value", "")
+                break
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(doi),
+            "title": _safe_strip(item.get("title", "")),
+            "year": _safe_strip(item.get("pubdate", "")[:4]),
+            "authors": _candidate_authors_from_names([a.get("name", "") for a in item.get("authors", []) if isinstance(a, dict)]),
+            "journal": _safe_strip(item.get("fulljournalname", "") or item.get("source", "")),
+            "volume": _safe_strip(item.get("volume", "")),
+            "issue": _safe_strip(item.get("issue", "")),
+            "pages": _safe_strip(item.get("pages", "")),
+            "publisher": "",
+            "type": "journal-article",
+            "url": f"https://pubmed.ncbi.nlm.nih.gov/{item.get('uid', '')}/" if item.get("uid") else "",
+            "is_retracted": "retracted" in _safe_strip(item.get("pubtype", "")).lower(),
+        }
+
+    if src == "google_books":
+        info = item.get("volumeInfo") or {}
+        identifiers = info.get("industryIdentifiers") or []
+        isbn = ""
+        for ident in identifiers:
+            if "ISBN" in ident.get("type", ""):
+                isbn = ident.get("identifier", "")
+                break
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": "",
+            "title": _safe_strip(info.get("title", "")),
+            "year": _safe_strip(info.get("publishedDate", "")[:4]),
+            "authors": _candidate_authors_from_names(info.get("authors", []) or []),
+            "journal": "",
+            "volume": "",
+            "issue": "",
+            "pages": _safe_strip(info.get("pageCount", "")),
+            "publisher": _safe_strip(info.get("publisher", "")),
+            "type": "book",
+            "url": _safe_strip(info.get("infoLink", "")),
+            "isbn": isbn,
+            "is_retracted": False,
+        }
+
+    if src == "open_library":
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": "",
+            "title": _safe_strip(item.get("title", "")),
+            "year": _safe_strip(item.get("first_publish_year", "") or (item.get("publish_year") or [""])[0]),
+            "authors": _candidate_authors_from_names(item.get("author_name", []) or []),
+            "journal": "",
+            "volume": "",
+            "issue": "",
+            "pages": _safe_strip(item.get("number_of_pages_median", "")),
+            "publisher": _safe_strip((item.get("publisher") or [""])[0]),
+            "type": "book",
+            "url": f"https://openlibrary.org{item.get('key', '')}" if item.get("key") else "",
+            "isbn": (item.get("isbn") or [""])[0],
+            "is_retracted": False,
+        }
+
+    if src == "eric":
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(item.get("doi", "")),
+            "title": _safe_strip(item.get("title", "") or item.get("title_display", "")),
+            "year": _safe_strip(item.get("publicationdateyear", "") or item.get("publicationdate", "")[:4]),
+            "authors": _candidate_authors_from_names(item.get("author", []) if isinstance(item.get("author"), list) else [item.get("author", "")]),
+            "journal": _safe_strip(item.get("source", "") or item.get("sourceid", "")),
+            "volume": _safe_strip(item.get("volume", "")),
+            "issue": _safe_strip(item.get("issue", "")),
+            "pages": _safe_strip(item.get("pages", "")),
+            "publisher": _safe_strip(item.get("publisher", "")),
+            "type": _safe_strip(item.get("publicationtype", "")),
+            "url": _safe_strip(item.get("url", "") or item.get("pdf_url", "")),
+            "is_retracted": False,
+        }
+
+    if src == "arxiv":
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(item.get("doi", "")),
+            "title": _safe_strip(item.get("title", "")),
+            "year": _safe_strip(item.get("year", "")),
+            "authors": _candidate_authors_from_names(item.get("authors", []) or []),
+            "journal": _safe_strip(item.get("journal", "")),
+            "volume": "",
+            "issue": "",
+            "pages": "",
+            "publisher": "arXiv",
+            "type": "preprint",
+            "url": _safe_strip(item.get("url", "")),
+            "is_retracted": False,
+        }
+
+    if src == "core":
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(item.get("doi", "") or item.get("identifiers", {}).get("doi", "") if isinstance(item.get("identifiers"), dict) else ""),
+            "title": _safe_strip(item.get("title", "")),
+            "year": _safe_strip(item.get("yearPublished", "") or item.get("publishedDate", "")[:4]),
+            "authors": _candidate_authors_from_names([a.get("name", "") if isinstance(a, dict) else str(a) for a in item.get("authors", [])]),
+            "journal": _safe_strip(item.get("publisher", "") or item.get("journals", "")),
+            "volume": "",
+            "issue": "",
+            "pages": "",
+            "publisher": _safe_strip(item.get("publisher", "")),
+            "type": _safe_strip(item.get("type", "")),
+            "url": _safe_strip(item.get("downloadUrl", "") or item.get("sourceFulltextUrls", [""])[0] if isinstance(item.get("sourceFulltextUrls"), list) and item.get("sourceFulltextUrls") else ""),
+            "is_retracted": False,
+        }
+
+    if src == "doaj":
+        bibjson = item.get("bibjson", item)
+        journal = bibjson.get("journal", {}) if isinstance(bibjson.get("journal"), dict) else {}
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(";".join([i.get("id", "") for i in bibjson.get("identifier", []) if i.get("type") == "doi"])),
+            "title": _safe_strip(bibjson.get("title", "")),
+            "year": _safe_strip(bibjson.get("year", "")),
+            "authors": _candidate_authors_from_names([a.get("name", "") for a in bibjson.get("author", []) if isinstance(a, dict)]),
+            "journal": _safe_strip(journal.get("title", "")),
+            "volume": _safe_strip(journal.get("volume", "")),
+            "issue": _safe_strip(journal.get("number", "")),
+            "pages": "",
+            "publisher": _safe_strip(journal.get("publisher", "")),
+            "type": "journal-article",
+            "url": "",
+            "is_retracted": False,
+        }
+
+    return {
+        "source": src or "unknown",
+        "sources": sources,
+        "query_name": cand.get("query_name", ""),
+        "doi": "",
+        "title": _safe_strip(item.get("title", "") if isinstance(item, dict) else ""),
+        "year": "",
+        "authors": [],
+        "journal": "",
+        "volume": "",
+        "issue": "",
+        "pages": "",
+        "publisher": "",
+        "type": "",
+        "url": "",
+        "is_retracted": False,
+    }
+
+
+def _source_enabled(source: str) -> bool:
+    return {
+        "datacite": VERIFY_USE_DATACITE,
+        "europepmc": VERIFY_USE_EUROPEPMC,
+        "pubmed": VERIFY_USE_PUBMED,
+        "semantic_scholar": VERIFY_USE_SEMANTIC_SCHOLAR,
+        "google_books": VERIFY_USE_GOOGLE_BOOKS,
+        "open_library": VERIFY_USE_OPEN_LIBRARY,
+        "eric": VERIFY_USE_ERIC,
+        "arxiv": VERIFY_USE_ARXIV,
+        "core": VERIFY_USE_CORE and bool(CORE_API_KEY),
+        "doaj": VERIFY_USE_DOAJ,
+    }.get(source, False)
+
+
+def _candidate_is_strong_enough(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
+    if not candidates:
+        return False
+    try:
+        best, meta, _alts = _best_candidate(fields, candidates)
+        if not best:
+            return False
+        status, _reason = _classify_from_meta(fields, meta)
+        if status == "verified":
+            return True
+        if status == "likely" and int(meta.get("title_score", 0)) >= 90 and (int(meta.get("year_match", 0)) or int(meta.get("author_overlap", 0))):
+            return True
+        if meta.get("doi_match") and int(meta.get("title_score", 0)) >= 65:
+            return True
+    except Exception as exc:
+        _debug_multisource(f"Precheck failed: {exc}")
+    return False
+
+
+def _run_fallback_query(q: Dict[str, Any], fields: Dict[str, Any]) -> List[Dict[str, Any]]:
+    source = q.get("source")
+    if not _source_enabled(source):
+        return []
+    if source == "datacite":
+        if q.get("mode") == "doi_exact":
+            return _query_datacite_by_doi(fields.get("doi", ""))
+        return _query_datacite_search(_generic_metadata_query(fields), VERIFY_SPECIAL_ROWS)
+    if source == "semantic_scholar":
+        if q.get("mode") == "doi_exact":
+            return _query_semantic_scholar_by_doi(fields.get("doi", ""))
+        return _query_semantic_scholar_search(_generic_metadata_query(fields), VERIFY_SPECIAL_ROWS)
+    if source == "pubmed":
+        return _query_pubmed(fields, VERIFY_SPECIAL_ROWS)
+    if source == "europepmc":
+        if fields.get("pmid"):
+            query = f"EXT_ID:{fields.get('pmid')} AND SRC:MED"
+        elif fields.get("pmcid"):
+            query = f"PMCID:{fields.get('pmcid')}"
+        else:
+            query = _generic_metadata_query(fields)
+        return _query_europepmc(query, VERIFY_SPECIAL_ROWS)
+    if source == "google_books":
+        return _query_google_books(fields, VERIFY_SPECIAL_ROWS)
+    if source == "open_library":
+        return _query_open_library(fields, VERIFY_SPECIAL_ROWS)
+    if source == "eric":
+        return _query_eric(fields, VERIFY_SPECIAL_ROWS)
+    if source == "arxiv":
+        return _query_arxiv(fields, VERIFY_SPECIAL_ROWS)
+    if source == "core":
+        return _query_core(fields, VERIFY_SPECIAL_ROWS)
+    if source == "doaj":
+        return _query_doaj(fields, VERIFY_SPECIAL_ROWS)
+    return []
+
+
+def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    candidates: List[Dict[str, Any]] = []
+    query_used: List[str] = []
+    query_strategy: List[str] = []
+    fields = plan.get("fields", {})
+    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+
+    for q in sorted(plan.get("crossref_queries", []), key=lambda x: x.get("priority", 99)):
+        if not use_crossref:
+            continue
+        name = q.get("name", "crossref")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_crossref_by_doi(q.get("doi", ""))
+            else:
+                res = _query_crossref_bibliographic(
+                    q.get("query_bibliographic", ""),
+                    query_author=q.get("query_author", ""),
+                    rows=int(q.get("rows", VERIFY_CROSSREF_ROWS)),
+                    query_name=name,
+                )
+            if res:
+                candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
+            if VERIFY_STOP_ON_STRONG_MATCH and _candidate_is_strong_enough(fields, candidates):
+                return candidates, query_used, query_strategy
+        except Exception as exc:
+            print(f"[DEBUG] Crossref query failed for {name}: {exc}")
+
+    for q in sorted(plan.get("openalex_queries", []), key=lambda x: x.get("priority", 99)):
+        if not openalex_allowed:
+            continue
+        name = q.get("name", "openalex")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_openalex_by_doi(q.get("doi", ""))
+            else:
+                res = _query_openalex_search(
+                    q.get("search", ""),
+                    rows=int(q.get("rows", VERIFY_OPENALEX_ROWS)),
+                    publication_year=q.get("publication_year", ""),
+                    query_name=name,
+                )
+            if res:
+                candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("search") or "")
+            if VERIFY_STOP_ON_STRONG_MATCH and _candidate_is_strong_enough(fields, candidates):
+                return candidates, query_used, query_strategy
+        except Exception as exc:
+            print(f"[DEBUG] OpenAlex query failed for {name}: {exc}")
+
+    if not VERIFY_MULTISOURCE_FALLBACK:
+        return candidates, query_used, query_strategy
+
+    if VERIFY_MULTISOURCE_ONLY_WHEN_WEAK and _candidate_is_strong_enough(fields, candidates):
+        return candidates, query_used, query_strategy
+
+    extra_count = 0
+    for q in sorted(plan.get("fallback_queries", []), key=lambda x: x.get("priority", 99)):
+        source = q.get("source", "")
+        if not _source_enabled(source):
+            continue
+        if extra_count >= VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES:
+            break
+        try:
+            res = _run_fallback_query(q, fields)
+            query_strategy.append(q.get("name", source))
+            query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
+            extra_count += 1
+            if res:
+                candidates.extend(res)
+                if _candidate_is_strong_enough(fields, candidates):
+                    break
+        except Exception as exc:
+            print(f"[DEBUG] {source} fallback failed for {q.get('name')}: {exc}")
+
+    return candidates, query_used, query_strategy
+
+
+# Override single reference only to expose fallback query plan in the output row.
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    """Commercial-grade single reference verification with adaptive multi-source fallback."""
+    cache_key = f"commercial_multisource_v1::{style}::{use_crossref}:{use_openalex}:{enrich_metadata}::{ref}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    plan = _build_verification_query_plan(ref, style)
+    fields = plan.get("fields", {})
+    query_preview, ref_authors, _ref_year, ref_doi, title_only = _build_query(ref, style)
+
+    if VERIFY_SKIP_WEAK_TITLE and not ref_doi and _significant_word_count(title_only or fields.get("title", "")) < VERIFY_MIN_TITLE_WORDS:
+        row = _make_fast_review_row(
+            ref,
+            style,
+            query=query_preview,
+            authors=ref_authors,
+            reason="No DOI and too few significant title words for reliable commercial verification.",
+        )
+        row.update({
+            "reference_title": fields.get("title", ""),
+            "reference_year": fields.get("year", ""),
+            "reference_doi": fields.get("doi", ""),
+            "reference_journal": fields.get("journal", ""),
+            "reference_volume": fields.get("volume", ""),
+            "reference_issue": fields.get("issue", ""),
+            "reference_pages": fields.get("pages", ""),
+            "query_strategy": "fast_skip",
+            "confidence_reason": "No DOI and too few significant title words for reliable commercial verification.",
+            "alternative_matches": [],
+        })
+        row["status"] = _normalize_verify_status(row.get("status"))
+        _cache_set(cache_key, row)
+        return row
+
+    try:
+        candidates, query_used, query_strategy = _run_query_plan(plan, use_crossref, use_openalex)
+        row = _base_commercial_row(
+            ref,
+            style,
+            fields,
+            " | ".join(_dedupe_preserve(query_used)),
+            " | ".join(_dedupe_preserve(query_strategy)),
+        )
+        row["query_plan"] = {
+            "crossref": [q.get("name") for q in plan.get("crossref_queries", [])],
+            "openalex": [q.get("name") for q in plan.get("openalex_queries", [])],
+            "fallback": [q.get("name") for q in plan.get("fallback_queries", [])],
+        }
+        row["reference_isbn"] = fields.get("isbn", "")
+        row["reference_pmid"] = fields.get("pmid", "")
+        row["reference_pmcid"] = fields.get("pmcid", "")
+        row["reference_arxiv_id"] = fields.get("arxiv_id", "")
+
+        if not candidates:
+            row["status"] = "not_found"
+            row["confidence_reason"] = "No candidates returned from DOI, Crossref/OpenAlex, or adaptive fallback searches."
+            _cache_set(cache_key, row)
+            return row
+
+        best, meta, alternatives = _best_candidate(fields, candidates)
+        if not best:
+            row["status"] = "not_found"
+            row["confidence_reason"] = "Candidates were returned, but none had enough usable metadata."
+            _cache_set(cache_key, row)
+            return row
+
+        status, reason = _classify_from_meta(fields, meta)
+        author_conflict = _has_author_conflict(fields, meta)
+
+        row.update({
+            "status": status,
+            "source": "+".join(meta.get("sources") or [meta.get("source", "")]),
+            "score": int(meta.get("score", 0)),
+            "doi": _normalise_doi(meta.get("doi", "")),
+            "matched_title": _safe_strip(meta.get("title", "")),
+            "matched_year": _safe_strip(meta.get("year", "")),
+            "matched_authors": ", ".join(meta.get("authors", []) or []),
+            "matched_journal": _safe_strip(meta.get("journal", "")),
+            "matched_container_title": _safe_strip(meta.get("journal", "")),
+            "matched_volume": _safe_strip(meta.get("volume", "")),
+            "matched_issue": _safe_strip(meta.get("issue", "")),
+            "matched_pages": _safe_strip(meta.get("pages", "")),
+            "matched_publisher": _safe_strip(meta.get("publisher", "")),
+            "matched_type": _safe_strip(meta.get("type", "")),
+            "matched_url": _safe_strip(meta.get("url", "")),
+            "title_score": int(meta.get("title_score", 0)),
+            "journal_score": int(meta.get("journal_score", 0)),
+            "author_overlap": int(meta.get("author_overlap", 0)),
+            "author_similarity": int(meta.get("author_similarity", 0)),
+            "year_match": int(meta.get("year_match", 0)),
+            "year_delta": int(meta.get("year_delta", 999)),
+            "doi_match": 1 if meta.get("doi_match") else 0,
+            "volume_match": int(meta.get("volume_match", 0)),
+            "issue_match": int(meta.get("issue_match", 0)),
+            "page_match": int(meta.get("page_match", 0)),
+            "source_agreement": int(meta.get("source_agreement", 0)),
+            "author_mismatch_flag": 1 if author_conflict else 0,
+            "match_note": "Author mismatch" if author_conflict else "",
+            "confidence_reason": reason,
+            "alternative_matches": alternatives,
+        })
+
+        if enrich_metadata and row.get("doi"):
+            row = enrich_with_full_metadata(row)
+
+    except Exception as exc:
+        print(f"[DEBUG] Error verifying reference: {exc}")
+        row = _base_commercial_row(ref, style, fields, query_preview, "error")
+        row["status"] = "not_found"
+        row["error"] = str(exc)
+        row["confidence_reason"] = "Verification failed because an exception occurred."
+
+    row["status"] = _normalize_verify_status(row.get("status"))
+    _cache_set(cache_key, row)
+    return row
+
