@@ -5077,3 +5077,421 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
 
     return "not_found", "No reliable metadata match found after recall-boost queries."
 
+
+# ============================================================
+# LEAN SPEED + COVERAGE OVERRIDE v2
+# Added to fix slow verification that does not improve verified rate.
+# This final block intentionally overrides earlier ultra/recall/multisource
+# runners while preserving the public API and result schema.
+# ============================================================
+
+VERIFY_LEAN_FAST_MODE = _env_flag("VERIFY_LEAN_FAST_MODE", "1")
+VERIFY_LEAN_ROWS = int(os.getenv("VERIFY_LEAN_ROWS", "6"))
+VERIFY_LEAN_CROSSREF_TEXT_QUERIES = int(os.getenv("VERIFY_LEAN_CROSSREF_TEXT_QUERIES", "2"))
+VERIFY_LEAN_OPENALEX_TEXT_QUERIES = int(os.getenv("VERIFY_LEAN_OPENALEX_TEXT_QUERIES", "1"))
+VERIFY_LEAN_MAX_API_CALLS = int(os.getenv("VERIFY_LEAN_MAX_API_CALLS", "4"))
+VERIFY_LEAN_USE_SPECIAL_FALLBACK = _env_flag("VERIFY_LEAN_USE_SPECIAL_FALLBACK", "0")
+VERIFY_LEAN_SPECIAL_FALLBACK_ONLY_IF_EMPTY = _env_flag("VERIFY_LEAN_SPECIAL_FALLBACK_ONLY_IF_EMPTY", "1")
+VERIFY_LEAN_STORE_EVERY = int(os.getenv("VERIFY_LEAN_STORE_EVERY", "3"))
+VERIFY_LEAN_WORKERS = int(os.getenv("VERIFY_LEAN_WORKERS", os.getenv("VERIFY_INNER_THREADS", "3")))
+VERIFY_LEAN_DISABLE_ENRICH_METADATA = _env_flag("VERIFY_LEAN_DISABLE_ENRICH_METADATA", "1")
+VERIFY_LEAN_PROMOTE_STRONG_TITLE_YEAR = _env_flag("VERIFY_LEAN_PROMOTE_STRONG_TITLE_YEAR", "1")
+VERIFY_LEAN_DEBUG = _env_flag("VERIFY_LEAN_DEBUG", "0")
+
+# Hard speed guards. These override previous broad settings at runtime.
+VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "0")
+VERIFY_RETRY_FAILED = _env_flag("VERIFY_RETRY_FAILED", "0")
+VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES = int(os.getenv("VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES", "1"))
+VERIFY_SPECIAL_ROWS = min(int(os.getenv("VERIFY_SPECIAL_ROWS", "2")), 2)
+VERIFY_SPECIAL_TIMEOUT = min(int(os.getenv("VERIFY_SPECIAL_TIMEOUT", "2")), 2)
+
+
+def _lean_debug(msg: str) -> None:
+    if VERIFY_LEAN_DEBUG:
+        print(f"[LEAN_VERIFY] {msg}")
+
+
+def _lean_sort_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Prefer high-signal queries and avoid loose title-only searches."""
+    if not queries:
+        return []
+
+    preferred = {
+        "crossref_doi_exact": 0,
+        "crossref_full_bibliographic": 1,
+        "crossref_rich_bibliographic": 2,
+        "crossref_title_author_year": 3,
+        "openalex_doi_exact": 0,
+        "openalex_title_year": 1,
+        "openalex_title_only": 4,
+    }
+
+    def rank(q: Dict[str, Any]) -> Tuple[int, int]:
+        name = q.get("name", "")
+        return (preferred.get(name, 50), int(q.get("priority", 99)))
+
+    return sorted(queries, key=rank)
+
+
+def _lean_select_non_doi(queries: List[Dict[str, Any]], max_text: int) -> List[Dict[str, Any]]:
+    """Keep DOI query plus a small number of high-signal text queries."""
+    out: List[Dict[str, Any]] = []
+    text_count = 0
+    for q in _lean_sort_queries(queries):
+        if q.get("mode") == "doi_exact":
+            out.append(q)
+            continue
+        name = q.get("name", "")
+        # Avoid very loose title-only searches in the normal path.
+        if "title_only" in name and text_count > 0:
+            continue
+        if text_count >= max(0, max_text):
+            continue
+        out.append(q)
+        text_count += 1
+    return out
+
+
+def _lean_best_meta(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    try:
+        _best, meta, _alts = _best_candidate(fields, _dedupe_candidates(candidates or []))
+        return meta or {}
+    except Exception:
+        return {}
+
+
+def _lean_is_verified_like(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
+    meta = _lean_best_meta(fields, candidates)
+    if not meta:
+        return False
+    status, _reason = _classify_from_meta(fields, meta)
+    return status == "verified"
+
+
+def _lean_is_good_enough(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
+    meta = _lean_best_meta(fields, candidates)
+    if not meta:
+        return False
+    status, _reason = _classify_from_meta(fields, meta)
+    if status == "verified":
+        return True
+    title_score = int(meta.get("title_score", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    return status == "likely" and title_score >= 82 and year_delta <= 1
+
+
+def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """
+    Lean speed + coverage query runner.
+
+    Default budget:
+      1. Crossref DOI if DOI exists.
+      2. Crossref full bibliographic query.
+      3. Crossref rich/title-author-year query.
+      4. OpenAlex title-year fallback only when Crossref is not already useful.
+
+    This avoids slow multi-source loops that did not improve the verified count.
+    """
+    candidates: List[Dict[str, Any]] = []
+    query_used: List[str] = []
+    query_strategy: List[str] = []
+    fields = plan.get("fields", {}) or {}
+    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+    api_calls = 0
+    max_calls = max(1, VERIFY_LEAN_MAX_API_CALLS)
+
+    def budget_left() -> bool:
+        return api_calls < max_calls
+
+    # Crossref first. It gives the highest precision for most journal articles.
+    for q in _lean_select_non_doi(plan.get("crossref_queries", []), VERIFY_LEAN_CROSSREF_TEXT_QUERIES):
+        if not use_crossref or not budget_left():
+            break
+        name = q.get("name", "crossref")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_crossref_by_doi(q.get("doi", ""))
+            else:
+                res = _query_crossref_bibliographic(
+                    q.get("query_bibliographic", ""),
+                    query_author=q.get("query_author", ""),
+                    rows=min(max(3, VERIFY_LEAN_ROWS), max(3, int(q.get("rows", VERIFY_CROSSREF_ROWS)))),
+                    query_name=name,
+                )
+            api_calls += 1
+            if res:
+                candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
+
+            # DOI match or verified-level candidate, stop early.
+            if _lean_is_verified_like(fields, candidates):
+                return _dedupe_candidates(candidates), query_used, query_strategy
+        except Exception as exc:
+            api_calls += 1
+            _lean_debug(f"Crossref query failed for {name}: {exc}")
+
+    # OpenAlex only if Crossref has not already produced a good candidate.
+    if openalex_allowed and budget_left() and not _lean_is_good_enough(fields, candidates):
+        for q in _lean_select_non_doi(plan.get("openalex_queries", []), VERIFY_LEAN_OPENALEX_TEXT_QUERIES):
+            if not budget_left():
+                break
+            name = q.get("name", "openalex")
+            try:
+                if q.get("mode") == "doi_exact":
+                    # Avoid duplicate DOI lookup when Crossref DOI already produced candidates.
+                    if candidates and fields.get("doi"):
+                        continue
+                    res = _query_openalex_by_doi(q.get("doi", ""))
+                else:
+                    res = _query_openalex_search(
+                        q.get("search", ""),
+                        rows=min(max(3, VERIFY_LEAN_ROWS), max(3, int(q.get("rows", VERIFY_OPENALEX_ROWS)))),
+                        publication_year=q.get("publication_year", ""),
+                        query_name=name,
+                    )
+                api_calls += 1
+                if res:
+                    candidates.extend(res)
+                query_strategy.append(name)
+                query_used.append(q.get("doi") or q.get("search") or "")
+                if _lean_is_verified_like(fields, candidates):
+                    return _dedupe_candidates(candidates), query_used, query_strategy
+            except Exception as exc:
+                api_calls += 1
+                _lean_debug(f"OpenAlex query failed for {name}: {exc}")
+
+    # Special fallback is off by default. It was the main speed cost with little gain.
+    # Enable VERIFY_LEAN_USE_SPECIAL_FALLBACK=1 only after the core engine is stable.
+    if VERIFY_LEAN_USE_SPECIAL_FALLBACK and budget_left():
+        if (not VERIFY_LEAN_SPECIAL_FALLBACK_ONLY_IF_EMPTY) or not candidates:
+            for q in _prioritise_fallback_queries(plan.get("fallback_queries", []), fields, candidates)[:1]:
+                source = q.get("source", "")
+                if not _source_enabled(source):
+                    continue
+                try:
+                    res = _run_fallback_query(q, fields)
+                    api_calls += 1
+                    if res:
+                        candidates.extend(res)
+                    query_strategy.append(q.get("name", source))
+                    query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
+                    break
+                except Exception as exc:
+                    api_calls += 1
+                    _lean_debug(f"Fallback failed for {q.get('name', source)}: {exc}")
+
+    return _dedupe_candidates(candidates), query_used, query_strategy
+
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Lean commercial classifier.
+
+    The previous settings made the system slower without increasing verified count.
+    This classifier relies on high-signal bibliographic evidence and avoids harsh
+    author downgrades when title/year/journal evidence is strong.
+    """
+    title_score = int(meta.get("title_score", 0))
+    score = int(meta.get("score", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    doi_match = bool(meta.get("doi_match"))
+    source_agreement = int(meta.get("source_agreement", 1))
+    retracted = bool(meta.get("is_retracted"))
+
+    has_ref_authors = bool(ref_fields.get("authors"))
+    has_cand_authors = bool(meta.get("authors"))
+    has_ref_journal = bool(ref_fields.get("journal"))
+    author_conflict = bool(has_ref_authors and has_cand_authors and author_overlap == 0 and author_similarity < 60)
+
+    year_ok = year_match == 1 or year_delta <= 1
+    author_ok = author_overlap >= 1 or author_similarity >= 70 or not has_ref_authors or not has_cand_authors
+    journal_ok = journal_score >= 60 or not has_ref_journal
+    cross_source_ok = source_agreement >= 2
+
+    if retracted:
+        return "needs_review", "Matched record appears to be retracted and needs manual review."
+
+    if doi_match:
+        if title_score >= 55 or year_ok or author_overlap >= 1:
+            return "verified", "Exact DOI match with acceptable bibliographic support."
+        return "likely", "DOI matches, but title evidence is weak."
+
+    # Do not let imperfect author extraction suppress a strong bibliographic match.
+    if VERIFY_LEAN_PROMOTE_STRONG_TITLE_YEAR and title_score >= 90 and year_ok:
+        if journal_ok or author_ok or cross_source_ok:
+            return "verified", "Strong title and year evidence with supporting bibliographic signal."
+        return "likely", "Strong title and year evidence, but support is incomplete."
+
+    if title_score >= 86 and year_ok and (author_ok or journal_score >= 55 or cross_source_ok):
+        return "verified", "Strong title-year match with author, journal, or cross-source support."
+
+    if title_score >= 82 and year_ok and not author_conflict and (journal_ok or author_ok or cross_source_ok):
+        return "verified", "Good title-year match with no serious bibliographic conflict."
+
+    if title_score >= 80 and year_ok:
+        return "likely", "Good title and year evidence, but not enough support for automatic verification."
+
+    if title_score >= 76 and (author_overlap >= 1 or journal_score >= 65 or year_ok):
+        return "likely", "Moderate-to-strong bibliographic evidence."
+
+    if score >= 70 and title_score >= 70:
+        return "likely", "Moderate composite metadata evidence."
+
+    if title_score >= 58 or score >= 48:
+        return "needs_review", "Possible match found, but evidence is insufficient for automatic verification."
+
+    return "not_found", "No reliable metadata match found from lean verification queries."
+
+
+# Simple fast batch runner. It updates progress after every completed reference and
+# does not run extra retry loops. This keeps the frontend from sitting at 0/N.
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
+    total = len(refs)
+
+    print(f"[DEBUG] LEAN verify_references_batch called: {total} references")
+
+    if job_id:
+        try:
+            update_job_progress(job_id, 0)
+            store_verification_results(job_id, [])
+        except Exception:
+            pass
+
+    if not refs:
+        return []
+
+    rows: List[Optional[Dict[str, Any]]] = [None] * total
+    completed = 0
+    workers = max(1, min(VERIFY_LEAN_WORKERS, total))
+    start = time.time()
+
+    def run_one(idx_ref: Tuple[int, str]) -> Tuple[int, Dict[str, Any]]:
+        idx, ref = idx_ref
+        try:
+            row = _verify_single_reference(
+                ref,
+                normalized_style,
+                use_crossref,
+                use_openalex,
+                False if VERIFY_LEAN_DISABLE_ENRICH_METADATA else enrich_metadata,
+            )
+            return idx, row
+        except Exception as exc:
+            return idx, {
+                "reference": ref,
+                "style": normalized_style,
+                "status": "not_found",
+                "source": "error",
+                "score": 0,
+                "doi": "",
+                "matched_title": "",
+                "matched_year": "",
+                "matched_authors": "",
+                "title_score": 0,
+                "author_overlap": 0,
+                "author_similarity": 0,
+                "year_match": 0,
+                "query_used": "",
+                "author": "",
+                "error": str(exc),
+            }
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(run_one, item): item[0] for item in enumerate(refs)}
+        for fut in as_completed(future_map):
+            idx, row = fut.result()
+            row["status"] = _normalize_verify_status(row.get("status"))
+            rows[idx] = row
+            completed += 1
+
+            if job_id:
+                try:
+                    update_job_progress(job_id, completed)
+                    if completed % max(1, VERIFY_LEAN_STORE_EVERY) == 0 or completed == total:
+                        store_verification_results(job_id, [r for r in rows if r is not None])
+                except Exception:
+                    pass
+
+            if throttle_s:
+                time.sleep(throttle_s)
+
+    final_rows = [r for r in rows if r is not None]
+    counts = {
+        "verified": sum(1 for r in final_rows if r.get("status") == "verified"),
+        "likely": sum(1 for r in final_rows if r.get("status") == "likely"),
+        "needs_review": sum(1 for r in final_rows if r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in final_rows if r.get("status") == "not_found"),
+    }
+    print(f"[DEBUG] LEAN verification complete in {time.time() - start:.1f}s: {counts}")
+
+    if job_id:
+        try:
+            update_job_progress(job_id, total)
+            store_verification_results(job_id, final_rows)
+        except Exception:
+            pass
+
+    return final_rows
+
+
+# Legacy scorer export, kept for citation_suggester.py imports.
+def _score(
+    ref_title: str,
+    ref_authors: list = None,
+    ref_year: str = "",
+    cand_title: str = "",
+    cand_authors: list = None,
+    cand_year: str = "",
+) -> dict:
+    ref_authors = ref_authors or []
+    cand_authors = cand_authors or []
+    ref_title_norm = _norm_text(ref_title or "")
+    cand_title_norm = _norm_text(cand_title or "")
+
+    if ref_title_norm and cand_title_norm:
+        token_score = fuzz.token_sort_ratio(ref_title_norm, cand_title_norm)
+        set_score = fuzz.token_set_ratio(ref_title_norm, cand_title_norm)
+        partial_score = fuzz.partial_ratio(ref_title_norm, cand_title_norm)
+        title_score = int((token_score * 0.45) + (set_score * 0.35) + (partial_score * 0.20))
+    else:
+        title_score = 0
+
+    ref_author_set = set([_norm_text(a) for a in ref_authors if a])
+    cand_author_set = set([_norm_text(a) for a in cand_authors if a])
+    if ref_author_set and cand_author_set:
+        author_overlap = len(ref_author_set & cand_author_set)
+        union = len(ref_author_set | cand_author_set)
+        author_similarity = int((author_overlap / union) * 100) if union else 0
+    else:
+        author_overlap = 0
+        author_similarity = 0
+
+    year_match = 1 if ref_year and cand_year and str(ref_year)[:4] == str(cand_year)[:4] else 0
+    score = int((title_score * 0.65) + (author_similarity * 0.25) + (year_match * 10))
+    if author_overlap >= 1:
+        score += 5
+    if author_overlap >= 2:
+        score += 8
+
+    return {
+        "score": int(score),
+        "title_score": int(title_score),
+        "author_overlap": int(author_overlap),
+        "author_similarity": int(author_similarity),
+        "year_match": int(year_match),
+    }
