@@ -5758,3 +5758,162 @@ try:
 except Exception:
     pass
 
+
+# ============================================================
+# FINGERPRINT BALANCED QUERY + PROMOTION OVERRIDE v4
+# Added after testing showed validation plateaued at 9 instead of the
+# previous 18. The earlier fingerprint patch worked, but in lean mode the
+# second Crossref call was often the journal fingerprint. Journal extraction is
+# noisy, so it wasted the second query. This final override keeps the fast
+# fingerprint first, then tries the repaired author-year and/or full reference
+# before journal-heavy queries. It also avoids stopping on a weak "likely"
+# Crossref candidate before OpenAlex can provide source agreement.
+# ============================================================
+
+VERIFY_BALANCED_PROMOTION = _env_flag("VERIFY_BALANCED_PROMOTION", "1")
+VERIFY_BALANCED_VERIFY_TITLE_YEAR = int(os.getenv("VERIFY_BALANCED_VERIFY_TITLE_YEAR", "88"))
+VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT = int(os.getenv("VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT", "84"))
+VERIFY_BALANCED_OPENALEX_ON_LIKELY = _env_flag("VERIFY_BALANCED_OPENALEX_ON_LIKELY", "1")
+
+
+def _lean_sort_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Balanced final lean order.
+
+    Order is designed for high Crossref hit-rate without more calls:
+      1. DOI exact
+      2. compact title + first author + year
+      3. repaired title + first author + year
+      4. full bibliographic reference
+      5. rich bibliographic
+      6. title + journal + year
+      7. journal fingerprint
+    """
+    if not queries:
+        return []
+
+    preferred = {
+        "crossref_doi_exact": 0,
+        "crossref_fingerprint_title_author_year": 1,
+        "crossref_title_author_year_repaired": 2,
+        "crossref_title_author_year": 3,
+        "crossref_full_bibliographic": 4,
+        "crossref_rich_bibliographic": 5,
+        "crossref_title_journal_year": 6,
+        "crossref_fingerprint_title_journal_year": 7,
+        "openalex_doi_exact": 0,
+        "openalex_title_year": 1,
+        "openalex_title_journal": 2,
+        "openalex_title_only": 5,
+    }
+
+    def rank(q: Dict[str, Any]) -> Tuple[int, int]:
+        return (preferred.get(_safe_strip(q.get("name", "")), 50), int(q.get("priority", 99)))
+
+    return sorted(queries or [], key=rank)
+
+
+def _recall_select_crossref_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Recall selector using the same balanced Crossref order as lean mode."""
+    ordered = _lean_sort_queries(queries or [])
+    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
+    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
+    selected = text_queries[:max(0, VERIFY_RECALL_CROSSREF_TEXT_QUERIES)]
+    return doi_queries + selected
+
+
+def _lean_is_good_enough(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
+    """Do not stop on ordinary likely matches.
+
+    The previous lean gate skipped OpenAlex when Crossref returned a likely
+    candidate. That kept many good records at likely instead of verified. Stop
+    only for verified, or for extremely strong likely evidence.
+    """
+    meta = _lean_best_meta(fields, candidates)
+    if not meta:
+        return False
+    status, _reason = _classify_from_meta(fields, meta)
+    if status == "verified":
+        return True
+    if not VERIFY_BALANCED_OPENALEX_ON_LIKELY:
+        title_score = int(meta.get("title_score", 0))
+        year_delta = int(meta.get("year_delta", 999))
+        return status == "likely" and title_score >= 90 and year_delta <= 1
+    return False
+
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    """Balanced classifier to recover valid references without making searches slower."""
+    title_score = int(meta.get("title_score", 0))
+    score = int(meta.get("score", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    doi_match = bool(meta.get("doi_match"))
+    source_agreement = int(meta.get("source_agreement", 1))
+    retracted = bool(meta.get("is_retracted"))
+
+    has_ref_authors = bool(ref_fields.get("authors"))
+    has_cand_authors = bool(meta.get("authors"))
+    author_conflict = bool(has_ref_authors and has_cand_authors and author_overlap == 0 and author_similarity < 55)
+
+    year_ok = year_match == 1 or year_delta <= 1
+    author_ok = author_overlap >= 1 or author_similarity >= 68 or not has_ref_authors or not has_cand_authors
+    journal_ok = journal_score >= 58
+    cross_source_ok = source_agreement >= 2
+
+    if retracted:
+        return "needs_review", "Matched record appears to be retracted and needs manual review."
+
+    if doi_match:
+        if title_score >= 50 or year_ok or author_overlap >= 1:
+            return "verified", "Exact DOI match with acceptable bibliographic support."
+        return "likely", "DOI matches, but title evidence is weak."
+
+    # Author extraction is often the weak point. Only treat it as blocking when
+    # title/year evidence is not strong enough.
+    if author_conflict:
+        if title_score >= 92 and year_ok and (journal_ok or cross_source_ok):
+            return "verified", "Very strong title-year evidence with journal or cross-source support despite author mismatch."
+        if title_score >= 86 and year_ok and journal_score >= 70:
+            return "verified", "Strong title, year and journal evidence despite author mismatch."
+        if title_score >= 80 and year_ok:
+            return "likely", "Strong title-year evidence, but author names do not overlap."
+        if title_score >= 65 or score >= 55:
+            return "needs_review", "Possible match found, but author names do not overlap."
+        return "not_found", "Candidates were found, but author and title evidence were too weak."
+
+    if VERIFY_BALANCED_PROMOTION and title_score >= VERIFY_BALANCED_VERIFY_TITLE_YEAR and year_ok:
+        return "verified", "Strong title and year evidence."
+
+    if title_score >= VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT and year_ok and (author_ok or journal_ok or cross_source_ok):
+        return "verified", "Good title-year match with supporting author, journal, or source evidence."
+
+    if title_score >= 82 and year_match == 1 and (author_ok or journal_ok or cross_source_ok):
+        return "verified", "Good title and exact year evidence with supporting metadata."
+
+    if score >= 84 and title_score >= 80 and year_ok and (author_ok or journal_ok or cross_source_ok):
+        return "verified", "High composite bibliographic evidence."
+
+    if title_score >= 78 and year_ok:
+        return "likely", "Good title and year evidence, but not enough support for automatic verification."
+
+    if title_score >= 74 and (author_overlap >= 1 or journal_score >= 65 or year_ok):
+        return "likely", "Moderate-to-strong bibliographic evidence."
+
+    if score >= 68 and title_score >= 68:
+        return "likely", "Moderate composite metadata evidence."
+
+    if title_score >= 56 or score >= 45:
+        return "needs_review", "Possible match found, but evidence is insufficient for automatic verification."
+
+    return "not_found", "No reliable metadata match found from balanced verification queries."
+
+try:
+    if "__all__" in globals():
+        for name in ["_lean_sort_queries", "_recall_select_crossref_queries", "_classify_from_meta"]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
