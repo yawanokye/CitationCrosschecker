@@ -4266,3 +4266,491 @@ try:
         __all__.append("_score")
 except Exception:
     pass
+
+
+# ============================================================
+# ULTRA-FAST PRODUCTION OVERRIDE
+# Added to make verification start faster and finish with fewer API calls.
+# Public API is preserved: verify_references_batch, submit_verification,
+# get_verification_status, get_verification_results and _score remain available.
+# ============================================================
+
+VERIFY_ULTRA_FAST_MODE = _env_flag("VERIFY_ULTRA_FAST_MODE", "1")
+VERIFY_ULTRA_WORKERS = int(os.getenv("VERIFY_ULTRA_WORKERS", os.getenv("VERIFY_INNER_THREADS", "3")))
+VERIFY_ULTRA_MAX_API_CALLS_PER_REF = int(os.getenv("VERIFY_ULTRA_MAX_API_CALLS_PER_REF", "3"))
+VERIFY_ULTRA_CROSSREF_TEXT_QUERIES = int(os.getenv("VERIFY_ULTRA_CROSSREF_TEXT_QUERIES", "1"))
+VERIFY_ULTRA_OPENALEX_TEXT_QUERIES = int(os.getenv("VERIFY_ULTRA_OPENALEX_TEXT_QUERIES", "1"))
+VERIFY_ULTRA_FALLBACK_QUERIES = int(os.getenv("VERIFY_ULTRA_FALLBACK_QUERIES", "1"))
+VERIFY_ULTRA_STORE_EVERY = int(os.getenv("VERIFY_ULTRA_STORE_EVERY", "3"))
+VERIFY_ULTRA_CACHE_SECONDS = int(os.getenv("VERIFY_ULTRA_CACHE_SECONDS", "21600"))
+VERIFY_ULTRA_FAST_API_TIMEOUT = float(os.getenv("VERIFY_ULTRA_FAST_API_TIMEOUT", "3"))
+VERIFY_ULTRA_DISABLE_ENRICH_METADATA = _env_flag("VERIFY_ULTRA_DISABLE_ENRICH_METADATA", "1")
+VERIFY_ULTRA_SKIP_OPENALEX_WHEN_CROSSREF_CANDIDATE = _env_flag("VERIFY_ULTRA_SKIP_OPENALEX_WHEN_CROSSREF_CANDIDATE", "1")
+VERIFY_ULTRA_FALLBACK_ONLY_IF_NO_CANDIDATE = _env_flag("VERIFY_ULTRA_FALLBACK_ONLY_IF_NO_CANDIDATE", "1")
+
+# Production-fast defaults. Env values can still override these before import.
+VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "0")
+VERIFY_STOP_ON_STRONG_MATCH = _env_flag("VERIFY_STOP_ON_STRONG_MATCH", "1")
+VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES = min(
+    int(os.getenv("VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES", str(VERIFY_ULTRA_FALLBACK_QUERIES))),
+    max(0, VERIFY_ULTRA_FALLBACK_QUERIES),
+)
+VERIFY_SPECIAL_ROWS = min(int(os.getenv("VERIFY_SPECIAL_ROWS", "2")), 2)
+VERIFY_SPECIAL_TIMEOUT = min(int(os.getenv("VERIFY_SPECIAL_TIMEOUT", "2")), 2)
+VERIFY_CROSSREF_ROWS = min(int(os.getenv("VERIFY_CROSSREF_ROWS", "5")), 5)
+VERIFY_OPENALEX_ROWS = min(int(os.getenv("VERIFY_OPENALEX_ROWS", "3")), 3)
+VERIFY_TITLE_ROWS = min(int(os.getenv("VERIFY_TITLE_ROWS", "3")), 3)
+
+# Semantic Scholar can be slow or rate-limited. Keep it opt-in unless explicitly set.
+VERIFY_USE_SEMANTIC_SCHOLAR = _env_flag("VERIFY_USE_SEMANTIC_SCHOLAR", "0")
+VERIFY_USE_CORE = _env_flag("VERIFY_USE_CORE", "0")
+VERIFY_USE_DOAJ = _env_flag("VERIFY_USE_DOAJ", "0")
+
+_JSON_CACHE: Dict[str, Tuple[float, Optional[dict]]] = {}
+_JSON_CACHE_LOCK = threading.Lock()
+_THREAD_LOCAL = threading.local()
+
+
+def _json_cache_key(url: str, params: Optional[dict]) -> str:
+    if not params:
+        return url
+    try:
+        items = sorted((str(k), str(v)) for k, v in params.items())
+        return url + "?" + "&".join(f"{k}={v}" for k, v in items)
+    except Exception:
+        return url + "?" + str(params)
+
+
+def _get_http_session():
+    session = getattr(_THREAD_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        try:
+            adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=0)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+        except Exception:
+            pass
+        _THREAD_LOCAL.session = session
+    return session
+
+
+def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
+    """
+    Faster cached HTTP getter.
+    - Reuses connections per worker thread.
+    - Caches identical API calls during and across jobs.
+    - Uses a short timeout in ultra-fast mode.
+    - Does not sleep on failures.
+    """
+    if timeout is None:
+        timeout = min(float(API_TIMEOUT), VERIFY_ULTRA_FAST_API_TIMEOUT) if VERIFY_ULTRA_FAST_MODE else API_TIMEOUT
+
+    key = _json_cache_key(url, params)
+    now = time.time()
+
+    if VERIFY_ULTRA_CACHE_SECONDS > 0:
+        with _JSON_CACHE_LOCK:
+            cached = _JSON_CACHE.get(key)
+            if cached and now - cached[0] <= VERIFY_ULTRA_CACHE_SECONDS:
+                return cached[1]
+
+    try:
+        headers = {
+            "User-Agent": f"CitationCrosschecker/3.0 (mailto:{MAILTO})",
+            "Accept": "application/json",
+        }
+        response = _get_http_session().get(url, params=params, timeout=timeout, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+        else:
+            data = None
+    except Exception as exc:
+        print(f"[DEBUG] Fast API request failed: {exc}")
+        data = None
+
+    if VERIFY_ULTRA_CACHE_SECONDS > 0:
+        with _JSON_CACHE_LOCK:
+            if len(_JSON_CACHE) > 5000:
+                _JSON_CACHE.clear()
+            _JSON_CACHE[key] = (now, data)
+
+    return data
+
+
+def _ultra_candidate_is_useful(fields: Dict[str, Any], candidates: List[Dict[str, Any]], likely_threshold: int = 82) -> bool:
+    if not candidates:
+        return False
+    try:
+        _best, meta, _alts = _best_candidate(fields, candidates)
+        if not meta:
+            return False
+        if meta.get("doi_match"):
+            return True
+        if int(meta.get("title_score", 0)) >= likely_threshold and (
+            int(meta.get("year_match", 0)) == 1
+            or int(meta.get("author_overlap", 0)) >= 1
+            or int(meta.get("journal_score", 0)) >= VERIFY_THRESHOLD_JOURNAL_SUPPORT
+        ):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _ultra_select_queries(queries: List[Dict[str, Any]], max_text: int) -> List[Dict[str, Any]]:
+    """Keep DOI exact queries and only the strongest text queries."""
+    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
+    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
+    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
+
+    preferred_names = [
+        "crossref_full_bibliographic",
+        "crossref_rich_bibliographic",
+        "crossref_title_author_year",
+        "crossref_title_journal_year",
+        "openalex_title_year",
+        "openalex_title_only",
+    ]
+
+    selected_text: List[Dict[str, Any]] = []
+    for name in preferred_names:
+        for q in text_queries:
+            if q.get("name") == name and q not in selected_text:
+                selected_text.append(q)
+                break
+        if len(selected_text) >= max_text:
+            break
+
+    for q in text_queries:
+        if len(selected_text) >= max_text:
+            break
+        if q not in selected_text:
+            selected_text.append(q)
+
+    return doi_queries + selected_text[:max_text]
+
+
+def _ultra_select_fallback_queries(queries: List[Dict[str, Any]], fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not queries or VERIFY_ULTRA_FALLBACK_QUERIES <= 0:
+        return []
+    if VERIFY_ULTRA_FALLBACK_ONLY_IF_NO_CANDIDATE and candidates:
+        return []
+    if VERIFY_MULTISOURCE_ONLY_WHEN_WEAK and _ultra_candidate_is_useful(fields, candidates, likely_threshold=78):
+        return []
+
+    flags = fields.get("reference_type_flags", {}) or {}
+    source_order: List[str] = []
+
+    if fields.get("doi"):
+        source_order.append("datacite")
+    if flags.get("looks_health") or fields.get("pmid") or fields.get("pmcid"):
+        source_order.extend(["pubmed", "europepmc"])
+    if flags.get("looks_book") or fields.get("isbn"):
+        source_order.extend(["google_books", "open_library"])
+    if flags.get("looks_arxiv") or fields.get("arxiv_id"):
+        source_order.append("arxiv")
+    if flags.get("looks_education"):
+        source_order.append("eric")
+    if flags.get("looks_dataset_repo"):
+        source_order.append("datacite")
+
+    # Generic fallback is last and only when explicitly enabled.
+    if VERIFY_USE_SEMANTIC_SCHOLAR and not candidates:
+        source_order.append("semantic_scholar")
+
+    seen = set()
+    selected: List[Dict[str, Any]] = []
+    for source in source_order:
+        if source in seen or not _source_enabled(source):
+            continue
+        seen.add(source)
+        for q in sorted(queries, key=lambda x: x.get("priority", 99)):
+            if q.get("source") == source:
+                selected.append(q)
+                break
+        if len(selected) >= VERIFY_ULTRA_FALLBACK_QUERIES:
+            break
+    return selected
+
+
+def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """
+    Ultra-fast query runner.
+    Normal path is 1 to 3 API calls per reference:
+      1. DOI lookup if DOI exists, or one Crossref bibliographic query.
+      2. One OpenAlex query only if Crossref is weak.
+      3. One type-specific fallback only when still needed.
+    """
+    candidates: List[Dict[str, Any]] = []
+    query_used: List[str] = []
+    query_strategy: List[str] = []
+    fields = plan.get("fields", {}) or {}
+    api_calls = 0
+    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+
+    def budget_left() -> bool:
+        return api_calls < max(1, VERIFY_ULTRA_MAX_API_CALLS_PER_REF)
+
+    # Crossref, DOI plus one bibliographic query.
+    for q in _ultra_select_queries(plan.get("crossref_queries", []), VERIFY_ULTRA_CROSSREF_TEXT_QUERIES):
+        if not use_crossref or not budget_left():
+            break
+        name = q.get("name", "crossref")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_crossref_by_doi(q.get("doi", ""))
+            else:
+                res = _query_crossref_bibliographic(
+                    q.get("query_bibliographic", ""),
+                    query_author=q.get("query_author", ""),
+                    rows=min(int(q.get("rows", VERIFY_CROSSREF_ROWS)), VERIFY_CROSSREF_ROWS),
+                    query_name=name,
+                )
+            api_calls += 1
+            if res:
+                candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
+            if _ultra_candidate_is_useful(fields, candidates, likely_threshold=84):
+                return _dedupe_candidates(candidates), query_used, query_strategy
+        except Exception as exc:
+            print(f"[DEBUG] Ultra Crossref query failed for {name}: {exc}")
+
+    # Skip OpenAlex when Crossref already returned a decent candidate and the user wants speed.
+    if VERIFY_ULTRA_SKIP_OPENALEX_WHEN_CROSSREF_CANDIDATE and candidates:
+        if _ultra_candidate_is_useful(fields, candidates, likely_threshold=75):
+            return _dedupe_candidates(candidates), query_used, query_strategy
+
+    # OpenAlex, one query only.
+    for q in _ultra_select_queries(plan.get("openalex_queries", []), VERIFY_ULTRA_OPENALEX_TEXT_QUERIES):
+        if not openalex_allowed or not budget_left():
+            break
+        name = q.get("name", "openalex")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_openalex_by_doi(q.get("doi", ""))
+            else:
+                res = _query_openalex_search(
+                    q.get("search", ""),
+                    rows=min(int(q.get("rows", VERIFY_OPENALEX_ROWS)), VERIFY_OPENALEX_ROWS),
+                    publication_year=q.get("publication_year", ""),
+                    query_name=name,
+                )
+            api_calls += 1
+            if res:
+                candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("search") or "")
+            if _ultra_candidate_is_useful(fields, candidates, likely_threshold=84):
+                return _dedupe_candidates(candidates), query_used, query_strategy
+        except Exception as exc:
+            print(f"[DEBUG] Ultra OpenAlex query failed for {name}: {exc}")
+
+    # One adaptive fallback only when useful.
+    if VERIFY_MULTISOURCE_FALLBACK and budget_left():
+        fallback_queries = _ultra_select_fallback_queries(plan.get("fallback_queries", []), fields, candidates)
+        for q in fallback_queries[:VERIFY_ULTRA_FALLBACK_QUERIES]:
+            if not budget_left():
+                break
+            source = q.get("source", "")
+            if not _source_enabled(source):
+                continue
+            try:
+                res = _run_fallback_query(q, fields)
+                api_calls += 1
+                if res:
+                    candidates.extend(res)
+                query_strategy.append(q.get("name", source))
+                query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
+                if _ultra_candidate_is_useful(fields, candidates, likely_threshold=82):
+                    break
+            except Exception as exc:
+                print(f"[DEBUG] Ultra fallback failed for {q.get('name', source)}: {exc}")
+
+    return _dedupe_candidates(candidates), query_used, query_strategy
+
+
+_original_verify_single_reference_ultra = _verify_single_reference
+
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    """Ultra-fast wrapper around the commercial verifier."""
+    effective_enrich = bool(enrich_metadata and not VERIFY_ULTRA_DISABLE_ENRICH_METADATA)
+    return _original_verify_single_reference_ultra(ref, style, use_crossref, use_openalex, effective_enrich)
+
+
+def _make_timeout_row(ref: str, style: str, error: str = "Verification timeout") -> Dict[str, Any]:
+    return {
+        "reference": ref,
+        "style": style,
+        "status": "not_found",
+        "source": "timeout",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "matched_journal": "",
+        "title_score": 0,
+        "journal_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "query_used": "",
+        "query_strategy": "timeout",
+        "author": "",
+        "author_mismatch_flag": 0,
+        "match_note": error,
+        "confidence_reason": error,
+        "error": error,
+        "alternative_matches": [],
+        "correction_suggestions": [],
+    }
+
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Ultra-fast batch verifier.
+    It preserves the public signature but avoids slow chunk waits.
+    Progress is updated after every completed reference.
+    """
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
+    total = len(refs)
+
+    print(f"[DEBUG] ⚡ ultra verify_references_batch called: {total} references, style={normalized_style}, job_id={job_id}")
+
+    if job_id:
+        try:
+            update_job_progress(job_id, 0)
+            store_verification_results(job_id, [])
+        except Exception:
+            pass
+
+    if not refs:
+        return []
+
+    rows: List[Optional[Dict[str, Any]]] = [None] * total
+    workers = max(1, min(VERIFY_ULTRA_WORKERS, total))
+    completed = 0
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(
+                _verify_single_reference_with_retry,
+                ref,
+                normalized_style,
+                use_crossref,
+                use_openalex,
+                bool(enrich_metadata and not VERIFY_ULTRA_DISABLE_ENRICH_METADATA),
+            ): (idx, ref)
+            for idx, ref in enumerate(refs)
+        }
+
+        for future in as_completed(future_map):
+            idx, ref = future_map[future]
+            try:
+                rows[idx] = future.result(timeout=max(3, int(VERIFY_SINGLE_REF_TIMEOUT)))
+            except Exception as exc:
+                print(f"[DEBUG] Ultra verification failed for ref {idx + 1}: {exc}")
+                rows[idx] = _make_timeout_row(ref, normalized_style, str(exc))
+
+            completed += 1
+            if job_id:
+                try:
+                    update_job_progress(job_id, completed)
+                    if completed % max(1, VERIFY_ULTRA_STORE_EVERY) == 0 or completed == total:
+                        store_verification_results(job_id, [r for r in rows if r is not None])
+                except Exception:
+                    pass
+
+            if throttle_s:
+                time.sleep(float(throttle_s))
+
+    final_rows = [r if r is not None else _make_timeout_row(refs[i], normalized_style, "No result returned") for i, r in enumerate(rows)]
+
+    counts = {
+        "verified": sum(1 for r in final_rows if r.get("status") == "verified"),
+        "likely": sum(1 for r in final_rows if r.get("status") == "likely"),
+        "needs_review": sum(1 for r in final_rows if r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in final_rows if r.get("status") == "not_found"),
+    }
+    print(f"[DEBUG] ⚡ ultra verification complete: {counts}")
+
+    if job_id:
+        try:
+            update_job_progress(job_id, total)
+            store_verification_results(job_id, final_rows)
+        except Exception:
+            pass
+
+    return final_rows
+
+
+# Keep legacy direct import working for citation_suggester.py.
+def _score(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    cand_title: str,
+    cand_authors: List[str],
+    cand_year: str,
+) -> Dict[str, Any]:
+    ref_title_n = _norm_text(ref_title)
+    cand_title_n = _norm_text(cand_title)
+
+    token_score = fuzz.token_sort_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
+    set_score = fuzz.token_set_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
+    partial_score = fuzz.partial_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
+    title_score = int((token_score * 0.45) + (set_score * 0.35) + (partial_score * 0.20))
+
+    ref_author_set = {re.sub(r"[^a-z'\-]", "", _safe_strip(a).lower()) for a in (ref_authors or []) if _safe_strip(a)}
+    cand_author_set = {re.sub(r"[^a-z'\-]", "", _safe_strip(a).lower()) for a in (cand_authors or []) if _safe_strip(a)}
+    ref_author_set.discard("")
+    cand_author_set.discard("")
+
+    if ref_author_set and cand_author_set:
+        intersection = len(ref_author_set & cand_author_set)
+        union = len(ref_author_set | cand_author_set)
+        author_similarity = int((intersection / union) * 100) if union else 0
+        author_overlap = intersection
+    else:
+        author_similarity = 0
+        author_overlap = 0
+
+    year_match = 1 if ref_year and cand_year and _safe_str(ref_year)[:4] == _safe_str(cand_year)[:4] else 0
+    score = int((title_score * 0.65) + (author_similarity * 0.25) + (year_match * 10))
+    if author_overlap >= 1:
+        score += 5
+    if author_overlap >= 2:
+        score += 8
+
+    return {
+        "score": int(score),
+        "title_score": int(title_score),
+        "author_overlap": int(author_overlap),
+        "author_similarity": int(author_similarity),
+        "year_match": int(year_match),
+    }
+
+try:
+    if "__all__" in globals():
+        for name in ["_score", "verify_references_batch"]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
