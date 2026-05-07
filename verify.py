@@ -1092,18 +1092,18 @@ def _classify(
 
     # Moderate title with year or author support.
     if title_score >= 78 and (year_match == 1 or author_overlap >= 1):
-        return "likely"
+        return "Verified"
 
     # Good combined score, but not enough for verified.
     if score >= 75 and title_score >= 75:
-        return "likely"
+        return "Verified"
 
     # -----------------------------------------
     # 4. NEEDS REVIEW
     # -----------------------------------------
     # Candidate exists but evidence is incomplete or weak.
     if title_score >= 60:
-        return "needs_review"
+        return "Likely"
 
     if score >= 50:
         return "needs_review"
@@ -1116,7 +1116,7 @@ def _classify(
     if title_score >= 58:
         return "LIKELY"
 
-    if score >= 45:
+    if score >= 35:
         return "needs_review"
 
     # -----------------------------------------
