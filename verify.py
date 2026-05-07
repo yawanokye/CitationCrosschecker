@@ -5495,3 +5495,266 @@ def _score(
         "author_similarity": int(author_similarity),
         "year_match": int(year_match),
     }
+
+# ============================================================
+# CROSSREF FINGERPRINT QUERY ORDER OVERRIDE v3
+# Added to improve Crossref success without increasing rows/timeouts.
+# Public API is unchanged. This makes the first Crossref text query:
+#   title core keywords + first author + year
+# Example:
+#   sample size determination survey research adam 2020
+# ============================================================
+
+try:
+    _previous_build_verification_query_plan_fingerprint = _build_verification_query_plan
+except Exception:
+    _previous_build_verification_query_plan_fingerprint = None
+
+
+def _fingerprint_title_key_for_crossref(title: str, limit: int = 8) -> str:
+    """Compact high-signal title key for Crossref query.bibliographic.
+
+    This deliberately keeps words such as "research" when they are part of
+    title phrases like "survey research". It avoids the broader query stopword
+    list because that list can remove useful title fingerprints.
+    """
+    title = _clean_query_text(title or "") if "_clean_query_text" in globals() else _safe_strip(title or "")
+    raw_words = re.findall(r"[A-Za-z0-9]{3,}", title)
+
+    # Smaller stoplist for fingerprint queries. Keep research, survey, sample,
+    # determination, etc., because they can distinguish a specific title.
+    fingerprint_stop = {
+        "and", "the", "with", "from", "into", "using", "that", "this",
+        "their", "these", "those", "among", "across", "journal",
+        "article", "paper", "available", "retrieved", "accessed",
+        "press", "university", "publisher", "page", "pages",
+    }
+
+    selected = []
+    for w in raw_words:
+        wl = _safe_strip(w).lower()
+        if not wl or wl in fingerprint_stop:
+            continue
+        selected.append(wl)
+        if len(selected) >= limit:
+            break
+    return " ".join(selected).strip()
+
+
+def _build_crossref_fingerprint_query(fields: Dict[str, Any], include_journal: bool = False) -> str:
+    """
+    Build compact Crossref query.
+
+    Preferred example:
+        Adam, A. M. (2020). Sample size determination in survey research.
+    becomes:
+        sample size determination survey research adam 2020
+    """
+    title = fields.get("title", "") or ""
+    authors = fields.get("authors", []) or []
+    year = fields.get("year", "") or ""
+    journal = fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", "") or ""
+
+    first_author = _safe_strip(authors[0]) if authors else ""
+    title_key = _fingerprint_title_key_for_crossref(title, limit=8)
+
+    if include_journal:
+        journal_words = _significant_title_words(journal, limit=6)
+        journal_key = " ".join(journal_words[:5]).strip()
+        parts = [title_key, journal_key, year]
+    else:
+        parts = [title_key, first_author, year]
+
+    query = " ".join([_safe_strip(p) for p in parts if _safe_strip(p)]).strip()
+    query = re.sub(r"\s+", " ", query)
+    return query
+
+
+def _dedupe_query_plan_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for q in items or []:
+        key = (
+            q.get("name", ""),
+            q.get("mode", ""),
+            q.get("doi", ""),
+            q.get("query_bibliographic", ""),
+            q.get("query_author", ""),
+            q.get("search", ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+    return out
+
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    """
+    Override the previous plan by putting Crossref fingerprint searches first.
+    This improves success rate more than adding rows or more databases.
+    """
+    if _previous_build_verification_query_plan_fingerprint:
+        plan = _previous_build_verification_query_plan_fingerprint(ref, style)
+    else:
+        # Safe fallback, should rarely be used.
+        fields = _extract_fields_by_style(ref, style)
+        plan = {"reference": ref, "style": style, "fields": fields, "crossref_queries": [], "openalex_queries": [], "fallback_queries": []}
+
+    fields = plan.get("fields", {}) or {}
+    authors = fields.get("authors", []) or []
+    first_author = _safe_strip(authors[0]) if authors else ""
+    year = _safe_strip(fields.get("year", "") or "")
+    doi = _normalise_doi(fields.get("doi", "") or "") if "_normalise_doi" in globals() else _safe_strip(fields.get("doi", ""))
+    title = fields.get("title", "") or ""
+    journal = fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", "") or ""
+
+    old_crossref = plan.get("crossref_queries", []) or []
+    doi_queries = [q for q in old_crossref if q.get("mode") == "doi_exact"]
+    old_text = [q for q in old_crossref if q.get("mode") != "doi_exact"]
+
+    # Ensure DOI query exists and remains first when DOI is available.
+    if doi and not any(q.get("mode") == "doi_exact" and _safe_strip(q.get("doi")) == doi for q in doi_queries):
+        doi_queries.insert(0, {"name": "crossref_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 0})
+
+    fingerprint = _build_crossref_fingerprint_query(fields, include_journal=False)
+    journal_fingerprint = _build_crossref_fingerprint_query(fields, include_journal=True)
+
+    new_text: List[Dict[str, Any]] = []
+
+    if fingerprint:
+        new_text.append({
+            "name": "crossref_fingerprint_title_author_year",
+            "mode": "bibliographic",
+            "query_bibliographic": fingerprint,
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 1,
+        })
+
+    if journal_fingerprint and journal:
+        new_text.append({
+            "name": "crossref_fingerprint_title_journal_year",
+            "mode": "bibliographic",
+            "query_bibliographic": journal_fingerprint,
+            "query_author": "",
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 2,
+        })
+
+    # Keep the older title-author query, but repair it by adding the first author
+    # inside query.bibliographic, not only in query.author.
+    for q in old_text:
+        name = q.get("name", "")
+        if name == "crossref_title_author_year":
+            repaired = dict(q)
+            repaired["name"] = "crossref_title_author_year_repaired"
+            old_bib = _safe_strip(repaired.get("query_bibliographic", ""))
+            if first_author and first_author.lower() not in old_bib.lower().split():
+                old_bib = " ".join([old_bib, first_author]).strip()
+            if year and year not in old_bib:
+                old_bib = " ".join([old_bib, year]).strip()
+            repaired["query_bibliographic"] = re.sub(r"\s+", " ", old_bib).strip()
+            repaired["query_author"] = first_author
+            repaired["priority"] = 3
+            new_text.append(repaired)
+            break
+
+    # Full and rich bibliographic are useful fallbacks but should not run before
+    # the compact fingerprint in lean mode.
+    for wanted_name, priority in [
+        ("crossref_full_bibliographic", 4),
+        ("crossref_rich_bibliographic", 5),
+        ("crossref_title_journal_year", 6),
+    ]:
+        for q in old_text:
+            if q.get("name") == wanted_name:
+                qq = dict(q)
+                qq["priority"] = priority
+                new_text.append(qq)
+                break
+
+    # Preserve any other Crossref query as last-resort, but after the new order.
+    used_names = {q.get("name") for q in new_text}
+    for q in old_text:
+        if q.get("name") in used_names:
+            continue
+        qq = dict(q)
+        qq["priority"] = int(qq.get("priority", 99)) + 20
+        new_text.append(qq)
+
+    plan["crossref_queries"] = _dedupe_query_plan_items(doi_queries + sorted(new_text, key=lambda q: q.get("priority", 99)))
+    plan.setdefault("fields", fields)
+    plan["fields"]["crossref_fingerprint_query"] = fingerprint
+    plan["fields"]["crossref_journal_fingerprint_query"] = journal_fingerprint
+    return plan
+
+
+def _lean_sort_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Final lean order, fingerprint first after DOI."""
+    if not queries:
+        return []
+
+    preferred = {
+        "crossref_doi_exact": 0,
+        "crossref_fingerprint_title_author_year": 1,
+        "crossref_fingerprint_title_journal_year": 2,
+        "crossref_title_author_year_repaired": 3,
+        "crossref_title_author_year": 4,
+        "crossref_full_bibliographic": 5,
+        "crossref_rich_bibliographic": 6,
+        "crossref_title_journal_year": 7,
+        "openalex_doi_exact": 0,
+        "openalex_title_year": 1,
+        "openalex_title_journal": 2,
+        "openalex_title_only": 5,
+    }
+
+    def rank(q: Dict[str, Any]) -> Tuple[int, int]:
+        name = q.get("name", "")
+        return (preferred.get(name, 50), int(q.get("priority", 99)))
+
+    return sorted(queries, key=rank)
+
+
+# Also support recall mode if enabled instead of lean mode.
+def _recall_select_crossref_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
+    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
+    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
+
+    preferred = [
+        "crossref_fingerprint_title_author_year",
+        "crossref_fingerprint_title_journal_year",
+        "crossref_title_author_year_repaired",
+        "crossref_title_author_year",
+        "crossref_full_bibliographic",
+        "crossref_rich_bibliographic",
+        "crossref_title_journal_year",
+    ]
+
+    selected: List[Dict[str, Any]] = []
+    for name in preferred:
+        for q in text_queries:
+            if _safe_strip(q.get("name")) == name and q not in selected:
+                selected.append(q)
+                break
+        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
+            break
+
+    for q in text_queries:
+        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
+            break
+        if q not in selected:
+            selected.append(q)
+
+    return doi_queries + selected[:VERIFY_RECALL_CROSSREF_TEXT_QUERIES]
+
+try:
+    if "__all__" in globals():
+        for name in ["_build_crossref_fingerprint_query", "_build_verification_query_plan"]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
+
