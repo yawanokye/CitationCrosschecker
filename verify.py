@@ -1744,3 +1744,1018 @@ __all__ = [
     'build_harvard_from_metadata',
     'enrich_with_full_metadata',
 ]
+
+
+# ============================================================
+# COMMERCIAL-GRADE VERIFICATION OVERRIDES
+# Added by ChatGPT. These later definitions override selected earlier functions
+# while preserving the public API of verify.py.
+# ============================================================
+
+VERIFY_CROSSREF_ROWS = int(os.getenv("VERIFY_CROSSREF_ROWS", "10"))
+VERIFY_OPENALEX_ROWS = int(os.getenv("VERIFY_OPENALEX_ROWS", "10"))
+VERIFY_TITLE_ROWS = int(os.getenv("VERIFY_TITLE_ROWS", "10"))
+VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "1")
+VERIFY_STOP_ON_STRONG_MATCH = _env_flag("VERIFY_STOP_ON_STRONG_MATCH", "0")
+VERIFY_STRICT_AUTHOR_GATE = _env_flag("VERIFY_STRICT_AUTHOR_GATE", "1")
+VERIFY_THRESHOLD_TITLE_VERIFIED = int(os.getenv("VERIFY_THRESHOLD_TITLE_VERIFIED", "92"))
+VERIFY_THRESHOLD_TITLE_LIKELY = int(os.getenv("VERIFY_THRESHOLD_TITLE_LIKELY", "84"))
+VERIFY_THRESHOLD_TITLE_REVIEW = int(os.getenv("VERIFY_THRESHOLD_TITLE_REVIEW", "70"))
+VERIFY_THRESHOLD_JOURNAL_SUPPORT = int(os.getenv("VERIFY_THRESHOLD_JOURNAL_SUPPORT", "70"))
+
+
+def _normalise_doi(doi: str) -> str:
+    doi = _safe_strip(doi)
+    doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi, flags=re.I)
+    doi = re.sub(r"^doi\s*:\s*", "", doi, flags=re.I)
+    doi = doi.strip().strip(".,;) ]}").lower()
+    return doi
+
+
+def _doi_url(doi: str) -> str:
+    doi = _normalise_doi(doi)
+    return f"https://doi.org/{doi}" if doi else ""
+
+
+def _clean_query_text(value: str) -> str:
+    value = _safe_strip(value)
+    value = re.sub(r"https?://\S+", " ", value, flags=re.I)
+    value = re.sub(r"\bdoi\s*:?\s*10\.\S+", " ", value, flags=re.I)
+    value = re.sub(r"[^A-Za-z0-9\s:&/\-().,]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip(" .,:;\"'")
+    return value
+
+
+def _extract_volume_issue_pages(ref: str) -> Dict[str, str]:
+    out = {"volume": "", "issue": "", "pages": ""}
+    ref = _safe_strip(ref)
+
+    m = re.search(r"\bvol\.?\s*(\d+[A-Za-z]?)", ref, flags=re.I)
+    if m:
+        out["volume"] = m.group(1)
+
+    m = re.search(r"\b(?:no|issue)\.?\s*(\d+[A-Za-z]?)", ref, flags=re.I)
+    if m:
+        out["issue"] = m.group(1)
+
+    m = re.search(r"\bpp?\.?\s*([A-Za-z]?\d+\s*[\-–—]\s*[A-Za-z]?\d+|[A-Za-z]?\d+)", ref, flags=re.I)
+    if m:
+        out["pages"] = re.sub(r"\s+", "", m.group(1)).replace("–", "-").replace("—", "-")
+
+    # APA/Harvard: Journal Name, 12(3), 45-67.
+    m = re.search(r",\s*(\d+[A-Za-z]?)\s*\(([^)]+)\)\s*,\s*([A-Za-z]?\d+\s*[\-–—]\s*[A-Za-z]?\d+|[A-Za-z]?\d+)", ref)
+    if m:
+        out["volume"] = out["volume"] or m.group(1)
+        out["issue"] = out["issue"] or m.group(2)
+        out["pages"] = out["pages"] or re.sub(r"\s+", "", m.group(3)).replace("–", "-").replace("—", "-")
+
+    # APA/Harvard without issue: Journal Name, 12, 45-67.
+    m = re.search(r",\s*(\d+[A-Za-z]?)\s*,\s*([A-Za-z]?\d+\s*[\-–—]\s*[A-Za-z]?\d+|[A-Za-z]?\d+)", ref)
+    if m and not out["volume"]:
+        out["volume"] = m.group(1)
+        out["pages"] = out["pages"] or re.sub(r"\s+", "", m.group(2)).replace("–", "-").replace("—", "-")
+
+    return out
+
+
+def _split_after_year(ref: str, year: str) -> List[str]:
+    if not year:
+        return []
+    parts = re.split(rf"[\(\[]?\s*{re.escape(year)}[a-z]?\s*[\)\]]?\.?,?", ref, maxsplit=1, flags=re.I)
+    if len(parts) < 2:
+        return []
+    right = parts[1].strip(" .,:;")
+    return [b.strip() for b in re.split(r"\.\s+", right) if b.strip()]
+
+
+def _extract_journal_guess(ref: str, year: str, title: str) -> str:
+    ref_clean = _strip_leading_numbering(ref)
+    segments = _split_after_year(ref_clean, year)
+
+    if len(segments) >= 2:
+        candidate = segments[1]
+        candidate = re.split(r",\s*\d", candidate, maxsplit=1)[0]
+        candidate = re.split(r"\b(?:vol|no|issue|pp?|pages?)\.?", candidate, maxsplit=1, flags=re.I)[0]
+        candidate = _clean_query_text(candidate)
+        if len(candidate) >= 3:
+            return candidate
+
+    # IEEE/Vancouver: "Title," Journal, vol. ...
+    if title and title in ref_clean:
+        after = ref_clean.split(title, 1)[-1].strip(" ,.;:”“\"")
+        candidate = _clean_query_text(after.split(",")[0])
+        if len(candidate) >= 3 and not _YEAR_RE.search(candidate):
+            return candidate
+
+    return ""
+
+
+def _extract_common_fields(ref: str) -> Dict[str, Any]:
+    ref = _safe_strip(ref)
+    ref = _strip_leading_numbering(ref)
+
+    year = _extract_year(ref)
+    doi = _normalise_doi(_extract_doi(ref))
+
+    left = ref
+    if year:
+        left = ref.split(year, 1)[0].strip(" ,.;:()[]")
+
+    authors = _extract_authors_from_left(left)
+    title = _extract_title_guess(ref, year)
+    journal = _extract_journal_guess(ref, year, title)
+    vip = _extract_volume_issue_pages(ref)
+
+    return {
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "title": title,
+        "journal": journal,
+        "container_title": journal,
+        "source": journal,
+        "volume": vip.get("volume", ""),
+        "issue": vip.get("issue", ""),
+        "pages": vip.get("pages", ""),
+    }
+
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    fields = _extract_fields_by_style(ref, style)
+    authors = fields.get("authors", []) or []
+    first_author = authors[0] if authors else ""
+    year = fields.get("year", "") or ""
+    doi = _normalise_doi(fields.get("doi", "") or "")
+    title = _clean_query_text(fields.get("title", "") or "")
+    journal = _clean_query_text(fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", "") or "")
+    volume = _clean_query_text(fields.get("volume", "") or "")
+    issue = _clean_query_text(fields.get("issue", "") or "")
+    pages = _clean_query_text(fields.get("pages", "") or fields.get("page", "") or "")
+    clean_ref = _clean_query_text(ref)
+
+    title_words = _significant_title_words(title, limit=14)
+    title_key = " ".join(title_words[:10]).strip()
+    title_short = " ".join(title_words[:7]).strip()
+    bibliographic_rich = " ".join([p for p in [title, journal, year, volume, issue, pages] if p]).strip()
+
+    crossref_queries: List[Dict[str, Any]] = []
+    openalex_queries: List[Dict[str, Any]] = []
+
+    if doi:
+        crossref_queries.append({"name": "crossref_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+        openalex_queries.append({"name": "openalex_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+
+    if clean_ref:
+        crossref_queries.append({
+            "name": "crossref_full_bibliographic",
+            "mode": "bibliographic",
+            "query_bibliographic": clean_ref,
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 2,
+        })
+
+    if bibliographic_rich:
+        crossref_queries.append({
+            "name": "crossref_rich_bibliographic",
+            "mode": "bibliographic",
+            "query_bibliographic": bibliographic_rich,
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 3,
+        })
+
+    if title_key:
+        crossref_queries.append({
+            "name": "crossref_title_author_year",
+            "mode": "bibliographic",
+            "query_bibliographic": " ".join([title_key, year]).strip(),
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 4,
+        })
+
+    if title_key and journal:
+        crossref_queries.append({
+            "name": "crossref_title_journal_year",
+            "mode": "bibliographic",
+            "query_bibliographic": " ".join([title_key, journal, year]).strip(),
+            "query_author": "",
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 5,
+        })
+
+    if title_key and year:
+        openalex_queries.append({
+            "name": "openalex_title_year",
+            "mode": "search",
+            "search": title_key,
+            "publication_year": year,
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 6,
+        })
+
+    if title_key and journal:
+        openalex_queries.append({
+            "name": "openalex_title_journal",
+            "mode": "search",
+            "search": f"{title_key} {journal}",
+            "publication_year": year,
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 7,
+        })
+
+    if title_short:
+        openalex_queries.append({
+            "name": "openalex_title_only",
+            "mode": "search",
+            "search": title_short,
+            "publication_year": "",
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 8,
+        })
+
+    return {
+        "reference": ref,
+        "style": style,
+        "fields": {
+            "authors": authors,
+            "first_author": first_author,
+            "year": year,
+            "doi": doi,
+            "title": title,
+            "journal": journal,
+            "volume": volume,
+            "issue": issue,
+            "pages": pages,
+            "title_key": title_key,
+            "title_short": title_short,
+        },
+        "crossref_queries": crossref_queries,
+        "openalex_queries": openalex_queries,
+    }
+
+
+def _build_query(ref: str, style: str) -> Tuple[str, List[str], str, str, str]:
+    plan = _build_verification_query_plan(ref, style)
+    fields = plan["fields"]
+    query = ""
+    for q in plan.get("crossref_queries", []):
+        if q.get("mode") == "bibliographic" and q.get("query_bibliographic"):
+            query = q["query_bibliographic"]
+            break
+    if not query:
+        query = fields.get("title_key", "") or _clean_query_text(ref)[:180]
+    return query, fields.get("authors", []), fields.get("year", ""), fields.get("doi", ""), fields.get("title_short", "")
+
+
+def _query_crossref_bibliographic(query_bibliographic: str, query_author: str = "", rows: int = None, query_name: str = "crossref_bibliographic") -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_CROSSREF_ROWS
+    query_bibliographic = _safe_strip(query_bibliographic)
+    if not query_bibliographic:
+        return []
+    url = "https://api.crossref.org/works"
+    params: Dict[str, Any] = {
+        "query.bibliographic": query_bibliographic,
+        "rows": rows,
+        "sort": "score",
+        "order": "desc",
+    }
+    if query_author:
+        params["query.author"] = query_author
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("message", {}).get("items", [])
+    return [{"source": "crossref", "query_name": query_name, "item": it} for it in items]
+
+
+def _query_crossref(query: str, rows: int = None) -> List[Dict[str, Any]]:
+    return _query_crossref_bibliographic(query, rows=rows, query_name="crossref_legacy_query")
+
+
+def _query_crossref_title_only(title_query: str, rows: int = None) -> List[Dict[str, Any]]:
+    # Commercial correction: Crossref query.title is not used. Use query.bibliographic for title-like lookup.
+    return _query_crossref_bibliographic(title_query, rows=rows or VERIFY_TITLE_ROWS, query_name="crossref_title_as_bibliographic")
+
+
+def _query_openalex_by_doi(doi: str) -> List[Dict[str, Any]]:
+    doi = _normalise_doi(doi)
+    if not doi:
+        return []
+    url = "https://api.openalex.org/works"
+    params: Dict[str, Any] = {"filter": f"doi:{_doi_url(doi)}", "per-page": 5}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("results", [])
+    return [{"source": "openalex", "query_name": "openalex_doi_exact", "item": it} for it in items]
+
+
+def _query_openalex_search(query: str, rows: int = None, publication_year: str = "", query_name: str = "openalex_search") -> List[Dict[str, Any]]:
+    if rows is None:
+        rows = VERIFY_OPENALEX_ROWS
+    query = _safe_strip(query)
+    if not query:
+        return []
+    url = "https://api.openalex.org/works"
+    params: Dict[str, Any] = {"search": query, "per-page": rows}
+    if publication_year:
+        params["filter"] = f"publication_year:{publication_year}"
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("results", [])
+    return [{"source": "openalex", "query_name": query_name, "item": it} for it in items]
+
+
+def _query_openalex(query: str, rows: int = None) -> List[Dict[str, Any]]:
+    return _query_openalex_search(query, rows=rows, query_name="openalex_legacy_search")
+
+
+def _query_openalex_title_only(title_query: str, rows: int = None) -> List[Dict[str, Any]]:
+    return _query_openalex_search(title_query, rows=rows or VERIFY_TITLE_ROWS, query_name="openalex_title_only")
+
+
+def _crossref_year(item: Dict[str, Any]) -> str:
+    for key in ("issued", "published-print", "published-online", "created", "deposited"):
+        obj = item.get(key) or {}
+        parts = obj.get("date-parts", []) if isinstance(obj, dict) else []
+        if parts and parts[0]:
+            return _safe_str(parts[0][0])
+    return ""
+
+
+def _extract_crossref_authors(item: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    for au in (item.get("author") or [])[:12]:
+        fam = _safe_strip(au.get("family")).lower()
+        fam = re.sub(r"[^a-z'\-]", "", fam)
+        if fam:
+            out.append(fam)
+    return _dedupe_preserve(out)
+
+
+def _extract_openalex_authors(item: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    for authorship in (item.get("authorships") or [])[:12]:
+        name = _safe_strip((authorship.get("author") or {}).get("display_name"))
+        if name:
+            surname = re.sub(r"[^a-z'\-]", "", name.split()[-1].lower())
+            if surname:
+                out.append(surname)
+    return _dedupe_preserve(out)
+
+
+def _candidate_fields(cand: Dict[str, Any]) -> Dict[str, Any]:
+    src = cand.get("source")
+    item = cand.get("item") or {}
+    sources = cand.get("sources") or [src]
+
+    if src == "crossref":
+        title_list = item.get("title") or []
+        container_list = item.get("container-title") or item.get("short-container-title") or []
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(item.get("DOI", "")),
+            "title": _safe_strip(title_list[0]) if title_list else "",
+            "year": _crossref_year(item),
+            "authors": _extract_crossref_authors(item),
+            "journal": _safe_strip(container_list[0]) if container_list else "",
+            "volume": _safe_strip(item.get("volume", "")),
+            "issue": _safe_strip(item.get("issue", "")),
+            "pages": _safe_strip(item.get("page", "")),
+            "publisher": _safe_strip(item.get("publisher", "")),
+            "type": _safe_strip(item.get("type", "")),
+            "url": _safe_strip(item.get("URL", "")),
+            "api_score": item.get("score", 0),
+            "is_retracted": False,
+        }
+
+    if src == "openalex":
+        biblio = item.get("biblio") or {}
+        primary = item.get("primary_location") or {}
+        source_obj = primary.get("source") or {}
+        first_page = _safe_strip(biblio.get("first_page", ""))
+        last_page = _safe_strip(biblio.get("last_page", ""))
+        pages = f"{first_page}-{last_page}" if first_page and last_page else first_page
+        return {
+            "source": src,
+            "sources": sources,
+            "query_name": cand.get("query_name", ""),
+            "doi": _normalise_doi(item.get("doi", "")),
+            "title": _safe_strip(item.get("title") or item.get("display_name")),
+            "year": _safe_strip(item.get("publication_year")),
+            "authors": _extract_openalex_authors(item),
+            "journal": _safe_strip(source_obj.get("display_name", "")),
+            "volume": _safe_strip(biblio.get("volume", "")),
+            "issue": _safe_strip(biblio.get("issue", "")),
+            "pages": pages,
+            "publisher": _safe_strip(source_obj.get("host_organization_name", "")),
+            "type": _safe_strip(item.get("type", "")),
+            "url": _safe_strip(primary.get("landing_page_url", "") or item.get("id", "")),
+            "api_score": item.get("relevance_score", 0),
+            "is_retracted": bool(item.get("is_retracted", False)),
+        }
+
+    return {
+        "source": src or "unknown", "sources": sources, "query_name": cand.get("query_name", ""),
+        "doi": "", "title": "", "year": "", "authors": [], "journal": "", "volume": "",
+        "issue": "", "pages": "", "publisher": "", "type": "", "url": "", "api_score": 0,
+        "is_retracted": False,
+    }
+
+
+def _candidate_key(cand: Dict[str, Any]) -> str:
+    f = _candidate_fields(cand)
+    if f["doi"]:
+        return f"doi::{f['doi']}"
+    title = _norm_text(f.get("title", ""))
+    year = f.get("year", "")
+    return f"title::{title[:120]}::{year}"
+
+
+def _metadata_richness(cand: Dict[str, Any]) -> int:
+    f = _candidate_fields(cand)
+    return sum(1 for k in ["doi", "title", "year", "journal", "volume", "issue", "pages", "publisher"] if f.get(k)) + len(f.get("authors", []))
+
+
+def _dedupe_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for cand in candidates:
+        key = _candidate_key(cand)
+        if not key or key == "title::::":
+            continue
+        src = cand.get("source", "unknown")
+        if key not in by_key:
+            new_cand = dict(cand)
+            new_cand["sources"] = [src]
+            by_key[key] = new_cand
+        else:
+            existing = by_key[key]
+            sources = set(existing.get("sources") or [existing.get("source")])
+            sources.add(src)
+            if _metadata_richness(cand) > _metadata_richness(existing):
+                replacement = dict(cand)
+                replacement["sources"] = sorted(sources)
+                by_key[key] = replacement
+            else:
+                existing["sources"] = sorted(sources)
+    return list(by_key.values())
+
+
+def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    candidates: List[Dict[str, Any]] = []
+    query_used: List[str] = []
+    query_strategy: List[str] = []
+    fields = plan.get("fields", {})
+    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+
+    for q in sorted(plan.get("crossref_queries", []), key=lambda x: x.get("priority", 99)):
+        if not use_crossref:
+            continue
+        name = q.get("name", "crossref")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_crossref_by_doi(q.get("doi", ""))
+            else:
+                res = _query_crossref_bibliographic(
+                    q.get("query_bibliographic", ""),
+                    query_author=q.get("query_author", ""),
+                    rows=int(q.get("rows", VERIFY_CROSSREF_ROWS)),
+                    query_name=name,
+                )
+            candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
+            if VERIFY_STOP_ON_STRONG_MATCH and q.get("mode") == "doi_exact" and res:
+                break
+        except Exception as exc:
+            print(f"[DEBUG] Crossref query failed for {name}: {exc}")
+
+    for q in sorted(plan.get("openalex_queries", []), key=lambda x: x.get("priority", 99)):
+        if not openalex_allowed:
+            continue
+        name = q.get("name", "openalex")
+        try:
+            if q.get("mode") == "doi_exact":
+                res = _query_openalex_by_doi(q.get("doi", ""))
+            else:
+                res = _query_openalex_search(
+                    q.get("search", ""),
+                    rows=int(q.get("rows", VERIFY_OPENALEX_ROWS)),
+                    publication_year=q.get("publication_year", ""),
+                    query_name=name,
+                )
+            candidates.extend(res)
+            query_strategy.append(name)
+            query_used.append(q.get("doi") or q.get("search") or "")
+        except Exception as exc:
+            print(f"[DEBUG] OpenAlex query failed for {name}: {exc}")
+
+    if not candidates and VERIFY_DEEP_FALLBACK:
+        title_short = fields.get("title_short", "")
+        if use_crossref and title_short:
+            candidates.extend(_query_crossref_title_only(title_short, rows=VERIFY_TITLE_ROWS))
+            query_strategy.append("crossref_final_title_fallback")
+            query_used.append(title_short)
+        if openalex_allowed and title_short:
+            candidates.extend(_query_openalex_title_only(title_short, rows=VERIFY_TITLE_ROWS))
+            query_strategy.append("openalex_final_title_fallback")
+            query_used.append(title_short)
+
+    return _dedupe_candidates(candidates), query_used, query_strategy
+
+
+def _year_match_info(ref_year: str, cand_year: str) -> Tuple[int, int]:
+    if not ref_year or not cand_year:
+        return 0, 999
+    try:
+        delta = abs(int(ref_year[:4]) - int(cand_year[:4]))
+    except Exception:
+        return 0, 999
+    return (1 if delta == 0 else 0), delta
+
+
+def _page_tokens(pages: str) -> set:
+    pages = _safe_strip(pages).replace("–", "-").replace("—", "-")
+    return set(re.findall(r"[A-Za-z]?\d+", pages))
+
+
+def _exact_or_empty_match(a: str, b: str) -> int:
+    a = _safe_strip(a).lower()
+    b = _safe_strip(b).lower()
+    if not a or not b:
+        return 0
+    return 1 if a == b else 0
+
+
+def _author_metrics(ref_authors: List[str], cand_authors: List[str]) -> Tuple[int, int]:
+    ref_clean = [re.sub(r"[^a-z'\-]", "", a.lower()) for a in (ref_authors or []) if a]
+    cand_clean = [re.sub(r"[^a-z'\-]", "", a.lower()) for a in (cand_authors or []) if a]
+    ref_clean = _dedupe_preserve(ref_clean)
+    cand_clean = _dedupe_preserve(cand_clean)
+
+    if not ref_clean or not cand_clean:
+        return 0, 0
+
+    exact_overlap = len(set(ref_clean) & set(cand_clean))
+    fuzzy_scores = []
+    for ra in ref_clean[:5]:
+        fuzzy_scores.append(max((fuzz.ratio(ra, ca) for ca in cand_clean[:8]), default=0))
+    fuzzy_similarity = int(sum(fuzzy_scores) / len(fuzzy_scores)) if fuzzy_scores else 0
+
+    if exact_overlap:
+        fuzzy_similarity = max(fuzzy_similarity, min(100, 60 + exact_overlap * 20))
+    return exact_overlap, fuzzy_similarity
+
+
+def _score_candidate(ref_fields: Dict[str, Any], cand: Dict[str, Any]) -> Dict[str, Any]:
+    cf = _candidate_fields(cand)
+    ref_title = _norm_text(ref_fields.get("title", ""))
+    cand_title = _norm_text(cf.get("title", ""))
+
+    if ref_title and cand_title:
+        token_set = fuzz.token_set_ratio(ref_title, cand_title)
+        token_sort = fuzz.token_sort_ratio(ref_title, cand_title)
+        partial = fuzz.partial_ratio(ref_title, cand_title)
+        title_score = int((token_set * 0.50) + (token_sort * 0.35) + (partial * 0.15))
+        if len(ref_title.split()) <= 4 and partial > token_set + 20:
+            title_score = int((token_set * 0.65) + (token_sort * 0.35))
+    else:
+        title_score = 0
+
+    ref_journal = _norm_text(ref_fields.get("journal", ""))
+    cand_journal = _norm_text(cf.get("journal", ""))
+    journal_score = int(fuzz.token_set_ratio(ref_journal, cand_journal)) if ref_journal and cand_journal else 0
+
+    author_overlap, author_similarity = _author_metrics(ref_fields.get("authors", []), cf.get("authors", []))
+    year_match, year_delta = _year_match_info(ref_fields.get("year", ""), cf.get("year", ""))
+
+    ref_doi = _normalise_doi(ref_fields.get("doi", ""))
+    cand_doi = _normalise_doi(cf.get("doi", ""))
+    doi_match = bool(ref_doi and cand_doi and ref_doi == cand_doi)
+
+    volume_match = _exact_or_empty_match(ref_fields.get("volume", ""), cf.get("volume", ""))
+    issue_match = _exact_or_empty_match(ref_fields.get("issue", ""), cf.get("issue", ""))
+
+    ref_pages = _page_tokens(ref_fields.get("pages", ""))
+    cand_pages = _page_tokens(cf.get("pages", ""))
+    page_match = 1 if ref_pages and cand_pages and bool(ref_pages & cand_pages) else 0
+
+    source_agreement = len(set(cf.get("sources") or [cf.get("source", "")]))
+
+    score = 0.0
+    score += title_score * 0.56
+    score += author_similarity * 0.18
+    score += 12 if year_match else 0
+    score += 6 if year_delta == 1 else 0
+    score += journal_score * 0.08
+    score += 4 if volume_match else 0
+    score += 2 if issue_match else 0
+    score += 3 if page_match else 0
+    score += min(6, max(0, source_agreement - 1) * 3)
+    if doi_match:
+        score += 30
+    if cf.get("is_retracted"):
+        score -= 5
+
+    return {
+        "score": int(min(100, round(score))),
+        "title_score": int(title_score),
+        "journal_score": int(journal_score),
+        "author_overlap": int(author_overlap),
+        "author_similarity": int(author_similarity),
+        "year_match": int(year_match),
+        "year_delta": int(year_delta if year_delta != 999 else 999),
+        "doi_match": bool(doi_match),
+        "volume_match": int(volume_match),
+        "issue_match": int(issue_match),
+        "page_match": int(page_match),
+        "source_agreement": int(source_agreement),
+        **cf,
+    }
+
+
+def _has_author_conflict(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> bool:
+    return bool(ref_fields.get("authors") and meta.get("authors") and int(meta.get("author_overlap", 0)) == 0)
+
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    title_score = int(meta.get("title_score", 0))
+    score = int(meta.get("score", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    doi_match = bool(meta.get("doi_match"))
+    source_agreement = int(meta.get("source_agreement", 1))
+    has_author_conflict = _has_author_conflict(ref_fields, meta)
+    has_ref_journal = bool(ref_fields.get("journal"))
+    retracted = bool(meta.get("is_retracted"))
+
+    if doi_match:
+        if title_score >= 80 or (title_score >= 65 and (year_match or author_overlap >= 1)):
+            if retracted:
+                return "needs_review", "DOI matches, but the matched record is marked as retracted."
+            return "verified", "Exact DOI match with supporting title, year, or author evidence."
+        if title_score >= 50:
+            return "likely", "DOI matches, but title evidence is not strong enough for automatic verification."
+        return "needs_review", "DOI matches, but the title appears inconsistent with the reference."
+
+    if has_author_conflict and VERIFY_STRICT_AUTHOR_GATE:
+        if title_score >= 96 and year_match and journal_score >= VERIFY_THRESHOLD_JOURNAL_SUPPORT:
+            return "likely", "Very strong title, year and journal match, but author names do not overlap."
+        if title_score >= VERIFY_THRESHOLD_TITLE_REVIEW:
+            return "needs_review", "Possible match found, but author names do not overlap."
+        return "not_found", "Candidates were found, but author and title evidence were too weak."
+
+    if title_score >= VERIFY_THRESHOLD_TITLE_VERIFIED and year_match and (author_overlap >= 1 or author_similarity >= 80 or not ref_fields.get("authors")):
+        if has_ref_journal and journal_score and journal_score < 45:
+            return "likely", "Strong title, author and year match, but journal name differs."
+        return "verified", "Strong title, author and year match."
+
+    if title_score >= 96 and year_match and journal_score >= VERIFY_THRESHOLD_JOURNAL_SUPPORT:
+        return "verified", "Strong title, year and journal match."
+
+    if source_agreement >= 2 and title_score >= 90 and year_delta <= 1 and (author_overlap >= 1 or journal_score >= VERIFY_THRESHOLD_JOURNAL_SUPPORT):
+        return "verified", "Cross-source agreement with strong bibliographic match."
+
+    if title_score >= VERIFY_THRESHOLD_TITLE_LIKELY and year_delta <= 1 and (author_overlap >= 1 or author_similarity >= 70 or journal_score >= VERIFY_THRESHOLD_JOURNAL_SUPPORT):
+        return "likely", "Strong title match with supporting year, author, or journal evidence."
+
+    if score >= 82 and title_score >= 82 and year_delta <= 1:
+        return "likely", "High composite score, but not enough evidence for automatic verification."
+
+    if title_score >= VERIFY_THRESHOLD_TITLE_REVIEW or score >= 55:
+        return "needs_review", "A possible match was found, but evidence is insufficient for automatic verification."
+
+    return "not_found", "No reliable Crossref/OpenAlex match found."
+
+
+def _classify(doi_match: bool, title_score: int, score: int, year_match: int, author_overlap: int = 0) -> str:
+    # Backward-compatible wrapper for any older internal call.
+    meta = {
+        "doi_match": doi_match,
+        "title_score": title_score,
+        "score": score,
+        "year_match": year_match,
+        "year_delta": 0 if year_match else 999,
+        "author_overlap": author_overlap,
+        "author_similarity": 80 if author_overlap else 0,
+        "journal_score": 0,
+        "source_agreement": 1,
+        "authors": ["x"] if author_overlap else [],
+    }
+    ref_fields = {"authors": ["x"] if author_overlap else [], "journal": ""}
+    return _classify_from_meta(ref_fields, meta)[0]
+
+
+def _best_candidate(ref_title_or_fields, ref_authors=None, ref_year=None, ref_doi=None, candidates: Optional[List[Dict[str, Any]]] = None):
+    # Supports both the new call _best_candidate(fields, candidates) and old call shape.
+    if isinstance(ref_title_or_fields, dict):
+        ref_fields = ref_title_or_fields
+        cand_list = ref_authors or []
+        return_new_shape = True
+    else:
+        ref_fields = {
+            "title": ref_title_or_fields or "",
+            "authors": ref_authors or [],
+            "year": ref_year or "",
+            "doi": ref_doi or "",
+            "journal": "",
+            "volume": "",
+            "issue": "",
+            "pages": "",
+        }
+        cand_list = candidates or []
+        return_new_shape = False
+
+    scored: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for cand in cand_list:
+        meta = _score_candidate(ref_fields, cand)
+        scored.append((cand, meta))
+
+    scored.sort(key=lambda cm: (cm[1].get("score", 0), cm[1].get("title_score", 0), cm[1].get("source_agreement", 1)), reverse=True)
+    if not scored:
+        return (None, {}, []) if return_new_shape else (None, {})
+
+    best, best_meta = scored[0]
+    alternatives = []
+    for _cand, meta in scored[1:6]:
+        if int(meta.get("title_score", 0)) < 60:
+            continue
+        alternatives.append({
+            "title": meta.get("title", ""),
+            "doi": meta.get("doi", ""),
+            "year": meta.get("year", ""),
+            "journal": meta.get("journal", ""),
+            "source": "+".join(meta.get("sources") or [meta.get("source", "")]),
+            "score": int(meta.get("score", 0)),
+            "title_score": int(meta.get("title_score", 0)),
+            "author_overlap": int(meta.get("author_overlap", 0)),
+            "year_match": int(meta.get("year_match", 0)),
+        })
+
+    return (best, best_meta, alternatives) if return_new_shape else (best, best_meta)
+
+
+def _base_commercial_row(ref: str, style: str, fields: Dict[str, Any], query_used: str = "", query_strategy: str = "") -> Dict[str, Any]:
+    return {
+        "reference": ref,
+        "style": style,
+        "status": "offline",
+        "source": "",
+        "score": 0,
+        "doi": "",
+        "matched_title": "",
+        "matched_year": "",
+        "matched_authors": "",
+        "matched_journal": "",
+        "matched_container_title": "",
+        "matched_volume": "",
+        "matched_issue": "",
+        "matched_pages": "",
+        "matched_publisher": "",
+        "matched_type": "",
+        "matched_url": "",
+        "title_score": 0,
+        "journal_score": 0,
+        "author_overlap": 0,
+        "author_similarity": 0,
+        "year_match": 0,
+        "year_delta": 999,
+        "doi_match": 0,
+        "volume_match": 0,
+        "issue_match": 0,
+        "page_match": 0,
+        "source_agreement": 0,
+        "query_used": query_used,
+        "query_strategy": query_strategy,
+        "author": ", ".join(fields.get("authors", []) or []),
+        "reference_title": fields.get("title", ""),
+        "reference_year": fields.get("year", ""),
+        "reference_doi": fields.get("doi", ""),
+        "reference_journal": fields.get("journal", ""),
+        "reference_volume": fields.get("volume", ""),
+        "reference_issue": fields.get("issue", ""),
+        "reference_pages": fields.get("pages", ""),
+        "author_mismatch_flag": 0,
+        "match_note": "",
+        "confidence_reason": "",
+        "correction_suggestions": [],
+        "alternative_matches": [],
+    }
+
+
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    """Commercial-grade single reference verification using DOI-first, Crossref bibliographic search and OpenAlex fallback."""
+    cache_key = f"commercial_v1::{style}::{use_crossref}:{use_openalex}:{enrich_metadata}::{ref}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    plan = _build_verification_query_plan(ref, style)
+    fields = plan.get("fields", {})
+    query_preview, ref_authors, _ref_year, ref_doi, title_only = _build_query(ref, style)
+
+    if VERIFY_SKIP_WEAK_TITLE and not ref_doi and _significant_word_count(title_only or fields.get("title", "")) < VERIFY_MIN_TITLE_WORDS:
+        row = _make_fast_review_row(
+            ref,
+            style,
+            query=query_preview,
+            authors=ref_authors,
+            reason="No DOI and too few significant title words for reliable commercial verification.",
+        )
+        row.update({
+            "reference_title": fields.get("title", ""),
+            "reference_year": fields.get("year", ""),
+            "reference_doi": fields.get("doi", ""),
+            "reference_journal": fields.get("journal", ""),
+            "reference_volume": fields.get("volume", ""),
+            "reference_issue": fields.get("issue", ""),
+            "reference_pages": fields.get("pages", ""),
+            "query_strategy": "fast_skip",
+            "confidence_reason": "No DOI and too few significant title words for reliable commercial verification.",
+            "alternative_matches": [],
+        })
+        row["status"] = _normalize_verify_status(row.get("status"))
+        _cache_set(cache_key, row)
+        return row
+
+    try:
+        candidates, query_used, query_strategy = _run_query_plan(plan, use_crossref, use_openalex)
+        row = _base_commercial_row(
+            ref,
+            style,
+            fields,
+            " | ".join(_dedupe_preserve(query_used)),
+            " | ".join(_dedupe_preserve(query_strategy)),
+        )
+        row["query_plan"] = {
+            "crossref": [q.get("name") for q in plan.get("crossref_queries", [])],
+            "openalex": [q.get("name") for q in plan.get("openalex_queries", [])],
+        }
+
+        if not candidates:
+            row["status"] = "not_found"
+            row["confidence_reason"] = "No candidates returned from DOI, Crossref bibliographic, or OpenAlex searches."
+            _cache_set(cache_key, row)
+            return row
+
+        best, meta, alternatives = _best_candidate(fields, candidates)
+        if not best:
+            row["status"] = "not_found"
+            row["confidence_reason"] = "Candidates were returned, but none had enough usable metadata."
+            _cache_set(cache_key, row)
+            return row
+
+        status, reason = _classify_from_meta(fields, meta)
+        author_conflict = _has_author_conflict(fields, meta)
+
+        row.update({
+            "status": status,
+            "source": "+".join(meta.get("sources") or [meta.get("source", "")]),
+            "score": int(meta.get("score", 0)),
+            "doi": _normalise_doi(meta.get("doi", "")),
+            "matched_title": _safe_strip(meta.get("title", "")),
+            "matched_year": _safe_strip(meta.get("year", "")),
+            "matched_authors": ", ".join(meta.get("authors", []) or []),
+            "matched_journal": _safe_strip(meta.get("journal", "")),
+            "matched_container_title": _safe_strip(meta.get("journal", "")),
+            "matched_volume": _safe_strip(meta.get("volume", "")),
+            "matched_issue": _safe_strip(meta.get("issue", "")),
+            "matched_pages": _safe_strip(meta.get("pages", "")),
+            "matched_publisher": _safe_strip(meta.get("publisher", "")),
+            "matched_type": _safe_strip(meta.get("type", "")),
+            "matched_url": _safe_strip(meta.get("url", "")),
+            "title_score": int(meta.get("title_score", 0)),
+            "journal_score": int(meta.get("journal_score", 0)),
+            "author_overlap": int(meta.get("author_overlap", 0)),
+            "author_similarity": int(meta.get("author_similarity", 0)),
+            "year_match": int(meta.get("year_match", 0)),
+            "year_delta": int(meta.get("year_delta", 999)),
+            "doi_match": 1 if meta.get("doi_match") else 0,
+            "volume_match": int(meta.get("volume_match", 0)),
+            "issue_match": int(meta.get("issue_match", 0)),
+            "page_match": int(meta.get("page_match", 0)),
+            "source_agreement": int(meta.get("source_agreement", 0)),
+            "author_mismatch_flag": 1 if author_conflict else 0,
+            "match_note": "Author mismatch" if author_conflict else "",
+            "confidence_reason": reason,
+            "alternative_matches": alternatives,
+        })
+
+        if enrich_metadata and row.get("doi"):
+            row = enrich_with_full_metadata(row)
+
+    except Exception as exc:
+        print(f"[DEBUG] Error verifying reference: {exc}")
+        row = _base_commercial_row(ref, style, fields, query_preview, "error")
+        row["status"] = "not_found"
+        row["error"] = str(exc)
+        row["confidence_reason"] = "Verification failed because an exception occurred."
+
+    row["status"] = _normalize_verify_status(row.get("status"))
+    _cache_set(cache_key, row)
+    return row
+
+# Final extraction refinements. These override the earlier helper definitions above.
+def _extract_authors_from_left(left: str) -> List[str]:
+    left = _safe_strip(left)
+    if not left:
+        return []
+    left = re.sub(r"\bet\s+al\.?\b", "", left, flags=re.I)
+    left = left.replace("&", " and ")
+    left = re.sub(r"\s+", " ", left).strip(" ,.;:")
+
+    candidates: List[str] = []
+
+    # APA/Harvard style: Surname, I., Surname, I., and Surname, I.
+    surname_matches = re.findall(r"(?:^|,|\band\s+)([A-Z][A-Za-z'\-]{1,})(?=\s*,)", left)
+    candidates.extend(surname_matches)
+
+    # Name and Name style.
+    if not candidates:
+        for part in re.split(r"\band\b", left, flags=re.I):
+            toks = [t for t in part.strip().split() if t]
+            if toks:
+                candidates.append(toks[-1])
+
+    cleaned = []
+    for c in candidates:
+        c = re.sub(r"[^A-Za-z'\-]", "", c).lower().strip()
+        if len(c) >= 2 and c not in _QUERY_STOP_WORDS:
+            cleaned.append(c)
+    return _dedupe_preserve(cleaned)[:8]
+
+
+def _extract_journal_guess(ref: str, year: str, title: str) -> str:
+    ref_clean = _strip_leading_numbering(ref)
+    segments = _split_after_year(ref_clean, year)
+
+    if len(segments) >= 2:
+        candidate = segments[1]
+        candidate = re.split(r",\s*\d", candidate, maxsplit=1)[0]
+        candidate = re.split(r"\b(?:vol|no|issue|pp|pages?)\.?\s+", candidate, maxsplit=1, flags=re.I)[0]
+        candidate = _clean_query_text(candidate)
+        if len(candidate) >= 3:
+            return candidate
+
+    if title and title in ref_clean:
+        after = ref_clean.split(title, 1)[-1].strip(" ,.;:”“\"")
+        candidate = _clean_query_text(after.split(",")[0])
+        if len(candidate) >= 3 and not _YEAR_RE.search(candidate):
+            return candidate
+
+    return ""
+
+
+def _get_top_suggestions(
+    ref_title: str,
+    ref_authors: List[str],
+    ref_year: str,
+    candidates: List[Dict[str, Any]],
+    top_k: int = 3,
+) -> List[Dict[str, Any]]:
+    """Backward-compatible related-match suggestions using the commercial candidate structure."""
+    ref_fields = {
+        "title": ref_title,
+        "authors": ref_authors or [],
+        "year": ref_year or "",
+        "doi": "",
+        "journal": "",
+        "volume": "",
+        "issue": "",
+        "pages": "",
+    }
+    scored = []
+    seen = set()
+    for cand in candidates or []:
+        meta = _score_candidate(ref_fields, cand)
+        title_key = _norm_text(meta.get("title", ""))
+        if not title_key or title_key in seen:
+            continue
+        seen.add(title_key)
+        if int(meta.get("title_score", 0)) < 60:
+            continue
+        scored.append({
+            "title": meta.get("title", ""),
+            "doi": meta.get("doi", ""),
+            "year": meta.get("year", ""),
+            "journal": meta.get("journal", ""),
+            "score": int(meta.get("score", 0)),
+            "title_score": int(meta.get("title_score", 0)),
+            "confidence": "related",
+        })
+    return sorted(scored, key=lambda x: x["score"], reverse=True)[:top_k]
