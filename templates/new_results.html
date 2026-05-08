@@ -1649,7 +1649,11 @@ document.addEventListener("DOMContentLoaded", function () {
         setCount("countSummary", "OK");
         setCount("countMissing", data.missing_in_references?.length || 0);
         setCount("countUncited", data.uncited_references?.length || 0);
-        setCount("countC2R", data.reconciliation_intext_to_reference?.length || 0);
+        const c2rUniqueRows = getUniqueCitationsWithCount(
+            data.reconciliation_intext_to_reference || []
+        );
+        
+        setCount("countC2R", c2rUniqueRows.length);
         setCount("countR2C", data.reconciliation_reference_to_intext?.length || 0);
         setCount("countVerify", data.online_verification?.rows?.length || 0);
         setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
