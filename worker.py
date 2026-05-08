@@ -60,7 +60,7 @@ def _env_flag(name, default="0"):
 
 DEEP_LOOKUPS_IN_VERIFY = _env_flag("DEEP_LOOKUPS_IN_VERIFY", "0")
 RUN_REAL_CLAIM_CHECK_IN_VERIFY = _env_flag("RUN_REAL_CLAIM_CHECK_IN_VERIFY", "0")
-ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY = _env_flag("ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY", "1")
+ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY = _env_flag("ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY", "0")
 DEEP_ENRICHMENT_LIMIT = int(os.environ.get("DEEP_ENRICHMENT_LIMIT", "80"))
 DEEP_LOOKUP_TOP_K = int(os.environ.get("DEEP_LOOKUP_TOP_K", "3"))
 DEEP_ENRICHMENT_BATCH_SAVE = int(os.environ.get("DEEP_ENRICHMENT_BATCH_SAVE", "10"))
@@ -2412,7 +2412,7 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
 # COMMERCIAL DEEP ENRICHMENT JOB
 # ============================================================
 
-def _enqueue_deep_enrichment(job_id, style="apa"):
+def _enqueue_deep_enrichment(job_id, style="apa", scope="weak_only"):
     """Queue expensive enrichment after the usable dashboard is already ready."""
     if not ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY:
         return None
@@ -2423,6 +2423,7 @@ def _enqueue_deep_enrichment(job_id, style="apa"):
             "worker.process_deep_enrichment",
             job_id,
             style,
+            scope,
             job_timeout=10800,
             result_ttl=86400,
             failure_ttl=86400,
@@ -2445,9 +2446,67 @@ def _set_enrichment_meta(result, **kwargs):
 
     result["enrichment"] = enrichment
     return result
+WEAK_CLAIM_STATUSES = {
+    "weak_or_unclear",
+    "insufficient_evidence",
+    "no_evidence_found",
+    "manual_review_required",
+    "insufficient_title_overlap",
+    "title_overlap_review_required",
+}
+
+WEAK_VERIFY_STATUSES = {
+    "needs_review",
+    "not_found",
+    "offline",
+}
+
+def _should_enrich_claim_row(row, scope="weak_only"):
+    if scope == "recovery_only":
+        return False
+
+    if scope == "all_problem_rows":
+        return not bool(row.get("alternative_sources"))
+
+    status = str(
+        row.get("support_status")
+        or row.get("status")
+        or ""
+    ).strip().lower()
+
+    try:
+        score = float(row.get("support_score") or row.get("score") or 0)
+    except Exception:
+        score = 0
+
+    already_has_alternatives = bool(row.get("alternative_sources"))
+
+    if already_has_alternatives:
+        return False
+
+    return (
+        status in WEAK_CLAIM_STATUSES
+        or score < 20
+    )
 
 
-def process_deep_enrichment(job_id, style="apa", limit=None):
+def _should_enrich_recovery_row(row, scope="weak_only"):
+    if scope == "claim_only":
+        return False
+
+    if scope == "all_problem_rows":
+        return not bool(row.get("deep_suggestions")) and not bool(row.get("enriched"))
+
+    status = str(row.get("status") or "").strip().lower()
+
+    already_enriched = bool(row.get("deep_suggestions")) or bool(row.get("enriched"))
+
+    if already_enriched:
+        return False
+
+    return status in WEAK_VERIFY_STATUSES
+
+def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     """
     Expensive background enrichment. This runs after the dashboard is already usable.
     It adds deep Recovery suggestions and alternative claim-support sources without
@@ -2456,11 +2515,15 @@ def process_deep_enrichment(job_id, style="apa", limit=None):
     print(f"[DEEP ENRICHMENT] Starting for job {job_id}")
     start_time = time.time()
     limit = int(limit or DEEP_ENRICHMENT_LIMIT)
+    scope = str(scope or "weak_only").strip().lower()
 
+    if scope not in {"weak_only", "recovery_only", "claim_only", "all_problem_rows"}:
+        scope = "weak_only"
     result = _load_job_result(job_id)
     result = _set_enrichment_meta(
         result,
         state="running",
+        scope=scope,
         message="Advanced Recovery and Claim Support enrichment is running.",
         started_at=now_iso(),
         deep_recovery_ready=False,
@@ -2476,14 +2539,42 @@ def process_deep_enrichment(job_id, style="apa", limit=None):
     recovery_rows = recovery.get("verification_recovery") or []
     claim_rows = result.get("claim_support") or []
 
-    total_work = min(len(missing_rows), limit) + min(len(recovery_rows), limit) + min(len(claim_rows), limit)
+    if scope == "claim_only":
+        missing_rows_to_enrich = []
+    else:
+        missing_rows_to_enrich = [
+            row for row in missing_rows
+            if not row.get("deep_suggestions") and not row.get("enriched")
+        ]
+    
+    recovery_rows_to_enrich = [
+        row for row in recovery_rows
+        if _should_enrich_recovery_row(row, scope)
+    ]
+    
+    claim_rows_to_enrich = [
+        row for row in claim_rows
+        if _should_enrich_claim_row(row, scope)
+    ]
+    
+    total_work = (
+        min(len(missing_rows_to_enrich), limit)
+        + min(len(recovery_rows_to_enrich), limit)
+        + min(len(claim_rows_to_enrich), limit)
+    )
+    
     done = 0
-    result = _set_enrichment_meta(result, total=total_work, progress=done)
-    _save_job_result(job_id, result, status="completed")
+    result = _set_enrichment_meta(
+        result,
+        total=total_work,
+        progress=done,
+        scope=scope,
+        message=f"Advanced enrichment queued for {total_work} problem rows."
+    )
 
     # Enrich missing in-text citation recovery rows first. These rows have no
     # matched reference, so the deep lookup relies mainly on the citation context.
-    for idx, rec in enumerate(missing_rows[:limit], start=1):
+    for idx, rec in enumerate(missing_rows_to_enrich[:limit], start=1):
         citation = str(rec.get("citation") or "").strip()
         source_row = {
             "citation": citation,
@@ -2528,7 +2619,7 @@ def process_deep_enrichment(job_id, style="apa", limit=None):
         )
         verify_lookup[key] = row
 
-    for idx, rec in enumerate(recovery_rows[:limit], start=1):
+    for idx, rec in enumerate(recovery_rows_to_enrich[:limit], start=1):
         citation = str(rec.get("citation") or "").strip().lower()
         reference = str(rec.get("reference") or "").strip().lower()
         source_row = verify_lookup.get((citation, reference)) or rec
@@ -2566,7 +2657,7 @@ def process_deep_enrichment(job_id, style="apa", limit=None):
     )
     _save_job_result(job_id, result, status="completed")
 
-    for idx, row in enumerate(claim_rows[:limit], start=1):
+    for idx, row in enumerate(claim_rows_to_enrich[:limit], start=1):
         claim = row.get("claim") or row.get("claim_extracted") or ""
         citation = row.get("citation") or ""
         source_title = row.get("source_title") or row.get("matched_source") or ""
@@ -2606,7 +2697,8 @@ def process_deep_enrichment(job_id, style="apa", limit=None):
         percentage=100,
         deep_recovery_ready=True,
         deep_claim_support_ready=True,
-        message="Advanced enrichment completed.",
+        message=f"Advanced enrichment completed for scope: {scope}.",
+        scope=scope,
         completed_at=now_iso(),
         processing_time_seconds=elapsed,
     )
@@ -2844,7 +2936,7 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             "completed_at": now_iso()
         }
 
-        deep_job_id = _enqueue_deep_enrichment(job_id, style=style)
+        deep_job_id = None
         result = _set_enrichment_meta(
             result,
             state="queued" if deep_job_id else "not_queued",
@@ -2906,7 +2998,7 @@ if __name__ == "__main__":
     print(f"📊 Redis: {REDIS_URL[:50]}..." if REDIS_URL else "📊 Redis: NOT SET")
     print(f"💾 PostgreSQL: {'Connected' if DATABASE_URL else 'NOT SET'}")
 
-    queue_env = os.environ.get("WORKER_QUEUES", "document_processing,verification")
+    queue_env = os.environ.get("WORKER_QUEUES", "document_processing,verification,deep_enrichment")
     queues_to_listen = [q.strip() for q in queue_env.split(",") if q.strip()]
 
     with Connection(redis_conn):
