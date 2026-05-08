@@ -681,6 +681,7 @@ async def security_middleware(request: Request, call_next):
         "/fix-log",
         "/apply-autofix",
         "/queue/status",
+        "/api/enrichment",
         "/new",
         "/analyse",
         "/results",
@@ -715,7 +716,13 @@ async def redirect_with_message(request: Request, call_next):
     path = request.url.path
     
     # Skip redirect for API endpoints
-    if path.startswith("/online/") or path.startswith("/verify") or path.startswith("/private-stats") or path.startswith("/result"):
+    if (
+        path.startswith("/online/")
+        or path.startswith("/verify")
+        or path.startswith("/api/")
+        or path.startswith("/private-stats")
+        or path.startswith("/result")
+    ):
         return await call_next(request)
     
     if "citationcrosschecker.onrender.com" in host:
