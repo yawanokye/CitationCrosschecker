@@ -39,18 +39,18 @@ RETRY_ATTEMPTS = int(os.getenv("VERIFY_RETRY_ATTEMPTS", "1"))
 BATCH_DELAY = float(os.getenv("VERIFY_BATCH_DELAY", "0"))
 
 # Chunk processing for large reference sets
-CHUNK_SIZE = int(os.getenv("VERIFY_INTERNAL_CHUNK_SIZE", "5"))
+CHUNK_SIZE = int(os.getenv("VERIFY_INTERNAL_CHUNK_SIZE", "10"))
 CHUNK_DELAY = float(os.getenv("VERIFY_CHUNK_DELAY", "0"))
-MAX_RETRIES_PER_REFERENCE = int(os.getenv("VERIFY_MAX_RETRIES_PER_REFERENCE", "2"))
+MAX_RETRIES_PER_REFERENCE = int(os.getenv("VERIFY_MAX_RETRIES_PER_REFERENCE", "1"))
 
 # Fast-skip and fallback controls
 VERIFY_SKIP_WEAK_TITLE = _env_flag("VERIFY_SKIP_WEAK_TITLE", "1")
-VERIFY_MIN_TITLE_WORDS = int(os.getenv("VERIFY_MIN_TITLE_WORDS", "3"))
+VERIFY_MIN_TITLE_WORDS = int(os.getenv("VERIFY_MIN_TITLE_WORDS", "4"))
 VERIFY_STOP_ON_STRONG_MATCH = _env_flag("VERIFY_STOP_ON_STRONG_MATCH", "1")
 VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "0")
 VERIFY_RETRY_FAILED = _env_flag("VERIFY_RETRY_FAILED", "0")
-VERIFY_CROSSREF_ROWS = int(os.getenv("VERIFY_CROSSREF_ROWS", "10"))
-VERIFY_TITLE_ROWS = int(os.getenv("VERIFY_TITLE_ROWS", "10"))
+VERIFY_CROSSREF_ROWS = int(os.getenv("VERIFY_CROSSREF_ROWS", "5"))
+VERIFY_TITLE_ROWS = int(os.getenv("VERIFY_TITLE_ROWS", "5"))
 VERIFY_OPENALEX_ROWS = int(os.getenv("VERIFY_OPENALEX_ROWS", "5"))
 VERIFY_SINGLE_REF_TIMEOUT = int(os.getenv("VERIFY_SINGLE_REF_TIMEOUT", str(max(6, API_TIMEOUT + 2))))
 VERIFY_RETRY_BACKOFF_SECONDS = float(os.getenv("VERIFY_RETRY_BACKOFF_SECONDS", "1"))
@@ -1072,11 +1072,11 @@ def _classify(
         return "verified"
 
     # Strong title + author support.
-    if title_score >= 70 and author_overlap >= 1:
+    if title_score >= 88 and author_overlap >= 1:
         return "verified"
 
     # Strong title + both year and author support.
-    if title_score >= 69 and year_match == 1 and author_overlap >= 1:
+    if title_score >= 85 and year_match == 1 and author_overlap >= 1:
         return "verified"
 
     # High combined score, but still requires title strength and at least one external support.
@@ -1095,17 +1095,17 @@ def _classify(
         return "Verified"
 
     # Good combined score, but not enough for verified.
-    if score >= 70 and title_score >= 70:
+    if score >= 75 and title_score >= 75:
         return "Verified"
 
     # -----------------------------------------
     # 4. NEEDS REVIEW
     # -----------------------------------------
     # Candidate exists but evidence is incomplete or weak.
-    if title_score >= 50:
+    if title_score >= 55:
         return "Likely"
 
-    if score >= 20:
+    if score >= 30:
         return "needs_review"
 
     # -----------------------------------------
@@ -1113,10 +1113,10 @@ def _classify(
     # -----------------------------------------
     return "not_found"
 
-    if title_score >= 50:
+    if title_score >= 55:
         return "LIKELY"
 
-    if score >= 20:
+    if score >= 35:
         return "needs_review"
 
     # -----------------------------------------
@@ -5770,7 +5770,9 @@ except Exception:
 # Crossref candidate before OpenAlex can provide source agreement.
 # ============================================================
 
-
+VERIFY_BALANCED_PROMOTION = _env_flag("VERIFY_BALANCED_PROMOTION", "1")
+VERIFY_BALANCED_VERIFY_TITLE_YEAR = int(os.getenv("VERIFY_BALANCED_VERIFY_TITLE_YEAR", "88"))
+VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT = int(os.getenv("VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT", "84"))
 VERIFY_BALANCED_OPENALEX_ON_LIKELY = _env_flag("VERIFY_BALANCED_OPENALEX_ON_LIKELY", "1")
 
 
