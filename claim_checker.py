@@ -296,15 +296,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         
             alternative_sources = []
         
-            if alt_source_count < MAX_ALT_SOURCE_ROWS:
-                alternative_sources = suggest_alternative_sources_for_claim(
-                    claim=claim,
-                    citation=citation_text,
-                    current_source_title=source_label,
-                    top_k=3
-                )
-                if alternative_sources:
-                    alt_source_count += 1
+            
         
             out.append({
                 "citation": citation_text,
@@ -427,19 +419,7 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             
             alternative_sources = []
             
-            if (
-                support_status in {"no_evidence_found", "insufficient_evidence"}
-                or support_score < 20
-            ):
-                if alt_source_count < MAX_ALT_SOURCE_ROWS:
-                    alternative_sources = suggest_alternative_sources_for_claim(
-                        claim=claim,
-                        citation=cit,
-                        current_source_title=source_title,
-                        top_k=3
-                    )
-                    if alternative_sources:
-                        alt_source_count += 1
+            alternative_sources = []
             out.append({
                 "citation": cit,
                 "claim": claim,
