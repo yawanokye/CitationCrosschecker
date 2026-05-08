@@ -1088,7 +1088,7 @@ def _classify(
     # -----------------------------------------
     # Strong title but missing author or year support.
     if title_score >= 85:
-        return "Verified"
+        return "likely"
 
     # Moderate title with year or author support.
     if title_score >= 78 and (year_match == 1 or author_overlap >= 1):
@@ -1102,10 +1102,10 @@ def _classify(
     # 4. NEEDS REVIEW
     # -----------------------------------------
     # Candidate exists but evidence is incomplete or weak.
-    if title_score >= 55:
+    if title_score >= 60:
         return "Likely"
 
-    if score >= 30:
+    if score >= 50:
         return "needs_review"
 
     # -----------------------------------------
@@ -1113,7 +1113,7 @@ def _classify(
     # -----------------------------------------
     return "not_found"
 
-    if title_score >= 55:
+    if title_score >= 58:
         return "LIKELY"
 
     if score >= 35:
@@ -3953,625 +3953,135 @@ def _verify_single_reference(
 
 
 # ============================================================
-# FAST-START MULTI-SOURCE OVERRIDE
-# Added to fix verification jobs that appear not to start or run too slowly.
-# This keeps the public structure and function names unchanged.
+# TARGET-18 EXISTENCE FALLBACK OVERRIDE v7
+# Added to improve verified count for valid non-DOI books, reports,
+# fact sheets and older references without slowing normal article checks.
+# It runs only after the normal verifier returns non-verified.
 # ============================================================
 
-VERIFY_FAST_START_MODE = _env_flag("VERIFY_FAST_START_MODE", "1")
-VERIFY_MAX_CROSSREF_QUERIES = int(os.getenv("VERIFY_MAX_CROSSREF_QUERIES", "2"))
-VERIFY_MAX_OPENALEX_QUERIES = int(os.getenv("VERIFY_MAX_OPENALEX_QUERIES", "1"))
-VERIFY_FAST_RETURN_ON_DOI = _env_flag("VERIFY_FAST_RETURN_ON_DOI", "1")
-VERIFY_FAST_RETURN_ON_ANY_STRONG = _env_flag("VERIFY_FAST_RETURN_ON_ANY_STRONG", "1")
-VERIFY_FAST_SKIP_GENERIC_SEMANTIC_WHEN_CANDIDATES = _env_flag("VERIFY_FAST_SKIP_GENERIC_SEMANTIC_WHEN_CANDIDATES", "1")
-VERIFY_FAST_SPECIAL_TIMEOUT = int(os.getenv("VERIFY_FAST_SPECIAL_TIMEOUT", "2"))
-
-# Re-tighten defaults for production speed. The user can still override these,
-# but FAST_START_MODE budgets the number of API calls even if older env values are broad.
-VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "0")
-VERIFY_STOP_ON_STRONG_MATCH = _env_flag("VERIFY_STOP_ON_STRONG_MATCH", "1")
-VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES = int(os.getenv("VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES", "1"))
-VERIFY_SPECIAL_ROWS = int(os.getenv("VERIFY_SPECIAL_ROWS", "2"))
-VERIFY_SPECIAL_TIMEOUT = min(
-    int(os.getenv("VERIFY_SPECIAL_TIMEOUT", str(VERIFY_FAST_SPECIAL_TIMEOUT))),
-    VERIFY_FAST_SPECIAL_TIMEOUT,
-)
+VERIFY_EXISTENCE_FALLBACK = _env_flag("VERIFY_EXISTENCE_FALLBACK", "1")
+VERIFY_EXISTENCE_MAX_SOURCES = int(os.getenv("VERIFY_EXISTENCE_MAX_SOURCES", "2"))
+VERIFY_EXISTENCE_ROWS = int(os.getenv("VERIFY_EXISTENCE_ROWS", "2"))
+VERIFY_BOOK_VERIFY_TITLE = int(os.getenv("VERIFY_BOOK_VERIFY_TITLE", "80"))
+VERIFY_BOOK_VERIFY_AUTHOR_SIM = int(os.getenv("VERIFY_BOOK_VERIFY_AUTHOR_SIM", "55"))
+VERIFY_BOOK_YEAR_DELTA = int(os.getenv("VERIFY_BOOK_YEAR_DELTA", "8"))
+VERIFY_ARTICLE_ONLINE_YEAR_DELTA = int(os.getenv("VERIFY_ARTICLE_ONLINE_YEAR_DELTA", "4"))
+VERIFY_ERICTITLE_VERIFY = int(os.getenv("VERIFY_ERIC_TITLE_VERIFY", "82"))
+VERIFY_DOI_TITLE_VERIFY_LOOSE = int(os.getenv("VERIFY_DOI_TITLE_VERIFY_LOOSE", "68"))
 
 
-def _fast_candidate_has_doi_match(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
-    """Return True when an exact DOI lookup produced a usable DOI match."""
-    ref_doi = _normalise_doi(fields.get("doi", ""))
-    if not ref_doi or not candidates:
-        return False
-    try:
-        for cand in candidates:
-            meta = _candidate_fields(cand)
-            if _normalise_doi(meta.get("doi", "")) == ref_doi:
-                return True
-    except Exception:
-        return False
-    return False
+def _status_rank(status: str) -> int:
+    st = _normalize_verify_status(status)
+    return {"not_found": 0, "needs_review": 1, "likely": 2, "verified": 3, "offline": 0}.get(st, 0)
 
 
-def _fast_should_return(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
-    """Fast stopping rule used after each small query batch."""
-    if not candidates:
-        return False
-    if VERIFY_FAST_RETURN_ON_DOI and _fast_candidate_has_doi_match(fields, candidates):
-        return True
-    if VERIFY_FAST_RETURN_ON_ANY_STRONG and _candidate_is_strong_enough(fields, candidates):
-        return True
-    return False
-
-
-def _limited_queries(queries: List[Dict[str, Any]], max_non_doi: int) -> List[Dict[str, Any]]:
-    """Keep DOI searches plus a small number of non-DOI searches."""
-    ordered = sorted(queries or [], key=lambda x: x.get("priority", 99))
-    out: List[Dict[str, Any]] = []
-    non_doi = 0
-    for q in ordered:
-        if q.get("mode") == "doi_exact":
-            out.append(q)
-            continue
-        if non_doi >= max(0, max_non_doi):
-            continue
-        out.append(q)
-        non_doi += 1
-    return out
-
-
-def _prioritise_fallback_queries(queries: List[Dict[str, Any]], fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Select only the most useful fallback sources.
-    This prevents every weak reference from calling many external databases.
-    """
-    if not queries:
+def _trusted_source_candidates_for_existing_refs(ref: str, fields: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Run only targeted low-cost fallbacks for references that already failed core verification."""
+    if not VERIFY_EXISTENCE_FALLBACK:
         return []
 
-    flags = fields.get("reference_type_flags", {}) or {}
-    doi = bool(fields.get("doi"))
-    has_candidates = bool(candidates)
-
-    priority_source_order: List[str] = []
-
-    if doi:
-        priority_source_order.extend(["datacite", "semantic_scholar"])
-    if flags.get("looks_health"):
-        priority_source_order.extend(["pubmed", "europepmc"])
-    if flags.get("looks_book") or fields.get("isbn"):
-        priority_source_order.extend(["google_books", "open_library"])
-    if flags.get("looks_education"):
-        priority_source_order.append("eric")
-    if flags.get("looks_arxiv"):
-        priority_source_order.append("arxiv")
-    if flags.get("looks_dataset_repo"):
-        priority_source_order.extend(["datacite", "core"])
-
-    # Generic fallback only when Crossref/OpenAlex returned nothing.
-    if not has_candidates:
-        priority_source_order.append("semantic_scholar")
-
-    seen_sources = set()
-    selected: List[Dict[str, Any]] = []
-
-    for source in priority_source_order:
-        if source in seen_sources:
-            continue
-        seen_sources.add(source)
-        for q in sorted(queries, key=lambda x: x.get("priority", 99)):
-            if q.get("source") == source and _source_enabled(source):
-                if VERIFY_FAST_SKIP_GENERIC_SEMANTIC_WHEN_CANDIDATES and has_candidates and q.get("name") == "semantic_scholar_search":
-                    continue
-                selected.append(q)
-                break
-        if len(selected) >= VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES:
-            break
-
-    return selected
-
-
-def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
-    """
-    Fast-start query runner.
-
-    It preserves the existing verification structure but prevents the job from
-    making 8 to 12 network calls per reference before progress appears.
-    """
+    flags = _reference_type_flags(ref, fields)
+    ref_l = _safe_strip(ref).lower()
     candidates: List[Dict[str, Any]] = []
-    query_used: List[str] = []
-    query_strategy: List[str] = []
-    fields = plan.get("fields", {}) or {}
-    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+    used = 0
 
-    # 1. Crossref first, with DOI plus only the strongest bibliographic queries.
-    crossref_queries = plan.get("crossref_queries", [])
-    if VERIFY_FAST_START_MODE:
-        crossref_queries = _limited_queries(crossref_queries, VERIFY_MAX_CROSSREF_QUERIES)
-    else:
-        crossref_queries = sorted(crossref_queries, key=lambda x: x.get("priority", 99))
-
-    for q in crossref_queries:
-        if not use_crossref:
-            continue
-        name = q.get("name", "crossref")
+    def add_from(source_name: str, fn):
+        nonlocal used, candidates
+        if used >= VERIFY_EXISTENCE_MAX_SOURCES:
+            return
+        if not _source_enabled(source_name):
+            return
         try:
-            if q.get("mode") == "doi_exact":
-                res = _query_crossref_by_doi(q.get("doi", ""))
-            else:
-                res = _query_crossref_bibliographic(
-                    q.get("query_bibliographic", ""),
-                    query_author=q.get("query_author", ""),
-                    rows=min(int(q.get("rows", VERIFY_CROSSREF_ROWS)), VERIFY_CROSSREF_ROWS),
-                    query_name=name,
-                )
+            res = fn()
+            used += 1
             if res:
                 candidates.extend(res)
-            query_strategy.append(name)
-            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
-            if _fast_should_return(fields, candidates):
-                return candidates, query_used, query_strategy
         except Exception as exc:
-            print(f"[DEBUG] Crossref query failed for {name}: {exc}")
+            print(f"[DEBUG] Target-18 existence fallback failed for {source_name}: {exc}")
 
-    # 2. OpenAlex fallback, also budgeted. Usually one title-year query is enough.
-    openalex_queries = plan.get("openalex_queries", [])
-    if VERIFY_FAST_START_MODE:
-        openalex_queries = _limited_queries(openalex_queries, VERIFY_MAX_OPENALEX_QUERIES)
-    else:
-        openalex_queries = sorted(openalex_queries, key=lambda x: x.get("priority", 99))
+    # Books and monographs are often absent from Crossref/OpenAlex article-style lookup.
+    if flags.get("looks_book") or any(x in ref_l for x in ["wiley", "guilford", "brooks/cole", "routledge", "harper", "lawrence erlbaum", "oxford university press", "john wiley", "crc"]):
+        add_from("google_books", lambda: _query_google_books(fields, rows=VERIFY_EXISTENCE_ROWS))
+        add_from("open_library", lambda: _query_open_library(fields, rows=VERIFY_EXISTENCE_ROWS))
 
-    for q in openalex_queries:
-        if not openalex_allowed:
-            continue
-        name = q.get("name", "openalex")
-        try:
-            if q.get("mode") == "doi_exact":
-                res = _query_openalex_by_doi(q.get("doi", ""))
-            else:
-                res = _query_openalex_search(
-                    q.get("search", ""),
-                    rows=min(int(q.get("rows", VERIFY_OPENALEX_ROWS)), VERIFY_OPENALEX_ROWS),
-                    publication_year=q.get("publication_year", ""),
-                    query_name=name,
-                )
-            if res:
-                candidates.extend(res)
-            query_strategy.append(name)
-            query_used.append(q.get("doi") or q.get("search") or "")
-            if _fast_should_return(fields, candidates):
-                return candidates, query_used, query_strategy
-        except Exception as exc:
-            print(f"[DEBUG] OpenAlex query failed for {name}: {exc}")
+    # Education reports/fact sheets and older education articles may be indexed by ERIC.
+    if flags.get("looks_education") or any(x in ref_l for x in ["fact sheet", "ifas", "extension", "educational and psychological", "information technology, learning"]):
+        add_from("eric", lambda: _query_eric(_generic_metadata_query(fields), rows=VERIFY_EXISTENCE_ROWS))
 
-    # 3. Extra databases only when still weak, and only selected by reference type.
-    if not VERIFY_MULTISOURCE_FALLBACK:
-        return candidates, query_used, query_strategy
-
-    if VERIFY_MULTISOURCE_ONLY_WHEN_WEAK and _candidate_is_strong_enough(fields, candidates):
-        return candidates, query_used, query_strategy
-
-    fallback_queries = plan.get("fallback_queries", [])
-    if VERIFY_FAST_START_MODE:
-        fallback_queries = _prioritise_fallback_queries(fallback_queries, fields, candidates)
-    else:
-        fallback_queries = sorted(fallback_queries, key=lambda x: x.get("priority", 99))[:VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES]
-
-    extra_count = 0
-    for q in fallback_queries:
-        source = q.get("source", "")
-        if not _source_enabled(source):
-            continue
-        if extra_count >= VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES:
-            break
-        try:
-            res = _run_fallback_query(q, fields)
-            query_strategy.append(q.get("name", source))
-            query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
-            extra_count += 1
-            if res:
-                candidates.extend(res)
-                if _fast_should_return(fields, candidates):
-                    break
-        except Exception as exc:
-            print(f"[DEBUG] {source} fallback failed for {q.get('name')}: {exc}")
-
-    return candidates, query_used, query_strategy
-
-
-# Make the batch heartbeat more visible without changing its public signature.
-_original_verify_references_batch_fast_start = verify_references_batch
-
-def verify_references_batch(
-    references: List[str],
-    style: str = "apa",
-    throttle_s: float = 0.0,
-    use_crossref: bool = True,
-    use_openalex: bool = False,
-    job_id: str = None,
-    enrich_metadata: bool = False,
-) -> List[Dict[str, Any]]:
-    if job_id:
-        try:
-            update_job_progress(job_id, 0)
-            store_verification_results(job_id, [])
-        except Exception:
-            pass
-    return _original_verify_references_batch_fast_start(
-        references=references,
-        style=style,
-        throttle_s=throttle_s,
-        use_crossref=use_crossref,
-        use_openalex=use_openalex,
-        job_id=job_id,
-        enrich_metadata=enrich_metadata,
-    )
-
-# ============================================================
-# LEGACY IMPORT COMPATIBILITY PATCH
-# Keeps older modules such as citation_suggester.py working.
-# Some modules still import _score directly from verify.py.
-# The commercial scorer uses richer metadata internally, but this wrapper
-# preserves the original six-argument _score contract.
-# ============================================================
-
-def _score(
-    ref_title: str,
-    ref_authors: List[str],
-    ref_year: str,
-    cand_title: str,
-    cand_authors: List[str],
-    cand_year: str,
-) -> Dict[str, Any]:
-    ref_title_n = _norm_text(ref_title)
-    cand_title_n = _norm_text(cand_title)
-
-    token_score = fuzz.token_sort_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
-    set_score = fuzz.token_set_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
-    partial_score = fuzz.partial_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
-
-    title_score = int((token_score * 0.45) + (set_score * 0.35) + (partial_score * 0.20))
-
-    ref_author_set = {re.sub(r"[^a-z'\-]", "", _safe_strip(a).lower()) for a in (ref_authors or []) if _safe_strip(a)}
-    cand_author_set = {re.sub(r"[^a-z'\-]", "", _safe_strip(a).lower()) for a in (cand_authors or []) if _safe_strip(a)}
-    ref_author_set.discard("")
-    cand_author_set.discard("")
-
-    if ref_author_set and cand_author_set:
-        intersection = len(ref_author_set & cand_author_set)
-        union = len(ref_author_set | cand_author_set)
-        author_similarity = int((intersection / union) * 100) if union else 0
-        author_overlap = intersection
-    else:
-        author_similarity = 0
-        author_overlap = 0
-
-    year_match = 1 if ref_year and cand_year and _safe_str(ref_year)[:4] == _safe_str(cand_year)[:4] else 0
-
-    score = int((title_score * 0.65) + (author_similarity * 0.25) + (year_match * 10))
-    if author_overlap >= 1:
-        score += 5
-    if author_overlap >= 2:
-        score += 8
-
-    return {
-        "score": int(score),
-        "title_score": int(title_score),
-        "author_overlap": int(author_overlap),
-        "author_similarity": int(author_similarity),
-        "year_match": int(year_match),
-    }
-
-try:
-    if "__all__" in globals() and "_score" not in __all__:
-        __all__.append("_score")
-except Exception:
-    pass
-
-
-# ============================================================
-# ULTRA-FAST PRODUCTION OVERRIDE
-# Added to make verification start faster and finish with fewer API calls.
-# Public API is preserved: verify_references_batch, submit_verification,
-# get_verification_status, get_verification_results and _score remain available.
-# ============================================================
-
-VERIFY_ULTRA_FAST_MODE = _env_flag("VERIFY_ULTRA_FAST_MODE", "1")
-VERIFY_ULTRA_WORKERS = int(os.getenv("VERIFY_ULTRA_WORKERS", os.getenv("VERIFY_INNER_THREADS", "3")))
-VERIFY_ULTRA_MAX_API_CALLS_PER_REF = int(os.getenv("VERIFY_ULTRA_MAX_API_CALLS_PER_REF", "3"))
-VERIFY_ULTRA_CROSSREF_TEXT_QUERIES = int(os.getenv("VERIFY_ULTRA_CROSSREF_TEXT_QUERIES", "1"))
-VERIFY_ULTRA_OPENALEX_TEXT_QUERIES = int(os.getenv("VERIFY_ULTRA_OPENALEX_TEXT_QUERIES", "1"))
-VERIFY_ULTRA_FALLBACK_QUERIES = int(os.getenv("VERIFY_ULTRA_FALLBACK_QUERIES", "1"))
-VERIFY_ULTRA_STORE_EVERY = int(os.getenv("VERIFY_ULTRA_STORE_EVERY", "3"))
-VERIFY_ULTRA_CACHE_SECONDS = int(os.getenv("VERIFY_ULTRA_CACHE_SECONDS", "21600"))
-VERIFY_ULTRA_FAST_API_TIMEOUT = float(os.getenv("VERIFY_ULTRA_FAST_API_TIMEOUT", "3"))
-VERIFY_ULTRA_DISABLE_ENRICH_METADATA = _env_flag("VERIFY_ULTRA_DISABLE_ENRICH_METADATA", "1")
-VERIFY_ULTRA_SKIP_OPENALEX_WHEN_CROSSREF_CANDIDATE = _env_flag("VERIFY_ULTRA_SKIP_OPENALEX_WHEN_CROSSREF_CANDIDATE", "1")
-VERIFY_ULTRA_FALLBACK_ONLY_IF_NO_CANDIDATE = _env_flag("VERIFY_ULTRA_FALLBACK_ONLY_IF_NO_CANDIDATE", "1")
-
-# Production-fast defaults. Env values can still override these before import.
-VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "0")
-VERIFY_STOP_ON_STRONG_MATCH = _env_flag("VERIFY_STOP_ON_STRONG_MATCH", "1")
-VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES = min(
-    int(os.getenv("VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES", str(VERIFY_ULTRA_FALLBACK_QUERIES))),
-    max(0, VERIFY_ULTRA_FALLBACK_QUERIES),
-)
-VERIFY_SPECIAL_ROWS = min(int(os.getenv("VERIFY_SPECIAL_ROWS", "2")), 2)
-VERIFY_SPECIAL_TIMEOUT = min(int(os.getenv("VERIFY_SPECIAL_TIMEOUT", "2")), 2)
-VERIFY_CROSSREF_ROWS = min(int(os.getenv("VERIFY_CROSSREF_ROWS", "5")), 5)
-VERIFY_OPENALEX_ROWS = min(int(os.getenv("VERIFY_OPENALEX_ROWS", "3")), 3)
-VERIFY_TITLE_ROWS = min(int(os.getenv("VERIFY_TITLE_ROWS", "3")), 3)
-
-# Semantic Scholar can be slow or rate-limited. Keep it opt-in unless explicitly set.
-VERIFY_USE_SEMANTIC_SCHOLAR = _env_flag("VERIFY_USE_SEMANTIC_SCHOLAR", "0")
-VERIFY_USE_CORE = _env_flag("VERIFY_USE_CORE", "0")
-VERIFY_USE_DOAJ = _env_flag("VERIFY_USE_DOAJ", "0")
-
-_JSON_CACHE: Dict[str, Tuple[float, Optional[dict]]] = {}
-_JSON_CACHE_LOCK = threading.Lock()
-_THREAD_LOCAL = threading.local()
-
-
-def _json_cache_key(url: str, params: Optional[dict]) -> str:
-    if not params:
-        return url
-    try:
-        items = sorted((str(k), str(v)) for k, v in params.items())
-        return url + "?" + "&".join(f"{k}={v}" for k, v in items)
-    except Exception:
-        return url + "?" + str(params)
-
-
-def _get_http_session():
-    session = getattr(_THREAD_LOCAL, "session", None)
-    if session is None:
-        session = requests.Session()
-        try:
-            adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=0)
-            session.mount("https://", adapter)
-            session.mount("http://", adapter)
-        except Exception:
-            pass
-        _THREAD_LOCAL.session = session
-    return session
-
-
-def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None) -> Optional[dict]:
-    """
-    Faster cached HTTP getter.
-    - Reuses connections per worker thread.
-    - Caches identical API calls during and across jobs.
-    - Uses a short timeout in ultra-fast mode.
-    - Does not sleep on failures.
-    """
-    if timeout is None:
-        timeout = min(float(API_TIMEOUT), VERIFY_ULTRA_FAST_API_TIMEOUT) if VERIFY_ULTRA_FAST_MODE else API_TIMEOUT
-
-    key = _json_cache_key(url, params)
-    now = time.time()
-
-    if VERIFY_ULTRA_CACHE_SECONDS > 0:
-        with _JSON_CACHE_LOCK:
-            cached = _JSON_CACHE.get(key)
-            if cached and now - cached[0] <= VERIFY_ULTRA_CACHE_SECONDS:
-                return cached[1]
-
-    try:
-        headers = {
-            "User-Agent": f"CitationCrosschecker/3.0 (mailto:{MAILTO})",
-            "Accept": "application/json",
-        }
-        response = _get_http_session().get(url, params=params, timeout=timeout, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-        else:
-            data = None
-    except Exception as exc:
-        print(f"[DEBUG] Fast API request failed: {exc}")
-        data = None
-
-    if VERIFY_ULTRA_CACHE_SECONDS > 0:
-        with _JSON_CACHE_LOCK:
-            if len(_JSON_CACHE) > 5000:
-                _JSON_CACHE.clear()
-            _JSON_CACHE[key] = (now, data)
-
-    return data
-
-
-def _ultra_candidate_is_useful(fields: Dict[str, Any], candidates: List[Dict[str, Any]], likely_threshold: int = 82) -> bool:
-    if not candidates:
-        return False
-    try:
-        _best, meta, _alts = _best_candidate(fields, candidates)
-        if not meta:
-            return False
-        if meta.get("doi_match"):
-            return True
-        if int(meta.get("title_score", 0)) >= likely_threshold and (
-            int(meta.get("year_match", 0)) == 1
-            or int(meta.get("author_overlap", 0)) >= 1
-            or int(meta.get("journal_score", 0)) >= VERIFY_THRESHOLD_JOURNAL_SUPPORT
-        ):
-            return True
-    except Exception:
-        return False
-    return False
-
-
-def _ultra_select_queries(queries: List[Dict[str, Any]], max_text: int) -> List[Dict[str, Any]]:
-    """Keep DOI exact queries and only the strongest text queries."""
-    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
-    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
-    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
-
-    preferred_names = [
-        "crossref_full_bibliographic",
-        "crossref_rich_bibliographic",
-        "crossref_title_author_year",
-        "crossref_title_journal_year",
-        "openalex_title_year",
-        "openalex_title_only",
-    ]
-
-    selected_text: List[Dict[str, Any]] = []
-    for name in preferred_names:
-        for q in text_queries:
-            if q.get("name") == name and q not in selected_text:
-                selected_text.append(q)
-                break
-        if len(selected_text) >= max_text:
-            break
-
-    for q in text_queries:
-        if len(selected_text) >= max_text:
-            break
-        if q not in selected_text:
-            selected_text.append(q)
-
-    return doi_queries + selected_text[:max_text]
-
-
-def _ultra_select_fallback_queries(queries: List[Dict[str, Any]], fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    if not queries or VERIFY_ULTRA_FALLBACK_QUERIES <= 0:
-        return []
-    if VERIFY_ULTRA_FALLBACK_ONLY_IF_NO_CANDIDATE and candidates:
-        return []
-    if VERIFY_MULTISOURCE_ONLY_WHEN_WEAK and _ultra_candidate_is_useful(fields, candidates, likely_threshold=78):
-        return []
-
-    flags = fields.get("reference_type_flags", {}) or {}
-    source_order: List[str] = []
-
+    # If the original has a DOI but Crossref/OpenAlex did not verify, DataCite is a cheap exact fallback.
     if fields.get("doi"):
-        source_order.append("datacite")
-    if flags.get("looks_health") or fields.get("pmid") or fields.get("pmcid"):
-        source_order.extend(["pubmed", "europepmc"])
-    if flags.get("looks_book") or fields.get("isbn"):
-        source_order.extend(["google_books", "open_library"])
-    if flags.get("looks_arxiv") or fields.get("arxiv_id"):
-        source_order.append("arxiv")
-    if flags.get("looks_education"):
-        source_order.append("eric")
-    if flags.get("looks_dataset_repo"):
-        source_order.append("datacite")
+        add_from("datacite", lambda: _query_datacite_by_doi(fields.get("doi", "")))
 
-    # Generic fallback is last and only when explicitly enabled.
-    if VERIFY_USE_SEMANTIC_SCHOLAR and not candidates:
-        source_order.append("semantic_scholar")
-
-    seen = set()
-    selected: List[Dict[str, Any]] = []
-    for source in source_order:
-        if source in seen or not _source_enabled(source):
-            continue
-        seen.add(source)
-        for q in sorted(queries, key=lambda x: x.get("priority", 99)):
-            if q.get("source") == source:
-                selected.append(q)
-                break
-        if len(selected) >= VERIFY_ULTRA_FALLBACK_QUERIES:
-            break
-    return selected
+    return candidates
 
 
-def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
-    """
-    Ultra-fast query runner.
-    Normal path is 1 to 3 API calls per reference:
-      1. DOI lookup if DOI exists, or one Crossref bibliographic query.
-      2. One OpenAlex query only if Crossref is weak.
-      3. One type-specific fallback only when still needed.
-    """
-    candidates: List[Dict[str, Any]] = []
-    query_used: List[str] = []
-    query_strategy: List[str] = []
-    fields = plan.get("fields", {}) or {}
-    api_calls = 0
-    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
-
-    def budget_left() -> bool:
-        return api_calls < max(1, VERIFY_ULTRA_MAX_API_CALLS_PER_REF)
-
-    # Crossref, DOI plus one bibliographic query.
-    for q in _ultra_select_queries(plan.get("crossref_queries", []), VERIFY_ULTRA_CROSSREF_TEXT_QUERIES):
-        if not use_crossref or not budget_left():
-            break
-        name = q.get("name", "crossref")
-        try:
-            if q.get("mode") == "doi_exact":
-                res = _query_crossref_by_doi(q.get("doi", ""))
-            else:
-                res = _query_crossref_bibliographic(
-                    q.get("query_bibliographic", ""),
-                    query_author=q.get("query_author", ""),
-                    rows=min(int(q.get("rows", VERIFY_CROSSREF_ROWS)), VERIFY_CROSSREF_ROWS),
-                    query_name=name,
-                )
-            api_calls += 1
-            if res:
-                candidates.extend(res)
-            query_strategy.append(name)
-            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
-            if _ultra_candidate_is_useful(fields, candidates, likely_threshold=84):
-                return _dedupe_candidates(candidates), query_used, query_strategy
-        except Exception as exc:
-            print(f"[DEBUG] Ultra Crossref query failed for {name}: {exc}")
-
-    # Skip OpenAlex when Crossref already returned a decent candidate and the user wants speed.
-    if VERIFY_ULTRA_SKIP_OPENALEX_WHEN_CROSSREF_CANDIDATE and candidates:
-        if _ultra_candidate_is_useful(fields, candidates, likely_threshold=75):
-            return _dedupe_candidates(candidates), query_used, query_strategy
-
-    # OpenAlex, one query only.
-    for q in _ultra_select_queries(plan.get("openalex_queries", []), VERIFY_ULTRA_OPENALEX_TEXT_QUERIES):
-        if not openalex_allowed or not budget_left():
-            break
-        name = q.get("name", "openalex")
-        try:
-            if q.get("mode") == "doi_exact":
-                res = _query_openalex_by_doi(q.get("doi", ""))
-            else:
-                res = _query_openalex_search(
-                    q.get("search", ""),
-                    rows=min(int(q.get("rows", VERIFY_OPENALEX_ROWS)), VERIFY_OPENALEX_ROWS),
-                    publication_year=q.get("publication_year", ""),
-                    query_name=name,
-                )
-            api_calls += 1
-            if res:
-                candidates.extend(res)
-            query_strategy.append(name)
-            query_used.append(q.get("doi") or q.get("search") or "")
-            if _ultra_candidate_is_useful(fields, candidates, likely_threshold=84):
-                return _dedupe_candidates(candidates), query_used, query_strategy
-        except Exception as exc:
-            print(f"[DEBUG] Ultra OpenAlex query failed for {name}: {exc}")
-
-    # One adaptive fallback only when useful.
-    if VERIFY_MULTISOURCE_FALLBACK and budget_left():
-        fallback_queries = _ultra_select_fallback_queries(plan.get("fallback_queries", []), fields, candidates)
-        for q in fallback_queries[:VERIFY_ULTRA_FALLBACK_QUERIES]:
-            if not budget_left():
-                break
-            source = q.get("source", "")
-            if not _source_enabled(source):
-                continue
-            try:
-                res = _run_fallback_query(q, fields)
-                api_calls += 1
-                if res:
-                    candidates.extend(res)
-                query_strategy.append(q.get("name", source))
-                query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
-                if _ultra_candidate_is_useful(fields, candidates, likely_threshold=82):
-                    break
-            except Exception as exc:
-                print(f"[DEBUG] Ultra fallback failed for {q.get('name', source)}: {exc}")
-
-    return _dedupe_candidates(candidates), query_used, query_strategy
+def _is_bookish_meta(meta: Dict[str, Any]) -> bool:
+    src = _safe_strip(meta.get("source", "")).lower()
+    typ = _safe_strip(meta.get("type", "")).lower()
+    return src in {"google_books", "open_library"} or "book" in typ
 
 
-_original_verify_single_reference_ultra = _verify_single_reference
+def _is_eric_meta(meta: Dict[str, Any]) -> bool:
+    return _safe_strip(meta.get("source", "")).lower() == "eric"
+
+
+_original_target18_classify_from_meta_v7 = _classify_from_meta
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    """Target-18 classifier with existence-source support for books and older reports."""
+    title_score = int(meta.get("title_score", 0))
+    score = int(meta.get("score", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    candidate_has_doi = bool(meta.get("doi") or meta.get("candidate_has_doi"))
+    doi_match = bool(meta.get("doi_match"))
+    source = _safe_strip(meta.get("source", "")).lower()
+    ref_has_authors = bool(ref_fields.get("authors"))
+    cand_has_authors = bool(meta.get("authors"))
+    author_ok = author_overlap >= 1 or author_similarity >= VERIFY_BOOK_VERIFY_AUTHOR_SIM or not ref_has_authors or not cand_has_authors
+    year_ok_article = year_match == 1 or year_delta <= VERIFY_ARTICLE_ONLINE_YEAR_DELTA
+    year_ok_book = year_match == 1 or year_delta <= VERIFY_BOOK_YEAR_DELTA or year_delta == 999
+
+    if bool(meta.get("is_retracted")):
+        return "needs_review", "Matched record appears to be retracted and needs manual review."
+
+    # Exact DOI remains strongest. Allow online-first/article issue-year differences up to a few years.
+    if doi_match:
+        if title_score >= 50 or author_ok or year_ok_article:
+            return "verified", "Exact DOI match with acceptable title, author or publication-year support."
+        return "likely", "DOI matches, but bibliographic evidence is weak."
+
+    # DOI-backed article candidate found from a trusted scholarly source.
+    # This handles online-first year differences, e.g. Crossref year differs from issue year.
+    if candidate_has_doi and source in {"crossref", "openalex", "datacite", "pubmed", "europepmc", "semantic_scholar"}:
+        if title_score >= VERIFY_DOI_TITLE_VERIFY_LOOSE and score >= 58 and (author_ok or year_ok_article or journal_score >= 55):
+            return "verified", "DOI-backed scholarly match promoted with title and supporting metadata."
+        if title_score >= 55 and (author_ok or year_ok_article):
+            return "likely", "DOI-backed scholarly candidate found, but evidence is below verified threshold."
+
+    # Books and monographs: Google Books/Open Library do not supply DOI, so verify by title + author + edition/year tolerance.
+    if _is_bookish_meta(meta):
+        if title_score >= VERIFY_BOOK_VERIFY_TITLE and author_ok and year_ok_book:
+            return "verified", "Book/monograph verified through trusted book metadata with title and author support."
+        if title_score >= 90 and author_ok:
+            return "verified", "Book/monograph verified through trusted book metadata with very strong title and author support."
+        if title_score >= 72 and author_ok:
+            return "likely", "Book/monograph found in trusted book metadata, but year or edition needs review."
+
+    # ERIC and education sources: useful for older education articles, fact sheets, reports and non-DOI outputs.
+    if _is_eric_meta(meta):
+        if title_score >= VERIFY_ERICTITLE_VERIFY and (author_ok or year_match == 1 or journal_score >= 50):
+            return "verified", "Education/report reference verified through ERIC with strong title and supporting metadata."
+        if title_score >= 70 and (author_ok or year_delta <= 1):
+            return "likely", "ERIC candidate found, but evidence is below verified threshold."
+
+    return _original_target18_classify_from_meta_v7(ref_fields, meta)
+
+
+_original_verify_single_reference_v7 = _verify_single_reference
 
 def _verify_single_reference(
     ref: str,
@@ -4580,1339 +4090,73 @@ def _verify_single_reference(
     use_openalex: bool,
     enrich_metadata: bool = False,
 ) -> Dict[str, Any]:
-    """Ultra-fast wrapper around the commercial verifier."""
-    effective_enrich = bool(enrich_metadata and not VERIFY_ULTRA_DISABLE_ENRICH_METADATA)
-    return _original_verify_single_reference_ultra(ref, style, use_crossref, use_openalex, effective_enrich)
+    """Run normal verification first, then targeted existence fallback for non-verified rows."""
+    row = _original_verify_single_reference_v7(ref, style, use_crossref, use_openalex, enrich_metadata)
 
+    if _normalize_verify_status(row.get("status")) == "verified" or not VERIFY_EXISTENCE_FALLBACK:
+        return row
 
-def _make_timeout_row(ref: str, style: str, error: str = "Verification timeout") -> Dict[str, Any]:
-    return {
-        "reference": ref,
-        "style": style,
-        "status": "not_found",
-        "source": "timeout",
-        "score": 0,
-        "doi": "",
-        "matched_title": "",
-        "matched_year": "",
-        "matched_authors": "",
-        "matched_journal": "",
-        "title_score": 0,
-        "journal_score": 0,
-        "author_overlap": 0,
-        "author_similarity": 0,
-        "year_match": 0,
-        "query_used": "",
-        "query_strategy": "timeout",
-        "author": "",
-        "author_mismatch_flag": 0,
-        "match_note": error,
-        "confidence_reason": error,
-        "error": error,
-        "alternative_matches": [],
-        "correction_suggestions": [],
-    }
-
-
-def verify_references_batch(
-    references: List[str],
-    style: str = "apa",
-    throttle_s: float = 0.0,
-    use_crossref: bool = True,
-    use_openalex: bool = False,
-    job_id: str = None,
-    enrich_metadata: bool = False,
-) -> List[Dict[str, Any]]:
-    """
-    Ultra-fast batch verifier.
-    It preserves the public signature but avoids slow chunk waits.
-    Progress is updated after every completed reference.
-    """
-    refs = [r for r in (references or []) if _safe_strip(r)]
-    normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
-    total = len(refs)
-
-    print(f"[DEBUG] ⚡ ultra verify_references_batch called: {total} references, style={normalized_style}, job_id={job_id}")
-
-    if job_id:
-        try:
-            update_job_progress(job_id, 0)
-            store_verification_results(job_id, [])
-        except Exception:
-            pass
-
-    if not refs:
-        return []
-
-    rows: List[Optional[Dict[str, Any]]] = [None] * total
-    workers = max(1, min(VERIFY_ULTRA_WORKERS, total))
-    completed = 0
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {
-            executor.submit(
-                _verify_single_reference_with_retry,
-                ref,
-                normalized_style,
-                use_crossref,
-                use_openalex,
-                bool(enrich_metadata and not VERIFY_ULTRA_DISABLE_ENRICH_METADATA),
-            ): (idx, ref)
-            for idx, ref in enumerate(refs)
-        }
-
-        for future in as_completed(future_map):
-            idx, ref = future_map[future]
-            try:
-                rows[idx] = future.result(timeout=max(3, int(VERIFY_SINGLE_REF_TIMEOUT)))
-            except Exception as exc:
-                print(f"[DEBUG] Ultra verification failed for ref {idx + 1}: {exc}")
-                rows[idx] = _make_timeout_row(ref, normalized_style, str(exc))
-
-            completed += 1
-            if job_id:
-                try:
-                    update_job_progress(job_id, completed)
-                    if completed % max(1, VERIFY_ULTRA_STORE_EVERY) == 0 or completed == total:
-                        store_verification_results(job_id, [r for r in rows if r is not None])
-                except Exception:
-                    pass
-
-            if throttle_s:
-                time.sleep(float(throttle_s))
-
-    final_rows = [r if r is not None else _make_timeout_row(refs[i], normalized_style, "No result returned") for i, r in enumerate(rows)]
-
-    counts = {
-        "verified": sum(1 for r in final_rows if r.get("status") == "verified"),
-        "likely": sum(1 for r in final_rows if r.get("status") == "likely"),
-        "needs_review": sum(1 for r in final_rows if r.get("status") == "needs_review"),
-        "not_found": sum(1 for r in final_rows if r.get("status") == "not_found"),
-    }
-    print(f"[DEBUG] ⚡ ultra verification complete: {counts}")
-
-    if job_id:
-        try:
-            update_job_progress(job_id, total)
-            store_verification_results(job_id, final_rows)
-        except Exception:
-            pass
-
-    return final_rows
-
-
-# Keep legacy direct import working for citation_suggester.py.
-def _score(
-    ref_title: str,
-    ref_authors: List[str],
-    ref_year: str,
-    cand_title: str,
-    cand_authors: List[str],
-    cand_year: str,
-) -> Dict[str, Any]:
-    ref_title_n = _norm_text(ref_title)
-    cand_title_n = _norm_text(cand_title)
-
-    token_score = fuzz.token_sort_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
-    set_score = fuzz.token_set_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
-    partial_score = fuzz.partial_ratio(ref_title_n, cand_title_n) if ref_title_n and cand_title_n else 0
-    title_score = int((token_score * 0.45) + (set_score * 0.35) + (partial_score * 0.20))
-
-    ref_author_set = {re.sub(r"[^a-z'\-]", "", _safe_strip(a).lower()) for a in (ref_authors or []) if _safe_strip(a)}
-    cand_author_set = {re.sub(r"[^a-z'\-]", "", _safe_strip(a).lower()) for a in (cand_authors or []) if _safe_strip(a)}
-    ref_author_set.discard("")
-    cand_author_set.discard("")
-
-    if ref_author_set and cand_author_set:
-        intersection = len(ref_author_set & cand_author_set)
-        union = len(ref_author_set | cand_author_set)
-        author_similarity = int((intersection / union) * 100) if union else 0
-        author_overlap = intersection
-    else:
-        author_similarity = 0
-        author_overlap = 0
-
-    year_match = 1 if ref_year and cand_year and _safe_str(ref_year)[:4] == _safe_str(cand_year)[:4] else 0
-    score = int((title_score * 0.65) + (author_similarity * 0.25) + (year_match * 10))
-    if author_overlap >= 1:
-        score += 5
-    if author_overlap >= 2:
-        score += 8
-
-    return {
-        "score": int(score),
-        "title_score": int(title_score),
-        "author_overlap": int(author_overlap),
-        "author_similarity": int(author_similarity),
-        "year_match": int(year_match),
-    }
-
-try:
-    if "__all__" in globals():
-        for name in ["_score", "verify_references_batch"]:
-            if name not in __all__:
-                __all__.append(name)
-except Exception:
-    pass
-
-# ============================================================
-# RECALL-BOOST QUERY OVERRIDE
-# Added to improve verified counts in ultra-fast mode without returning to the
-# very slow all-database strategy. Public API is unchanged.
-# ============================================================
-
-VERIFY_RECALL_BOOST_MODE = _env_flag("VERIFY_RECALL_BOOST_MODE", "1")
-VERIFY_RECALL_MAX_API_CALLS = int(os.getenv("VERIFY_RECALL_MAX_API_CALLS", "5"))
-VERIFY_RECALL_CROSSREF_TEXT_QUERIES = int(os.getenv("VERIFY_RECALL_CROSSREF_TEXT_QUERIES", "3"))
-VERIFY_RECALL_OPENALEX_TEXT_QUERIES = int(os.getenv("VERIFY_RECALL_OPENALEX_TEXT_QUERIES", "2"))
-VERIFY_RECALL_FALLBACK_QUERIES = int(os.getenv("VERIFY_RECALL_FALLBACK_QUERIES", "1"))
-VERIFY_RECALL_ROWS = int(os.getenv("VERIFY_RECALL_ROWS", "5"))
-VERIFY_RECALL_PROMOTE_STRONG_LIKELY = _env_flag("VERIFY_RECALL_PROMOTE_STRONG_LIKELY", "1")
-
-
-def _recall_best_meta(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
     try:
-        _best, meta, _alts = _best_candidate(fields, candidates)
-        return meta or {}
-    except Exception:
-        return {}
+        plan = _build_verification_query_plan(ref, style)
+        fields = plan.get("fields", {}) or {}
+        extra_candidates = _trusted_source_candidates_for_existing_refs(ref, fields)
+        if not extra_candidates:
+            return row
 
-
-def _recall_is_verified_like(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
-    """Stop early only when the current candidates are strong enough to verify."""
-    if not candidates:
-        return False
-    meta = _recall_best_meta(fields, candidates)
-    if not meta:
-        return False
-
-    title_score = int(meta.get("title_score", 0))
-    year_match = int(meta.get("year_match", 0))
-    year_delta = int(meta.get("year_delta", 999))
-    author_overlap = int(meta.get("author_overlap", 0))
-    author_similarity = int(meta.get("author_similarity", 0))
-    journal_score = int(meta.get("journal_score", 0))
-    source_agreement = int(meta.get("source_agreement", 1))
-
-    if meta.get("doi_match"):
-        return True
-    if title_score >= 90 and year_delta <= 1 and (author_overlap >= 1 or author_similarity >= 70 or journal_score >= 65):
-        return True
-    if title_score >= 88 and year_match and source_agreement >= 2:
-        return True
-    if title_score >= 86 and year_match and journal_score >= 75:
-        return True
-    return False
-
-
-def _recall_query_name(q: Dict[str, Any]) -> str:
-    return _safe_strip(q.get("name", ""))
-
-
-def _recall_select_crossref_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Recall-preserving Crossref order.
-    Uses full reference plus compact title-author/year forms. This fixes the
-    ultra-fast problem where one weak full-reference query could miss a valid item.
-    """
-    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
-    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
-    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
-
-    preferred = [
-        "crossref_full_bibliographic",
-        "crossref_rich_bibliographic",
-        "crossref_title_author_year",
-        "crossref_title_journal_year",
-    ]
-    selected: List[Dict[str, Any]] = []
-    for name in preferred:
-        for q in text_queries:
-            if _recall_query_name(q) == name and q not in selected:
-                selected.append(q)
-                break
-        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
-            break
-
-    for q in text_queries:
-        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
-            break
-        if q not in selected:
-            selected.append(q)
-
-    return doi_queries + selected[:VERIFY_RECALL_CROSSREF_TEXT_QUERIES]
-
-
-def _recall_select_openalex_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
-    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
-    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
-    preferred = ["openalex_title_year", "openalex_title_journal", "openalex_title_only"]
-
-    selected: List[Dict[str, Any]] = []
-    for name in preferred:
-        for q in text_queries:
-            if _recall_query_name(q) == name and q not in selected:
-                selected.append(q)
-                break
-        if len(selected) >= VERIFY_RECALL_OPENALEX_TEXT_QUERIES:
-            break
-
-    for q in text_queries:
-        if len(selected) >= VERIFY_RECALL_OPENALEX_TEXT_QUERIES:
-            break
-        if q not in selected:
-            selected.append(q)
-
-    return doi_queries + selected[:VERIFY_RECALL_OPENALEX_TEXT_QUERIES]
-
-
-def _recall_select_fallback_queries(queries: List[Dict[str, Any]], fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Type-aware fallback. Unlike the earlier ultra-fast selector, this can still
-    run one fallback when Crossref/OpenAlex returned weak candidates.
-    """
-    if not queries or VERIFY_RECALL_FALLBACK_QUERIES <= 0:
-        return []
-    if _recall_is_verified_like(fields, candidates):
-        return []
-
-    flags = fields.get("reference_type_flags", {}) or {}
-    source_order: List[str] = []
-
-    if fields.get("doi"):
-        source_order.extend(["datacite", "semantic_scholar"])
-    if flags.get("looks_health") or fields.get("pmid") or fields.get("pmcid"):
-        source_order.extend(["pubmed", "europepmc"])
-    if flags.get("looks_book") or fields.get("isbn"):
-        source_order.extend(["google_books", "open_library"])
-    if flags.get("looks_education"):
-        source_order.append("eric")
-    if flags.get("looks_arxiv") or fields.get("arxiv_id"):
-        source_order.append("arxiv")
-    if flags.get("looks_dataset_repo"):
-        source_order.extend(["datacite", "core"])
-
-    # Generic scholarly fallback only when enabled and candidates are still poor.
-    if VERIFY_USE_SEMANTIC_SCHOLAR and not _ultra_candidate_is_useful(fields, candidates, likely_threshold=75):
-        source_order.append("semantic_scholar")
-
-    selected: List[Dict[str, Any]] = []
-    seen_sources = set()
-    for source in source_order:
-        if source in seen_sources or not _source_enabled(source):
-            continue
-        seen_sources.add(source)
-        for q in sorted(queries, key=lambda x: x.get("priority", 99)):
-            if q.get("source") == source:
-                selected.append(q)
-                break
-        if len(selected) >= VERIFY_RECALL_FALLBACK_QUERIES:
-            break
-    return selected
-
-
-def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
-    """
-    Recall-boost query runner.
-    Target: restore high verified counts while staying fast.
-    Normal upper budget: DOI + 3 Crossref text queries + 1 OpenAlex/fallback.
-    """
-    candidates: List[Dict[str, Any]] = []
-    query_used: List[str] = []
-    query_strategy: List[str] = []
-    fields = plan.get("fields", {}) or {}
-    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
-    api_calls = 0
-    max_calls = max(1, VERIFY_RECALL_MAX_API_CALLS if VERIFY_RECALL_BOOST_MODE else VERIFY_ULTRA_MAX_API_CALLS_PER_REF)
-
-    def budget_left() -> bool:
-        return api_calls < max_calls
-
-    # 1. Crossref first. Do not rely on only one full-reference query.
-    for q in _recall_select_crossref_queries(plan.get("crossref_queries", [])):
-        if not use_crossref or not budget_left():
-            break
-        name = q.get("name", "crossref")
-        try:
-            if q.get("mode") == "doi_exact":
-                res = _query_crossref_by_doi(q.get("doi", ""))
-            else:
-                res = _query_crossref_bibliographic(
-                    q.get("query_bibliographic", ""),
-                    query_author=q.get("query_author", ""),
-                    rows=min(max(3, int(q.get("rows", VERIFY_CROSSREF_ROWS))), max(3, VERIFY_RECALL_ROWS)),
-                    query_name=name,
-                )
-            api_calls += 1
-            if res:
-                candidates.extend(res)
-            query_strategy.append(name)
-            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
-            if _recall_is_verified_like(fields, candidates):
-                return _dedupe_candidates(candidates), query_used, query_strategy
-        except Exception as exc:
-            print(f"[DEBUG] Recall Crossref query failed for {name}: {exc}")
-
-    # 2. OpenAlex is no longer skipped just because Crossref returned weak candidates.
-    for q in _recall_select_openalex_queries(plan.get("openalex_queries", [])):
-        if not openalex_allowed or not budget_left():
-            break
-        name = q.get("name", "openalex")
-        try:
-            if q.get("mode") == "doi_exact":
-                res = _query_openalex_by_doi(q.get("doi", ""))
-            else:
-                res = _query_openalex_search(
-                    q.get("search", ""),
-                    rows=min(max(3, int(q.get("rows", VERIFY_OPENALEX_ROWS))), max(3, VERIFY_RECALL_ROWS)),
-                    publication_year=q.get("publication_year", ""),
-                    query_name=name,
-                )
-            api_calls += 1
-            if res:
-                candidates.extend(res)
-            query_strategy.append(name)
-            query_used.append(q.get("doi") or q.get("search") or "")
-            if _recall_is_verified_like(fields, candidates):
-                return _dedupe_candidates(candidates), query_used, query_strategy
-        except Exception as exc:
-            print(f"[DEBUG] Recall OpenAlex query failed for {name}: {exc}")
-
-    # 3. One type-specific fallback when the match is still weak.
-    if VERIFY_MULTISOURCE_FALLBACK and budget_left():
-        for q in _recall_select_fallback_queries(plan.get("fallback_queries", []), fields, candidates):
-            if not budget_left():
-                break
-            source = q.get("source", "")
-            if not _source_enabled(source):
+        scored = []
+        for cand in extra_candidates:
+            try:
+                meta = _score_candidate(fields, cand)
+                scored.append(meta)
+            except Exception:
                 continue
-            try:
-                res = _run_fallback_query(q, fields)
-                api_calls += 1
-                if res:
-                    candidates.extend(res)
-                query_strategy.append(q.get("name", source))
-                query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
-                if _recall_is_verified_like(fields, candidates):
-                    break
-            except Exception as exc:
-                print(f"[DEBUG] Recall fallback failed for {q.get('name', source)}: {exc}")
-
-    return _dedupe_candidates(candidates), query_used, query_strategy
-
-
-def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
-    """
-    Balanced recall classifier.
-    This is less pessimistic than the previous ultra-fast gate, but still requires
-    bibliographic support before promoting a match to verified.
-    """
-    title_score = int(meta.get("title_score", 0))
-    score = int(meta.get("score", 0))
-    year_match = int(meta.get("year_match", 0))
-    year_delta = int(meta.get("year_delta", 999))
-    author_overlap = int(meta.get("author_overlap", 0))
-    author_similarity = int(meta.get("author_similarity", 0))
-    journal_score = int(meta.get("journal_score", 0))
-    doi_match = bool(meta.get("doi_match"))
-    source_agreement = int(meta.get("source_agreement", 1))
-    retracted = bool(meta.get("is_retracted"))
-
-    has_ref_authors = bool(ref_fields.get("authors"))
-    has_cand_authors = bool(meta.get("authors"))
-    has_author_conflict = bool(has_ref_authors and has_cand_authors and author_overlap == 0)
-    has_ref_journal = bool(ref_fields.get("journal"))
-
-    author_ok = author_overlap >= 1 or author_similarity >= 72 or not has_ref_authors or not has_cand_authors
-    year_ok = year_match == 1 or year_delta <= 1
-    journal_ok = journal_score >= 68 or not has_ref_journal
-    cross_source_ok = source_agreement >= 2
-
-    if retracted:
-        return "needs_review", "Matched record appears to be retracted and needs manual review."
-
-    if doi_match:
-        if title_score >= 60 or year_match or author_overlap >= 1:
-            return "verified", "Exact DOI match with acceptable title, year, or author support."
-        if title_score >= 45:
-            return "likely", "DOI matches, but title evidence is weak."
-        return "needs_review", "DOI matches, but title evidence conflicts with the reference."
-
-    # Do not let imperfect author extraction block strong title/year/journal evidence.
-    if has_author_conflict:
-        if title_score >= 94 and year_ok and (journal_score >= 60 or cross_source_ok):
-            return "verified", "Very strong title and year evidence despite author-name extraction mismatch."
-        if title_score >= 88 and year_ok and journal_score >= 70:
-            return "verified", "Strong title, year and journal evidence despite author-name extraction mismatch."
-        if title_score >= 82 and year_ok:
-            return "likely", "Strong title and year evidence, but author names do not overlap."
-        if title_score >= 70:
-            return "needs_review", "Possible match found, but author names do not overlap."
-        return "not_found", "Candidates were found, but author and title evidence were too weak."
-
-    if title_score >= 92 and year_ok and (author_ok or journal_ok or cross_source_ok):
-        return "verified", "Very strong title match with supporting year and bibliographic evidence."
-
-    if title_score >= 88 and year_ok and (author_overlap >= 1 or author_similarity >= 65 or journal_score >= 60 or cross_source_ok):
-        return "verified", "Strong title match with year and author, journal, or cross-source support."
-
-    if VERIFY_RECALL_PROMOTE_STRONG_LIKELY and title_score >= 86 and year_match and (author_ok or journal_score >= 65 or cross_source_ok):
-        return "verified", "Strong title and year evidence promoted under recall-boost verification."
-
-    if score >= 86 and title_score >= 84 and year_ok and (author_ok or journal_ok or cross_source_ok):
-        return "verified", "High composite score with title, year and supporting evidence."
-
-    if title_score >= 82 and year_ok and (author_ok or journal_ok or cross_source_ok):
-        return "likely", "Good title and year evidence, but not enough support for verified."
-
-    if title_score >= 78 and (year_ok or author_overlap >= 1 or journal_score >= 70):
-        return "likely", "Moderate-to-strong bibliographic evidence."
-
-    if score >= 72 and title_score >= 72:
-        return "likely", "Moderate composite evidence from retrieved metadata."
-
-    if title_score >= 62 or score >= 50:
-        return "needs_review", "Possible match found, but evidence is insufficient for automatic verification."
-
-    return "not_found", "No reliable metadata match found after recall-boost queries."
-
-
-# ============================================================
-# LEAN SPEED + COVERAGE OVERRIDE v2
-# Added to fix slow verification that does not improve verified rate.
-# This final block intentionally overrides earlier ultra/recall/multisource
-# runners while preserving the public API and result schema.
-# ============================================================
-
-VERIFY_LEAN_FAST_MODE = _env_flag("VERIFY_LEAN_FAST_MODE", "1")
-VERIFY_LEAN_ROWS = int(os.getenv("VERIFY_LEAN_ROWS", "6"))
-VERIFY_LEAN_CROSSREF_TEXT_QUERIES = int(os.getenv("VERIFY_LEAN_CROSSREF_TEXT_QUERIES", "2"))
-VERIFY_LEAN_OPENALEX_TEXT_QUERIES = int(os.getenv("VERIFY_LEAN_OPENALEX_TEXT_QUERIES", "1"))
-VERIFY_LEAN_MAX_API_CALLS = int(os.getenv("VERIFY_LEAN_MAX_API_CALLS", "4"))
-VERIFY_LEAN_USE_SPECIAL_FALLBACK = _env_flag("VERIFY_LEAN_USE_SPECIAL_FALLBACK", "0")
-VERIFY_LEAN_SPECIAL_FALLBACK_ONLY_IF_EMPTY = _env_flag("VERIFY_LEAN_SPECIAL_FALLBACK_ONLY_IF_EMPTY", "1")
-VERIFY_LEAN_STORE_EVERY = int(os.getenv("VERIFY_LEAN_STORE_EVERY", "3"))
-VERIFY_LEAN_WORKERS = int(os.getenv("VERIFY_LEAN_WORKERS", os.getenv("VERIFY_INNER_THREADS", "3")))
-VERIFY_LEAN_DISABLE_ENRICH_METADATA = _env_flag("VERIFY_LEAN_DISABLE_ENRICH_METADATA", "1")
-VERIFY_LEAN_PROMOTE_STRONG_TITLE_YEAR = _env_flag("VERIFY_LEAN_PROMOTE_STRONG_TITLE_YEAR", "1")
-VERIFY_LEAN_DEBUG = _env_flag("VERIFY_LEAN_DEBUG", "0")
-
-# Hard speed guards. These override previous broad settings at runtime.
-VERIFY_DEEP_FALLBACK = _env_flag("VERIFY_DEEP_FALLBACK", "0")
-VERIFY_RETRY_FAILED = _env_flag("VERIFY_RETRY_FAILED", "0")
-VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES = int(os.getenv("VERIFY_MULTISOURCE_MAX_EXTRA_SOURCES", "1"))
-VERIFY_SPECIAL_ROWS = min(int(os.getenv("VERIFY_SPECIAL_ROWS", "2")), 2)
-VERIFY_SPECIAL_TIMEOUT = min(int(os.getenv("VERIFY_SPECIAL_TIMEOUT", "2")), 2)
-
-
-def _lean_debug(msg: str) -> None:
-    if VERIFY_LEAN_DEBUG:
-        print(f"[LEAN_VERIFY] {msg}")
-
-
-def _lean_sort_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Prefer high-signal queries and avoid loose title-only searches."""
-    if not queries:
-        return []
-
-    preferred = {
-        "crossref_doi_exact": 0,
-        "crossref_full_bibliographic": 1,
-        "crossref_rich_bibliographic": 2,
-        "crossref_title_author_year": 3,
-        "openalex_doi_exact": 0,
-        "openalex_title_year": 1,
-        "openalex_title_only": 4,
-    }
-
-    def rank(q: Dict[str, Any]) -> Tuple[int, int]:
-        name = q.get("name", "")
-        return (preferred.get(name, 50), int(q.get("priority", 99)))
-
-    return sorted(queries, key=rank)
-
-
-def _lean_select_non_doi(queries: List[Dict[str, Any]], max_text: int) -> List[Dict[str, Any]]:
-    """Keep DOI query plus a small number of high-signal text queries."""
-    out: List[Dict[str, Any]] = []
-    text_count = 0
-    for q in _lean_sort_queries(queries):
-        if q.get("mode") == "doi_exact":
-            out.append(q)
-            continue
-        name = q.get("name", "")
-        # Avoid very loose title-only searches in the normal path.
-        if "title_only" in name and text_count > 0:
-            continue
-        if text_count >= max(0, max_text):
-            continue
-        out.append(q)
-        text_count += 1
-    return out
-
-
-def _lean_best_meta(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
-    try:
-        _best, meta, _alts = _best_candidate(fields, _dedupe_candidates(candidates or []))
-        return meta or {}
-    except Exception:
-        return {}
-
-
-def _lean_is_verified_like(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
-    meta = _lean_best_meta(fields, candidates)
-    if not meta:
-        return False
-    status, _reason = _classify_from_meta(fields, meta)
-    return status == "verified"
-
-
-def _lean_is_good_enough(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
-    meta = _lean_best_meta(fields, candidates)
-    if not meta:
-        return False
-    status, _reason = _classify_from_meta(fields, meta)
-    if status == "verified":
-        return True
-    title_score = int(meta.get("title_score", 0))
-    year_delta = int(meta.get("year_delta", 999))
-    return status == "likely" and title_score >= 82 and year_delta <= 1
-
-
-def _run_query_plan(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
-    """
-    Lean speed + coverage query runner.
-
-    Default budget:
-      1. Crossref DOI if DOI exists.
-      2. Crossref full bibliographic query.
-      3. Crossref rich/title-author-year query.
-      4. OpenAlex title-year fallback only when Crossref is not already useful.
-
-    This avoids slow multi-source loops that did not improve the verified count.
-    """
-    candidates: List[Dict[str, Any]] = []
-    query_used: List[str] = []
-    query_strategy: List[str] = []
-    fields = plan.get("fields", {}) or {}
-    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
-    api_calls = 0
-    max_calls = max(1, VERIFY_LEAN_MAX_API_CALLS)
-
-    def budget_left() -> bool:
-        return api_calls < max_calls
-
-    # Crossref first. It gives the highest precision for most journal articles.
-    for q in _lean_select_non_doi(plan.get("crossref_queries", []), VERIFY_LEAN_CROSSREF_TEXT_QUERIES):
-        if not use_crossref or not budget_left():
-            break
-        name = q.get("name", "crossref")
-        try:
-            if q.get("mode") == "doi_exact":
-                res = _query_crossref_by_doi(q.get("doi", ""))
-            else:
-                res = _query_crossref_bibliographic(
-                    q.get("query_bibliographic", ""),
-                    query_author=q.get("query_author", ""),
-                    rows=min(max(3, VERIFY_LEAN_ROWS), max(3, int(q.get("rows", VERIFY_CROSSREF_ROWS)))),
-                    query_name=name,
-                )
-            api_calls += 1
-            if res:
-                candidates.extend(res)
-            query_strategy.append(name)
-            query_used.append(q.get("doi") or q.get("query_bibliographic") or "")
-
-            # DOI match or verified-level candidate, stop early.
-            if _lean_is_verified_like(fields, candidates):
-                return _dedupe_candidates(candidates), query_used, query_strategy
-        except Exception as exc:
-            api_calls += 1
-            _lean_debug(f"Crossref query failed for {name}: {exc}")
-
-    # OpenAlex only if Crossref has not already produced a good candidate.
-    if openalex_allowed and budget_left() and not _lean_is_good_enough(fields, candidates):
-        for q in _lean_select_non_doi(plan.get("openalex_queries", []), VERIFY_LEAN_OPENALEX_TEXT_QUERIES):
-            if not budget_left():
-                break
-            name = q.get("name", "openalex")
-            try:
-                if q.get("mode") == "doi_exact":
-                    # Avoid duplicate DOI lookup when Crossref DOI already produced candidates.
-                    if candidates and fields.get("doi"):
-                        continue
-                    res = _query_openalex_by_doi(q.get("doi", ""))
-                else:
-                    res = _query_openalex_search(
-                        q.get("search", ""),
-                        rows=min(max(3, VERIFY_LEAN_ROWS), max(3, int(q.get("rows", VERIFY_OPENALEX_ROWS)))),
-                        publication_year=q.get("publication_year", ""),
-                        query_name=name,
-                    )
-                api_calls += 1
-                if res:
-                    candidates.extend(res)
-                query_strategy.append(name)
-                query_used.append(q.get("doi") or q.get("search") or "")
-                if _lean_is_verified_like(fields, candidates):
-                    return _dedupe_candidates(candidates), query_used, query_strategy
-            except Exception as exc:
-                api_calls += 1
-                _lean_debug(f"OpenAlex query failed for {name}: {exc}")
-
-    # Special fallback is off by default. It was the main speed cost with little gain.
-    # Enable VERIFY_LEAN_USE_SPECIAL_FALLBACK=1 only after the core engine is stable.
-    if VERIFY_LEAN_USE_SPECIAL_FALLBACK and budget_left():
-        if (not VERIFY_LEAN_SPECIAL_FALLBACK_ONLY_IF_EMPTY) or not candidates:
-            for q in _prioritise_fallback_queries(plan.get("fallback_queries", []), fields, candidates)[:1]:
-                source = q.get("source", "")
-                if not _source_enabled(source):
-                    continue
-                try:
-                    res = _run_fallback_query(q, fields)
-                    api_calls += 1
-                    if res:
-                        candidates.extend(res)
-                    query_strategy.append(q.get("name", source))
-                    query_used.append(_generic_metadata_query(fields) or fields.get("doi", ""))
-                    break
-                except Exception as exc:
-                    api_calls += 1
-                    _lean_debug(f"Fallback failed for {q.get('name', source)}: {exc}")
-
-    return _dedupe_candidates(candidates), query_used, query_strategy
-
-
-def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
-    """
-    Lean commercial classifier.
-
-    The previous settings made the system slower without increasing verified count.
-    This classifier relies on high-signal bibliographic evidence and avoids harsh
-    author downgrades when title/year/journal evidence is strong.
-    """
-    title_score = int(meta.get("title_score", 0))
-    score = int(meta.get("score", 0))
-    year_match = int(meta.get("year_match", 0))
-    year_delta = int(meta.get("year_delta", 999))
-    author_overlap = int(meta.get("author_overlap", 0))
-    author_similarity = int(meta.get("author_similarity", 0))
-    journal_score = int(meta.get("journal_score", 0))
-    doi_match = bool(meta.get("doi_match"))
-    source_agreement = int(meta.get("source_agreement", 1))
-    retracted = bool(meta.get("is_retracted"))
-
-    has_ref_authors = bool(ref_fields.get("authors"))
-    has_cand_authors = bool(meta.get("authors"))
-    has_ref_journal = bool(ref_fields.get("journal"))
-    author_conflict = bool(has_ref_authors and has_cand_authors and author_overlap == 0 and author_similarity < 60)
-
-    year_ok = year_match == 1 or year_delta <= 1
-    author_ok = author_overlap >= 1 or author_similarity >= 70 or not has_ref_authors or not has_cand_authors
-    journal_ok = journal_score >= 60 or not has_ref_journal
-    cross_source_ok = source_agreement >= 2
-
-    if retracted:
-        return "needs_review", "Matched record appears to be retracted and needs manual review."
-
-    if doi_match:
-        if title_score >= 55 or year_ok or author_overlap >= 1:
-            return "verified", "Exact DOI match with acceptable bibliographic support."
-        return "likely", "DOI matches, but title evidence is weak."
-
-    # Do not let imperfect author extraction suppress a strong bibliographic match.
-    if VERIFY_LEAN_PROMOTE_STRONG_TITLE_YEAR and title_score >= 90 and year_ok:
-        if journal_ok or author_ok or cross_source_ok:
-            return "verified", "Strong title and year evidence with supporting bibliographic signal."
-        return "likely", "Strong title and year evidence, but support is incomplete."
-
-    if title_score >= 86 and year_ok and (author_ok or journal_score >= 55 or cross_source_ok):
-        return "verified", "Strong title-year match with author, journal, or cross-source support."
-
-    if title_score >= 82 and year_ok and not author_conflict and (journal_ok or author_ok or cross_source_ok):
-        return "verified", "Good title-year match with no serious bibliographic conflict."
-
-    if title_score >= 80 and year_ok:
-        return "likely", "Good title and year evidence, but not enough support for automatic verification."
-
-    if title_score >= 76 and (author_overlap >= 1 or journal_score >= 65 or year_ok):
-        return "likely", "Moderate-to-strong bibliographic evidence."
-
-    if score >= 70 and title_score >= 70:
-        return "likely", "Moderate composite metadata evidence."
-
-    if title_score >= 58 or score >= 48:
-        return "needs_review", "Possible match found, but evidence is insufficient for automatic verification."
-
-    return "not_found", "No reliable metadata match found from lean verification queries."
-
-
-# Simple fast batch runner. It updates progress after every completed reference and
-# does not run extra retry loops. This keeps the frontend from sitting at 0/N.
-def verify_references_batch(
-    references: List[str],
-    style: str = "apa",
-    throttle_s: float = 0.0,
-    use_crossref: bool = True,
-    use_openalex: bool = False,
-    job_id: str = None,
-    enrich_metadata: bool = False,
-) -> List[Dict[str, Any]]:
-    refs = [r for r in (references or []) if _safe_strip(r)]
-    normalized_style = _STYLE_ALIASES.get((style or "apa").lower(), "apa")
-    total = len(refs)
-
-    print(f"[DEBUG] LEAN verify_references_batch called: {total} references")
-
-    if job_id:
-        try:
-            update_job_progress(job_id, 0)
-            store_verification_results(job_id, [])
-        except Exception:
-            pass
-
-    if not refs:
-        return []
-
-    rows: List[Optional[Dict[str, Any]]] = [None] * total
-    completed = 0
-    workers = max(1, min(VERIFY_LEAN_WORKERS, total))
-    start = time.time()
-
-    def run_one(idx_ref: Tuple[int, str]) -> Tuple[int, Dict[str, Any]]:
-        idx, ref = idx_ref
-        try:
-            row = _verify_single_reference(
-                ref,
-                normalized_style,
-                use_crossref,
-                use_openalex,
-                False if VERIFY_LEAN_DISABLE_ENRICH_METADATA else enrich_metadata,
-            )
-            return idx, row
-        except Exception as exc:
-            return idx, {
-                "reference": ref,
-                "style": normalized_style,
-                "status": "not_found",
-                "source": "error",
-                "score": 0,
-                "doi": "",
-                "matched_title": "",
-                "matched_year": "",
-                "matched_authors": "",
-                "title_score": 0,
-                "author_overlap": 0,
-                "author_similarity": 0,
-                "year_match": 0,
-                "query_used": "",
-                "author": "",
-                "error": str(exc),
-            }
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(run_one, item): item[0] for item in enumerate(refs)}
-        for fut in as_completed(future_map):
-            idx, row = fut.result()
+        if not scored:
+            return row
+
+        scored.sort(key=lambda x: int(x.get("score", 0)), reverse=True)
+        meta = scored[0]
+        new_status, reason = _classify_from_meta(fields, meta)
+
+        if _status_rank(new_status) > _status_rank(row.get("status")):
+            row.update({
+                "status": new_status,
+                "source": _safe_strip(meta.get("source", "")),
+                "score": int(meta.get("score", 0)),
+                "doi": _normalise_doi(meta.get("doi", "")),
+                "matched_title": _safe_strip(meta.get("title", "")),
+                "matched_year": _safe_strip(meta.get("year", "")),
+                "matched_authors": ", ".join(meta.get("authors", []) or []),
+                "matched_journal": _safe_strip(meta.get("journal", "")),
+                "matched_container_title": _safe_strip(meta.get("journal", "")),
+                "matched_publisher": _safe_strip(meta.get("publisher", "")),
+                "matched_type": _safe_strip(meta.get("type", "")),
+                "matched_url": _safe_strip(meta.get("url", "")),
+                "title_score": int(meta.get("title_score", 0)),
+                "journal_score": int(meta.get("journal_score", 0)),
+                "author_overlap": int(meta.get("author_overlap", 0)),
+                "author_similarity": int(meta.get("author_similarity", 0)),
+                "year_match": int(meta.get("year_match", 0)),
+                "year_delta": int(meta.get("year_delta", 999)),
+                "doi_match": 1 if meta.get("doi_match") else 0,
+                "confidence_reason": reason,
+                "query_strategy": (row.get("query_strategy", "") + " | target18_existence_fallback").strip(" |"),
+                "query_used": (row.get("query_used", "") + " | " + _generic_metadata_query(fields)).strip(" |"),
+            })
             row["status"] = _normalize_verify_status(row.get("status"))
-            rows[idx] = row
-            completed += 1
-
-            if job_id:
-                try:
-                    update_job_progress(job_id, completed)
-                    if completed % max(1, VERIFY_LEAN_STORE_EVERY) == 0 or completed == total:
-                        store_verification_results(job_id, [r for r in rows if r is not None])
-                except Exception:
-                    pass
-
-            if throttle_s:
-                time.sleep(throttle_s)
-
-    final_rows = [r for r in rows if r is not None]
-    counts = {
-        "verified": sum(1 for r in final_rows if r.get("status") == "verified"),
-        "likely": sum(1 for r in final_rows if r.get("status") == "likely"),
-        "needs_review": sum(1 for r in final_rows if r.get("status") == "needs_review"),
-        "not_found": sum(1 for r in final_rows if r.get("status") == "not_found"),
-    }
-    print(f"[DEBUG] LEAN verification complete in {time.time() - start:.1f}s: {counts}")
-
-    if job_id:
-        try:
-            update_job_progress(job_id, total)
-            store_verification_results(job_id, final_rows)
-        except Exception:
-            pass
-
-    return final_rows
-
-
-# Legacy scorer export, kept for citation_suggester.py imports.
-def _score(
-    ref_title: str,
-    ref_authors: list = None,
-    ref_year: str = "",
-    cand_title: str = "",
-    cand_authors: list = None,
-    cand_year: str = "",
-) -> dict:
-    ref_authors = ref_authors or []
-    cand_authors = cand_authors or []
-    ref_title_norm = _norm_text(ref_title or "")
-    cand_title_norm = _norm_text(cand_title or "")
-
-    if ref_title_norm and cand_title_norm:
-        token_score = fuzz.token_sort_ratio(ref_title_norm, cand_title_norm)
-        set_score = fuzz.token_set_ratio(ref_title_norm, cand_title_norm)
-        partial_score = fuzz.partial_ratio(ref_title_norm, cand_title_norm)
-        title_score = int((token_score * 0.45) + (set_score * 0.35) + (partial_score * 0.20))
-    else:
-        title_score = 0
-
-    ref_author_set = set([_norm_text(a) for a in ref_authors if a])
-    cand_author_set = set([_norm_text(a) for a in cand_authors if a])
-    if ref_author_set and cand_author_set:
-        author_overlap = len(ref_author_set & cand_author_set)
-        union = len(ref_author_set | cand_author_set)
-        author_similarity = int((author_overlap / union) * 100) if union else 0
-    else:
-        author_overlap = 0
-        author_similarity = 0
-
-    year_match = 1 if ref_year and cand_year and str(ref_year)[:4] == str(cand_year)[:4] else 0
-    score = int((title_score * 0.65) + (author_similarity * 0.25) + (year_match * 10))
-    if author_overlap >= 1:
-        score += 5
-    if author_overlap >= 2:
-        score += 8
-
-    return {
-        "score": int(score),
-        "title_score": int(title_score),
-        "author_overlap": int(author_overlap),
-        "author_similarity": int(author_similarity),
-        "year_match": int(year_match),
-    }
-
-# ============================================================
-# CROSSREF FINGERPRINT QUERY ORDER OVERRIDE v3
-# Added to improve Crossref success without increasing rows/timeouts.
-# Public API is unchanged. This makes the first Crossref text query:
-#   title core keywords + first author + year
-# Example:
-#   sample size determination survey research adam 2020
-# ============================================================
-
-try:
-    _previous_build_verification_query_plan_fingerprint = _build_verification_query_plan
-except Exception:
-    _previous_build_verification_query_plan_fingerprint = None
-
-
-def _fingerprint_title_key_for_crossref(title: str, limit: int = 8) -> str:
-    """Compact high-signal title key for Crossref query.bibliographic.
-
-    This deliberately keeps words such as "research" when they are part of
-    title phrases like "survey research". It avoids the broader query stopword
-    list because that list can remove useful title fingerprints.
-    """
-    title = _clean_query_text(title or "") if "_clean_query_text" in globals() else _safe_strip(title or "")
-    raw_words = re.findall(r"[A-Za-z0-9]{3,}", title)
-
-    # Smaller stoplist for fingerprint queries. Keep research, survey, sample,
-    # determination, etc., because they can distinguish a specific title.
-    fingerprint_stop = {
-        "and", "the", "with", "from", "into", "using", "that", "this",
-        "their", "these", "those", "among", "across", "journal",
-        "article", "paper", "available", "retrieved", "accessed",
-        "press", "university", "publisher", "page", "pages",
-    }
-
-    selected = []
-    for w in raw_words:
-        wl = _safe_strip(w).lower()
-        if not wl or wl in fingerprint_stop:
-            continue
-        selected.append(wl)
-        if len(selected) >= limit:
-            break
-    return " ".join(selected).strip()
-
-
-def _build_crossref_fingerprint_query(fields: Dict[str, Any], include_journal: bool = False) -> str:
-    """
-    Build compact Crossref query.
-
-    Preferred example:
-        Adam, A. M. (2020). Sample size determination in survey research.
-    becomes:
-        sample size determination survey research adam 2020
-    """
-    title = fields.get("title", "") or ""
-    authors = fields.get("authors", []) or []
-    year = fields.get("year", "") or ""
-    journal = fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", "") or ""
-
-    first_author = _safe_strip(authors[0]) if authors else ""
-    title_key = _fingerprint_title_key_for_crossref(title, limit=8)
-
-    if include_journal:
-        journal_words = _significant_title_words(journal, limit=6)
-        journal_key = " ".join(journal_words[:5]).strip()
-        parts = [title_key, journal_key, year]
-    else:
-        parts = [title_key, first_author, year]
-
-    query = " ".join([_safe_strip(p) for p in parts if _safe_strip(p)]).strip()
-    query = re.sub(r"\s+", " ", query)
-    return query
-
-
-def _dedupe_query_plan_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for q in items or []:
-        key = (
-            q.get("name", ""),
-            q.get("mode", ""),
-            q.get("doi", ""),
-            q.get("query_bibliographic", ""),
-            q.get("query_author", ""),
-            q.get("search", ""),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(q)
-    return out
-
-
-def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
-    """
-    Override the previous plan by putting Crossref fingerprint searches first.
-    This improves success rate more than adding rows or more databases.
-    """
-    if _previous_build_verification_query_plan_fingerprint:
-        plan = _previous_build_verification_query_plan_fingerprint(ref, style)
-    else:
-        # Safe fallback, should rarely be used.
-        fields = _extract_fields_by_style(ref, style)
-        plan = {"reference": ref, "style": style, "fields": fields, "crossref_queries": [], "openalex_queries": [], "fallback_queries": []}
-
-    fields = plan.get("fields", {}) or {}
-    authors = fields.get("authors", []) or []
-    first_author = _safe_strip(authors[0]) if authors else ""
-    year = _safe_strip(fields.get("year", "") or "")
-    doi = _normalise_doi(fields.get("doi", "") or "") if "_normalise_doi" in globals() else _safe_strip(fields.get("doi", ""))
-    title = fields.get("title", "") or ""
-    journal = fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", "") or ""
-
-    old_crossref = plan.get("crossref_queries", []) or []
-    doi_queries = [q for q in old_crossref if q.get("mode") == "doi_exact"]
-    old_text = [q for q in old_crossref if q.get("mode") != "doi_exact"]
-
-    # Ensure DOI query exists and remains first when DOI is available.
-    if doi and not any(q.get("mode") == "doi_exact" and _safe_strip(q.get("doi")) == doi for q in doi_queries):
-        doi_queries.insert(0, {"name": "crossref_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 0})
-
-    fingerprint = _build_crossref_fingerprint_query(fields, include_journal=False)
-    journal_fingerprint = _build_crossref_fingerprint_query(fields, include_journal=True)
-
-    new_text: List[Dict[str, Any]] = []
-
-    if fingerprint:
-        new_text.append({
-            "name": "crossref_fingerprint_title_author_year",
-            "mode": "bibliographic",
-            "query_bibliographic": fingerprint,
-            "query_author": first_author,
-            "rows": VERIFY_CROSSREF_ROWS,
-            "priority": 1,
-        })
-
-    if journal_fingerprint and journal:
-        new_text.append({
-            "name": "crossref_fingerprint_title_journal_year",
-            "mode": "bibliographic",
-            "query_bibliographic": journal_fingerprint,
-            "query_author": "",
-            "rows": VERIFY_CROSSREF_ROWS,
-            "priority": 2,
-        })
-
-    # Keep the older title-author query, but repair it by adding the first author
-    # inside query.bibliographic, not only in query.author.
-    for q in old_text:
-        name = q.get("name", "")
-        if name == "crossref_title_author_year":
-            repaired = dict(q)
-            repaired["name"] = "crossref_title_author_year_repaired"
-            old_bib = _safe_strip(repaired.get("query_bibliographic", ""))
-            if first_author and first_author.lower() not in old_bib.lower().split():
-                old_bib = " ".join([old_bib, first_author]).strip()
-            if year and year not in old_bib:
-                old_bib = " ".join([old_bib, year]).strip()
-            repaired["query_bibliographic"] = re.sub(r"\s+", " ", old_bib).strip()
-            repaired["query_author"] = first_author
-            repaired["priority"] = 3
-            new_text.append(repaired)
-            break
-
-    # Full and rich bibliographic are useful fallbacks but should not run before
-    # the compact fingerprint in lean mode.
-    for wanted_name, priority in [
-        ("crossref_full_bibliographic", 4),
-        ("crossref_rich_bibliographic", 5),
-        ("crossref_title_journal_year", 6),
-    ]:
-        for q in old_text:
-            if q.get("name") == wanted_name:
-                qq = dict(q)
-                qq["priority"] = priority
-                new_text.append(qq)
-                break
-
-    # Preserve any other Crossref query as last-resort, but after the new order.
-    used_names = {q.get("name") for q in new_text}
-    for q in old_text:
-        if q.get("name") in used_names:
-            continue
-        qq = dict(q)
-        qq["priority"] = int(qq.get("priority", 99)) + 20
-        new_text.append(qq)
-
-    plan["crossref_queries"] = _dedupe_query_plan_items(doi_queries + sorted(new_text, key=lambda q: q.get("priority", 99)))
-    plan.setdefault("fields", fields)
-    plan["fields"]["crossref_fingerprint_query"] = fingerprint
-    plan["fields"]["crossref_journal_fingerprint_query"] = journal_fingerprint
-    return plan
-
-
-def _lean_sort_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Final lean order, fingerprint first after DOI."""
-    if not queries:
-        return []
-
-    preferred = {
-        "crossref_doi_exact": 0,
-        "crossref_fingerprint_title_author_year": 1,
-        "crossref_fingerprint_title_journal_year": 2,
-        "crossref_title_author_year_repaired": 3,
-        "crossref_title_author_year": 4,
-        "crossref_full_bibliographic": 5,
-        "crossref_rich_bibliographic": 6,
-        "crossref_title_journal_year": 7,
-        "openalex_doi_exact": 0,
-        "openalex_title_year": 1,
-        "openalex_title_journal": 2,
-        "openalex_title_only": 5,
-    }
-
-    def rank(q: Dict[str, Any]) -> Tuple[int, int]:
-        name = q.get("name", "")
-        return (preferred.get(name, 50), int(q.get("priority", 99)))
-
-    return sorted(queries, key=rank)
-
-
-# Also support recall mode if enabled instead of lean mode.
-def _recall_select_crossref_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    ordered = sorted(queries or [], key=lambda q: q.get("priority", 99))
-    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
-    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
-
-    preferred = [
-        "crossref_fingerprint_title_author_year",
-        "crossref_fingerprint_title_journal_year",
-        "crossref_title_author_year_repaired",
-        "crossref_title_author_year",
-        "crossref_full_bibliographic",
-        "crossref_rich_bibliographic",
-        "crossref_title_journal_year",
-    ]
-
-    selected: List[Dict[str, Any]] = []
-    for name in preferred:
-        for q in text_queries:
-            if _safe_strip(q.get("name")) == name and q not in selected:
-                selected.append(q)
-                break
-        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
-            break
-
-    for q in text_queries:
-        if len(selected) >= VERIFY_RECALL_CROSSREF_TEXT_QUERIES:
-            break
-        if q not in selected:
-            selected.append(q)
-
-    return doi_queries + selected[:VERIFY_RECALL_CROSSREF_TEXT_QUERIES]
+            _cache_set(f"target18_existence_v7::{style}::{use_crossref}:{use_openalex}:{enrich_metadata}::{ref}", row)
+        return row
+    except Exception as exc:
+        print(f"[DEBUG] Target-18 existence fallback wrapper failed: {exc}")
+        return row
 
 try:
     if "__all__" in globals():
-        for name in ["_build_crossref_fingerprint_query", "_build_verification_query_plan"]:
-            if name not in __all__:
-                __all__.append(name)
-except Exception:
-    pass
-
-
-# ============================================================
-# FINGERPRINT BALANCED QUERY + PROMOTION OVERRIDE v4
-# Added after testing showed validation plateaued at 9 instead of the
-# previous 18. The earlier fingerprint patch worked, but in lean mode the
-# second Crossref call was often the journal fingerprint. Journal extraction is
-# noisy, so it wasted the second query. This final override keeps the fast
-# fingerprint first, then tries the repaired author-year and/or full reference
-# before journal-heavy queries. It also avoids stopping on a weak "likely"
-# Crossref candidate before OpenAlex can provide source agreement.
-# ============================================================
-
-VERIFY_BALANCED_PROMOTION = _env_flag("VERIFY_BALANCED_PROMOTION", "1")
-VERIFY_BALANCED_VERIFY_TITLE_YEAR = int(os.getenv("VERIFY_BALANCED_VERIFY_TITLE_YEAR", "88"))
-VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT = int(os.getenv("VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT", "84"))
-VERIFY_BALANCED_OPENALEX_ON_LIKELY = _env_flag("VERIFY_BALANCED_OPENALEX_ON_LIKELY", "1")
-
-
-def _lean_sort_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Balanced final lean order.
-
-    Order is designed for high Crossref hit-rate without more calls:
-      1. DOI exact
-      2. compact title + first author + year
-      3. repaired title + first author + year
-      4. full bibliographic reference
-      5. rich bibliographic
-      6. title + journal + year
-      7. journal fingerprint
-    """
-    if not queries:
-        return []
-
-    preferred = {
-        "crossref_doi_exact": 0,
-        "crossref_fingerprint_title_author_year": 1,
-        "crossref_title_author_year_repaired": 2,
-        "crossref_title_author_year": 3,
-        "crossref_full_bibliographic": 4,
-        "crossref_rich_bibliographic": 5,
-        "crossref_title_journal_year": 6,
-        "crossref_fingerprint_title_journal_year": 7,
-        "openalex_doi_exact": 0,
-        "openalex_title_year": 1,
-        "openalex_title_journal": 2,
-        "openalex_title_only": 5,
-    }
-
-    def rank(q: Dict[str, Any]) -> Tuple[int, int]:
-        return (preferred.get(_safe_strip(q.get("name", "")), 50), int(q.get("priority", 99)))
-
-    return sorted(queries or [], key=rank)
-
-
-def _recall_select_crossref_queries(queries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Recall selector using the same balanced Crossref order as lean mode."""
-    ordered = _lean_sort_queries(queries or [])
-    doi_queries = [q for q in ordered if q.get("mode") == "doi_exact"]
-    text_queries = [q for q in ordered if q.get("mode") != "doi_exact"]
-    selected = text_queries[:max(0, VERIFY_RECALL_CROSSREF_TEXT_QUERIES)]
-    return doi_queries + selected
-
-
-def _lean_is_good_enough(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> bool:
-    """Do not stop on ordinary likely matches.
-
-    The previous lean gate skipped OpenAlex when Crossref returned a likely
-    candidate. That kept many good records at likely instead of verified. Stop
-    only for verified, or for extremely strong likely evidence.
-    """
-    meta = _lean_best_meta(fields, candidates)
-    if not meta:
-        return False
-    status, _reason = _classify_from_meta(fields, meta)
-    if status == "verified":
-        return True
-    if not VERIFY_BALANCED_OPENALEX_ON_LIKELY:
-        title_score = int(meta.get("title_score", 0))
-        year_delta = int(meta.get("year_delta", 999))
-        return status == "likely" and title_score >= 90 and year_delta <= 1
-    return False
-
-
-def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
-    """Balanced classifier to recover valid references without making searches slower."""
-    title_score = int(meta.get("title_score", 0))
-    score = int(meta.get("score", 0))
-    year_match = int(meta.get("year_match", 0))
-    year_delta = int(meta.get("year_delta", 999))
-    author_overlap = int(meta.get("author_overlap", 0))
-    author_similarity = int(meta.get("author_similarity", 0))
-    journal_score = int(meta.get("journal_score", 0))
-    doi_match = bool(meta.get("doi_match"))
-    source_agreement = int(meta.get("source_agreement", 1))
-    retracted = bool(meta.get("is_retracted"))
-
-    has_ref_authors = bool(ref_fields.get("authors"))
-    has_cand_authors = bool(meta.get("authors"))
-    author_conflict = bool(has_ref_authors and has_cand_authors and author_overlap == 0 and author_similarity < 55)
-
-    year_ok = year_match == 1 or year_delta <= 1
-    author_ok = author_overlap >= 1 or author_similarity >= 68 or not has_ref_authors or not has_cand_authors
-    journal_ok = journal_score >= 58
-    cross_source_ok = source_agreement >= 2
-
-    if retracted:
-        return "needs_review", "Matched record appears to be retracted and needs manual review."
-
-    if doi_match:
-        if title_score >= 50 or year_ok or author_overlap >= 1:
-            return "verified", "Exact DOI match with acceptable bibliographic support."
-        return "likely", "DOI matches, but title evidence is weak."
-
-    # Author extraction is often the weak point. Only treat it as blocking when
-    # title/year evidence is not strong enough.
-    if author_conflict:
-        if title_score >= 92 and year_ok and (journal_ok or cross_source_ok):
-            return "verified", "Very strong title-year evidence with journal or cross-source support despite author mismatch."
-        if title_score >= 86 and year_ok and journal_score >= 70:
-            return "verified", "Strong title, year and journal evidence despite author mismatch."
-        if title_score >= 80 and year_ok:
-            return "likely", "Strong title-year evidence, but author names do not overlap."
-        if title_score >= 65 or score >= 55:
-            return "needs_review", "Possible match found, but author names do not overlap."
-        return "not_found", "Candidates were found, but author and title evidence were too weak."
-
-    if VERIFY_BALANCED_PROMOTION and title_score >= VERIFY_BALANCED_VERIFY_TITLE_YEAR and year_ok:
-        return "verified", "Strong title and year evidence."
-
-    if title_score >= VERIFY_BALANCED_VERIFY_TITLE_YEAR_SUPPORT and year_ok and (author_ok or journal_ok or cross_source_ok):
-        return "verified", "Good title-year match with supporting author, journal, or source evidence."
-
-    if title_score >= 82 and year_match == 1 and (author_ok or journal_ok or cross_source_ok):
-        return "verified", "Good title and exact year evidence with supporting metadata."
-
-    if score >= 84 and title_score >= 80 and year_ok and (author_ok or journal_ok or cross_source_ok):
-        return "verified", "High composite bibliographic evidence."
-
-    if title_score >= 78 and year_ok:
-        return "likely", "Good title and year evidence, but not enough support for automatic verification."
-
-    if title_score >= 74 and (author_overlap >= 1 or journal_score >= 65 or year_ok):
-        return "likely", "Moderate-to-strong bibliographic evidence."
-
-    if score >= 68 and title_score >= 68:
-        return "likely", "Moderate composite metadata evidence."
-
-    if title_score >= 56 or score >= 45:
-        return "needs_review", "Possible match found, but evidence is insufficient for automatic verification."
-
-    return "not_found", "No reliable metadata match found from balanced verification queries."
-
-try:
-    if "__all__" in globals():
-        for name in ["_lean_sort_queries", "_recall_select_crossref_queries", "_classify_from_meta"]:
+        for name in [
+            "VERIFY_EXISTENCE_FALLBACK",
+            "_trusted_source_candidates_for_existing_refs",
+            "_classify_from_meta",
+            "_verify_single_reference",
+        ]:
             if name not in __all__:
                 __all__.append(name)
 except Exception:
