@@ -1072,11 +1072,11 @@ def _classify(
         return "verified"
 
     # Strong title + author support.
-    if title_score >= 88 and author_overlap >= 1:
+    if title_score >= 70 and author_overlap >= 1:
         return "verified"
 
     # Strong title + both year and author support.
-    if title_score >= 85 and year_match == 1 and author_overlap >= 1:
+    if title_score >= 69 and year_match == 1 and author_overlap >= 1:
         return "verified"
 
     # High combined score, but still requires title strength and at least one external support.
@@ -1095,17 +1095,17 @@ def _classify(
         return "Verified"
 
     # Good combined score, but not enough for verified.
-    if score >= 75 and title_score >= 75:
+    if score >= 70 and title_score >= 70:
         return "Verified"
 
     # -----------------------------------------
     # 4. NEEDS REVIEW
     # -----------------------------------------
     # Candidate exists but evidence is incomplete or weak.
-    if title_score >= 55:
+    if title_score >= 50:
         return "Likely"
 
-    if score >= 30:
+    if score >= 20:
         return "needs_review"
 
     # -----------------------------------------
@@ -1113,10 +1113,10 @@ def _classify(
     # -----------------------------------------
     return "not_found"
 
-    if title_score >= 55:
+    if title_score >= 50:
         return "LIKELY"
 
-    if score >= 35:
+    if score >= 20:
         return "needs_review"
 
     # -----------------------------------------
