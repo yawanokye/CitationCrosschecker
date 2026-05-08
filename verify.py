@@ -5915,3 +5915,250 @@ try:
                 __all__.append(name)
 except Exception:
     pass
+
+
+# ============================================================
+# DOI EXTRACTION + DOI-AWARE SCORE BOOST OVERRIDE v5
+# Added to increase validation without increasing API calls.
+# Key changes:
+#   1. Better DOI extraction from raw references.
+#   2. Candidate DOI presence boosts score only when title/year/author evidence supports it.
+#   3. Exact DOI match verifies with modest title support.
+#   4. Weak OpenAlex/Crossref candidates are not promoted just because a DOI exists.
+# ============================================================
+
+_DOI_RE = re.compile(
+    r"(?:doi\s*:\s*|https?://(?:dx\.)?doi\.org/)?"
+    r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)",
+    re.I,
+)
+
+
+def _extract_doi(text: str) -> str:
+    """Extract and normalise DOI from common reference formats.
+
+    Handles:
+      doi:10.xxxx/xxxxx
+      https://doi.org/10.xxxx/xxxxx
+      http://dx.doi.org/10.xxxx/xxxxx
+      bare DOI strings with trailing punctuation.
+    """
+    text = _safe_str(text)
+    m = _DOI_RE.search(text or "")
+    if not m:
+        return ""
+
+    doi = _safe_strip(m.group(1))
+    doi = doi.rstrip(".,;:)]}>'\"")
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I)
+    doi = re.sub(r"^doi\s*:\s*", "", doi, flags=re.I)
+    return doi.lower()
+
+
+def _score_candidate(ref_fields: Dict[str, Any], cand: Dict[str, Any]) -> Dict[str, Any]:
+    """DOI-aware candidate scoring.
+
+    This replaces the earlier score with a safer DOI boost:
+    - exact DOI match gives a strong boost;
+    - candidate DOI found gives a smaller boost only when title/year/author supports it;
+    - weak candidates are not promoted merely because they have a DOI.
+    """
+    cf = _candidate_fields(cand)
+
+    ref_title = _norm_text(ref_fields.get("title", ""))
+    cand_title = _norm_text(cf.get("title", ""))
+
+    if ref_title and cand_title:
+        token_set = fuzz.token_set_ratio(ref_title, cand_title)
+        token_sort = fuzz.token_sort_ratio(ref_title, cand_title)
+        partial = fuzz.partial_ratio(ref_title, cand_title)
+        title_score = int((token_set * 0.50) + (token_sort * 0.35) + (partial * 0.15))
+        # For short titles, partial matching can overstate similarity.
+        if len(ref_title.split()) <= 4 and partial > token_set + 20:
+            title_score = int((token_set * 0.65) + (token_sort * 0.35))
+    else:
+        title_score = 0
+
+    ref_journal = _norm_text(ref_fields.get("journal", ""))
+    cand_journal = _norm_text(cf.get("journal", ""))
+    journal_score = int(fuzz.token_set_ratio(ref_journal, cand_journal)) if ref_journal and cand_journal else 0
+
+    author_overlap, author_similarity = _author_metrics(ref_fields.get("authors", []), cf.get("authors", []))
+    year_match, year_delta = _year_match_info(ref_fields.get("year", ""), cf.get("year", ""))
+
+    ref_doi = _normalise_doi(ref_fields.get("doi", ""))
+    cand_doi = _normalise_doi(cf.get("doi", ""))
+    doi_match = bool(ref_doi and cand_doi and ref_doi == cand_doi)
+    candidate_has_doi = bool(cand_doi)
+
+    volume_match = _exact_or_empty_match(ref_fields.get("volume", ""), cf.get("volume", ""))
+    issue_match = _exact_or_empty_match(ref_fields.get("issue", ""), cf.get("issue", ""))
+
+    ref_pages = _page_tokens(ref_fields.get("pages", ""))
+    cand_pages = _page_tokens(cf.get("pages", ""))
+    page_match = 1 if ref_pages and cand_pages and bool(ref_pages & cand_pages) else 0
+
+    source_agreement = len(set(cf.get("sources") or [cf.get("source", "")]))
+
+    score = 0.0
+    score += title_score * 0.56
+    score += author_similarity * 0.18
+    score += 12 if year_match else 0
+    score += 6 if year_delta == 1 else 0
+    score += journal_score * 0.08
+    score += 4 if volume_match else 0
+    score += 2 if issue_match else 0
+    score += 3 if page_match else 0
+    score += min(6, max(0, source_agreement - 1) * 3)
+
+    # DOI-aware boost.
+    if doi_match:
+        score += 30
+    elif candidate_has_doi:
+        # The candidate DOI is useful evidence, but only when the bibliographic
+        # evidence is already reasonably strong.
+        if title_score >= 85 and (year_match or year_delta <= 1):
+            score += 12
+        elif title_score >= 75 and (year_match or year_delta <= 1):
+            score += 8
+        elif title_score >= 75 and author_overlap >= 1:
+            score += 6
+        elif title_score >= 65 and (author_overlap >= 1 or journal_score >= 65):
+            score += 4
+        else:
+            score += 2
+
+    # Extra safe boosts for high-signal bibliographic support.
+    if title_score >= 88 and (year_match or year_delta <= 1):
+        score += 6
+    if title_score >= 82 and author_overlap >= 1:
+        score += 5
+    if title_score >= 78 and journal_score >= 70:
+        score += 4
+
+    if cf.get("is_retracted"):
+        score -= 5
+
+    return {
+        "score": int(min(100, round(score))),
+        "title_score": int(title_score),
+        "journal_score": int(journal_score),
+        "author_overlap": int(author_overlap),
+        "author_similarity": int(author_similarity),
+        "year_match": int(year_match),
+        "year_delta": int(year_delta if year_delta != 999 else 999),
+        "doi_match": bool(doi_match),
+        "candidate_has_doi": bool(candidate_has_doi),
+        "reference_has_doi": bool(ref_doi),
+        "volume_match": int(volume_match),
+        "issue_match": int(issue_match),
+        "page_match": int(page_match),
+        "source_agreement": int(source_agreement),
+        **cf,
+    }
+
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    """DOI-aware classifier.
+
+    This classifier improves promotion for DOI-backed candidates while preserving
+    guardrails for weak or generic matches.
+    """
+    title_score = int(meta.get("title_score", 0))
+    score = int(meta.get("score", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    doi_match = bool(meta.get("doi_match"))
+    candidate_has_doi = bool(meta.get("candidate_has_doi") or meta.get("doi"))
+    source_agreement = int(meta.get("source_agreement", 1))
+    retracted = bool(meta.get("is_retracted"))
+
+    has_ref_authors = bool(ref_fields.get("authors"))
+    has_cand_authors = bool(meta.get("authors"))
+    has_ref_journal = bool(ref_fields.get("journal"))
+
+    year_ok = year_match == 1 or year_delta <= 1
+    author_ok = author_overlap >= 1 or author_similarity >= 68 or not has_ref_authors or not has_cand_authors
+    journal_ok = journal_score >= 60 or not has_ref_journal
+    cross_source_ok = source_agreement >= 2
+    author_conflict = bool(has_ref_authors and has_cand_authors and author_overlap == 0 and author_similarity < 55)
+
+    if retracted:
+        return "needs_review", "Matched record appears to be retracted and needs manual review."
+
+    # Exact DOI match is the strongest available evidence.
+    if doi_match:
+        if title_score >= 55 or year_ok or author_overlap >= 1:
+            return "verified", "Exact DOI match with acceptable bibliographic support."
+        return "likely", "DOI matches, but title evidence is weak."
+
+    # Candidate DOI found from a trusted metadata source.
+    # Promote only when title/year or title/author support it.
+    if candidate_has_doi and title_score >= 85 and year_ok:
+        if not author_conflict or journal_ok or cross_source_ok:
+            return "verified", "Candidate DOI found with strong title and year support."
+        return "likely", "Candidate DOI and title-year evidence are strong, but author names do not overlap."
+
+    if candidate_has_doi and title_score >= 82 and author_ok and (year_ok or journal_ok):
+        return "verified", "Candidate DOI found with strong title and supporting author/year/journal evidence."
+
+    # Strong non-DOI bibliographic evidence.
+    if title_score >= 90 and year_ok and (author_ok or journal_ok or cross_source_ok):
+        return "verified", "Strong title and year evidence with supporting bibliographic signal."
+
+    if title_score >= 84 and year_ok and author_overlap >= 1:
+        return "verified", "Strong title, year and author match."
+
+    if score >= 88 and title_score >= 80 and year_ok and (author_ok or journal_ok or candidate_has_doi):
+        return "verified", "High composite bibliographic score with title-year support."
+
+    # Do not automatically verify weak/generic matches.
+    if title_score >= 78 and (year_ok or author_ok or candidate_has_doi):
+        return "likely", "Good bibliographic evidence, but not enough for automatic verification."
+
+    if score >= 70 and title_score >= 65:
+        return "likely", "Moderate composite metadata evidence."
+
+    if title_score >= 55 or score >= 45:
+        return "needs_review", "Possible match found, but evidence is insufficient for automatic verification."
+
+    return "not_found", "No reliable metadata match found from DOI-aware verification queries."
+
+
+def _classify(
+    doi_match: bool,
+    title_score: int,
+    score: int,
+    year_match: int,
+    author_overlap: int = 0,
+    candidate_has_doi: bool = False,
+) -> str:
+    """Backward-compatible wrapper for older internal calls."""
+    meta = {
+        "doi_match": bool(doi_match),
+        "candidate_has_doi": bool(candidate_has_doi),
+        "doi": "10.fake/placeholder" if candidate_has_doi else "",
+        "title_score": int(title_score or 0),
+        "score": int(score or 0),
+        "year_match": int(year_match or 0),
+        "year_delta": 0 if year_match else 999,
+        "author_overlap": int(author_overlap or 0),
+        "author_similarity": 80 if author_overlap else 0,
+        "journal_score": 0,
+        "source_agreement": 1,
+        "authors": ["x"] if author_overlap else [],
+    }
+    ref_fields = {"authors": ["x"] if author_overlap else [], "journal": ""}
+    return _classify_from_meta(ref_fields, meta)[0]
+
+try:
+    if "__all__" in globals():
+        for name in ["_extract_doi", "_score_candidate", "_classify_from_meta", "_classify"]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
+
