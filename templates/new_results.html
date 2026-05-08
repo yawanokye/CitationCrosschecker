@@ -1759,15 +1759,60 @@ document.addEventListener("DOMContentLoaded", function () {
                     updateCounts(hydrated);
                     partialFinalRendered = true;
                 }
-
+                
+                const metaProgress = Number(
+                    onlineMeta.progress ??
+                    result.verification?.progress ??
+                    rows.length ??
+                    0
+                );
+                
+                const metaTotal = Number(
+                    onlineMeta.total ??
+                    result.verification?.total ??
+                    result.online_verification?.summary?.total ??
+                    lastKnownTotal ??
+                    rows.length ??
+                    0
+                );
+                
+                if (metaTotal > 0) {
+                    lastKnownTotal = Math.max(lastKnownTotal, metaTotal);
+                }
+                
+                if (metaProgress > 0 || rows.length > 0) {
+                    lastKnownProgress = Math.max(lastKnownProgress, metaProgress, rows.length);
+                }
+                
+                const liveTotal = lastKnownTotal || metaTotal || rows.length;
+                const liveProgress = Math.min(
+                    liveTotal || rows.length,
+                    Math.max(lastKnownProgress, rows.length)
+                );
+                
+                let livePercent = 8;
+                if (liveTotal > 0) {
+                    livePercent = Math.round((liveProgress / liveTotal) * 92);
+                    livePercent = Math.min(94, Math.max(8, livePercent));
+                }
+                
                 if (onlineState === "completed" || onlineState === "finalising") {
                     showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
                     setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
                     if (!finalFetchRunning) fetchFinalResultWithRetry();
                     return;
                 }
-
-                setStatus(`Verification in progress. Partial verification rows loaded: ${rows.length}.`, "info");
+                
+                showProgress(
+                    livePercent,
+                    `Verifying references: ${liveProgress}/${liveTotal}. Partial results are loading.`
+                );
+                
+                setStatus(
+                    `Verification in progress: ${liveProgress}/${liveTotal}. Partial verification rows loaded: ${rows.length}.`,
+                    "info"
+                );
+                
                 return;
             }
 
