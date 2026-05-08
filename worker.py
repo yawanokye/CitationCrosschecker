@@ -2830,10 +2830,23 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     _save_job_result(job_id, result, status="completed")
 
     for idx, row in enumerate(claim_rows_to_enrich[:limit], start=1):
-        claim = row.get("claim") or row.get("claim_extracted") or ""
-        citation = row.get("citation") or ""
-        source_title = row.get("source_title") or row.get("matched_source") or ""
-
+        citation = str(row.get("citation") or "").strip()
+    
+        claim = str(
+            row.get("claim")
+            or row.get("claim_extracted")
+            or row.get("extracted_claim")
+            or row.get("context")
+            or ""
+        ).strip()
+    
+        source_title = str(
+            row.get("source_title")
+            or row.get("matched_source")
+            or row.get("matched_title")
+            or ""
+        ).strip()
+    
         try:
             row["alternative_sources"] = _safe_alternative_sources(
                 claim=claim,
@@ -2843,6 +2856,8 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
                 allow_external=True,
             )
             row["enriched"] = True
+            row["enrichment_type"] = "claim_support_alternative_sources"
+    
         except Exception as e:
             row["alternative_sources"] = row.get("alternative_sources") or []
             row["enriched"] = False
