@@ -504,6 +504,82 @@ def _lookup_context_suggestions_for_row(row, result, target=3):
     return _dedupe_and_pad_suggestions(suggestions, row, result, target=target)
 
 
+def _deep_context_source_suggestions(row, result, target=3, include_reference=True):
+    """
+    Force a context-specific source lookup for deep enrichment.
+
+    This differs from Recovery Lite:
+    - It does not stop at existing generic fallback suggestions.
+    - It uses the manuscript context around the citation.
+    - It optionally adds reference-title lookup for needs_review/not_found/offline rows.
+    """
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or ""
+    )
+
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+
+    context = (
+        row.get("context")
+        or row.get("claim")
+        or row.get("claim_extracted")
+        or row.get("extracted_claim")
+        or ""
+    )
+
+    if not context and main_text and citation:
+        try:
+            sentences = _split_sentences(main_text)
+            context = _find_sentence_for_citation(sentences, citation)
+        except Exception:
+            context = ""
+
+    if not context and main_text:
+        context = main_text[:1500]
+
+    suggestions = []
+
+    if suggest_from_context and context:
+        try:
+            suggestions.extend(
+                suggest_from_context(
+                    context=context,
+                    citation=citation,
+                    top_k=target + 3,
+                ) or []
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Context-specific lookup failed: {e}")
+
+    if include_reference and suggest_for_unverified and reference:
+        try:
+            suggestions.extend(
+                suggest_for_unverified(
+                    reference,
+                    top_k=target,
+                ) or []
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Reference alternative lookup failed: {e}")
+
+    return _dedupe_and_pad_suggestions(
+        suggestions,
+        row,
+        result,
+        target=target,
+    )
 def _context_suggestions_for_row(row, result):
     """
     Fast Recovery Lite path for the main verification job.
@@ -633,7 +709,7 @@ def _build_recovery_payload(result, verification_rows):
 
     for row in verification_rows or []:
         status = row.get("status", "")
-        if status not in {"likely", "needs_review", "not_found", "offline"}:
+        if status not in {"needs_review", "not_found", "offline"}:
                continue
 
         suggestions = _context_suggestions_for_row(row, result)
@@ -2450,9 +2526,13 @@ WEAK_CLAIM_STATUSES = {
     "weak_or_unclear",
     "insufficient_evidence",
     "no_evidence_found",
+    "no_source_found",
+    "source_not_found",
+    "matched_source_not_available",
     "manual_review_required",
     "insufficient_title_overlap",
     "title_overlap_review_required",
+    "claim_not_extracted",
 }
 
 WEAK_VERIFY_STATUSES = {
@@ -2462,11 +2542,12 @@ WEAK_VERIFY_STATUSES = {
 }
 
 def _should_enrich_claim_row(row, scope="weak_only"):
+    """
+    Select only claim-support rows that need deeper alternative-source lookup.
+    Deep enrichment should run for weak, insufficient, no-evidence, and no-source cases.
+    """
     if scope == "recovery_only":
         return False
-
-    if scope == "all_problem_rows":
-        return not bool(row.get("alternative_sources"))
 
     status = str(
         row.get("support_status")
@@ -2479,14 +2560,28 @@ def _should_enrich_claim_row(row, scope="weak_only"):
     except Exception:
         score = 0
 
-    already_has_alternatives = bool(row.get("alternative_sources"))
+    source_title = str(
+        row.get("source_title")
+        or row.get("matched_source")
+        or row.get("matched_title")
+        or ""
+    ).strip().lower()
 
-    if already_has_alternatives:
+    no_source = (
+        not source_title
+        or source_title in {"no source found", "no source title available"}
+        or source_title.startswith("matched source not available")
+        or source_title.startswith("source title not available")
+        or source_title.startswith("no source")
+    )
+
+    if row.get("alternative_sources"):
         return False
 
     return (
         status in WEAK_CLAIM_STATUSES
         or score < 20
+        or no_source
     )
 
 
@@ -2505,7 +2600,84 @@ def _should_enrich_recovery_row(row, scope="weak_only"):
         return False
 
     return status in WEAK_VERIFY_STATUSES
+DEEP_RECOVERY_STATUSES = {
+    "needs_review",
+    "not_found",
+    "offline",
+}
 
+DEEP_CLAIM_STATUSES = {
+    "weak_or_unclear",
+    "insufficient_evidence",
+    "no_evidence_found",
+    "no_source_found",
+    "source_not_found",
+    "matched_source_not_available",
+    "manual_review_required",
+    "insufficient_title_overlap",
+    "title_overlap_review_required",
+}
+
+def _should_deep_enrich_recovery_row(row, scope="weak_only"):
+    """
+    Deep enrichment for verification recovery should run only on
+    needs_review, not_found, and offline rows.
+    """
+    if scope == "claim_only":
+        return False
+
+    status = str(row.get("status") or "").strip().lower()
+
+    if status not in DEEP_RECOVERY_STATUSES:
+        return False
+
+    if row.get("deep_suggestions") or row.get("enriched") is True:
+        return False
+
+    return True
+
+
+def _should_deep_enrich_claim_row(row, scope="weak_only"):
+    """
+    Deep enrichment for claim support should run only where the current
+    source is weak, insufficient, missing, or no evidence was found.
+    """
+    if scope == "recovery_only":
+        return False
+
+    status = str(
+        row.get("support_status")
+        or row.get("status")
+        or ""
+    ).strip().lower()
+
+    try:
+        score = float(row.get("support_score") or row.get("score") or 0)
+    except Exception:
+        score = 0
+
+    source_title = str(
+        row.get("source_title")
+        or row.get("matched_source")
+        or row.get("matched_title")
+        or ""
+    ).strip().lower()
+
+    no_source = (
+        not source_title
+        or source_title.startswith("matched source not available")
+        or source_title.startswith("source title not available")
+        or source_title.startswith("no source")
+    )
+
+    if row.get("alternative_sources"):
+        return False
+
+    return (
+        status in DEEP_CLAIM_STATUSES
+        or score < 20
+        or no_source
+    )
 def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     """
     Expensive background enrichment. This runs after the dashboard is already usable.
@@ -2516,7 +2688,6 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     start_time = time.time()
     limit = int(limit or DEEP_ENRICHMENT_LIMIT)
     scope = str(scope or "weak_only").strip().lower()
-
     if scope not in {"weak_only", "recovery_only", "claim_only", "all_problem_rows"}:
         scope = "weak_only"
     result = _load_job_result(job_id)
@@ -2544,17 +2715,17 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     else:
         missing_rows_to_enrich = [
             row for row in missing_rows
-            if not row.get("deep_suggestions") and not row.get("enriched")
+            if not row.get("deep_suggestions") and row.get("enriched") is not True
         ]
     
     recovery_rows_to_enrich = [
         row for row in recovery_rows
-        if _should_enrich_recovery_row(row, scope)
+        if _should_deep_enrich_recovery_row(row, scope=scope)
     ]
     
     claim_rows_to_enrich = [
         row for row in claim_rows
-        if _should_enrich_claim_row(row, scope)
+        if _should_deep_enrich_claim_row(row, scope=scope)
     ]
     
     total_work = (
@@ -2564,14 +2735,15 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     )
     
     done = 0
+    
     result = _set_enrichment_meta(
         result,
         total=total_work,
         progress=done,
         scope=scope,
-        message=f"Advanced enrichment queued for {total_work} problem rows."
+        message=f"Advanced enrichment queued for {total_work} problem rows.",
     )
-
+    _save_job_result(job_id, result, status="completed")
     # Enrich missing in-text citation recovery rows first. These rows have no
     # matched reference, so the deep lookup relies mainly on the citation context.
     for idx, rec in enumerate(missing_rows_to_enrich[:limit], start=1):
