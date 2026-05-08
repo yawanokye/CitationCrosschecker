@@ -2922,6 +2922,115 @@ def online_status(job_id: str):
                 }
             }
         )
+@app.post("/api/enrichment/start/{job_id}")
+async def start_advanced_enrichment(job_id: str, request: Request):
+    """
+    Start advanced enrichment only when the user requests it.
+    This queues deep recovery and claim-support enrichment without blocking the dashboard.
+    """
+    if not redis_conn:
+        return JSONResponse(
+            {"ok": False, "error": "Redis is not available."},
+            status_code=500
+        )
+
+    if not DATABASE_URL:
+        return JSONResponse(
+            {"ok": False, "error": "Database is not available."},
+            status_code=500
+        )
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    scope = payload.get("scope", "weak_only")
+
+    allowed_scopes = {
+        "weak_only",
+        "recovery_only",
+        "claim_only",
+        "all_problem_rows",
+    }
+
+    if scope not in allowed_scopes:
+        scope = "weak_only"
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        return JSONResponse(
+            {"ok": False, "error": "Job not found."},
+            status_code=404
+        )
+
+    result = job.get("result") or {}
+
+    enrichment = result.get("enrichment") or {}
+    current_state = str(enrichment.get("state", "")).lower()
+
+    if current_state in {"queued", "running"}:
+        return {
+            "ok": True,
+            "message": "Advanced enrichment is already running.",
+            "state": current_state,
+            "rq_job_id": enrichment.get("rq_job_id"),
+            "scope": enrichment.get("scope", scope),
+        }
+
+    deep_queue = Queue("deep_enrichment", connection=redis_conn)
+
+    rq_job = deep_queue.enqueue(
+        "worker.process_deep_enrichment",
+        job_id,
+        "apa",
+        scope,
+        job_timeout=10800,
+        result_ttl=86400,
+        failure_ttl=86400,
+    )
+
+    result["enrichment"] = {
+        "state": "queued",
+        "scope": scope,
+        "rq_job_id": rq_job.id,
+        "progress": 0,
+        "total": None,
+        "message": "Advanced enrichment queued.",
+        "requested_at": datetime.utcnow().isoformat(),
+        "deep_recovery_ready": False,
+        "deep_claim_support_ready": False,
+    }
+
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            UPDATE jobs
+            SET result = %s::jsonb
+            WHERE job_id = %s
+            """,
+            (json.dumps(result), job_id)
+        )
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
+
+    try:
+        redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+    except Exception as e:
+        print(f"[ENRICHMENT START] Could not update Redis cache: {e}")
+
+    return {
+        "ok": True,
+        "message": "Advanced enrichment queued.",
+        "rq_job_id": rq_job.id,
+        "scope": scope,
+    }
 # ============================================================
 # DOCUMENT EXPORT
 # ============================================================
