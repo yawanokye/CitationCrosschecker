@@ -263,18 +263,31 @@
             font-size: 13px;
         }
 
+        .insights-grid {
+            display: grid;
+            grid-template-columns: 300px minmax(0, 1fr);
+            gap: 12px;
+            align-items: stretch;
+            margin-bottom: 14px;
+        }
+
         .dashboard-grid {
             display: grid;
-            grid-template-columns: 340px 1fr;
-            gap: 18px;
+            grid-template-columns: 250px minmax(0, 1fr);
+            gap: 12px;
             align-items: start;
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 28px;
+            box-shadow: var(--shadow-soft);
+            padding: 12px;
         }
 
         .sidebar {
             position: sticky;
             top: 82px;
             display: grid;
-            gap: 16px;
+            gap: 10px;
         }
 
         .card {
@@ -285,6 +298,50 @@
             padding: 20px;
         }
 
+        .dashboard-grid .card {
+            box-shadow: none;
+            border-radius: 20px;
+            padding: 14px;
+        }
+
+        .insights-panel {
+            display: grid;
+            align-content: start;
+            min-width: 0;
+        }
+
+        .insights-grid .kpi-grid {
+            grid-template-columns: repeat(4, minmax(120px, 1fr));
+        }
+
+        .insights-grid .kpi {
+            padding: 12px 10px;
+            border-radius: 16px;
+        }
+
+        .insights-grid .kpi-value {
+            font-size: 26px;
+        }
+
+        .workspace-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .workspace-label h2 {
+            font-size: 17px;
+            font-weight: 900;
+            letter-spacing: -0.3px;
+        }
+
+        .workspace-label p {
+            color: var(--slate);
+            font-size: 12px;
+        }
+
         .acii-card {
             background: linear-gradient(135deg, var(--navy), #1e3a5f);
             color: white;
@@ -292,12 +349,18 @@
             border: none;
         }
 
+        .insights-grid .acii-card {
+            display: grid;
+            align-content: center;
+            min-height: 210px;
+        }
+
         .acii-score {
-            font-size: 64px;
+            font-size: 54px;
             line-height: 1;
             font-weight: 950;
             letter-spacing: -2px;
-            margin-top: 10px;
+            margin-top: 8px;
         }
 
         .acii-label {
@@ -362,7 +425,7 @@
 
         .nav-tabs {
             display: grid;
-            gap: 8px;
+            gap: 7px;
         }
 
         .tab-btn {
@@ -370,15 +433,17 @@
             text-align: left;
             border: 1px solid #eef2f6;
             background: #f8fafc;
-            border-radius: 16px;
-            padding: 12px 14px;
+            border-radius: 13px;
+            padding: 10px 11px;
             cursor: pointer;
             font-family: inherit;
+            font-size: 13px;
             font-weight: 850;
             color: var(--slate);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 8px;
         }
 
         .tab-btn:hover {
@@ -398,10 +463,16 @@
             border-radius: 999px;
             padding: 3px 8px;
             font-size: 11px;
+            min-width: 34px;
+            text-align: center;
         }
 
         .main-panel {
             min-width: 0;
+        }
+
+        .main-panel > .tab-pane > .card {
+            min-height: 560px;
         }
 
         .tab-pane {
@@ -654,6 +725,7 @@
         }
 
         @media (max-width: 1120px) {
+            .insights-grid,
             .dashboard-grid {
                 grid-template-columns: 1fr;
             }
@@ -663,7 +735,7 @@
             }
 
             .nav-tabs {
-                grid-template-columns: repeat(2, 1fr);
+                grid-template-columns: repeat(3, 1fr);
             }
 
             .topbar {
@@ -707,8 +779,14 @@
             }
 
             .nav-tabs,
-            .kpi-grid {
+            .kpi-grid,
+            .insights-grid .kpi-grid {
                 grid-template-columns: 1fr;
+            }
+
+            .dashboard-grid {
+                padding: 10px;
+                border-radius: 22px;
             }
 
             .actions .btn {
@@ -787,31 +865,33 @@
         <div class="progress-text" id="progressText">Preparing...</div>
     </section>
 
+    <section class="insights-grid">
+        <div class="card acii-card">
+            <div class="small-muted" style="color: rgba(255,255,255,0.72);">Academic Citation Integrity Index</div>
+            <div class="acii-score" id="aciiScore">--</div>
+            <div class="acii-label">ACII Score</div>
+            <div class="acii-rating" id="aciiRating">Not available</div>
+            <div class="acii-rec" id="aciiRecommendation">Run analysis and verification to improve citation integrity evidence.</div>
+        </div>
+
+        <div class="card insights-panel">
+            <div class="section-title" style="margin-bottom:12px;">
+                <div>
+                    <h2 style="font-size:18px;">Summary Cards</h2>
+                    <p>Key dashboard counts.</p>
+                </div>
+            </div>
+
+            <div class="kpi-grid" id="kpiGrid"></div>
+        </div>
+    </section>
+
     <section class="dashboard-grid">
         <aside class="sidebar">
-            <div class="card acii-card">
-                <div class="small-muted" style="color: rgba(255,255,255,0.72);">Academic Citation Integrity Index</div>
-                <div class="acii-score" id="aciiScore">--</div>
-                <div class="acii-label">ACII Score</div>
-                <div class="acii-rating" id="aciiRating">Not available</div>
-                <div class="acii-rec" id="aciiRecommendation">Run analysis and verification to improve citation integrity evidence.</div>
-            </div>
-
-            <div class="card">
-                <div class="section-title" style="margin-bottom:12px;">
+            <div class="card sections-card">
+                <div class="workspace-label">
                     <div>
-                        <h2 style="font-size:18px;">Summary Cards</h2>
-                        <p>Key dashboard counts.</p>
-                    </div>
-                </div>
-
-                <div class="kpi-grid" id="kpiGrid"></div>
-            </div>
-
-            <div class="card">
-                <div class="section-title" style="margin-bottom:12px;">
-                    <div>
-                        <h2 style="font-size:18px;">Sections</h2>
+                        <h2>Sections</h2>
                         <p>Open each result area.</p>
                     </div>
                 </div>
@@ -1649,11 +1729,7 @@ document.addEventListener("DOMContentLoaded", function () {
         setCount("countSummary", "OK");
         setCount("countMissing", data.missing_in_references?.length || 0);
         setCount("countUncited", data.uncited_references?.length || 0);
-        const c2rUniqueRows = getUniqueCitationsWithCount(
-            data.reconciliation_intext_to_reference || []
-        );
-        
-        setCount("countC2R", c2rUniqueRows.length);
+        setCount("countC2R", data.reconciliation_intext_to_reference?.length || 0);
         setCount("countR2C", data.reconciliation_reference_to_intext?.length || 0);
         setCount("countVerify", data.online_verification?.rows?.length || 0);
         setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
@@ -1763,60 +1839,15 @@ document.addEventListener("DOMContentLoaded", function () {
                     updateCounts(hydrated);
                     partialFinalRendered = true;
                 }
-                
-                const metaProgress = Number(
-                    onlineMeta.progress ??
-                    result.verification?.progress ??
-                    rows.length ??
-                    0
-                );
-                
-                const metaTotal = Number(
-                    onlineMeta.total ??
-                    result.verification?.total ??
-                    result.online_verification?.summary?.total ??
-                    lastKnownTotal ??
-                    rows.length ??
-                    0
-                );
-                
-                if (metaTotal > 0) {
-                    lastKnownTotal = Math.max(lastKnownTotal, metaTotal);
-                }
-                
-                if (metaProgress > 0 || rows.length > 0) {
-                    lastKnownProgress = Math.max(lastKnownProgress, metaProgress, rows.length);
-                }
-                
-                const liveTotal = lastKnownTotal || metaTotal || rows.length;
-                const liveProgress = Math.min(
-                    liveTotal || rows.length,
-                    Math.max(lastKnownProgress, rows.length)
-                );
-                
-                let livePercent = 8;
-                if (liveTotal > 0) {
-                    livePercent = Math.round((liveProgress / liveTotal) * 92);
-                    livePercent = Math.min(94, Math.max(8, livePercent));
-                }
-                
+
                 if (onlineState === "completed" || onlineState === "finalising") {
                     showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
                     setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
                     if (!finalFetchRunning) fetchFinalResultWithRetry();
                     return;
                 }
-                
-                showProgress(
-                    livePercent,
-                    `Verifying references: ${liveProgress}/${liveTotal}. Partial results are loading.`
-                );
-                
-                setStatus(
-                    `Verification in progress: ${liveProgress}/${liveTotal}. Partial verification rows loaded: ${rows.length}.`,
-                    "info"
-                );
-                
+
+                setStatus(`Verification in progress. Partial verification rows loaded: ${rows.length}.`, "info");
                 return;
             }
 
@@ -2249,7 +2280,13 @@ ${claimTable}
                 document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
                 btn.classList.add("active");
                 const pane = $(target);
-                if (pane) pane.classList.add("active");
+                if (pane) {
+                    pane.classList.add("active");
+                    const mainPanel = document.querySelector(".main-panel");
+                    if (mainPanel && window.innerWidth <= 1120) {
+                        mainPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }
+                }
             });
         });
     }
