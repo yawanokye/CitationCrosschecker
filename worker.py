@@ -1412,12 +1412,246 @@ def _enhance_claim_support_scores(rows):
 
     return enhanced
 
+
+# ============================================================
+# CLAIM-SUPPORT VERIFICATION GATE
+# ============================================================
+# A claim-support score must never outrank the trustworthiness of the source.
+# If the matched reference is needs_review/not_found/offline, the claim may be
+# semantically related to the title, but it cannot be labelled strong_support.
+
+
+def _norm_claim_lookup_key(text):
+    """Normalise citation/reference/title text for safer verification lookup."""
+    text = str(text or "").lower()
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"\bdoi\s*:?\s*10\.\S+", " ", text, flags=re.I)
+    text = re.sub(r"\b10\.\d{4,9}/\S+", " ", text, flags=re.I)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _build_verification_claim_lookups(verification_rows):
+    """
+    Build citation and reference/title lookup tables so claim-support rows inherit
+    the real online verification status of the matched source.
+    """
+    citation_lookup = {}
+    reference_lookup = {}
+
+    for vr in verification_rows or []:
+        if not isinstance(vr, dict):
+            continue
+
+        status = str(vr.get("status") or "").strip().lower()
+
+        citation_key = str(
+            vr.get("citation")
+            or vr.get("in_text")
+            or vr.get("citation_in_text")
+            or ""
+        ).strip().lower()
+
+        reference_value = (
+            vr.get("reference")
+            or vr.get("original_reference")
+            or vr.get("matched_title")
+            or vr.get("title")
+            or vr.get("source_title")
+            or ""
+        )
+
+        payload = {
+            "reference": reference_value,
+            "doi": vr.get("doi", ""),
+            "status": status,
+            "matched_title": vr.get("matched_title") or vr.get("title") or vr.get("source_title") or "",
+            "matched_authors": vr.get("matched_authors") or vr.get("authors") or "",
+            "matched_year": vr.get("matched_year") or vr.get("year") or "",
+            "source": vr.get("source") or "",
+        }
+
+        if citation_key and citation_key not in citation_lookup:
+            citation_lookup[citation_key] = payload
+
+        for key_text in [
+            vr.get("reference"),
+            vr.get("original_reference"),
+            vr.get("matched_title"),
+            vr.get("title"),
+            vr.get("source_title"),
+            reference_value,
+        ]:
+            key = _norm_claim_lookup_key(key_text)
+            if key and key not in reference_lookup:
+                reference_lookup[key] = payload
+
+    return citation_lookup, reference_lookup
+
+
+def _attach_verification_status_to_claim_row(row, citation_lookup=None, reference_lookup=None):
+    """Attach source verification status to a claim-support row when possible."""
+    if not isinstance(row, dict):
+        return row
+
+    citation_lookup = citation_lookup or {}
+    reference_lookup = reference_lookup or {}
+
+    existing_status = str(
+        row.get("verification_status")
+        or row.get("source_verification_status")
+        or row.get("citation_match_status")
+        or ""
+    ).strip().lower()
+
+    payload = None
+
+    citation_key = str(
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    ).strip().lower()
+
+    if citation_key:
+        payload = citation_lookup.get(citation_key)
+
+    if not payload:
+        for key_text in [
+            row.get("matched_source"),
+            row.get("reference"),
+            row.get("source_title"),
+            row.get("matched_title"),
+            row.get("title"),
+        ]:
+            key = _norm_claim_lookup_key(key_text)
+            if key and key in reference_lookup:
+                payload = reference_lookup[key]
+                break
+
+    if payload:
+        status = str(payload.get("status") or "").strip().lower()
+        if status:
+            row["verification_status"] = status
+            row["source_verification_status"] = status
+            row["citation_match_status"] = status
+
+        row.setdefault("doi", payload.get("doi", ""))
+        row.setdefault("verification_matched_title", payload.get("matched_title", ""))
+        row.setdefault("verification_matched_authors", payload.get("matched_authors", ""))
+        row.setdefault("verification_matched_year", payload.get("matched_year", ""))
+
+    elif existing_status:
+        row["verification_status"] = existing_status
+        row["source_verification_status"] = existing_status
+        row["citation_match_status"] = existing_status
+
+    else:
+        row.setdefault("verification_status", "unknown")
+        row.setdefault("source_verification_status", "unknown")
+        row.setdefault("citation_match_status", "unknown")
+
+    return row
+
+
+def _apply_verification_gate_to_claim_row(row):
+    """
+    Prevent unverified or uncertain sources from being labelled as strong claim support.
+    Verification confidence must dominate claim-support confidence.
+    """
+    if not isinstance(row, dict):
+        return row
+
+    trusted_statuses = {"verified", "likely"}
+    weak_verify_statuses = {
+        "needs_review", "not_found", "offline", "error", "failed",
+        "unverified", "unknown", "", "none"
+    }
+
+    verification_status = str(
+        row.get("verification_status")
+        or row.get("source_verification_status")
+        or row.get("citation_match_status")
+        or "unknown"
+    ).strip().lower()
+
+    support_status = str(row.get("support_status") or "").strip().lower()
+
+    try:
+        support_score = int(float(row.get("support_score") or row.get("score") or 0))
+    except Exception:
+        support_score = 0
+
+    row["verification_status"] = verification_status or "unknown"
+    row["source_verification_status"] = verification_status or "unknown"
+    row["citation_match_status"] = verification_status or "unknown"
+
+    if verification_status in trusted_statuses:
+        return row
+
+    positive_or_high = (
+        support_status in {
+            "strong_support",
+            "moderate_support",
+            "related_evidence",
+            "weak_or_unclear",
+            "title_overlap_review_required",
+        }
+        or support_score >= 50
+    )
+
+    # If the row is already negative and low-scoring, do not replace its more
+    # specific no-evidence explanation. The gate is mainly to prevent false
+    # confidence such as needs_review + strong_support.
+    if not positive_or_high:
+        return row
+
+    if verification_status in weak_verify_statuses:
+        row["ungated_support_status"] = row.get("support_status", "")
+        row["ungated_support_score"] = row.get("support_score", 0)
+
+        row["support_status"] = (
+            "source_needs_review"
+            if verification_status not in {"", "unknown", "none"}
+            else "source_verification_unknown"
+        )
+        row["support_score"] = min(support_score, 49)
+        row["evidence_used"] = "unverified_source_metadata"
+        row["partial_support"] = False
+        row["score_explanation"] = (
+            "The extracted claim appears related to the matched source, but the source itself "
+            f"has verification status '{verification_status or 'unknown'}'. Claim support is capped "
+            "until the reference is verified or accepted after manual review."
+        )
+        row["note"] = (
+            "Potential support detected, but the matched source is not trusted. "
+            "Review the reference before accepting this claim-support result."
+        )
+
+    return row
+
+
+def _apply_verification_gate_to_claim_rows(rows, verification_rows=None):
+    citation_lookup, reference_lookup = _build_verification_claim_lookups(verification_rows or [])
+    gated = []
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        row = _attach_verification_status_to_claim_row(row, citation_lookup, reference_lookup)
+        row = _apply_verification_gate_to_claim_row(row)
+        gated.append(row)
+
+    return gated
+
+
 def _fallback_claim_support_rows(result, verification_rows):
     """
     Claim-support fallback with real claim extraction from main_text.
 
-    It does not verify whether the source truly supports the claim.
-    It extracts the claim sentence around the citation and marks it for review.
+    It extracts the claim sentence around the citation, scores title-level
+    relatedness, then applies a verification gate so untrusted sources cannot
+    appear as strong claim support.
     """
     rows = []
 
@@ -1426,32 +1660,7 @@ def _fallback_claim_support_rows(result, verification_rows):
 
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
-    # Create lookup from verification rows
-    verification_lookup = {}
-
-    for row in verification_rows or []:
-        citation_key = str(
-            row.get("citation")
-            or row.get("in_text")
-            or row.get("citation_in_text")
-            or ""
-        ).strip().lower()
-
-        reference_value = (
-            row.get("reference")
-            or row.get("original_reference")
-            or row.get("matched_title")
-            or row.get("title")
-            or row.get("source_title")
-            or ""
-        )
-
-        if citation_key and citation_key not in verification_lookup:
-            verification_lookup[citation_key] = {
-                "reference": reference_value,
-                "doi": row.get("doi", ""),
-                "status": row.get("status", "")
-            }
+    citation_lookup, reference_lookup = _build_verification_claim_lookups(verification_rows)
 
     for row in c2r_rows:
         citation = (
@@ -1470,7 +1679,11 @@ def _fallback_claim_support_rows(result, verification_rows):
             or ""
         )
 
-        lookup = verification_lookup.get(citation.lower(), {})
+        lookup = (
+            citation_lookup.get(citation.lower())
+            or reference_lookup.get(_norm_claim_lookup_key(matched_reference))
+            or {}
+        )
 
         if not matched_reference:
             matched_reference = lookup.get("reference", "")
@@ -1489,13 +1702,20 @@ def _fallback_claim_support_rows(result, verification_rows):
         )
 
         support = _score_claim_support_for_worker(claim, matched_reference)
-        
-        rows.append({
+
+        verification_status = str(lookup.get("status") or "unknown").strip().lower()
+
+        claim_row = {
             "citation": citation,
             "claim": claim,
             "source_title": matched_reference[:250] if matched_reference else "Matched source not available",
             "matched_source": matched_reference,
-            "support_status": support.get("status", "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required"),
+            "support_status": support.get(
+                "status",
+                "claim_extracted_review_required"
+                if claim.startswith("Claim could not") is False
+                else "manual_review_required"
+            ),
             "support_score": support.get("score", 0),
             "evidence_used": support.get("evidence_used", "title_only"),
             "title_overlap": support.get("title_overlap", 0),
@@ -1508,14 +1728,19 @@ def _fallback_claim_support_rows(result, verification_rows):
             "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
             "doi": lookup.get("doi", ""),
             "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": row.get("status", lookup.get("status", "")),
+            "citation_match_status": verification_status,
+            "verification_status": verification_status,
+            "source_verification_status": verification_status,
             "alternative_sources": alt_sources
-        })
+        }
 
-    # If c2r rows are unavailable, fall back to verification rows
+        rows.append(_apply_verification_gate_to_claim_row(claim_row))
+
+    # If c2r rows are available, return gated rows immediately.
     if rows:
         return rows
 
+    # If c2r rows are unavailable, fall back to verification rows.
     for row in verification_rows or []:
         citation = (
             row.get("citation")
@@ -1549,13 +1774,19 @@ def _fallback_claim_support_rows(result, verification_rows):
         )
 
         support = _score_claim_support_for_worker(claim, source_title)
-        
-        rows.append({
+        verification_status = str(row.get("status") or "unknown").strip().lower()
+
+        claim_row = {
             "citation": citation,
             "claim": claim,
             "source_title": source_title[:250],
             "matched_source": reference,
-            "support_status": support.get("status", "claim_extracted_review_required" if claim.startswith("Claim could not") is False else "manual_review_required"),
+            "support_status": support.get(
+                "status",
+                "claim_extracted_review_required"
+                if claim.startswith("Claim could not") is False
+                else "manual_review_required"
+            ),
             "support_score": support.get("score", 0),
             "evidence_used": support.get("evidence_used", "title_only"),
             "title_overlap": support.get("title_overlap", 0),
@@ -1568,9 +1799,13 @@ def _fallback_claim_support_rows(result, verification_rows):
             "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
             "doi": row.get("doi", ""),
             "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": row.get("status", ""),
+            "citation_match_status": verification_status,
+            "verification_status": verification_status,
+            "source_verification_status": verification_status,
             "alternative_sources": alt_sources
-        })
+        }
+
+        rows.append(_apply_verification_gate_to_claim_row(claim_row))
 
     return rows
 
@@ -1618,7 +1853,10 @@ def _build_claim_support_safe(result, verification_rows):
     fallback_rows = _fallback_claim_support_rows(result, verification_rows)
 
     if not RUN_REAL_CLAIM_CHECK_IN_VERIFY:
-        return _enhance_claim_support_scores(fallback_rows)
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
 
     executor = None
 
@@ -1637,10 +1875,16 @@ def _build_claim_support_safe(result, verification_rows):
                 for row in claim_rows:
                     row.setdefault("fallback", False)
 
-                return _enhance_claim_support_scores(claim_rows)
+                return _apply_verification_gate_to_claim_rows(
+                    _enhance_claim_support_scores(claim_rows),
+                    verification_rows
+                )
 
         print("[VERIFY WORKER] Claim-support checker returned no real extracted claims. Using fallback rows.")
-        return _enhance_claim_support_scores(fallback_rows)
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
 
     except FutureTimeoutError:
         print(f"[VERIFY WORKER] Claim-support timed out after {CLAIM_SUPPORT_TIMEOUT}s. Using fallback rows.")
@@ -1648,11 +1892,17 @@ def _build_claim_support_safe(result, verification_rows):
             future.cancel()
         except Exception:
             pass
-        return _enhance_claim_support_scores(fallback_rows)
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
 
     except Exception as e:
         print(f"[VERIFY WORKER] Claim-support failed: {e}. Using fallback rows.")
-        return _enhance_claim_support_scores(fallback_rows)
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
 
     finally:
         if executor:
@@ -3501,7 +3751,10 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
         
         except Exception as e:
             print(f"[VERIFY WORKER] Claim-support scoring failed: {e}")
-            result["claim_support"] = _enhance_claim_support_scores(_fallback_claim_support_rows(result, all_rows))
+            result["claim_support"] = _apply_verification_gate_to_claim_rows(
+                _enhance_claim_support_scores(_fallback_claim_support_rows(result, all_rows)),
+                all_rows
+            )
 
         # ACII should not block completion.
         try:
