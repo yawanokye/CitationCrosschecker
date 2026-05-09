@@ -437,11 +437,11 @@ def _dedupe_and_pad_suggestions(suggestions, row, result, target=3):
     return clean[:target]
 
 
-def _lookup_context_suggestions_for_row(row, result, target=3, force_external=True):
+def _lookup_context_suggestions_for_row(row, result, target=3):
     """
     Slower deep lookup path for context/reference suggestions.
-    This may call Crossref/OpenAlex through citation_suggester.
-    force_external=True bypasses DEEP_LOOKUPS_IN_VERIFY for deep enrichment.
+    This may call Crossref/OpenAlex through citation_suggester, so it should be used
+    only in the deep_enrichment queue or when DEEP_LOOKUPS_IN_VERIFY is explicitly enabled.
     """
     existing = (
         row.get("suggested_references")
@@ -483,7 +483,6 @@ def _lookup_context_suggestions_for_row(row, result, target=3, force_external=Tr
 
     suggestions = []
 
-    # 🔥 CRITICAL FIX: Always attempt external lookups in deep enrichment
     if suggest_from_context and context:
         try:
             suggestions.extend(
@@ -925,11 +924,15 @@ def _find_sentence_for_citation(sentences, citation):
 
     return ""
 
-def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3, force_external=False):
+def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3, allow_external=False):
     """
-    Alternative-source lookup for claim support.
-    Set force_external=True when called from deep enrichment.
+    Alternative-source lookup is expensive. In the main verification job it is
+    disabled by default so Recovery and Claim Support can populate quickly.
+    Set allow_external=True only from the deep_enrichment queue.
     """
+    if not (allow_external or DEEP_LOOKUPS_IN_VERIFY):
+        return []
+
     claim = str(claim or "").strip()
 
     if not claim or len(claim) < 20:
@@ -938,7 +941,6 @@ def _safe_alternative_sources(claim, citation="", current_source_title="", top_k
     if claim.lower().startswith("claim could not be extracted"):
         return []
 
-    # 🔥 Always attempt external lookups if force_external=True
     try:
         return suggest_alternative_sources_for_claim(
             claim=claim,
@@ -2785,15 +2787,12 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         }
 
         try:
-            # 🔥 Use the enhanced lookup for missing citations too
-            deep_suggestions = _lookup_context_suggestions_for_row(
-                source_row, result, target=DEEP_LOOKUP_TOP_K, force_external=True
-            )
+            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
             rec["deep_suggestions"] = deep_suggestions
-            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or []
+            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
             rec["enriched"] = True
         except Exception as e:
-            rec["suggestions"] = rec.get("suggestions") or []
+            rec["suggestions"] = rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
             rec["enriched"] = False
             rec["enrichment_error"] = str(e)
 
@@ -2828,12 +2827,9 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         source_row = verify_lookup.get((citation, reference)) or rec
 
         try:
-            # 🔥 Use force_external=True for recovery rows too
-            deep_suggestions = _lookup_context_suggestions_for_row(
-                source_row, result, target=DEEP_LOOKUP_TOP_K, force_external=True
-            )
+            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
             rec["deep_suggestions"] = deep_suggestions
-            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or []
+            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _fallback_recovery_suggestions(source_row, result, target=3)
             rec["enriched"] = True
         except Exception as e:
             rec["enriched"] = False
@@ -2887,7 +2883,7 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
                 citation=citation,
                 current_source_title=source_title,
                 top_k=DEEP_LOOKUP_TOP_K,
-                force_external=True,  # <-- ADD THIS
+                allow_external=True,
             )
             row["enriched"] = True
             row["enrichment_type"] = "claim_support_alternative_sources"
