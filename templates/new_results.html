@@ -905,7 +905,11 @@
                     <button class="tab-btn" data-tab="verifyPane">Verification <span class="count-pill" id="countVerify">0</span></button>
                     <button class="tab-btn" data-tab="recoveryPane">Recovery <span class="count-pill" id="countRecovery">0</span></button>
                     <button class="tab-btn" data-tab="claimPane">Claim Support <span class="count-pill" id="countClaim">0</span></button>
+                    <button class="tab-btn" data-tab="enrichmentPane">
+                        Advanced Enrichment <span class="count-pill" id="countEnrichment">Optional</span>
+                    </button>
                     <button class="tab-btn" data-tab="suggestionsPane">Suggestions <span class="count-pill" id="countSuggestions">0</span></button>
+                    
                 </div>
             </div>
         </aside>
@@ -1113,6 +1117,34 @@
                             <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th></tr></thead>
                             <tbody id="claimBody"></tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+
+                        <div class="tab-pane" id="enrichmentPane">
+                        <div class="card">
+                            <div class="section-title">
+                                <div>
+                                    <h2>Advanced Enrichment</h2>
+                                    <p>Generate deeper source suggestions only for weak, insufficient, or no-evidence cases.</p>
+                                </div>
+                            </div>
+        
+                            <div class="filters">
+                                <select id="enrichmentScope">
+                                    <option value="weak_only">Only weak / insufficient / no evidence</option>
+                                    <option value="recovery_only">Recovery rows only</option>
+                                    <option value="claim_only">Claim-support rows only</option>
+                                    <option value="all_problem_rows">All problem rows</option>
+                                </select>
+        
+                                <button class="btn btn-primary" id="btnStartEnrichment">
+                            ✨ Start Advanced Enrichment
+                        </button>
+                    </div>
+
+                    <div class="empty" id="enrichmentStatusBox">
+                        Advanced enrichment has not been started. Run it after verification is complete.
                     </div>
                 </div>
             </div>
@@ -1640,8 +1672,13 @@ document.addEventListener("DOMContentLoaded", function () {
         `;
     }
 
-    function renderSuggestionList(suggestions) {
-        if (!suggestions || !suggestions.length) return `<span class="badge no_evidence_found">No evidence found</span>`;
+    function renderSuggestionList(suggestions, note = "") {
+        if (!suggestions || !suggestions.length) {
+            return `
+                <span class="badge no_evidence_found">No context-specific source found</span>
+                ${note ? `<div class="small-muted" style="margin-top:6px;">${esc(note)}</div>` : ""}
+            `;
+        }
         return `<div class="suggestion-box">${suggestions.slice(0, 3).map((s, i) => {
             const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
             const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
@@ -1661,7 +1698,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
             else {
                 const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
                 if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
             }
         }
@@ -1670,7 +1707,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
             else {
                 const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
                 if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
             }
         }
@@ -1729,11 +1766,20 @@ document.addEventListener("DOMContentLoaded", function () {
         setCount("countSummary", "OK");
         setCount("countMissing", data.missing_in_references?.length || 0);
         setCount("countUncited", data.uncited_references?.length || 0);
-        setCount("countC2R", data.reconciliation_intext_to_reference?.length || 0);
+        const c2rUniqueRows = getUniqueCitationsWithCount(
+            data.reconciliation_intext_to_reference || []
+        );
+        
+        setCount("countC2R", c2rUniqueRows.length);
         setCount("countR2C", data.reconciliation_reference_to_intext?.length || 0);
         setCount("countVerify", data.online_verification?.rows?.length || 0);
         setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
         setCount("countClaim", data.claim_support?.length || 0);
+
+        const enrichment = data.enrichment || {};
+        const enrichmentState = String(enrichment.state || "optional").replaceAll("_", " ");
+        setCount("countEnrichment", enrichmentState || "Optional");
+        
         setCount("countSuggestions", suggestionCount);
     }
 
@@ -1839,15 +1885,60 @@ document.addEventListener("DOMContentLoaded", function () {
                     updateCounts(hydrated);
                     partialFinalRendered = true;
                 }
-
+                
+                const metaProgress = Number(
+                    onlineMeta.progress ??
+                    result.verification?.progress ??
+                    rows.length ??
+                    0
+                );
+                
+                const metaTotal = Number(
+                    onlineMeta.total ??
+                    result.verification?.total ??
+                    result.online_verification?.summary?.total ??
+                    lastKnownTotal ??
+                    rows.length ??
+                    0
+                );
+                
+                if (metaTotal > 0) {
+                    lastKnownTotal = Math.max(lastKnownTotal, metaTotal);
+                }
+                
+                if (metaProgress > 0 || rows.length > 0) {
+                    lastKnownProgress = Math.max(lastKnownProgress, metaProgress, rows.length);
+                }
+                
+                const liveTotal = lastKnownTotal || metaTotal || rows.length;
+                const liveProgress = Math.min(
+                    liveTotal || rows.length,
+                    Math.max(lastKnownProgress, rows.length)
+                );
+                
+                let livePercent = 8;
+                if (liveTotal > 0) {
+                    livePercent = Math.round((liveProgress / liveTotal) * 92);
+                    livePercent = Math.min(94, Math.max(8, livePercent));
+                }
+                
                 if (onlineState === "completed" || onlineState === "finalising") {
                     showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
                     setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
                     if (!finalFetchRunning) fetchFinalResultWithRetry();
                     return;
                 }
-
-                setStatus(`Verification in progress. Partial verification rows loaded: ${rows.length}.`, "info");
+                
+                showProgress(
+                    livePercent,
+                    `Verifying references: ${liveProgress}/${liveTotal}. Partial results are loading.`
+                );
+                
+                setStatus(
+                    `Verification in progress: ${liveProgress}/${liveTotal}. Partial verification rows loaded: ${rows.length}.`,
+                    "info"
+                );
+                
                 return;
             }
 
@@ -1976,6 +2067,70 @@ document.addEventListener("DOMContentLoaded", function () {
         return latestResults;
     }
 
+    async function startAdvancedEnrichment() {
+        if (!JOB_ID) {
+            setStatus("No job ID found.", "bad");
+            return;
+        }
+    
+        const scope = $("enrichmentScope")?.value || "weak_only";
+        const box = $("enrichmentStatusBox");
+        const btn = $("btnStartEnrichment");
+    
+        if (btn) btn.disabled = true;
+        if (box) {
+            box.innerHTML = "Queuing advanced enrichment...";
+        }
+    
+        try {
+            const response = await fetch(`/api/enrichment/start/${encodeURIComponent(JOB_ID)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ scope })
+            });
+    
+            const js = await response.json();
+    
+            if (!response.ok || js.ok === false) {
+                throw new Error(js.error || "Could not start advanced enrichment.");
+            }
+    
+            setStatus("Advanced enrichment queued. Results will update in the background.", "good");
+    
+            if (box) {
+                box.innerHTML = `
+                    <strong>Advanced enrichment queued.</strong><br>
+                    Scope: ${esc(scope)}<br>
+                    The dashboard will update when deeper suggestions arrive.
+                `;
+            }
+    
+            const tempResult = latestResults || {};
+            tempResult.enrichment = {
+                ...(tempResult.enrichment || {}),
+                state: "queued",
+                scope,
+                rq_job_id: js.rq_job_id || "",
+                message: js.message || "Advanced enrichment queued."
+            };
+    
+            latestResults = tempResult;
+            window.latestResults = tempResult;
+    
+            updateCounts(tempResult);
+            maybeStartEnrichmentPolling(tempResult);
+    
+        } catch (error) {
+            console.error(error);
+            setStatus("Advanced enrichment could not start: " + error.message, "bad");
+    
+            if (box) {
+                box.innerHTML = `Advanced enrichment could not start: ${esc(error.message)}`;
+            }
+    
+            if (btn) btn.disabled = false;
+        }
+    }
 
     function getEnrichmentState(result) {
         return String(result?.enrichment?.state || "").toLowerCase();
@@ -2013,6 +2168,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 if (freshState === "completed") {
                     renderAll(hydrated);
+                
+                    const box = $("enrichmentStatusBox");
+                    if (box) {
+                        box.innerHTML = `
+                            <strong>Advanced enrichment completed.</strong><br>
+                            Deeper Recovery and Claim Support suggestions have been updated.
+                        `;
+                    }
+                
                     clearInterval(enrichmentPollTimer);
                     enrichmentPollTimer = null;
                     setStatus("Results ready. Advanced enrichment completed.", "good");
@@ -2029,9 +2193,21 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (freshState === "running" || freshState === "queued") {
                     const progress = enrichment.progress ?? "";
                     const total = enrichment.total ?? "";
+                    const scope = enrichment.scope || "weak_only";
+                
                     const msg = progress && total
                         ? `Results ready. Advanced enrichment running: ${progress}/${total}.`
                         : "Results ready. Advanced enrichment is running in the background.";
+                
+                    const box = $("enrichmentStatusBox");
+                    if (box) {
+                        box.innerHTML = `
+                            <strong>Advanced enrichment ${esc(freshState)}.</strong><br>
+                            Scope: ${esc(scope)}<br>
+                            ${progress && total ? `Progress: ${esc(progress)}/${esc(total)}` : "Waiting for progress update..."}
+                        `;
+                    }
+                
                     setStatus(msg, "good");
                 }
             } catch (e) {
@@ -2311,6 +2487,7 @@ ${claimTable}
     function setupActions() {
         $("btnVerify")?.addEventListener("click", startVerification);
         $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
+        $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
         $("btnExportCsv")?.addEventListener("click", exportCSV);
         $("btnExportWord")?.addEventListener("click", exportWord);
         $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
