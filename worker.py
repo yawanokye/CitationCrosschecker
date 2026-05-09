@@ -503,6 +503,71 @@ def _lookup_context_suggestions_for_row(row, result, target=3):
 
     return _dedupe_and_pad_suggestions(suggestions, row, result, target=target)
 
+def _deep_context_source_suggestions(row, result, target=3, include_reference=True):
+    """
+    Force Advanced Enrichment to search for real context-specific sources.
+    It does not reuse Recovery Lite suggestions.
+    """
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or ""
+    )
+
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+
+    context = (
+        row.get("context")
+        or row.get("claim")
+        or row.get("claim_extracted")
+        or row.get("extracted_claim")
+        or ""
+    )
+
+    if not context and main_text and citation:
+        try:
+            sentences = _split_sentences(main_text)
+            context = _find_sentence_for_citation(sentences, citation)
+        except Exception:
+            context = ""
+
+    if not context and main_text:
+        context = main_text[:1500]
+
+    suggestions = []
+
+    if suggest_from_context and context:
+        try:
+            suggestions.extend(
+                suggest_from_context(
+                    context=context,
+                    citation=citation,
+                    top_k=target + 3
+                ) or []
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Context source lookup failed: {e}")
+
+    if include_reference and suggest_for_unverified and reference:
+        try:
+            suggestions.extend(
+                suggest_for_unverified(reference, top_k=target) or []
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Reference alternative lookup failed: {e}")
+
+    return _dedupe_real_source_suggestions(suggestions, target=target)
+
 
 def _deep_context_source_suggestions(row, result, target=3, include_reference=True):
     """
@@ -601,7 +666,47 @@ def _context_suggestions_for_row(row, result):
 
     return _lookup_context_suggestions_for_row(row, result, target=3)
 
+def _dedupe_real_source_suggestions(suggestions, target=3):
+    """
+    Keep only real source candidates.
+    Do not pad with generic fallback prompts.
+    """
+    clean = []
+    seen = set()
 
+    for item in suggestions or []:
+        if not isinstance(item, dict):
+            continue
+
+        title = str(item.get("title") or item.get("suggested") or "").strip()
+        doi = str(item.get("doi") or "").strip()
+        year = item.get("year") or ""
+        authors = item.get("authors") or []
+
+        if not title:
+            continue
+
+        key = f"{title.lower()}|{year}|{doi.lower()}"
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        clean.append({
+            "title": title,
+            "year": year,
+            "authors": authors,
+            "doi": doi,
+            "relevance": item.get("relevance") or item.get("confidence") or item.get("score") or 0,
+            "source": item.get("source") or item.get("type") or "context_source_lookup",
+            "suggestion_type": "context_specific_source",
+            "reason": "Suggested from the manuscript context during Advanced Enrichment."
+        })
+
+        if len(clean) >= target:
+            break
+
+    return clean[:target]
 def _context_suggestions_for_missing_citation(citation, result, count=1, target=3):
     """
     Fast Recovery Lite suggestions for in-text citations that are missing from
