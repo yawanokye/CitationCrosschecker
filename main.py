@@ -2966,6 +2966,7 @@ async def start_advanced_enrichment(job_id: str, request: Request):
         "weak_only",
         "recovery_only",
         "claim_only",
+        "citation_needed_only",
         "all_problem_rows",
     }
 
