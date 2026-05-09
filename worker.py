@@ -5,6 +5,9 @@ import json
 import re
 import time
 import hashlib
+import urllib.parse
+import urllib.request
+import urllib.error
 import redis
 import psycopg2
 from collections import Counter
@@ -30,7 +33,8 @@ except Exception:
 
 try:
     from citation_suggester import suggest_for_unverified, suggest_from_context
-except Exception:
+except Exception as e:
+    print(f"[DEEP ENRICHMENT] citation_suggester import failed; direct OpenAlex/Crossref fallback will be used: {e}")
     suggest_for_unverified = None
     suggest_from_context = None
 # Get connection strings
@@ -503,10 +507,278 @@ def _lookup_context_suggestions_for_row(row, result, target=3):
 
     return _dedupe_and_pad_suggestions(suggestions, row, result, target=target)
 
+
+# ============================================================
+# ROBUST ADVANCED ENRICHMENT LOOKUP HELPERS
+# ============================================================
+# These helpers make Advanced Enrichment independent of the citation_suggester
+# import path. If citation_suggester fails to import, or if its strict filters
+# return nothing, we still query Crossref/OpenAlex directly and return real
+# review-only source candidates.
+
+ENRICHMENT_HTTP_TIMEOUT = int(os.environ.get("ENRICHMENT_HTTP_TIMEOUT", "12"))
+ENRICHMENT_QUERY_LIMIT = int(os.environ.get("ENRICHMENT_QUERY_LIMIT", "6"))
+CROSSREF_MAILTO = os.environ.get("CROSSREF_MAILTO", "").strip()
+OPENALEX_MAILTO = os.environ.get("OPENALEX_MAILTO", "").strip()
+
+_ENRICHMENT_STOPWORDS = {
+    "about", "above", "after", "again", "against", "among", "because", "before",
+    "being", "between", "could", "during", "either", "figure", "found", "given",
+    "having", "however", "include", "including", "into", "method", "methods", "model",
+    "paper", "research", "result", "results", "review", "should", "study", "table",
+    "their", "there", "these", "those", "through", "using", "where", "which", "while",
+    "would", "claim", "citation", "source", "evidence", "analysis", "based", "support",
+    "manual", "required", "matched", "available", "extracted", "context"
+}
+
+
+def _safe_get_json_url(url, timeout=None):
+    """Small dependency-free JSON GET helper for Crossref/OpenAlex."""
+    timeout = timeout or ENRICHMENT_HTTP_TIMEOUT
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "CiteIntegrity/1.0 (advanced-enrichment)",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[DEEP ENRICHMENT] API lookup failed: {e} | {url[:180]}")
+        return {}
+
+
+def _clean_query_text(text, max_len=220):
+    text = re.sub(r"https?://\S+", " ", str(text or ""), flags=re.I)
+    text = re.sub(r"doi\s*:?\s*10\.\S+", " ", text, flags=re.I)
+    text = re.sub(r"\b10\.\d{4,9}/\S+", " ", text, flags=re.I)
+    text = re.sub(r"[^A-Za-z0-9\s:&,\-']", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
+
+
+def _extract_enrichment_keywords(text, limit=10):
+    words = re.findall(r"[A-Za-z][A-Za-z\-']{3,}", str(text or "").lower())
+    out = []
+    seen = set()
+    for word in words:
+        word = word.strip("-' ")
+        if len(word) < 4 or word in _ENRICHMENT_STOPWORDS or word in seen:
+            continue
+        seen.add(word)
+        out.append(word)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extract_reference_title_for_lookup(reference):
+    """Extract a usable title phrase from an APA-like reference string."""
+    ref = re.sub(r"\s+", " ", str(reference or "")).strip()
+    if not ref:
+        return ""
+
+    # Prefer title after the year, e.g. Author. (2021). Title. Journal.
+    m = re.search(r"\((?:19|20)\d{2}[a-z]?\)\s*\.\s*(.+?)(?:\.\s+[A-Z][A-Za-z& ]{2,}|$)", ref)
+    if m:
+        title = m.group(1).strip()
+        if len(title) >= 8:
+            return _clean_query_text(title, max_len=180)
+
+    # Handle references without a full stop immediately after year.
+    m = re.search(r"(?:19|20)\d{2}[a-z]?\)?\s*\.\s*(.+?)(?:\.\s+[A-Z][A-Za-z& ]{2,}|$)", ref)
+    if m:
+        title = m.group(1).strip()
+        if len(title) >= 8:
+            return _clean_query_text(title, max_len=180)
+
+    # Fallback: remove author/year leading material and use significant words.
+    fallback = re.sub(r"^.{0,140}?(?:19|20)\d{2}[a-z]?\)?\s*\.\s*", "", ref)
+    fallback = _clean_query_text(fallback or ref, max_len=180)
+    return fallback
+
+
+def _candidate_from_crossref_item(item, query=""):
+    title = ""
+    if isinstance(item.get("title"), list) and item.get("title"):
+        title = item.get("title")[0] or ""
+    elif isinstance(item.get("title"), str):
+        title = item.get("title")
+
+    if not title:
+        return None
+
+    year = ""
+    for key in ("published-print", "published-online", "issued", "created"):
+        parts = ((item.get(key) or {}).get("date-parts") or [])
+        if parts and parts[0]:
+            year = str(parts[0][0])
+            break
+
+    authors = []
+    for au in item.get("author") or []:
+        name = " ".join(x for x in [au.get("given"), au.get("family")] if x).strip()
+        if name:
+            authors.append(name)
+
+    doi = str(item.get("DOI") or item.get("doi") or "").strip()
+    url = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
+
+    return {
+        "title": title,
+        "year": year,
+        "authors": authors[:6],
+        "doi": doi,
+        "url": url,
+        "source": "crossref_direct",
+        "relevance": item.get("score") or 0,
+        "query_used": query,
+        "suggestion_type": "context_specific_source",
+        "reason": "Retrieved from Crossref using Advanced Enrichment query expansion. Review before using."
+    }
+
+
+def _candidate_from_openalex_item(item, query=""):
+    title = item.get("title") or item.get("display_name") or ""
+    if not title:
+        return None
+
+    authors = []
+    for auth in item.get("authorships") or []:
+        au = auth.get("author") or {}
+        name = au.get("display_name") or ""
+        if name:
+            authors.append(name)
+
+    doi = str(item.get("doi") or "").strip()
+    if doi.lower().startswith("https://doi.org/"):
+        doi = doi.split("https://doi.org/", 1)[1]
+
+    primary = item.get("primary_location") or {}
+    url = primary.get("landing_page_url") or item.get("id") or (f"https://doi.org/{doi}" if doi else "")
+
+    return {
+        "title": title,
+        "year": item.get("publication_year") or "",
+        "authors": authors[:6],
+        "doi": doi,
+        "url": url,
+        "source": "openalex_direct",
+        "relevance": item.get("relevance_score") or 0,
+        "query_used": query,
+        "suggestion_type": "context_specific_source",
+        "reason": "Retrieved from OpenAlex using Advanced Enrichment query expansion. Review before using."
+    }
+
+
+def _query_crossref_direct(query, rows=6):
+    query = _clean_query_text(query)
+    if not query:
+        return []
+    params = {
+        "query.bibliographic": query,
+        "rows": str(rows),
+        "select": "DOI,title,author,issued,published-print,published-online,created,URL,score",
+    }
+    if CROSSREF_MAILTO:
+        params["mailto"] = CROSSREF_MAILTO
+    url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
+    data = _safe_get_json_url(url)
+    items = (((data or {}).get("message") or {}).get("items") or [])
+    return [c for c in (_candidate_from_crossref_item(item, query) for item in items) if c]
+
+
+def _query_openalex_direct(query, rows=6):
+    query = _clean_query_text(query)
+    if not query:
+        return []
+    params = {"search": query, "per-page": str(rows)}
+    if OPENALEX_MAILTO:
+        params["mailto"] = OPENALEX_MAILTO
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data = _safe_get_json_url(url)
+    items = (data or {}).get("results") or []
+    return [c for c in (_candidate_from_openalex_item(item, query) for item in items) if c]
+
+
+def _build_deep_enrichment_queries(citation="", reference="", context="", source_title="", target=3):
+    """Build several fallback queries so one strict query does not kill enrichment."""
+    queries = []
+
+    ref_title = _extract_reference_title_for_lookup(reference or source_title)
+    if ref_title:
+        queries.append(ref_title)
+
+    citation_bits = []
+    try:
+        years = re.findall(r"(?:19|20)\d{2}[a-z]?", str(citation or ""))
+        names = [n for n in re.findall(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", str(citation or "")) if n.lower() not in {"et", "al"}]
+        citation_bits = names[:2] + years[:1]
+    except Exception:
+        citation_bits = []
+
+    if ref_title and citation_bits:
+        queries.append(" ".join(citation_bits + [ref_title]))
+
+    context_keywords = _extract_enrichment_keywords(context, limit=10)
+    if context_keywords:
+        queries.append(" ".join(context_keywords[:8]))
+        if citation_bits:
+            queries.append(" ".join(citation_bits + context_keywords[:6]))
+
+    compact_ref = _clean_query_text(reference, max_len=220)
+    if compact_ref and compact_ref not in queries:
+        queries.append(compact_ref)
+
+    # Keep unique and not too many.
+    out = []
+    seen = set()
+    for q in queries:
+        q = _clean_query_text(q)
+        key = q.lower()
+        if len(q) < 6 or key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+        if len(out) >= ENRICHMENT_QUERY_LIMIT:
+            break
+    return out
+
+
+def _direct_scholarly_source_lookup(citation="", reference="", context="", source_title="", target=3):
+    candidates = []
+    queries = _build_deep_enrichment_queries(
+        citation=citation,
+        reference=reference,
+        context=context,
+        source_title=source_title,
+        target=target,
+    )
+
+    for query in queries:
+        # Query OpenAlex first because it is often better for books, reports,
+        # older works, and non-DOI records. Then add Crossref.
+        candidates.extend(_query_openalex_direct(query, rows=max(target * 2, 6)))
+        candidates.extend(_query_crossref_direct(query, rows=max(target * 2, 6)))
+        if len(candidates) >= target * 3:
+            break
+
+    return candidates
+
 def _deep_context_source_suggestions(row, result, target=3, include_reference=True):
     """
     Force Advanced Enrichment to search for real context-specific sources.
-    It does not reuse Recovery Lite suggestions.
+
+    This version uses three layers:
+    1. citation_suggester context search, when the import works;
+    2. citation_suggester reference correction search, when a reference exists;
+    3. direct OpenAlex/Crossref query expansion from reference title, citation,
+       claim/context keywords, and full reference text.
+
+    It does not reuse Recovery Lite prompts as source suggestions.
     """
     citation = (
         row.get("citation")
@@ -518,11 +790,19 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
     reference = (
         row.get("reference")
         or row.get("original_reference")
+        or row.get("matched_reference")
         or row.get("matched_title")
         or row.get("title")
         or row.get("source_title")
         or ""
     )
+
+    source_title = str(
+        row.get("source_title")
+        or row.get("matched_source")
+        or row.get("matched_title")
+        or ""
+    ).strip()
 
     main_text = result.get("main_text", "") or result.get("full_text", "") or ""
 
@@ -531,6 +811,8 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
         or row.get("claim")
         or row.get("claim_extracted")
         or row.get("extracted_claim")
+        or row.get("citation_context")
+        or row.get("nearby_text")
         or ""
     )
 
@@ -541,33 +823,56 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
         except Exception:
             context = ""
 
+    # Do not rely only on the first 1500 characters for source discovery.
+    # It may be unrelated to the row. Use it only as the last weak fallback.
     if not context and main_text:
         context = main_text[:1500]
 
     suggestions = []
 
+    # Layer 1: existing context suggester, if available.
     if suggest_from_context and context:
         try:
             suggestions.extend(
                 suggest_from_context(
                     context=context,
                     citation=citation,
-                    top_k=target + 3
+                    top_k=target + 5
                 ) or []
             )
         except Exception as e:
-            print(f"[DEEP ENRICHMENT] Context source lookup failed: {e}")
+            print(f"[DEEP ENRICHMENT] citation_suggester context lookup failed: {e}")
 
+    # Layer 2: existing reference suggester, if available.
     if include_reference and suggest_for_unverified and reference:
         try:
             suggestions.extend(
-                suggest_for_unverified(reference, top_k=target) or []
+                suggest_for_unverified(reference, top_k=target + 5) or []
             )
         except Exception as e:
-            print(f"[DEEP ENRICHMENT] Reference alternative lookup failed: {e}")
+            print(f"[DEEP ENRICHMENT] citation_suggester reference lookup failed: {e}")
 
-    return _dedupe_real_source_suggestions(suggestions, target=target)
+    # Layer 3: direct OpenAlex/Crossref fallback. This is the important fix
+    # when citation_suggester import fails, strict title_score filters remove
+    # all candidates, or the row has only claim/context text.
+    try:
+        suggestions.extend(
+            _direct_scholarly_source_lookup(
+                citation=citation,
+                reference=reference if include_reference else "",
+                context=context,
+                source_title=source_title,
+                target=target + 5,
+            )
+        )
+    except Exception as e:
+        print(f"[DEEP ENRICHMENT] Direct scholarly lookup failed: {e}")
 
+    return _dedupe_real_source_suggestions(
+        suggestions,
+        target=target,
+        exclude_title=source_title,
+    )
 
 
 def _context_suggestions_for_row(row, result):
@@ -2814,6 +3119,8 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
             "in_text": citation,
             "reference": "",
             "status": "missing_reference",
+            "context": rec.get("context") or rec.get("citation_context") or "",
+            "claim": rec.get("claim") or rec.get("suggested") or "",
             "suggestions": rec.get("suggestions") or [],
         }
 
