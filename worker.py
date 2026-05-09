@@ -69,6 +69,10 @@ DEEP_ENRICHMENT_LIMIT = int(os.environ.get("DEEP_ENRICHMENT_LIMIT", "80"))
 DEEP_LOOKUP_TOP_K = int(os.environ.get("DEEP_LOOKUP_TOP_K", "3"))
 DEEP_ENRICHMENT_BATCH_SAVE = int(os.environ.get("DEEP_ENRICHMENT_BATCH_SAVE", "10"))
 
+# Citation-needed claims tab controls
+CITATION_NEEDED_MAX_ROWS = int(os.environ.get("CITATION_NEEDED_MAX_ROWS", "250"))
+CITATION_NEEDED_MIN_CONFIDENCE = float(os.environ.get("CITATION_NEEDED_MIN_CONFIDENCE", "0.55"))
+
 # Fast verification controls
 # Parallel mode verifies individual references concurrently inside each chunk.
 # This is the main speed lever for reducing 10-reference jobs from about a minute
@@ -1259,6 +1263,198 @@ def _find_sentence_for_citation(sentences, citation):
                 return sentence
 
     return ""
+
+def _has_existing_citation_marker(sentence):
+    """
+    Detect common in-text citation markers so the citation-needed tab only
+    flags claims that appear to have no citation.
+    Supports APA/Harvard author-year, narrative citations, and numeric styles.
+    """
+    text = str(sentence or "")
+    if not text:
+        return False
+
+    patterns = [
+        # Parenthetical author-year clusters: (Adam, 2021), (Adam & Mensah, 2021; Boateng, 2020)
+        r"\([^()]{0,220}\b(?:19|20)\d{2}[a-z]?\b[^()]{0,220}\)",
+        # Narrative author-year: Adam (2021), Adam et al. (2021), Adam and Mensah (2021)
+        r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s+(?:and|&)\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*\(\s*(?:19|20)\d{2}[a-z]?\s*\)",
+        # Loose author-year: Adam et al., 2021 or Adam and Mensah, 2021
+        r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s+(?:and|&)\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,\s*(?:19|20)\d{2}[a-z]?\b",
+        # Numeric citation styles: [1], [1, 2], [1-3], (1), (1,2)
+        r"\[(?:\s*\d{1,3}\s*(?:[-,;]\s*\d{1,3}\s*)*)\]",
+        r"\(\s*\d{1,3}\s*(?:[-,;]\s*\d{1,3}\s*)*\)",
+    ]
+
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _is_low_value_citation_needed_sentence(sentence):
+    """Avoid headings, methods boilerplate, table notes, and thesis housekeeping text."""
+    text = re.sub(r"\s+", " ", str(sentence or "")).strip()
+    lower = text.lower()
+
+    if not text or len(text) < 55 or len(text) > 520:
+        return True
+
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", text)
+    if len(words) < 9:
+        return True
+
+    if text.endswith("?"):
+        return True
+
+    skip_starts = (
+        "table ", "figure ", "appendix ", "chapter ", "section ",
+        "source:", "note:", "notes:", "author's computation", "authors' computation",
+        "this chapter", "this study", "the study", "the researcher", "the objective",
+        "the purpose of this study", "the research question", "the hypothesis",
+        "in this study", "in this chapter", "the next section"
+    )
+    if lower.startswith(skip_starts):
+        return True
+
+    if re.match(r"^(hypothesis|objective|research question)\s*\d*[:.]", lower):
+        return True
+
+    # Avoid obvious reference-list residue.
+    if re.search(r"\bdoi\b|https?://|retrieved from|journal of|vol\.|pp\.", lower):
+        return True
+
+    return False
+
+
+def _score_citation_needed_sentence(sentence):
+    """
+    Heuristic score for uncited claims that probably need a source.
+    This is intentionally conservative and review-only.
+    """
+    text = re.sub(r"\s+", " ", str(sentence or "")).strip()
+    lower = text.lower()
+    score = 0.15
+    reasons = []
+
+    if _has_existing_citation_marker(text):
+        return 0.0, ["Existing citation detected"]
+
+    if _is_low_value_citation_needed_sentence(text):
+        return 0.0, ["Low-value or non-claim sentence"]
+
+    evidence_patterns = [
+        r"\b(previous studies|prior studies|earlier studies|studies show|studies have shown|research shows|research suggests|empirical evidence|the literature|scholars argue|authors argue)\b",
+        r"\b(it is widely|it is generally|it is commonly|it is well established|it is known)\b",
+    ]
+    if any(re.search(p, lower) for p in evidence_patterns):
+        score += 0.35
+        reasons.append("Refers to prior studies, literature, or established evidence")
+
+    causal_patterns = [
+        r"\b(affects|influences|impacts|determines|predicts|drives|leads to|results in|contributes to|is associated with|is linked to|has a significant|significantly)\b",
+        r"\b(effect of|impact of|relationship between|association between|determinants of|influence of|role of)\b",
+    ]
+    if any(re.search(p, lower) for p in causal_patterns):
+        score += 0.25
+        reasons.append("Makes a causal, relational, or empirical-effect claim")
+
+    definition_patterns = [
+        r"\b(is defined as|are defined as|refers to|can be defined as|is conceptualised as|is conceptualized as|theory posits|theory suggests|framework assumes)\b",
+    ]
+    if any(re.search(p, lower) for p in definition_patterns):
+        score += 0.22
+        reasons.append("Defines or explains a concept that may require scholarly support")
+
+    numeric_patterns = [
+        r"\b\d+(?:\.\d+)?\s*(?:%|percent|per cent)\b",
+        r"\b(p\s*[<=>]\s*0\.\d+|coefficient|regression|correlation|sample size|respondents|odds ratio|confidence interval)\b",
+    ]
+    if any(re.search(p, lower) for p in numeric_patterns):
+        score += 0.18
+        reasons.append("Contains statistical, numerical, or empirical information")
+
+    generalisation_patterns = [
+        r"\b(most|many|several|major|critical|central|important|increasingly|widely|commonly|generally|often|frequently)\b",
+        r"\b(challenge|problem|barrier|driver|indicator|predictor|determinant|factor)\b",
+    ]
+    if any(re.search(p, lower) for p in generalisation_patterns):
+        score += 0.14
+        reasons.append("Makes a broad generalisation or importance claim")
+
+    # Sentences with country/institution/economy claims often need evidence, but keep this light.
+    if re.search(r"\b(ghana|africa|sub-saharan|government|public sector|university|students|households|firms|banks|economy|inflation|procurement)\b", lower):
+        score += 0.08
+        reasons.append("Contains a contextual factual claim that may need evidence")
+
+    score = min(score, 0.95)
+    return score, reasons
+
+
+def _build_citation_needed_claims(result, limit=None):
+    """
+    Identify thesis/manuscript sentences that look like evidence-based claims
+    but contain no visible citation. Returns review-only rows for the dashboard.
+    """
+    limit = int(limit or CITATION_NEEDED_MAX_ROWS)
+    main_text = (
+        result.get("main_text", "")
+        or result.get("full_text", "")
+        or result.get("data", {}).get("main_text", "")
+        or result.get("data", {}).get("full_text", "")
+        or ""
+    )
+
+    if not main_text:
+        return []
+
+    # Avoid scanning the reference list if it is still present in the extracted text.
+    parts = re.split(r"\n\s*(references|bibliography|works cited)\s*\n", main_text, maxsplit=1, flags=re.I)
+    body_text = parts[0] if parts else main_text
+
+    rows = []
+    seen = set()
+
+    for idx, sentence in enumerate(_split_sentences(body_text), start=1):
+        clean = re.sub(r"\s+", " ", str(sentence or "")).strip()
+        if not clean:
+            continue
+
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        confidence, reasons = _score_citation_needed_sentence(clean)
+        if confidence < CITATION_NEEDED_MIN_CONFIDENCE:
+            continue
+
+        if confidence >= 0.78:
+            priority = "high"
+        elif confidence >= 0.65:
+            priority = "medium"
+        else:
+            priority = "low"
+
+        rows.append({
+            "sentence_no": idx,
+            "claim": clean,
+            "context": clean,
+            "status": "citation_needed",
+            "priority": priority,
+            "confidence": round(confidence, 2),
+            "reason": "; ".join(reasons) if reasons else "The sentence appears to make an evidence-based claim without a visible citation.",
+            "suggested_action": "Add a credible citation after this claim, or revise the sentence if it is your own interpretation.",
+            "has_citation": False,
+            "alternative_sources": [],
+            "deep_suggestions": [],
+            "suggestions": [],
+            "enriched": False,
+            "enrichment_type": "citation_needed_claim",
+        })
+
+        if len(rows) >= limit:
+            break
+
+    return rows
+
 
 def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3, allow_external=False):
     """
@@ -3304,14 +3500,14 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     start_time = time.time()
     limit = int(limit or DEEP_ENRICHMENT_LIMIT)
     scope = str(scope or "weak_only").strip().lower()
-    if scope not in {"weak_only", "recovery_only", "claim_only", "all_problem_rows"}:
+    if scope not in {"weak_only", "recovery_only", "claim_only", "citation_needed_only", "all_problem_rows"}:
         scope = "weak_only"
     result = _load_job_result(job_id)
     result = _set_enrichment_meta(
         result,
         state="running",
         scope=scope,
-        message="Advanced Recovery and Claim Support enrichment is running.",
+        message="Advanced Recovery, Claim Support, and Citation Needed enrichment is running.",
         started_at=now_iso(),
         deep_recovery_ready=False,
         deep_claim_support_ready=False,
@@ -3325,8 +3521,9 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     missing_rows = recovery.get("missing_recovery") or []
     recovery_rows = recovery.get("verification_recovery") or []
     claim_rows = result.get("claim_support") or []
+    citation_needed_rows = result.get("citation_needed_claims") or []
 
-    if scope == "claim_only":
+    if scope in {"claim_only", "citation_needed_only"}:
         missing_rows_to_enrich = []
     else:
         missing_rows_to_enrich = [
@@ -3334,20 +3531,28 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
             if not row.get("deep_suggestions") and row.get("enriched") is not True
         ]
     
-    recovery_rows_to_enrich = [
+    recovery_rows_to_enrich = [] if scope == "citation_needed_only" else [
         row for row in recovery_rows
         if _should_deep_enrich_recovery_row(row, scope=scope)
     ]
     
-    claim_rows_to_enrich = [
+    claim_rows_to_enrich = [] if scope == "citation_needed_only" else [
         row for row in claim_rows
         if _should_deep_enrich_claim_row(row, scope=scope)
+    ]
+
+    citation_needed_rows_to_enrich = [
+        row for row in citation_needed_rows
+        if scope in {"citation_needed_only", "all_problem_rows"}
+        and not row.get("deep_suggestions")
+        and row.get("enriched") is not True
     ]
     
     total_work = (
         min(len(missing_rows_to_enrich), limit)
         + min(len(recovery_rows_to_enrich), limit)
         + min(len(claim_rows_to_enrich), limit)
+        + min(len(citation_needed_rows_to_enrich), limit)
     )
     
     done = 0
@@ -3538,6 +3743,60 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
             _save_job_result(job_id, result, status="completed")
 
     result["claim_support"] = claim_rows
+
+    # Enrich uncited claims that appear to need citations.
+    for idx, row in enumerate(citation_needed_rows_to_enrich[:limit], start=1):
+        claim = str(row.get("claim") or row.get("context") or "").strip()
+
+        try:
+            alt_sources = _deep_context_source_suggestions(
+                {
+                    "citation": "",
+                    "in_text": "",
+                    "claim": claim,
+                    "context": claim,
+                    "source_title": "",
+                    "matched_title": "",
+                },
+                result,
+                target=DEEP_LOOKUP_TOP_K + 3,
+                include_reference=False,
+            )
+
+            alt_sources = _dedupe_real_source_suggestions(
+                alt_sources,
+                target=DEEP_LOOKUP_TOP_K,
+                exclude_title="",
+            )
+
+            row["alternative_sources"] = alt_sources
+            row["deep_suggestions"] = alt_sources
+            row["suggestions"] = alt_sources
+            row["enriched"] = bool(alt_sources)
+            row["enrichment_type"] = "citation_needed_source_suggestions"
+            row["enrichment_note"] = _source_enrichment_note(alt_sources, target=DEEP_LOOKUP_TOP_K)
+
+        except Exception as e:
+            row["alternative_sources"] = row.get("alternative_sources") or []
+            row["deep_suggestions"] = row.get("deep_suggestions") or row.get("alternative_sources") or []
+            row["suggestions"] = row.get("suggestions") or row.get("deep_suggestions") or []
+            row["enriched"] = False
+            row["enrichment_error"] = str(e)
+            row["enrichment_note"] = "Advanced enrichment failed for this citation-needed claim. Manual source search is required."
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            result["citation_needed_claims"] = citation_needed_rows
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    result["citation_needed_claims"] = citation_needed_rows
+    result.setdefault("summary", {})["citation_needed_claims"] = len(citation_needed_rows)
     elapsed = round(time.time() - start_time, 2)
     result = _set_enrichment_meta(
         result,
@@ -3547,6 +3806,7 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         percentage=100,
         deep_recovery_ready=True,
         deep_claim_support_ready=True,
+        deep_citation_needed_ready=True,
         message=f"Advanced enrichment completed for scope: {scope}.",
         scope=scope,
         completed_at=now_iso(),
@@ -3604,6 +3864,8 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             }
 
             result["claim_support"] = []
+            result["citation_needed_claims"] = _build_citation_needed_claims(result)
+            result.setdefault("summary", {})["citation_needed_claims"] = len(result["citation_needed_claims"])
 
             _save_job_result(job_id, result)
             return result
@@ -3631,6 +3893,7 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
         }
 
         result["claim_support"] = []
+        result["citation_needed_claims"] = []
 
         _save_job_result(job_id, result)
 
@@ -3756,6 +4019,16 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 all_rows
             )
 
+        # Build citation-needed claims: claims that appear to need a citation but have no visible citation.
+        try:
+            citation_needed_rows = _build_citation_needed_claims(result)
+            result["citation_needed_claims"] = citation_needed_rows
+            result.setdefault("summary", {})["citation_needed_claims"] = len(citation_needed_rows)
+        except Exception as e:
+            print(f"[VERIFY WORKER] Citation-needed claim detection failed: {e}")
+            result["citation_needed_claims"] = []
+            result.setdefault("summary", {})["citation_needed_claims"] = 0
+
         # ACII should not block completion.
         try:
             result["acii"] = compute_acii(result, all_rows)
@@ -3797,9 +4070,9 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             deep_recovery_ready=False,
             deep_claim_support_ready=False,
             message=(
-                "Advanced enrichment queued. Recovery Lite and Claim Support Lite are ready."
+                "Advanced enrichment queued. Recovery Lite, Claim Support Lite, and Citation Needed checks are ready."
                 if deep_job_id else
-                "Advanced enrichment not queued. Recovery Lite and Claim Support Lite are ready."
+                "Advanced enrichment not queued. Recovery Lite, Claim Support Lite, and Citation Needed checks are ready."
             )
         )
 
