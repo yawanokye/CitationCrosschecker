@@ -377,9 +377,12 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             source_concepts = []
 
             if not source_title and not source_abstract and not source_concepts:
-                # Keep normal Claim Support fast. Advanced Enrichment will add
-                # context-specific alternative sources later.
-                alternative_sources = []
+                alternative_sources = suggest_alternative_sources_for_claim(
+                    claim=claim,
+                    citation=cit,
+                    current_source_title=source_title,
+                    top_k=3
+                )
             
                 out.append({
                     "citation": cit,
