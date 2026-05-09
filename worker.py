@@ -591,27 +591,48 @@ def _context_suggestions_for_row(row, result):
 
     return _lookup_context_suggestions_for_row(row, result, target=3)
 
-def _dedupe_real_source_suggestions(suggestions, target=3):
+def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title=""):
     """
-    Keep only real source candidates.
-    Do not pad with generic fallback prompts.
+    Keep only real source candidates and normalise them for the UI.
+
+    This intentionally does not create fake fallback sources. If fewer than
+    three real candidates are returned by Crossref/OpenAlex, the row receives
+    an enrichment_note so the reviewer understands why fewer sources appear.
     """
     clean = []
     seen = set()
+    exclude_title = str(exclude_title or "").strip().lower()
 
     for item in suggestions or []:
         if not isinstance(item, dict):
             continue
 
-        title = str(item.get("title") or item.get("suggested") or "").strip()
-        doi = str(item.get("doi") or "").strip()
-        year = item.get("year") or ""
-        authors = item.get("authors") or []
+        title = str(
+            item.get("title")
+            or item.get("suggested_title")
+            or item.get("source_title")
+            or item.get("suggested")
+            or ""
+        ).strip()
+        doi = str(item.get("doi") or item.get("DOI") or "").strip()
+        year = item.get("year") or item.get("published_year") or item.get("matched_year") or ""
+        authors = item.get("authors") or item.get("matched_authors") or []
+
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(",") if a.strip()]
 
         if not title:
             continue
 
-        key = f"{title.lower()}|{year}|{doi.lower()}"
+        title_key = title.lower()
+        if exclude_title and (
+            title_key == exclude_title
+            or title_key in exclude_title
+            or exclude_title in title_key
+        ):
+            continue
+
+        key = f"{title_key}|{year}|{doi.lower()}"
         if key in seen:
             continue
 
@@ -622,16 +643,26 @@ def _dedupe_real_source_suggestions(suggestions, target=3):
             "year": year,
             "authors": authors,
             "doi": doi,
-            "relevance": item.get("relevance") or item.get("confidence") or item.get("score") or 0,
+            "url": item.get("url") or item.get("source_url") or item.get("openalex_url") or "",
+            "relevance": item.get("relevance") or item.get("confidence") or item.get("score") or item.get("title_score") or 0,
             "source": item.get("source") or item.get("type") or "context_source_lookup",
-            "suggestion_type": "context_specific_source",
-            "reason": "Suggested from the manuscript context during Advanced Enrichment."
+            "suggestion_type": item.get("suggestion_type") or "context_specific_source",
+            "reason": item.get("reason") or "Suggested from manuscript context during Advanced Enrichment. Review before using."
         })
 
         if len(clean) >= target:
             break
 
     return clean[:target]
+
+
+def _source_enrichment_note(items, target=3):
+    count = len(items or [])
+    if count >= target:
+        return ""
+    if count == 0:
+        return "No context-specific source was returned by Crossref/OpenAlex. Manual review is required."
+    return f"Only {count} context-specific source(s) were returned by Crossref/OpenAlex. Manual review is required."
 def _context_suggestions_for_missing_citation(citation, result, count=1, target=3):
     """
     Fast Recovery Lite suggestions for in-text citations that are missing from
@@ -2787,10 +2818,18 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         }
 
         try:
-            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
+            deep_suggestions = _deep_context_source_suggestions(
+                source_row,
+                result,
+                target=DEEP_LOOKUP_TOP_K,
+                include_reference=False
+            )
             rec["deep_suggestions"] = deep_suggestions
-            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
-            rec["enriched"] = True
+            # Advanced enrichment must replace Recovery Lite, not silently reuse it.
+            rec["suggestions"] = deep_suggestions
+            rec["enriched"] = bool(deep_suggestions)
+            rec["enrichment_type"] = "missing_citation_context_sources"
+            rec["enrichment_note"] = _source_enrichment_note(deep_suggestions, target=DEEP_LOOKUP_TOP_K)
         except Exception as e:
             rec["suggestions"] = rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
             rec["enriched"] = False
@@ -2827,10 +2866,18 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         source_row = verify_lookup.get((citation, reference)) or rec
 
         try:
-            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
+            deep_suggestions = _deep_context_source_suggestions(
+                source_row,
+                result,
+                target=DEEP_LOOKUP_TOP_K,
+                include_reference=True
+            )
             rec["deep_suggestions"] = deep_suggestions
-            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _fallback_recovery_suggestions(source_row, result, target=3)
-            rec["enriched"] = True
+            # Advanced enrichment must replace Recovery Lite, not silently reuse it.
+            rec["suggestions"] = deep_suggestions
+            rec["enriched"] = bool(deep_suggestions)
+            rec["enrichment_type"] = "verification_recovery_context_sources"
+            rec["enrichment_note"] = _source_enrichment_note(deep_suggestions, target=DEEP_LOOKUP_TOP_K)
         except Exception as e:
             rec["enriched"] = False
             rec["enrichment_error"] = str(e)
@@ -2878,20 +2925,49 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         ).strip()
     
         try:
-            row["alternative_sources"] = _safe_alternative_sources(
+            alt_sources = _safe_alternative_sources(
                 claim=claim,
                 citation=citation,
                 current_source_title=source_title,
-                top_k=DEEP_LOOKUP_TOP_K,
+                top_k=DEEP_LOOKUP_TOP_K + 3,
                 allow_external=True,
             )
-            row["enriched"] = True
+
+            if len(alt_sources or []) < DEEP_LOOKUP_TOP_K:
+                alt_sources = (alt_sources or []) + _deep_context_source_suggestions(
+                    {
+                        "citation": citation,
+                        "in_text": citation,
+                        "claim": claim,
+                        "context": claim,
+                        "source_title": source_title,
+                        "matched_title": source_title,
+                    },
+                    result,
+                    target=DEEP_LOOKUP_TOP_K + 3,
+                    include_reference=False,
+                )
+
+            alt_sources = _dedupe_real_source_suggestions(
+                alt_sources,
+                target=DEEP_LOOKUP_TOP_K,
+                exclude_title=source_title,
+            )
+
+            row["alternative_sources"] = alt_sources
+            row["deep_suggestions"] = alt_sources
+            row["suggestions"] = alt_sources
+            row["enriched"] = bool(alt_sources)
             row["enrichment_type"] = "claim_support_alternative_sources"
+            row["enrichment_note"] = _source_enrichment_note(alt_sources, target=DEEP_LOOKUP_TOP_K)
     
         except Exception as e:
             row["alternative_sources"] = row.get("alternative_sources") or []
+            row["deep_suggestions"] = row.get("deep_suggestions") or row.get("alternative_sources") or []
+            row["suggestions"] = row.get("suggestions") or row.get("deep_suggestions") or []
             row["enriched"] = False
             row["enrichment_error"] = str(e)
+            row["enrichment_note"] = "Advanced enrichment failed for this claim-support row. Manual review is required."
 
         done += 1
         if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
