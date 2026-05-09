@@ -1143,26 +1143,20 @@ def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
     return None
 def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
     """
-    Fresh loader for polling endpoints.
-    It avoids stale _store data and reads the latest result from Redis/PostgreSQL.
+    Fresh loader for polling and enrichment endpoints.
+
+    PostgreSQL is the source of truth because the worker writes enrichment
+    updates to jobs.result first, then refreshes Redis. Redis is used only as
+    a fallback when PostgreSQL is unavailable.
     """
 
     result = None
     status = None
     error = None
 
-    # 1. Try Redis result cache first
-    if redis_conn:
-        try:
-            cached = redis_conn.get(f"result:{job_id}")
-            if cached:
-                result = json.loads(cached)
-                status = result.get("status") or "completed"
-        except Exception as e:
-            print(f"[FRESH LOAD] Redis read failed for {job_id}: {e}")
-
-    # 2. Fall back to PostgreSQL
-    if result is None and DATABASE_URL:
+    # 1. Read PostgreSQL first, so advanced-enrichment polling does not
+    # accidentally use a stale Redis copy.
+    if DATABASE_URL:
         try:
             conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
             cursor = conn.cursor()
@@ -1173,7 +1167,6 @@ def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
             )
 
             row = cursor.fetchone()
-
             cursor.close()
             conn.close()
 
@@ -1187,9 +1180,25 @@ def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
             if isinstance(result, str):
                 result = json.loads(result)
 
+            # Refresh Redis with the source-of-truth result.
+            if redis_conn:
+                try:
+                    redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+                except Exception as e:
+                    print(f"[FRESH LOAD] Redis refresh failed for {job_id}: {e}")
+
         except Exception as e:
             print(f"[FRESH LOAD] PostgreSQL read failed for {job_id}: {e}")
-            return None
+
+    # 2. Fallback to Redis only when PostgreSQL could not return a result.
+    if result is None and redis_conn:
+        try:
+            cached = redis_conn.get(f"result:{job_id}")
+            if cached:
+                result = json.loads(cached)
+                status = result.get("status") or "completed"
+        except Exception as e:
+            print(f"[FRESH LOAD] Redis read failed for {job_id}: {e}")
 
     if result is None:
         return None
@@ -1198,7 +1207,6 @@ def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
     online_verification = result.get("online_verification", {}) or {}
     rows = online_verification.get("rows", []) or []
 
-    # Use actual rows as progress fallback
     if rows and verification.get("progress", 0) < len(rows):
         verification["progress"] = len(rows)
         verification["results_count"] = len(rows)
@@ -3037,6 +3045,34 @@ async def start_advanced_enrichment(job_id: str, request: Request):
         "message": "Advanced enrichment queued.",
         "rq_job_id": rq_job.id,
         "scope": scope,
+    }
+
+@app.get("/debug/enrichment-counts/{job_id}")
+async def debug_enrichment_counts(job_id: str):
+    """Return counts that confirm whether advanced enrichment reached the UI payload."""
+    job = load_job_record_fresh(job_id)
+    if not job:
+        return {"ok": False, "error": "Job not found"}
+
+    result = job.get("result") or {}
+    recovery = result.get("recovery") or {}
+    missing_rows = recovery.get("missing_recovery") or []
+    verification_rows = recovery.get("verification_recovery") or []
+    claim_rows = result.get("claim_support") or []
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "enrichment": result.get("enrichment") or {},
+        "missing_recovery_rows": len(missing_rows),
+        "verification_recovery_rows": len(verification_rows),
+        "claim_support_rows": len(claim_rows),
+        "missing_deep_source_count": sum(len(r.get("deep_suggestions") or r.get("suggestions") or []) for r in missing_rows),
+        "verification_deep_source_count": sum(len(r.get("deep_suggestions") or r.get("suggestions") or []) for r in verification_rows),
+        "claim_alternative_source_count": sum(len(r.get("alternative_sources") or r.get("deep_suggestions") or r.get("suggestions") or []) for r in claim_rows),
+        "sample_missing_recovery": missing_rows[:1],
+        "sample_verification_recovery": verification_rows[:1],
+        "sample_claim_support": claim_rows[:1],
     }
 # ============================================================
 # DOCUMENT EXPORT
