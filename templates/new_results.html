@@ -1146,6 +1146,8 @@
                     <div class="empty" id="enrichmentStatusBox">
                         Advanced enrichment has not been started. Run it after verification is complete.
                     </div>
+
+                    <div id="enrichmentResults" style="margin-top:16px;"></div>
                 </div>
             </div>
 
@@ -1468,6 +1470,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderVerification(data);
         renderRecovery(data);
         renderClaimSupport(data);
+        renderAdvancedEnrichment(data);
         renderSuggestions(data);
         updateCounts(data);
         maybeStartEnrichmentPolling(data);
@@ -1638,9 +1641,18 @@ document.addEventListener("DOMContentLoaded", function () {
         return row.support_status || row.status || "offline";
     }
 
+    function getDeepSources(row) {
+        const sources = row.alternative_sources || row.alternativeSources || row.deep_suggestions || row.suggestions || [];
+        return Array.isArray(sources) ? sources : [];
+    }
+
     function renderAlternativeSources(row) {
-        const alternatives = row.alternative_sources || row.alternativeSources || [];
-        if (!Array.isArray(alternatives) || !alternatives.length) return "";
+        const alternatives = getDeepSources(row);
+        if (!Array.isArray(alternatives) || !alternatives.length) {
+            return row.enrichment_note
+                ? `<div class="small-muted" style="margin-top:8px;">${esc(row.enrichment_note)}</div>`
+                : "";
+        }
 
         const items = alternatives.slice(0, 3).map((src, index) => {
             const title = src.title || src.suggested || "Untitled source";
@@ -1648,9 +1660,10 @@ document.addEventListener("DOMContentLoaded", function () {
             const authors = Array.isArray(src.authors) ? src.authors.join(", ") : (src.authors || "Authors not available");
             const relevance = src.relevance ?? src.confidence ?? src.score ?? "Not scored";
             const doi = src.doi || "";
+            const url = src.url || src.source_url || "";
             const doiHtml = doi
                 ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a>`
-                : `<span class="small-muted">DOI not available</span>`;
+                : (url ? `<a class="doi-link" href="${esc(url)}" target="_blank" rel="noopener">View source</a>` : `<span class="small-muted">DOI not available</span>`);
 
             return `
                 <div class="alt-source-item">
@@ -1663,10 +1676,12 @@ document.addEventListener("DOMContentLoaded", function () {
             `;
         }).join("");
 
+        const note = row.enrichment_note ? `<p class="alt-source-note">${esc(row.enrichment_note)}</p>` : "";
         return `
-            <details class="alt-source-box">
-                <summary>Possible alternative supporting sources</summary>
+            <details class="alt-source-box" open>
+                <summary>Possible alternative supporting sources (${alternatives.slice(0, 3).length})</summary>
                 <p class="alt-source-note">These are review-only suggestions. Confirm the source before using it.</p>
+                ${note}
                 ${items}
             </details>
         `;
@@ -1687,6 +1702,162 @@ document.addEventListener("DOMContentLoaded", function () {
         }).join("")}</div>`;
     }
 
+    function isWeakClaimRow(row) {
+        const status = String(row.support_status || row.status || "").toLowerCase();
+        const weakStatuses = new Set([
+            "weak_or_unclear",
+            "insufficient_evidence",
+            "no_evidence_found",
+            "no_source_found",
+            "source_not_found",
+            "matched_source_not_available",
+            "manual_review_required",
+            "insufficient_title_overlap",
+            "title_overlap_review_required",
+            "claim_not_extracted"
+        ]);
+        const score = Number(row.support_score ?? row.score ?? 0);
+        const sourceTitle = String(row.source_title || row.matched_source || row.matched_title || "").toLowerCase();
+        const noSource = !sourceTitle || sourceTitle.startsWith("no source") || sourceTitle.startsWith("matched source not available") || sourceTitle.startsWith("source title not available");
+        return weakStatuses.has(status) || score < 20 || noSource || getDeepSources(row).length > 0;
+    }
+
+    function isRecoveryProblemRow(row) {
+        const status = String(row.status || "").toLowerCase();
+        return ["missing_reference", "needs_review", "not_found", "offline"].includes(status)
+            || getDeepSources(row).length > 0
+            || row.enriched === true;
+    }
+
+    function getEnrichmentRowsByScope(data) {
+        const scope = $("enrichmentScope")?.value || data?.enrichment?.scope || "weak_only";
+        const rec = data.recovery || {};
+        const missingRows = (rec.missing_recovery || []).map(row => ({ ...row, _section: "Missing citation recovery", _kind: "recovery" }));
+        const verifyRows = (rec.verification_recovery || []).map(row => ({ ...row, _section: "Verification recovery", _kind: "recovery" }));
+        const claimRows = (data.claim_support || []).map(row => ({ ...row, _section: "Claim support", _kind: "claim" }));
+
+        let recoveryRows = [];
+        let claimSupportRows = [];
+
+        if (scope !== "claim_only") {
+            recoveryRows = [...missingRows, ...verifyRows].filter(row => {
+                if (scope === "recovery_only") return true;
+                return isRecoveryProblemRow(row);
+            });
+        }
+
+        if (scope !== "recovery_only") {
+            claimSupportRows = claimRows.filter(row => {
+                if (scope === "claim_only" || scope === "all_problem_rows") return isWeakClaimRow(row);
+                return isWeakClaimRow(row);
+            });
+        }
+
+        return { scope, recoveryRows, claimSupportRows };
+    }
+
+    function renderEnrichmentSummary(data, recoveryRows, claimSupportRows) {
+        const enrichment = data.enrichment || {};
+        const recoverySourceCount = recoveryRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
+        const claimSourceCount = claimSupportRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
+        const enrichedRecoveryRows = recoveryRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
+        const enrichedClaimRows = claimSupportRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
+
+        return `
+            <div class="kpi-grid" style="grid-template-columns:repeat(4,minmax(130px,1fr)); margin-bottom:14px;">
+                <div class="kpi"><div class="kpi-value">${esc(enrichment.state || "idle")}</div><div class="kpi-label">Enrichment status</div></div>
+                <div class="kpi"><div class="kpi-value">${esc(enrichedRecoveryRows)}</div><div class="kpi-label">Recovery rows updated</div></div>
+                <div class="kpi"><div class="kpi-value">${esc(enrichedClaimRows)}</div><div class="kpi-label">Claim rows updated</div></div>
+                <div class="kpi"><div class="kpi-value">${esc(recoverySourceCount + claimSourceCount)}</div><div class="kpi-label">Source suggestions shown</div></div>
+            </div>
+        `;
+    }
+
+    function renderRecoveryEnrichmentTable(rows) {
+        if (!rows.length) {
+            return `<div class="empty">No Recovery rows match the selected enrichment option yet.</div>`;
+        }
+        return `
+            <h3 style="margin:14px 0 8px;">Recovery enrichment results</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>No.</th><th>Section</th><th>Status</th><th>Citation</th><th>Reference / Context</th><th>Advanced source suggestions</th></tr>
+                    </thead>
+                    <tbody>
+                        ${rows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY).map((row, i) => `
+                            <tr>
+                                <td>${i + 1}</td>
+                                <td>${esc(row._section || "Recovery")}</td>
+                                <td>${formatBadge(row.status || (row._section || "recovery"))}</td>
+                                <td>${esc(row.citation || row.in_text || "")}</td>
+                                <td>${esc(row.reference || row.context || row.claim || "")}</td>
+                                <td>${renderSuggestionList(getDeepSources(row), row.enrichment_note || row.enrichment_error || "")}</td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function renderClaimEnrichmentTable(rows) {
+        if (!rows.length) {
+            return `<div class="empty">No Claim Support rows match the selected enrichment option yet.</div>`;
+        }
+        return `
+            <h3 style="margin:18px 0 8px;">Claim Support enrichment results</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>No.</th><th>Citation</th><th>Claim</th><th>Current source</th><th>Status</th><th>Advanced alternative sources</th></tr>
+                    </thead>
+                    <tbody>
+                        ${rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY).map((row, i) => {
+                            const status = getSupportStatus(row);
+                            return `
+                                <tr data-status="${esc(status)}">
+                                    <td>${i + 1}</td>
+                                    <td>${esc(row.citation || "")}</td>
+                                    <td>${esc(getClaimText(row))}</td>
+                                    <td>${esc(getSourceTitle(row))}</td>
+                                    <td>${formatBadge(status)}</td>
+                                    <td>${renderSuggestionList(getDeepSources(row), row.enrichment_note || row.enrichment_error || "")}</td>
+                                </tr>
+                            `;
+                        }).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    function renderAdvancedEnrichment(data) {
+        const target = $("enrichmentResults");
+        if (!target) return;
+
+        const { scope, recoveryRows, claimSupportRows } = getEnrichmentRowsByScope(data);
+        const enrichment = data.enrichment || {};
+        const hasStarted = Boolean(enrichment.state);
+
+        if (!hasStarted && !recoveryRows.length && !claimSupportRows.length) {
+            target.innerHTML = "";
+            return;
+        }
+
+        target.innerHTML = `
+            <div class="section-title" style="margin-top:10px;">
+                <div>
+                    <h2>Advanced enrichment results</h2>
+                    <p>Showing results for: <strong>${esc(scope)}</strong>. Change the dropdown to view another option.</p>
+                </div>
+            </div>
+            ${renderEnrichmentSummary(data, recoveryRows, claimSupportRows)}
+            ${scope !== "claim_only" ? renderRecoveryEnrichmentTable(recoveryRows) : ""}
+            ${scope !== "recovery_only" ? renderClaimEnrichmentTable(claimSupportRows) : ""}
+        `;
+    }
+
     function renderRecovery(data) {
         const rec = data.recovery || {};
         const missingRows = rec.missing_recovery || [];
@@ -1698,7 +1869,10 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
             else {
                 const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
+                missingBody.innerHTML = visibleMissingRows.map((row, i) => {
+                    const suggestions = row.deep_suggestions || row.alternative_sources || row.suggestions || [];
+                    return `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(suggestions, row.enrichment_note || "")}</td></tr>`;
+                }).join("");
                 if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
             }
         }
@@ -1707,7 +1881,10 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
             else {
                 const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
+                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => {
+                    const suggestions = row.deep_suggestions || row.alternative_sources || row.suggestions || [];
+                    return `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(suggestions, row.enrichment_note || "")}</td></tr>`;
+                }).join("");
                 if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
             }
         }
@@ -2171,9 +2348,17 @@ document.addEventListener("DOMContentLoaded", function () {
                 
                     const box = $("enrichmentStatusBox");
                     if (box) {
+                        const rec = hydrated.recovery || {};
+                        const recoverySourceCount = [
+                            ...(rec.missing_recovery || []),
+                            ...(rec.verification_recovery || [])
+                        ].reduce((sum, row) => sum + (Array.isArray(row.deep_suggestions || row.suggestions) ? (row.deep_suggestions || row.suggestions).length : 0), 0);
+                        const claimSourceCount = (hydrated.claim_support || [])
+                            .reduce((sum, row) => sum + getDeepSources(row).length, 0);
                         box.innerHTML = `
                             <strong>Advanced enrichment completed.</strong><br>
-                            Deeper Recovery and Claim Support suggestions have been updated.
+                            Recovery source suggestions: ${esc(recoverySourceCount)}<br>
+                            Claim-support alternative sources: ${esc(claimSourceCount)}
                         `;
                     }
                 
@@ -2488,6 +2673,9 @@ ${claimTable}
         $("btnVerify")?.addEventListener("click", startVerification);
         $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
         $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
+        $("enrichmentScope")?.addEventListener("change", () => {
+            if (latestResults) renderAdvancedEnrichment(hydrateFinalDefaults(latestResults));
+        });
         $("btnExportCsv")?.addEventListener("click", exportCSV);
         $("btnExportWord")?.addEventListener("click", exportWord);
         $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
