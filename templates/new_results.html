@@ -1672,8 +1672,13 @@ document.addEventListener("DOMContentLoaded", function () {
         `;
     }
 
-    function renderSuggestionList(suggestions) {
-        if (!suggestions || !suggestions.length) return `<span class="badge no_evidence_found">No evidence found</span>`;
+    function renderSuggestionList(suggestions, note = "") {
+        if (!suggestions || !suggestions.length) {
+            return `
+                <span class="badge no_evidence_found">No context-specific source found</span>
+                ${note ? `<div class="small-muted" style="margin-top:6px;">${esc(note)}</div>` : ""}
+            `;
+        }
         return `<div class="suggestion-box">${suggestions.slice(0, 3).map((s, i) => {
             const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
             const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
@@ -1693,7 +1698,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
             else {
                 const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
                 if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
             }
         }
@@ -1702,7 +1707,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
             else {
                 const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [])}</td></tr>`).join("");
+                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
                 if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
             }
         }
