@@ -19,6 +19,7 @@ except Exception:
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
+from urllib.parse import quote_plus
 from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
@@ -566,7 +567,12 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
         except Exception as e:
             print(f"[DEEP ENRICHMENT] Reference alternative lookup failed: {e}")
 
-    return _dedupe_real_source_suggestions(suggestions, target=target)
+    return _dedupe_real_source_suggestions(
+        suggestions,
+        row=row,
+        result=result,
+        target=target,
+    )
 
 
 
@@ -591,10 +597,178 @@ def _context_suggestions_for_row(row, result):
 
     return _lookup_context_suggestions_for_row(row, result, target=3)
 
-def _dedupe_real_source_suggestions(suggestions, target=3):
+def _normalise_doi_for_link(doi):
+    doi = str(doi or "").strip()
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I)
+    doi = re.sub(r"^doi\s*:\s*", "", doi, flags=re.I)
+    doi = doi.strip(" .;,)]}")
+    return doi
+
+
+def _source_url_from_suggestion(item, title="", year="", authors=""):
     """
-    Keep only real source candidates.
-    Do not pad with generic fallback prompts.
+    Return a usable link for a suggested source.
+    DOI is preferred. If DOI is missing, use any URL field.
+    If no direct link exists, create a review-only search link.
+    """
+    item = item or {}
+    doi = _normalise_doi_for_link(item.get("doi") or "")
+
+    if doi:
+        return f"https://doi.org/{doi}"
+
+    for key in [
+        "url",
+        "link",
+        "source_url",
+        "landing_page_url",
+        "openalex_url",
+        "html_url",
+    ]:
+        value = str(item.get(key) or "").strip()
+        if value.startswith("http://") or value.startswith("https://"):
+            return value
+
+    query = " ".join([
+        str(title or "").strip(),
+        str(year or "").strip(),
+        ", ".join(authors) if isinstance(authors, list) else str(authors or "").strip(),
+    ]).strip()
+
+    if query:
+        return f"https://scholar.google.com/scholar?q={quote_plus(query)}"
+
+    return ""
+
+
+def _fallback_source_search_query(row, result):
+    """
+    Build a source-search query from citation, claim, context, or reference metadata.
+    Used only when real Crossref/OpenAlex candidates are fewer than three.
+    """
+    row = row or {}
+    result = result or {}
+
+    citation = str(
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    ).strip()
+
+    claim = str(
+        row.get("claim")
+        or row.get("claim_extracted")
+        or row.get("extracted_claim")
+        or row.get("context")
+        or ""
+    ).strip()
+
+    reference = str(
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or ""
+    ).strip()
+
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+
+    context = claim
+
+    if not context and main_text and citation:
+        try:
+            sentences = _split_sentences(main_text)
+            context = _find_sentence_for_citation(sentences, citation)
+        except Exception:
+            context = ""
+
+    query = " ".join([citation, context, reference]).strip()
+    query = re.sub(r"\s+", " ", query)
+
+    if len(query) > 240:
+        query = query[:240]
+
+    return query
+
+
+def _pad_with_source_search_links(clean, row, result, target=3):
+    """
+    Ensure the user gets at least three linked review options.
+    Real source candidates remain first. Search links are clearly marked
+    as review-only source-discovery links.
+    """
+    clean = clean or []
+
+    if len(clean) >= target:
+        return clean[:target]
+
+    query = _fallback_source_search_query(row, result)
+
+    if not query:
+        return clean[:target]
+
+    fallback_links = [
+        {
+            "title": "Search Google Scholar for possible source",
+            "year": "",
+            "authors": "",
+            "doi": "",
+            "url": f"https://scholar.google.com/scholar?q={quote_plus(query)}",
+            "link": f"https://scholar.google.com/scholar?q={quote_plus(query)}",
+            "relevance": 0,
+            "source": "google_scholar_search",
+            "suggestion_type": "source_discovery_link",
+            "reason": "Review-only search link added because fewer than three direct source candidates were returned.",
+        },
+        {
+            "title": "Search Crossref for possible source",
+            "year": "",
+            "authors": "",
+            "doi": "",
+            "url": f"https://search.crossref.org/?q={quote_plus(query)}",
+            "link": f"https://search.crossref.org/?q={quote_plus(query)}",
+            "relevance": 0,
+            "source": "crossref_search",
+            "suggestion_type": "source_discovery_link",
+            "reason": "Review-only search link added because fewer than three direct source candidates were returned.",
+        },
+        {
+            "title": "Search OpenAlex for possible source",
+            "year": "",
+            "authors": "",
+            "doi": "",
+            "url": f"https://openalex.org/works?search={quote_plus(query)}",
+            "link": f"https://openalex.org/works?search={quote_plus(query)}",
+            "relevance": 0,
+            "source": "openalex_search",
+            "suggestion_type": "source_discovery_link",
+            "reason": "Review-only search link added because fewer than three direct source candidates were returned.",
+        },
+    ]
+
+    seen = {
+        str(item.get("url") or item.get("doi") or item.get("title") or "").lower()
+        for item in clean
+    }
+
+    for item in fallback_links:
+        key = str(item.get("url") or item.get("title") or "").lower()
+        if key in seen:
+            continue
+        clean.append(item)
+        seen.add(key)
+        if len(clean) >= target:
+            break
+
+    return clean[:target]
+
+
+def _dedupe_real_source_suggestions(suggestions, row=None, result=None, target=3):
+    """
+    Keep real source candidates first, attach usable links, and pad to at least
+    three review-only linked source-discovery options when needed.
     """
     clean = []
     seen = set()
@@ -604,14 +778,21 @@ def _dedupe_real_source_suggestions(suggestions, target=3):
             continue
 
         title = str(item.get("title") or item.get("suggested") or "").strip()
-        doi = str(item.get("doi") or "").strip()
+        doi = _normalise_doi_for_link(item.get("doi") or "")
         year = item.get("year") or ""
         authors = item.get("authors") or []
 
         if not title:
             continue
 
-        key = f"{title.lower()}|{year}|{doi.lower()}"
+        url = _source_url_from_suggestion(
+            item,
+            title=title,
+            year=year,
+            authors=authors,
+        )
+
+        key = f"{title.lower()}|{year}|{doi.lower()}|{url.lower()}"
         if key in seen:
             continue
 
@@ -622,16 +803,19 @@ def _dedupe_real_source_suggestions(suggestions, target=3):
             "year": year,
             "authors": authors,
             "doi": doi,
+            "url": url,
+            "link": url,
             "relevance": item.get("relevance") or item.get("confidence") or item.get("score") or 0,
             "source": item.get("source") or item.get("type") or "context_source_lookup",
-            "suggestion_type": "context_specific_source",
-            "reason": "Suggested from the manuscript context during Advanced Enrichment."
+            "suggestion_type": item.get("suggestion_type") or "context_specific_source",
+            "reason": item.get("reason") or "Suggested from the manuscript context during Advanced Enrichment.",
         })
 
         if len(clean) >= target:
             break
 
-    return clean[:target]
+    return _pad_with_source_search_links(clean, row=row, result=result, target=target)
+
 def _context_suggestions_for_missing_citation(citation, result, count=1, target=3):
     """
     Fast Recovery Lite suggestions for in-text citations that are missing from
@@ -2642,10 +2826,14 @@ DEEP_CLAIM_STATUSES = {
     "no_evidence_found",
     "no_source_found",
     "source_not_found",
+    "source_title_not_available",
+    "no_source_title_available",
     "matched_source_not_available",
     "manual_review_required",
     "insufficient_title_overlap",
     "title_overlap_review_required",
+    "claim_not_extracted",
+    "claim_extracted_review_required",
 }
 
 def _should_deep_enrich_recovery_row(row, scope="weak_only"):
@@ -2669,8 +2857,11 @@ def _should_deep_enrich_recovery_row(row, scope="weak_only"):
 
 def _should_deep_enrich_claim_row(row, scope="weak_only"):
     """
-    Deep enrichment for claim support should run only where the current
-    source is weak, insufficient, missing, or no evidence was found.
+    Deep enrichment for claim support should run where the current source is
+    weak, insufficient, missing, or no evidence was found.
+
+    Existing Lite alternatives should not block Advanced Enrichment. Only a
+    completed deep-enrichment pass should stop a repeat run.
     """
     if scope == "recovery_only":
         return False
@@ -2695,12 +2886,18 @@ def _should_deep_enrich_claim_row(row, scope="weak_only"):
 
     no_source = (
         not source_title
+        or source_title in {"no source found", "no source title available"}
         or source_title.startswith("matched source not available")
         or source_title.startswith("source title not available")
         or source_title.startswith("no source")
     )
 
-    if row.get("alternative_sources"):
+    already_deep_enriched = (
+        row.get("enriched") is True
+        and row.get("enrichment_type") == "claim_support_alternative_sources"
+    )
+
+    if already_deep_enriched:
         return False
 
     return (
@@ -2708,18 +2905,20 @@ def _should_deep_enrich_claim_row(row, scope="weak_only"):
         or score < 20
         or no_source
     )
+
 def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     """
     Expensive background enrichment. This runs after the dashboard is already usable.
-    It adds deep Recovery suggestions and alternative claim-support sources without
-    blocking verification completion.
+    It replaces Lite recovery prompts with linked, context-specific source options.
     """
     print(f"[DEEP ENRICHMENT] Starting for job {job_id}")
     start_time = time.time()
     limit = int(limit or DEEP_ENRICHMENT_LIMIT)
     scope = str(scope or "weak_only").strip().lower()
+
     if scope not in {"weak_only", "recovery_only", "claim_only", "all_problem_rows"}:
         scope = "weak_only"
+
     result = _load_job_result(job_id)
     result = _set_enrichment_meta(
         result,
@@ -2747,25 +2946,25 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
             row for row in missing_rows
             if not row.get("deep_suggestions") and row.get("enriched") is not True
         ]
-    
+
     recovery_rows_to_enrich = [
         row for row in recovery_rows
         if _should_deep_enrich_recovery_row(row, scope=scope)
     ]
-    
+
     claim_rows_to_enrich = [
         row for row in claim_rows
         if _should_deep_enrich_claim_row(row, scope=scope)
     ]
-    
+
     total_work = (
         min(len(missing_rows_to_enrich), limit)
         + min(len(recovery_rows_to_enrich), limit)
         + min(len(claim_rows_to_enrich), limit)
     )
-    
+
     done = 0
-    
+
     result = _set_enrichment_meta(
         result,
         total=total_work,
@@ -2774,8 +2973,9 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         message=f"Advanced enrichment queued for {total_work} problem rows.",
     )
     _save_job_result(job_id, result, status="completed")
-    # Enrich missing in-text citation recovery rows first. These rows have no
-    # matched reference, so the deep lookup relies mainly on the citation context.
+
+    # Enrich missing in-text citation recovery rows first.
+    # Advanced Enrichment replaces Lite prompts with linked source suggestions.
     for idx, rec in enumerate(missing_rows_to_enrich[:limit], start=1):
         citation = str(rec.get("citation") or "").strip()
         source_row = {
@@ -2783,18 +2983,41 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
             "in_text": citation,
             "reference": "",
             "status": "missing_reference",
-            "suggestions": rec.get("suggestions") or [],
+            "context": rec.get("context") or "",
+            "claim": rec.get("claim") or "",
         }
 
         try:
-            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
+            lite_suggestions = rec.get("suggestions") or []
+
+            deep_suggestions = _deep_context_source_suggestions(
+                source_row,
+                result,
+                target=DEEP_LOOKUP_TOP_K,
+                include_reference=False,
+            )
+
+            rec["lite_suggestions"] = lite_suggestions
             rec["deep_suggestions"] = deep_suggestions
-            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
+            rec["suggestions"] = deep_suggestions
             rec["enriched"] = True
+            rec["enrichment_type"] = "missing_citation_context_sources"
+
+            if not deep_suggestions:
+                rec["enrichment_note"] = (
+                    "No context-specific source was found from Crossref/OpenAlex. "
+                    "Manual review is required."
+                )
+
         except Exception as e:
-            rec["suggestions"] = rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
+            rec["lite_suggestions"] = rec.get("suggestions") or []
+            rec["suggestions"] = []
+            rec["deep_suggestions"] = []
             rec["enriched"] = False
             rec["enrichment_error"] = str(e)
+            rec["enrichment_note"] = (
+                "Context-specific source lookup failed. Manual review is required."
+            )
 
         done += 1
         if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
@@ -2812,7 +3035,7 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     result["recovery"] = recovery
     _save_job_result(job_id, result, status="completed")
 
-    # Build lookup for richer recovery suggestions.
+    # Build lookup for richer verification recovery suggestions.
     verify_lookup = {}
     for row in verification_rows:
         key = (
@@ -2821,19 +3044,43 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
         )
         verify_lookup[key] = row
 
+    # Enrich needs_review / not_found / offline rows with alternative linked sources.
     for idx, rec in enumerate(recovery_rows_to_enrich[:limit], start=1):
         citation = str(rec.get("citation") or "").strip().lower()
         reference = str(rec.get("reference") or "").strip().lower()
         source_row = verify_lookup.get((citation, reference)) or rec
 
         try:
-            deep_suggestions = _lookup_context_suggestions_for_row(source_row, result, target=DEEP_LOOKUP_TOP_K)
+            lite_suggestions = rec.get("suggestions") or []
+
+            deep_suggestions = _deep_context_source_suggestions(
+                source_row,
+                result,
+                target=DEEP_LOOKUP_TOP_K,
+                include_reference=True,
+            )
+
+            rec["lite_suggestions"] = lite_suggestions
             rec["deep_suggestions"] = deep_suggestions
-            rec["suggestions"] = deep_suggestions or rec.get("suggestions") or _fallback_recovery_suggestions(source_row, result, target=3)
+            rec["suggestions"] = deep_suggestions
             rec["enriched"] = True
+            rec["enrichment_type"] = "verification_context_alternatives"
+
+            if not deep_suggestions:
+                rec["enrichment_note"] = (
+                    "No alternative context-specific source was found. "
+                    "Manual review is required."
+                )
+
         except Exception as e:
+            rec["lite_suggestions"] = rec.get("suggestions") or []
+            rec["suggestions"] = []
+            rec["deep_suggestions"] = []
             rec["enriched"] = False
             rec["enrichment_error"] = str(e)
+            rec["enrichment_note"] = (
+                "Alternative context-source lookup failed. Manual review is required."
+            )
 
         done += 1
         if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
@@ -2859,9 +3106,10 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
     )
     _save_job_result(job_id, result, status="completed")
 
+    # Enrich weak / insufficient / no-evidence claim-support rows with alternatives.
     for idx, row in enumerate(claim_rows_to_enrich[:limit], start=1):
         citation = str(row.get("citation") or "").strip()
-    
+
         claim = str(
             row.get("claim")
             or row.get("claim_extracted")
@@ -2869,29 +3117,54 @@ def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
             or row.get("context")
             or ""
         ).strip()
-    
+
         source_title = str(
             row.get("source_title")
             or row.get("matched_source")
             or row.get("matched_title")
             or ""
         ).strip()
-    
+
         try:
-            row["alternative_sources"] = _safe_alternative_sources(
+            lite_alternatives = row.get("alternative_sources") or []
+
+            deep_alternatives = _safe_alternative_sources(
                 claim=claim,
                 citation=citation,
                 current_source_title=source_title,
                 top_k=DEEP_LOOKUP_TOP_K,
                 allow_external=True,
             )
+
+            deep_alternatives = _dedupe_real_source_suggestions(
+                deep_alternatives,
+                row={
+                    "citation": citation,
+                    "claim": claim,
+                    "source_title": source_title,
+                },
+                result=result,
+                target=DEEP_LOOKUP_TOP_K,
+            )
+
+            row["lite_alternative_sources"] = lite_alternatives
+            row["alternative_sources"] = deep_alternatives
             row["enriched"] = True
             row["enrichment_type"] = "claim_support_alternative_sources"
-    
+
+            if not deep_alternatives:
+                row["enrichment_note"] = (
+                    "No alternative source was found from the extracted claim context."
+                )
+
         except Exception as e:
-            row["alternative_sources"] = row.get("alternative_sources") or []
+            row["lite_alternative_sources"] = row.get("alternative_sources") or []
+            row["alternative_sources"] = []
             row["enriched"] = False
             row["enrichment_error"] = str(e)
+            row["enrichment_note"] = (
+                "Alternative source lookup failed. Manual review is required."
+            )
 
         done += 1
         if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
