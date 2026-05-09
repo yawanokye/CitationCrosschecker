@@ -586,7 +586,9 @@
 
         .badge.needs_review,
         .badge.related_evidence,
-        .badge.weak_or_unclear {
+        .badge.weak_or_unclear,
+        .badge.source_needs_review,
+        .badge.source_verification_unknown {
             background: #fff7ed;
             color: #c2410c;
         }
@@ -802,6 +804,24 @@
                 border-radius: 22px;
             }
         }
+    
+        .badge.high {
+            background: var(--red-soft);
+            color: #b91c1c;
+        }
+
+        .badge.medium {
+            background: var(--amber-soft);
+            color: #b45309;
+        }
+
+        .badge.low,
+        .badge.review,
+        .badge.citation_needed {
+            background: var(--blue-soft);
+            color: var(--blue);
+        }
+
     </style>
 </head>
 
@@ -905,6 +925,7 @@
                     <button class="tab-btn" data-tab="verifyPane">Verification <span class="count-pill" id="countVerify">0</span></button>
                     <button class="tab-btn" data-tab="recoveryPane">Recovery <span class="count-pill" id="countRecovery">0</span></button>
                     <button class="tab-btn" data-tab="claimPane">Claim Support <span class="count-pill" id="countClaim">0</span></button>
+                    <button class="tab-btn" data-tab="citationNeededPane">Citation Needed <span class="count-pill" id="countCitationNeeded">0</span></button>
                     <button class="tab-btn" data-tab="enrichmentPane">
                         Advanced Enrichment <span class="count-pill" id="countEnrichment">Optional</span>
                     </button>
@@ -1109,6 +1130,8 @@
                             <option value="moderate_support">Moderate support</option>
                             <option value="related_evidence">Related evidence</option>
                             <option value="weak_or_unclear">Weak or unclear</option>
+                            <option value="source_needs_review">Source needs review</option>
+                            <option value="source_verification_unknown">Source verification unknown</option>
                             <option value="insufficient_evidence">Insufficient evidence</option>
                         </select>
                     </div>
@@ -1116,6 +1139,34 @@
                         <table>
                             <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th></tr></thead>
                             <tbody id="claimBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="citationNeededPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Citation Needed Claims</h2>
+                            <p>Sentences that appear to make evidence-based claims but have no visible citation. Treat these as review-only prompts.</p>
+                        </div>
+                    </div>
+                    <div class="filters">
+                        <input class="search-input" id="citationNeededSearch" placeholder="Search uncited claims...">
+                        <select id="citationNeededFilter">
+                            <option value="">All priorities</option>
+                            <option value="high">High priority</option>
+                            <option value="medium">Medium priority</option>
+                            <option value="low">Low priority</option>
+                        </select>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr><th>No.</th><th>Priority</th><th>Claim needing citation</th><th>Why flagged</th><th>Confidence</th><th>Suggested sources</th></tr>
+                            </thead>
+                            <tbody id="citationNeededBody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -1135,6 +1186,7 @@
                                     <option value="weak_only">Only weak / insufficient / no evidence</option>
                                     <option value="recovery_only">Recovery rows only</option>
                                     <option value="claim_only">Claim-support rows only</option>
+                                    <option value="citation_needed_only">Citation-needed claims only</option>
                                     <option value="all_problem_rows">All problem rows</option>
                                 </select>
         
@@ -1470,6 +1522,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderVerification(data);
         renderRecovery(data);
         renderClaimSupport(data);
+        renderCitationNeeded(data);
         renderAdvancedEnrichment(data);
         renderSuggestions(data);
         updateCounts(data);
@@ -1512,7 +1565,8 @@ document.addEventListener("DOMContentLoaded", function () {
             ["Match rate", `${s.match_rate}%`],
             ["Verified rows", ovRows.length],
             ["Recovery rows", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length],
-            ["Claim rows", claimRows.length]
+            ["Claim rows", claimRows.length],
+            ["Citation needed", getCitationNeededRows(data).length]
         ];
         const grid = $("kpiGrid");
         if (!grid) return;
@@ -1735,40 +1789,49 @@ document.addEventListener("DOMContentLoaded", function () {
         const missingRows = (rec.missing_recovery || []).map(row => ({ ...row, _section: "Missing citation recovery", _kind: "recovery" }));
         const verifyRows = (rec.verification_recovery || []).map(row => ({ ...row, _section: "Verification recovery", _kind: "recovery" }));
         const claimRows = (data.claim_support || []).map(row => ({ ...row, _section: "Claim support", _kind: "claim" }));
+        const citationNeededRowsAll = getCitationNeededRows(data).map(row => ({ ...row, _section: "Citation needed", _kind: "citation_needed" }));
 
         let recoveryRows = [];
         let claimSupportRows = [];
+        let citationNeededRows = [];
 
-        if (scope !== "claim_only") {
+        if (!["claim_only", "citation_needed_only"].includes(scope)) {
             recoveryRows = [...missingRows, ...verifyRows].filter(row => {
                 if (scope === "recovery_only") return true;
                 return isRecoveryProblemRow(row);
             });
         }
 
-        if (scope !== "recovery_only") {
+        if (!["recovery_only", "citation_needed_only"].includes(scope)) {
             claimSupportRows = claimRows.filter(row => {
                 if (scope === "claim_only" || scope === "all_problem_rows") return isWeakClaimRow(row);
                 return isWeakClaimRow(row);
             });
         }
 
-        return { scope, recoveryRows, claimSupportRows };
+        if (["citation_needed_only", "all_problem_rows"].includes(scope)) {
+            citationNeededRows = citationNeededRowsAll;
+        }
+
+        return { scope, recoveryRows, claimSupportRows, citationNeededRows };
     }
 
-    function renderEnrichmentSummary(data, recoveryRows, claimSupportRows) {
+    function renderEnrichmentSummary(data, recoveryRows, claimSupportRows, citationNeededRows) {
         const enrichment = data.enrichment || {};
         const recoverySourceCount = recoveryRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
         const claimSourceCount = claimSupportRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
+        const citationNeededSourceCount = citationNeededRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
         const enrichedRecoveryRows = recoveryRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
         const enrichedClaimRows = claimSupportRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
+        const enrichedCitationNeededRows = citationNeededRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
 
         return `
-            <div class="kpi-grid" style="grid-template-columns:repeat(4,minmax(130px,1fr)); margin-bottom:14px;">
+            <div class="kpi-grid" style="grid-template-columns:repeat(5,minmax(130px,1fr)); margin-bottom:14px;">
                 <div class="kpi"><div class="kpi-value">${esc(enrichment.state || "idle")}</div><div class="kpi-label">Enrichment status</div></div>
                 <div class="kpi"><div class="kpi-value">${esc(enrichedRecoveryRows)}</div><div class="kpi-label">Recovery rows updated</div></div>
                 <div class="kpi"><div class="kpi-value">${esc(enrichedClaimRows)}</div><div class="kpi-label">Claim rows updated</div></div>
-                <div class="kpi"><div class="kpi-value">${esc(recoverySourceCount + claimSourceCount)}</div><div class="kpi-label">Source suggestions shown</div></div>
+                <div class="kpi"><div class="kpi-value">${esc(enrichedCitationNeededRows)}</div><div class="kpi-label">Citation-needed rows updated</div></div>
+                <div class="kpi"><div class="kpi-value">${esc(recoverySourceCount + claimSourceCount + citationNeededSourceCount)}</div><div class="kpi-label">Source suggestions shown</div></div>
             </div>
         `;
     }
@@ -1832,15 +1895,42 @@ document.addEventListener("DOMContentLoaded", function () {
         `;
     }
 
+    function renderCitationNeededEnrichmentTable(rows) {
+        if (!rows.length) {
+            return `<div class="empty">No Citation Needed rows match the selected enrichment option yet.</div>`;
+        }
+        return `
+            <h3 style="margin:18px 0 8px;">Citation Needed enrichment results</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>No.</th><th>Priority</th><th>Claim needing citation</th><th>Reason</th><th>Advanced source suggestions</th></tr>
+                    </thead>
+                    <tbody>
+                        ${rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY).map((row, i) => `
+                            <tr>
+                                <td>${i + 1}</td>
+                                <td>${formatBadge(row.priority || "review")}</td>
+                                <td>${esc(row.claim || row.context || "")}</td>
+                                <td>${esc(row.reason || "Evidence-based claim without visible citation.")}</td>
+                                <td>${renderSuggestionList(getDeepSources(row), row.enrichment_note || row.enrichment_error || "")}</td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    }
+
     function renderAdvancedEnrichment(data) {
         const target = $("enrichmentResults");
         if (!target) return;
 
-        const { scope, recoveryRows, claimSupportRows } = getEnrichmentRowsByScope(data);
+        const { scope, recoveryRows, claimSupportRows, citationNeededRows } = getEnrichmentRowsByScope(data);
         const enrichment = data.enrichment || {};
         const hasStarted = Boolean(enrichment.state);
 
-        if (!hasStarted && !recoveryRows.length && !claimSupportRows.length) {
+        if (!hasStarted && !recoveryRows.length && !claimSupportRows.length && !citationNeededRows.length) {
             target.innerHTML = "";
             return;
         }
@@ -1852,9 +1942,10 @@ document.addEventListener("DOMContentLoaded", function () {
                     <p>Showing results for: <strong>${esc(scope)}</strong>. Change the dropdown to view another option.</p>
                 </div>
             </div>
-            ${renderEnrichmentSummary(data, recoveryRows, claimSupportRows)}
-            ${scope !== "claim_only" ? renderRecoveryEnrichmentTable(recoveryRows) : ""}
-            ${scope !== "recovery_only" ? renderClaimEnrichmentTable(claimSupportRows) : ""}
+            ${renderEnrichmentSummary(data, recoveryRows, claimSupportRows, citationNeededRows)}
+            ${!["claim_only", "citation_needed_only"].includes(scope) ? renderRecoveryEnrichmentTable(recoveryRows) : ""}
+            ${!["recovery_only", "citation_needed_only"].includes(scope) ? renderClaimEnrichmentTable(claimSupportRows) : ""}
+            ${["citation_needed_only", "all_problem_rows"].includes(scope) ? renderCitationNeededEnrichmentTable(citationNeededRows) : ""}
         `;
     }
 
@@ -1916,6 +2007,55 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    function getCitationNeededRows(data) {
+        return data.citation_needed_claims || data.citation_needed || data.claims_needing_citation || [];
+    }
+
+    function renderCitationNeeded(data) {
+        const rows = getCitationNeededRows(data);
+        const body = $("citationNeededBody");
+        if (!body) return;
+
+        const search = String($("citationNeededSearch")?.value || "").toLowerCase().trim();
+        const priorityFilter = String($("citationNeededFilter")?.value || "").toLowerCase().trim();
+
+        let filtered = rows.filter(row => {
+            const claim = String(row.claim || row.context || "").toLowerCase();
+            const reason = String(row.reason || "").toLowerCase();
+            const priority = String(row.priority || "").toLowerCase();
+            const matchesSearch = !search || claim.includes(search) || reason.includes(search);
+            const matchesPriority = !priorityFilter || priority === priorityFilter;
+            return matchesSearch && matchesPriority;
+        });
+
+        if (!filtered.length) {
+            body.innerHTML = `<tr><td colspan="6"><div class="empty">No uncited evidence-claim rows found. This may mean the manuscript is adequately cited, or the sentences are too general to flag automatically.</div></td></tr>`;
+            return;
+        }
+
+        body.innerHTML = filtered.slice(0, CONFIG.MAX_CLAIM_DISPLAY).map((row, i) => {
+            const priority = row.priority || "review";
+            const claim = row.claim || row.context || "";
+            const confidence = row.confidence !== undefined ? `${Math.round(Number(row.confidence || 0) * 100)}%` : "Review";
+            const sources = getDeepSources(row);
+            const sourceNote = row.enrichment_note || row.enrichment_error || "Run Advanced Enrichment with 'Citation-needed claims only' to retrieve possible sources.";
+            return `
+                <tr data-priority="${esc(priority)}">
+                    <td>${i + 1}</td>
+                    <td>${formatBadge(priority)}</td>
+                    <td>${esc(claim)}<div class="small-muted" style="margin-top:6px;">${esc(row.suggested_action || "Add a citation or revise the claim if it is your own interpretation.")}</div></td>
+                    <td>${esc(row.reason || "Evidence-based claim without a visible citation.")}</td>
+                    <td><strong>${esc(confidence)}</strong></td>
+                    <td>${renderSuggestionList(sources, sourceNote)}</td>
+                </tr>
+            `;
+        }).join("");
+
+        if (filtered.length > CONFIG.MAX_CLAIM_DISPLAY) {
+            body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${filtered.length} citation-needed rows.</div></td></tr>`;
+        }
+    }
+
     function getSuggestions(data) {
         if (data.autofix?.suggestions) return data.autofix.suggestions;
         if (data.suggestions) return data.suggestions;
@@ -1952,6 +2092,7 @@ document.addEventListener("DOMContentLoaded", function () {
         setCount("countVerify", data.online_verification?.rows?.length || 0);
         setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
         setCount("countClaim", data.claim_support?.length || 0);
+        setCount("countCitationNeeded", getCitationNeededRows(data).length || 0);
 
         const enrichment = data.enrichment || {};
         const enrichmentState = String(enrichment.state || "optional").replaceAll("_", " ");
@@ -2673,6 +2814,9 @@ ${claimTable}
         $("btnVerify")?.addEventListener("click", startVerification);
         $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
         $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
+        $("claimFilter")?.addEventListener("change", () => renderClaimSupport(latestResults || {}));
+        $("citationNeededSearch")?.addEventListener("input", () => renderCitationNeeded(latestResults || {}));
+        $("citationNeededFilter")?.addEventListener("change", () => renderCitationNeeded(latestResults || {}));
         $("enrichmentScope")?.addEventListener("change", () => {
             if (latestResults) renderAdvancedEnrichment(hydrateFinalDefaults(latestResults));
         });
