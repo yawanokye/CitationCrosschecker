@@ -112,7 +112,9 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 def normalise_currency(currency: str = "") -> str:
     currency = str(currency or DEFAULT_CURRENCY).strip().upper()
-    return currency if currency in SUPPORTED_CURRENCIES else DEFAULT_CURRENCY
+    if currency not in SUPPORTED_CURRENCIES:
+        currency = DEFAULT_CURRENCY
+    return currency
 
 def ordered_document_tiers() -> List[Tuple[str, Dict[str, Any]]]:
     return sorted(DOCUMENT_TIERS.items(), key=lambda item: item[1].get("display_order", 999))
