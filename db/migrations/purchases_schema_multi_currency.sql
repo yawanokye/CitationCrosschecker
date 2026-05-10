@@ -14,6 +14,12 @@ CREATE TABLE IF NOT EXISTS purchases (
     payment_provider TEXT,
     provider_reference TEXT UNIQUE,
     access_token_hash TEXT,
+
+    preview_job_id TEXT,
+    preview_file_name TEXT,
+    preview_reference_count INTEGER DEFAULT 0,
+    preview_citation_count INTEGER DEFAULT 0,
+
     analyses_total INTEGER DEFAULT 2,
     analyses_used INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
