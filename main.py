@@ -24,7 +24,7 @@ import redis
 from rq import Queue
 
 # FastAPI and web frameworks
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Body
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -51,6 +51,28 @@ from reference_formatter import (
     export_references_to_html,
     DOCX_AVAILABLE
 )
+
+# Commercial access, entitlements, and Paystack payment helpers
+try:
+    from entitlements import (
+        build_plan_selection_payload,
+        apply_entitlements_to_result,
+    )
+    from access_control import (
+        init_commercial_tables,
+        purchase_is_paid_for_job,
+        validate_purchase_for_new_run,
+        record_purchase_run,
+    )
+    from paystack_payments import (
+        initialize_citeintegrity_payment,
+        verify_and_activate_purchase,
+        handle_paystack_webhook,
+    )
+    COMMERCIAL_ACCESS_ENABLED = True
+except Exception as e:
+    print(f"⚠️ Commercial access imports failed: {e}")
+    COMMERCIAL_ACCESS_ENABLED = False
 
 
 # ===============================
@@ -579,6 +601,14 @@ class StatsTracker:
 stats_tracker = StatsTracker()
 print(f"✅ Using {stats_tracker.db_type.upper()} database for persistent statistics")
 
+# Initialise commercial payment/access tables when the helper is available.
+if COMMERCIAL_ACCESS_ENABLED and DATABASE_URL:
+    try:
+        init_commercial_tables(DATABASE_URL)
+        print("✅ Commercial payment tables ready")
+    except Exception as e:
+        print(f"⚠️ Commercial payment table initialisation failed: {e}")
+
 
 # ===============================
 # COUNTER SETUP
@@ -682,6 +712,10 @@ async def security_middleware(request: Request, call_next):
         "/apply-autofix",
         "/queue/status",
         "/api/enrichment",
+        "/api/plans",
+        "/api/paystack",
+        "/payment/paystack",
+        "/webhooks/paystack",
         "/new",
         "/analyse",
         "/results",
@@ -720,6 +754,8 @@ async def redirect_with_message(request: Request, call_next):
         path.startswith("/online/")
         or path.startswith("/verify")
         or path.startswith("/api/")
+        or path.startswith("/payment/paystack")
+        or path.startswith("/webhooks/paystack")
         or path.startswith("/private-stats")
         or path.startswith("/result")
     ):
@@ -1228,6 +1264,102 @@ def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
         "error": error,
         "verification": verification
     }
+
+# --------------------------------------------------
+# Commercial access helpers
+# --------------------------------------------------
+
+def get_access_for_job(job_id: str) -> Dict[str, Any]:
+    """
+    Return payment/access status for a job.
+
+    If the commercial layer is not available, keep the existing app behaviour
+    by treating results as unpaid/free preview instead of failing.
+    """
+    if not COMMERCIAL_ACCESS_ENABLED or not DATABASE_URL:
+        return {
+            "paid": False,
+            "tier_key": "",
+            "currency": "GHS",
+            "purchase": None,
+        }
+
+    try:
+        return purchase_is_paid_for_job(DATABASE_URL, job_id=job_id)
+    except Exception as e:
+        print(f"[ACCESS] Could not check purchase for job {job_id}: {e}")
+        return {
+            "paid": False,
+            "tier_key": "",
+            "currency": "GHS",
+            "purchase": None,
+        }
+
+
+def shape_result_for_access(job_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Apply Free Preview or paid Full Review entitlements before results
+    are sent to the browser.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    if not COMMERCIAL_ACCESS_ENABLED:
+        return result
+
+    access = get_access_for_job(job_id)
+
+    try:
+        return apply_entitlements_to_result(
+            result,
+            tier_key=access.get("tier_key", ""),
+            paid=access.get("paid", False),
+            currency=access.get("currency", "GHS"),
+        )
+    except Exception as e:
+        print(f"[ACCESS] Could not apply entitlements for job {job_id}: {e}")
+        return result
+
+
+def get_document_counts_from_result(result: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Extract reference and in-text citation counts for plan recommendation
+    and Paystack package validation.
+    """
+    result = result or {}
+    summary = result.get("summary") or {}
+
+    reference_count = (
+        summary.get("reference_entries_found")
+        or summary.get("references_count")
+        or len(result.get("references_raw") or [])
+        or len(result.get("references") or [])
+        or 0
+    )
+
+    citation_count = (
+        summary.get("in_text_citations_found")
+        or summary.get("citations_count")
+        or len(result.get("in_text_citations") or [])
+        or len(result.get("citations") or [])
+        or 0
+    )
+
+    try:
+        reference_count = int(reference_count or 0)
+    except Exception:
+        reference_count = 0
+
+    try:
+        citation_count = int(citation_count or 0)
+    except Exception:
+        citation_count = 0
+
+    return {
+        "reference_count": reference_count,
+        "citation_count": citation_count,
+    }
+
 def store_result(result):
     job_id = uuid.uuid4().hex
 
@@ -2485,26 +2617,226 @@ async def verify(
         "autofix_enabled": autofix_enabled  # Include for debugging
     }
 # ============================================================
+# PAYMENT AND ACCESS ENDPOINTS
+# ============================================================
+
+@app.get("/api/plans/recommend/{job_id}")
+async def recommend_package_for_job(job_id: str, currency: str = "GHS"):
+    """
+    Return the recommended package and GHS/USD price options
+    based on the completed preview job.
+    """
+    if not COMMERCIAL_ACCESS_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Commercial access is not enabled."
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = job.get("result") or {}
+    counts = get_document_counts_from_result(result)
+
+    return build_plan_selection_payload(
+        counts["reference_count"],
+        counts["citation_count"],
+        selected_currency=currency,
+    )
+
+
+@app.post("/api/paystack/initialize")
+async def paystack_initialize(payload: dict = Body(...)):
+    """
+    Initialise Paystack payment for unlocking the current preview job.
+    """
+    if not COMMERCIAL_ACCESS_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Commercial access is not enabled."
+        )
+
+    if not DATABASE_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL is not configured."
+        )
+
+    user_email = (payload.get("email") or "").strip()
+    tier_key = (payload.get("tier_key") or "").strip()
+    selected_currency = (payload.get("currency") or "GHS").strip().upper()
+    job_id = (payload.get("job_id") or "").strip()
+    file_name = (payload.get("file_name") or "").strip()
+
+    if not user_email or "@" not in user_email:
+        raise HTTPException(status_code=400, detail="A valid email is required.")
+
+    if not tier_key:
+        raise HTTPException(status_code=400, detail="A document package is required.")
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="A preview job ID is required.")
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Preview job not found.")
+
+    result = job.get("result") or {}
+    counts = get_document_counts_from_result(result)
+
+    # Prefer server-side counts so users cannot understate document size.
+    reference_count = counts["reference_count"] or int(payload.get("reference_count") or 0)
+    citation_count = counts["citation_count"] or int(payload.get("citation_count") or 0)
+
+    if not file_name:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_name FROM jobs WHERE job_id = %s", (job_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if row:
+                file_name = row.get("file_name") or ""
+        except Exception as e:
+            print(f"[PAYSTACK INIT] Could not recover file name for {job_id}: {e}")
+
+    init = initialize_citeintegrity_payment(
+        database_url=DATABASE_URL,
+        user_email=user_email,
+        tier_key=tier_key,
+        reference_count=reference_count,
+        citation_count=citation_count,
+        selected_currency=selected_currency,
+        job_id=job_id,
+        file_name=file_name,
+        callback_path="/payment/paystack/callback",
+    )
+
+    if not init.get("ok"):
+        raise HTTPException(
+            status_code=402,
+            detail=init.get("error", "Could not initialize payment.")
+        )
+
+    return init
+
+
+@app.get("/payment/paystack/callback")
+async def paystack_callback(reference: str):
+    """
+    Paystack redirects here after checkout.
+    The transaction is verified server-side before the preview job is unlocked.
+    """
+    if not COMMERCIAL_ACCESS_ENABLED:
+        return HTMLResponse(
+            "<h2>Payment system unavailable</h2><p>Please contact support.</p>",
+            status_code=503,
+        )
+
+    if not DATABASE_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="DATABASE_URL is not configured."
+        )
+
+    result = verify_and_activate_purchase(
+        database_url=DATABASE_URL,
+        reference=reference,
+    )
+
+    if not result.get("activated"):
+        return HTMLResponse(
+            """
+            <h2>Payment could not be confirmed</h2>
+            <p>Please contact support with your payment reference.</p>
+            """,
+            status_code=400,
+        )
+
+    purchase = result.get("purchase") or {}
+    preview_job_id = purchase.get("preview_job_id") or ""
+
+    if preview_job_id:
+        return HTMLResponse(
+            f"""
+            <h2>Payment successful</h2>
+            <p>Your CiteIntegrity Full Review has been unlocked.</p>
+            <p><a href="/results/{preview_job_id}">Return to your results dashboard</a></p>
+            <script>
+                setTimeout(function() {{
+                    window.location.href = "/results/{preview_job_id}";
+                }}, 1500);
+            </script>
+            """
+        )
+
+    return HTMLResponse(
+        """
+        <h2>Payment successful</h2>
+        <p>Your CiteIntegrity review access has been activated.</p>
+        """
+    )
+
+
+@app.post("/webhooks/paystack")
+async def paystack_webhook(request: Request):
+    """
+    Paystack webhook endpoint.
+
+    This is safer than relying only on browser callback because it works even if
+    the user's browser closes after payment.
+    """
+    if not COMMERCIAL_ACCESS_ENABLED:
+        return JSONResponse(
+            {"ok": False, "message": "Commercial access is not enabled."},
+            status_code=503
+        )
+
+    raw_body = await request.body()
+    signature = request.headers.get("x-paystack-signature", "")
+
+    result = handle_paystack_webhook(
+        database_url=DATABASE_URL,
+        raw_body=raw_body,
+        signature=signature,
+    )
+
+    return JSONResponse(result, status_code=result.get("status_code", 200))
+
+
+# ============================================================
 # RESULT CHECK ENDPOINT
 # ============================================================
 
 @app.get("/result/{job_id}")
 async def get_result(job_id: str, fresh: int = 0):
-    """Get job status and result.
+    """Get job status and result, shaped by payment access."""
 
-    Use fresh=1 when the browser is polling for enrichment updates, so
-    PostgreSQL is read directly instead of returning a possibly stale Redis value.
-    """
-    
-    # Check Redis cache first unless a fresh PostgreSQL read is requested
+    # Check Redis cache first unless a fresh PostgreSQL read is requested.
+    # Even cached results must be passed through entitlements before returning.
     if redis_conn and not fresh:
         cached = redis_conn.get(f"result:{job_id}")
         if cached:
             try:
-                return {"status": "completed", "data": json.loads(cached)}
-            except:
-                pass
-    
+                raw_result = json.loads(cached)
+                safe_result = shape_result_for_access(job_id, raw_result)
+                access = get_access_for_job(job_id)
+                return {
+                    "status": "completed",
+                    "data": safe_result,
+                    "access": {
+                        "paid": access.get("paid", False),
+                        "tier_key": access.get("tier_key", ""),
+                        "currency": access.get("currency", "GHS"),
+                    }
+                }
+            except Exception as e:
+                print(f"[RESULT] Redis cached result could not be shaped: {e}")
+
     # Check PostgreSQL
     if DATABASE_URL:
         try:
@@ -2517,27 +2849,41 @@ async def get_result(job_id: str, fresh: int = 0):
             row = cursor.fetchone()
             cursor.close()
             conn.close()
-            
+
             if not row:
                 return {"status": "not_found", "error": "Job not found"}
-            
+
             if row["status"] == "completed":
                 result = row["result"]
                 if isinstance(result, str):
                     result = json.loads(result)
-                return {"status": "completed", "data": result}
+
+                safe_result = shape_result_for_access(job_id, result)
+                access = get_access_for_job(job_id)
+
+                return {
+                    "status": "completed",
+                    "data": safe_result,
+                    "access": {
+                        "paid": access.get("paid", False),
+                        "tier_key": access.get("tier_key", ""),
+                        "currency": access.get("currency", "GHS"),
+                    }
+                }
+
             elif row["status"] == "processing":
                 return {"status": "processing", "message": "Processing in background"}
             elif row["status"] == "queued":
                 return {"status": "queued", "message": "Waiting in queue"}
             elif row["status"] == "failed":
                 return {"status": "failed", "error": row["error"]}
-            
+
         except Exception as e:
             print(f"Database error: {e}")
             return {"status": "error", "error": str(e)}
-    
+
     return {"status": "pending", "message": "Job not found"}
+
 
 @app.get("/job/{job_id}")
 def get_job_endpoint(job_id: str):
@@ -2545,10 +2891,19 @@ def get_job_endpoint(job_id: str):
     if not job:
         return {"status": "not_found"}
 
+    result = job.get("result") or {}
+    safe_result = shape_result_for_access(job_id, result)
+    access = get_access_for_job(job_id)
+
     return {
         "status": job.get("status", "unknown"),
-        "result": job.get("result"),
-        "verification": job.get("verification", {})
+        "result": safe_result,
+        "verification": job.get("verification", {}),
+        "access": {
+            "paid": access.get("paid", False),
+            "tier_key": access.get("tier_key", ""),
+            "currency": access.get("currency", "GHS"),
+        }
     }
 # ============================================================
 # AUTO-FIX ENDPOINTS
@@ -2917,7 +3272,13 @@ def online_status(job_id: str):
             or result.get("recovery")
             or result.get("claim_support")
         ):
-            response["result"] = result
+            response["result"] = shape_result_for_access(job_id, result)
+            access = get_access_for_job(job_id)
+            response["access"] = {
+                "paid": access.get("paid", False),
+                "tier_key": access.get("tier_key", ""),
+                "currency": access.get("currency", "GHS"),
+            }
 
         return JSONResponse(content=response)
 
@@ -2982,6 +3343,18 @@ async def start_advanced_enrichment(job_id: str, request: Request):
         )
 
     result = job.get("result") or {}
+
+    access = get_access_for_job(job_id)
+    if not access.get("paid"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "locked": True,
+                "error": "Advanced Enrichment is available after Full Review payment.",
+                "required_plan": "Full Review",
+            },
+            status_code=402
+        )
 
     enrichment = result.get("enrichment") or {}
     current_state = str(enrichment.get("state", "")).lower()
