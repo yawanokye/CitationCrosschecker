@@ -586,9 +586,7 @@
 
         .badge.needs_review,
         .badge.related_evidence,
-        .badge.weak_or_unclear,
-        .badge.source_needs_review,
-        .badge.source_verification_unknown {
+        .badge.weak_or_unclear {
             background: #fff7ed;
             color: #c2410c;
         }
@@ -804,22 +802,105 @@
                 border-radius: 22px;
             }
         }
-    
-        .badge.high {
-            background: var(--red-soft);
-            color: #b91c1c;
-        }
 
-        .badge.medium {
-            background: var(--amber-soft);
-            color: #b45309;
+        /* Payment / access gate */
+        .paywall-panel {
+            display: none;
+            margin: 18px 0 22px;
         }
-
-        .badge.low,
-        .badge.review,
-        .badge.citation_needed {
-            background: var(--blue-soft);
-            color: var(--blue);
+        .paywall-card {
+            border: 1px solid rgba(124, 58, 237, 0.20);
+            background: linear-gradient(135deg, #ffffff 0%, #f8f5ff 100%);
+            border-radius: 22px;
+            padding: 22px;
+            box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+        }
+        .paywall-head {
+            display: flex;
+            gap: 14px;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }
+        .paywall-title {
+            font-size: 22px;
+            font-weight: 900;
+            color: #111827;
+            margin: 0;
+        }
+        .paywall-subtitle {
+            margin: 6px 0 0;
+            color: #64748b;
+            max-width: 760px;
+            line-height: 1.6;
+        }
+        .paywall-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            border-radius: 999px;
+            padding: 8px 12px;
+            font-weight: 800;
+            background: #fff7ed;
+            color: #c2410c;
+            border: 1px solid #fed7aa;
+        }
+        .paywall-badge.unlocked {
+            background: #ecfdf5;
+            color: #047857;
+            border-color: #bbf7d0;
+        }
+        .paywall-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 18px;
+        }
+        .paywall-mini {
+            border: 1px solid #e5e7eb;
+            border-radius: 18px;
+            padding: 14px;
+            background: white;
+        }
+        .paywall-mini strong { color: #111827; }
+        .paywall-controls {
+            display: grid;
+            grid-template-columns: 1.3fr 0.7fr auto;
+            gap: 10px;
+            margin-top: 18px;
+            align-items: center;
+        }
+        .paywall-controls input, .paywall-controls select {
+            width: 100%;
+            border: 1px solid #d1d5db;
+            border-radius: 14px;
+            padding: 12px 14px;
+            font: inherit;
+            background: white;
+        }
+        .locked-card {
+            border: 1px dashed #c4b5fd;
+            background: #faf5ff;
+            color: #4c1d95;
+            border-radius: 18px;
+            padding: 18px;
+            line-height: 1.6;
+        }
+        .locked-card strong { color: #2e1065; }
+        .locked-inline {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #fef3c7;
+            color: #92400e;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 12px;
+            font-weight: 900;
+            margin-left: 8px;
+        }
+        @media (max-width: 900px) {
+            .paywall-grid, .paywall-controls { grid-template-columns: 1fr; }
         }
 
     </style>
@@ -885,6 +966,8 @@
         <div class="progress-text" id="progressText">Preparing...</div>
     </section>
 
+    <section class="paywall-panel" id="paywallPanel"></section>
+
     <section class="insights-grid">
         <div class="card acii-card">
             <div class="small-muted" style="color: rgba(255,255,255,0.72);">Academic Citation Integrity Index</div>
@@ -925,7 +1008,6 @@
                     <button class="tab-btn" data-tab="verifyPane">Verification <span class="count-pill" id="countVerify">0</span></button>
                     <button class="tab-btn" data-tab="recoveryPane">Recovery <span class="count-pill" id="countRecovery">0</span></button>
                     <button class="tab-btn" data-tab="claimPane">Claim Support <span class="count-pill" id="countClaim">0</span></button>
-                    <button class="tab-btn" data-tab="citationNeededPane">Citation Needed <span class="count-pill" id="countCitationNeeded">0</span></button>
                     <button class="tab-btn" data-tab="enrichmentPane">
                         Advanced Enrichment <span class="count-pill" id="countEnrichment">Optional</span>
                     </button>
@@ -1130,8 +1212,6 @@
                             <option value="moderate_support">Moderate support</option>
                             <option value="related_evidence">Related evidence</option>
                             <option value="weak_or_unclear">Weak or unclear</option>
-                            <option value="source_needs_review">Source needs review</option>
-                            <option value="source_verification_unknown">Source verification unknown</option>
                             <option value="insufficient_evidence">Insufficient evidence</option>
                         </select>
                     </div>
@@ -1139,34 +1219,6 @@
                         <table>
                             <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th></tr></thead>
                             <tbody id="claimBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="citationNeededPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Citation Needed Claims</h2>
-                            <p>Sentences that appear to make evidence-based claims but have no visible citation. Treat these as review-only prompts.</p>
-                        </div>
-                    </div>
-                    <div class="filters">
-                        <input class="search-input" id="citationNeededSearch" placeholder="Search uncited claims...">
-                        <select id="citationNeededFilter">
-                            <option value="">All priorities</option>
-                            <option value="high">High priority</option>
-                            <option value="medium">Medium priority</option>
-                            <option value="low">Low priority</option>
-                        </select>
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr><th>No.</th><th>Priority</th><th>Claim needing citation</th><th>Why flagged</th><th>Confidence</th><th>Suggested sources</th></tr>
-                            </thead>
-                            <tbody id="citationNeededBody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -1186,7 +1238,6 @@
                                     <option value="weak_only">Only weak / insufficient / no evidence</option>
                                     <option value="recovery_only">Recovery rows only</option>
                                     <option value="claim_only">Claim-support rows only</option>
-                                    <option value="citation_needed_only">Citation-needed claims only</option>
                                     <option value="all_problem_rows">All problem rows</option>
                                 </select>
         
@@ -1198,8 +1249,6 @@
                     <div class="empty" id="enrichmentStatusBox">
                         Advanced enrichment has not been started. Run it after verification is complete.
                     </div>
-
-                    <div id="enrichmentResults" style="margin-top:16px;"></div>
                 </div>
             </div>
 
@@ -1348,6 +1397,178 @@ document.addEventListener("DOMContentLoaded", function () {
         if (el) el.textContent = count ?? 0;
     }
 
+
+    // --------------------- PAYMENT / ACCESS HELPERS ---------------------
+    function isLockedPayload(value) {
+        return !!value && typeof value === "object" && value.locked === true;
+    }
+
+    function hasPaidAccess(data) {
+        return data?.access?.paid === true;
+    }
+
+    function getAccessPackage(data) {
+        return data?.access?.package || {};
+    }
+
+    function getSafeRows(value) {
+        return Array.isArray(value) ? value : [];
+    }
+
+    function lockHtml(featureName, message) {
+        return `
+            <div class="locked-card">
+                <strong>🔒 ${esc(featureName)} is locked in Free Preview.</strong><br>
+                ${esc(message || "Unlock Full Review to view this section.")}<br>
+                <button class="btn btn-green" style="margin-top:12px;" onclick="document.getElementById('paywallPanel')?.scrollIntoView({behavior:'smooth', block:'center'});">Unlock Full Review</button>
+            </div>
+        `;
+    }
+
+    function lockRow(colspan, featureName, message) {
+        return `<tr><td colspan="${colspan}">${lockHtml(featureName, message)}</td></tr>`;
+    }
+
+    function setPaidOnlyButtons(isPaid) {
+        ["btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment"].forEach(id => {
+            const btn = $(id);
+            if (!btn) return;
+            btn.disabled = !isPaid;
+            btn.title = isPaid ? "" : "Unlock Full Review to use this feature.";
+        });
+    }
+
+    function getDocumentCounts(data) {
+        const s = data?.summary || {};
+        return {
+            reference_count: Number(s.reference_entries_found || data?.references_raw?.length || 0),
+            citation_count: Number(s.in_text_citations_found || data?.in_text_citations?.length || 0)
+        };
+    }
+
+    function renderPaywall(data) {
+        const panel = $("paywallPanel");
+        if (!panel) return;
+
+        const paid = hasPaidAccess(data);
+        const pkg = getAccessPackage(data);
+        setPaidOnlyButtons(paid);
+
+        if (paid) {
+            panel.style.display = "block";
+            panel.innerHTML = `
+                <div class="paywall-card">
+                    <div class="paywall-head">
+                        <div>
+                            <h2 class="paywall-title">Full Review unlocked</h2>
+                            <p class="paywall-subtitle">You have access to the complete CiteIntegrity review for this result, including Recovery, Claim Support, Citation Needed, Advanced Enrichment, certificate, and export.</p>
+                        </div>
+                        <span class="paywall-badge unlocked">✅ ${esc(pkg.document_tier_name || pkg.name || "Paid access")}</span>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+
+        const counts = getDocumentCounts(data);
+        panel.style.display = "block";
+        panel.innerHTML = `
+            <div class="paywall-card">
+                <div class="paywall-head">
+                    <div>
+                        <h2 class="paywall-title">Free Preview shown <span class="locked-inline">🔒 Full Review locked</span></h2>
+                        <p class="paywall-subtitle">You are seeing a limited preview. Unlock Full Review to view all rows, Recovery, Claim Support, Citation Needed, Advanced Enrichment, certificate, and exports. Each payment includes two full analyses.</p>
+                    </div>
+                    <span class="paywall-badge">🔒 Payment required</span>
+                </div>
+                <div class="paywall-grid">
+                    <div class="paywall-mini"><strong>References detected</strong><br>${esc(counts.reference_count)}</div>
+                    <div class="paywall-mini"><strong>In-text citations detected</strong><br>${esc(counts.citation_count)}</div>
+                    <div class="paywall-mini"><strong>Paid access</strong><br>2 full analyses</div>
+                </div>
+                <div id="planBox" class="paywall-mini" style="margin-top:14px;">Loading recommended package...</div>
+                <div class="paywall-controls">
+                    <input id="payEmail" type="email" placeholder="Enter email for payment and access link">
+                    <select id="payCurrency"><option value="GHS">Pay in GHS</option><option value="USD">Pay in USD</option></select>
+                    <button class="btn btn-green" id="btnPayUnlock">Unlock Full Review</button>
+                </div>
+                <div class="small-muted" style="margin-top:10px;">Your document is used for citation integrity analysis. Payment records store email, package, analysis count, payment reference, and job link.</div>
+            </div>
+        `;
+
+        loadPlanRecommendation("GHS");
+        $("payCurrency")?.addEventListener("change", (e) => loadPlanRecommendation(e.target.value));
+        $("btnPayUnlock")?.addEventListener("click", startPaystackCheckout);
+    }
+
+    async function loadPlanRecommendation(currency = "GHS") {
+        const box = $("planBox");
+        if (!box) return;
+        try {
+            const js = await fetchJsonNoCache(`/api/plans/recommend/${encodeURIComponent(JOB_ID)}?currency=${encodeURIComponent(currency)}`);
+            const recommended = (js.tiers || []).find(t => t.recommended) || (js.tiers || []).find(t => t.allowed_for_document) || (js.tiers || [])[0];
+            window.recommendedPlan = recommended || null;
+            if (!recommended) {
+                box.innerHTML = `<strong>Package recommendation unavailable.</strong><br>Please refresh and try again.`;
+                return;
+            }
+            box.innerHTML = `
+                <strong>Recommended package: ${esc(recommended.name)}</strong><br>
+                Price: <strong>${esc(recommended.selected_price_display || (recommended.selected_currency + " " + recommended.selected_amount))}</strong><br>
+                Limit: ${esc(recommended.max_references)} references / ${esc(recommended.max_citations)} in-text citations<br>
+                Runs included: ${esc(recommended.analysis_runs || 2)}
+            `;
+        } catch (e) {
+            console.warn("Plan recommendation failed:", e);
+            box.innerHTML = `<strong>Could not load package recommendation.</strong><br>Check that /api/plans/recommend/${esc(JOB_ID)} is available.`;
+        }
+    }
+
+    async function startPaystackCheckout() {
+        const email = ($("payEmail")?.value || "").trim();
+        const currency = ($("payCurrency")?.value || "GHS").trim().toUpperCase();
+        const plan = window.recommendedPlan;
+        const counts = getDocumentCounts(latestResults || {});
+
+        if (!email || !email.includes("@")) {
+            alert("Please enter a valid email address.");
+            return;
+        }
+        if (!plan?.tier_key) {
+            alert("Package recommendation is not ready. Please wait a moment and try again.");
+            return;
+        }
+
+        const btn = $("btnPayUnlock");
+        if (btn) btn.disabled = true;
+        setStatus("Opening Paystack checkout...", "info");
+
+        try {
+            const res = await fetch("/api/paystack/initialize", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    email,
+                    tier_key: plan.tier_key,
+                    currency,
+                    job_id: JOB_ID,
+                    file_name: latestResults?.file_name || latestResults?.filename || "",
+                    reference_count: counts.reference_count,
+                    citation_count: counts.citation_count
+                })
+            });
+            const js = await res.json();
+            if (!res.ok || js.ok === false || !js.authorization_url) {
+                throw new Error(js.detail || js.error || "Payment could not be initialized.");
+            }
+            window.location.href = js.authorization_url;
+        } catch (e) {
+            console.error(e);
+            setStatus("Payment could not start: " + e.message, "bad");
+            if (btn) btn.disabled = false;
+        }
+    }
+
     function getACIIRating(score) {
         score = Number(score);
         if (!Number.isFinite(score)) return { text: "Not available", className: "offline" };
@@ -1414,11 +1635,15 @@ document.addEventListener("DOMContentLoaded", function () {
             state === "completed" ||
             result.status === "completed";
 
+        const previewMode = result?.access && result.access.paid !== true;
+
         return (
             completedSignal &&
             hasVerificationRows(result) &&
-            hasRecoveryPayload(result) &&
-            hasClaimPayload(result)
+            (
+                previewMode ||
+                (hasRecoveryPayload(result) && hasClaimPayload(result))
+            )
         );
     }
 
@@ -1444,7 +1669,7 @@ document.addEventListener("DOMContentLoaded", function () {
             result.recovery.verification_recovery = [];
         }
 
-        if (!Array.isArray(result.claim_support)) {
+        if (!Array.isArray(result.claim_support) && !isLockedPayload(result.claim_support)) {
             result.claim_support = [];
         }
 
@@ -1468,12 +1693,27 @@ document.addEventListener("DOMContentLoaded", function () {
 
         console.warn(`Temporary polling error ${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS}:`, error);
 
+        if (statusErrorCount === 3 && !finalFetchRunning) {
+            showProgress(Math.max(progressHighWater, 90), "Connection issue. Checking final result directly...");
+            setStatus("Connection issue with live status. Checking saved result directly...", "warn");
+            fetchFinalResultWithRetry();
+            return;
+        }
+
         if (statusErrorCount < CONFIG.MAX_STATUS_ERRORS) {
             showProgress(
                 Math.max(progressHighWater, 6),
                 `Temporary connection issue. Still checking verification status... (${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS})`
             );
             setStatus("Still checking verification status. The server may be busy with a large reference list.", "warn");
+            return;
+        }
+
+        if (latestResults) {
+            renderAll(latestResults);
+            showProgress(100, "Saved results loaded.");
+            setStatus("Live verification status could not be checked, but saved results are available.", "warn");
+            finishVerification(true);
             return;
         }
 
@@ -1512,6 +1752,7 @@ document.addEventListener("DOMContentLoaded", function () {
         latestResults = data;
         window.latestResults = data;
 
+        renderPaywall(data);
         renderACII(data);
         renderKpis(data);
         renderSummary(data);
@@ -1522,8 +1763,6 @@ document.addEventListener("DOMContentLoaded", function () {
         renderVerification(data);
         renderRecovery(data);
         renderClaimSupport(data);
-        renderCitationNeeded(data);
-        renderAdvancedEnrichment(data);
         renderSuggestions(data);
         updateCounts(data);
         maybeStartEnrichmentPolling(data);
@@ -1555,8 +1794,8 @@ document.addEventListener("DOMContentLoaded", function () {
     function renderKpis(data) {
         const s = data.summary || {};
         const ovRows = data.online_verification?.rows || [];
-        const claimRows = data.claim_support || [];
-        const rec = data.recovery || {};
+        const claimRows = getSafeRows(data.claim_support);
+        const rec = isLockedPayload(data.recovery) ? {} : (data.recovery || {});
         const kpis = [
             ["In-text citations", s.in_text_citations_found],
             ["References", s.reference_entries_found],
@@ -1565,8 +1804,7 @@ document.addEventListener("DOMContentLoaded", function () {
             ["Match rate", `${s.match_rate}%`],
             ["Verified rows", ovRows.length],
             ["Recovery rows", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length],
-            ["Claim rows", claimRows.length],
-            ["Citation needed", getCitationNeededRows(data).length]
+            ["Claim rows", claimRows.length]
         ];
         const grid = $("kpiGrid");
         if (!grid) return;
@@ -1695,18 +1933,9 @@ document.addEventListener("DOMContentLoaded", function () {
         return row.support_status || row.status || "offline";
     }
 
-    function getDeepSources(row) {
-        const sources = row.alternative_sources || row.alternativeSources || row.deep_suggestions || row.suggestions || [];
-        return Array.isArray(sources) ? sources : [];
-    }
-
     function renderAlternativeSources(row) {
-        const alternatives = getDeepSources(row);
-        if (!Array.isArray(alternatives) || !alternatives.length) {
-            return row.enrichment_note
-                ? `<div class="small-muted" style="margin-top:8px;">${esc(row.enrichment_note)}</div>`
-                : "";
-        }
+        const alternatives = row.alternative_sources || row.alternativeSources || [];
+        if (!Array.isArray(alternatives) || !alternatives.length) return "";
 
         const items = alternatives.slice(0, 3).map((src, index) => {
             const title = src.title || src.suggested || "Untitled source";
@@ -1714,10 +1943,9 @@ document.addEventListener("DOMContentLoaded", function () {
             const authors = Array.isArray(src.authors) ? src.authors.join(", ") : (src.authors || "Authors not available");
             const relevance = src.relevance ?? src.confidence ?? src.score ?? "Not scored";
             const doi = src.doi || "";
-            const url = src.url || src.source_url || "";
             const doiHtml = doi
                 ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a>`
-                : (url ? `<a class="doi-link" href="${esc(url)}" target="_blank" rel="noopener">View source</a>` : `<span class="small-muted">DOI not available</span>`);
+                : `<span class="small-muted">DOI not available</span>`;
 
             return `
                 <div class="alt-source-item">
@@ -1730,12 +1958,10 @@ document.addEventListener("DOMContentLoaded", function () {
             `;
         }).join("");
 
-        const note = row.enrichment_note ? `<p class="alt-source-note">${esc(row.enrichment_note)}</p>` : "";
         return `
-            <details class="alt-source-box" open>
-                <summary>Possible alternative supporting sources (${alternatives.slice(0, 3).length})</summary>
+            <details class="alt-source-box">
+                <summary>Possible alternative supporting sources</summary>
                 <p class="alt-source-note">These are review-only suggestions. Confirm the source before using it.</p>
-                ${note}
                 ${items}
             </details>
         `;
@@ -1756,214 +1982,25 @@ document.addEventListener("DOMContentLoaded", function () {
         }).join("")}</div>`;
     }
 
-    function isWeakClaimRow(row) {
-        const status = String(row.support_status || row.status || "").toLowerCase();
-        const weakStatuses = new Set([
-            "weak_or_unclear",
-            "insufficient_evidence",
-            "no_evidence_found",
-            "no_source_found",
-            "source_not_found",
-            "matched_source_not_available",
-            "manual_review_required",
-            "insufficient_title_overlap",
-            "title_overlap_review_required",
-            "claim_not_extracted"
-        ]);
-        const score = Number(row.support_score ?? row.score ?? 0);
-        const sourceTitle = String(row.source_title || row.matched_source || row.matched_title || "").toLowerCase();
-        const noSource = !sourceTitle || sourceTitle.startsWith("no source") || sourceTitle.startsWith("matched source not available") || sourceTitle.startsWith("source title not available");
-        return weakStatuses.has(status) || score < 20 || noSource || getDeepSources(row).length > 0;
-    }
-
-    function isRecoveryProblemRow(row) {
-        const status = String(row.status || "").toLowerCase();
-        return ["missing_reference", "needs_review", "not_found", "offline"].includes(status)
-            || getDeepSources(row).length > 0
-            || row.enriched === true;
-    }
-
-    function getEnrichmentRowsByScope(data) {
-        const scope = $("enrichmentScope")?.value || data?.enrichment?.scope || "weak_only";
+    function renderRecovery(data) {
         const rec = data.recovery || {};
-        const missingRows = (rec.missing_recovery || []).map(row => ({ ...row, _section: "Missing citation recovery", _kind: "recovery" }));
-        const verifyRows = (rec.verification_recovery || []).map(row => ({ ...row, _section: "Verification recovery", _kind: "recovery" }));
-        const claimRows = (data.claim_support || []).map(row => ({ ...row, _section: "Claim support", _kind: "claim" }));
-        const citationNeededRowsAll = getCitationNeededRows(data).map(row => ({ ...row, _section: "Citation needed", _kind: "citation_needed" }));
+        const missingBody = $("recoveryMissingBody");
+        const verifyBody = $("recoveryVerifyBody");
 
-        let recoveryRows = [];
-        let claimSupportRows = [];
-        let citationNeededRows = [];
-
-        if (!["claim_only", "citation_needed_only"].includes(scope)) {
-            recoveryRows = [...missingRows, ...verifyRows].filter(row => {
-                if (scope === "recovery_only") return true;
-                return isRecoveryProblemRow(row);
-            });
-        }
-
-        if (!["recovery_only", "citation_needed_only"].includes(scope)) {
-            claimSupportRows = claimRows.filter(row => {
-                if (scope === "claim_only" || scope === "all_problem_rows") return isWeakClaimRow(row);
-                return isWeakClaimRow(row);
-            });
-        }
-
-        if (["citation_needed_only", "all_problem_rows"].includes(scope)) {
-            citationNeededRows = citationNeededRowsAll;
-        }
-
-        return { scope, recoveryRows, claimSupportRows, citationNeededRows };
-    }
-
-    function renderEnrichmentSummary(data, recoveryRows, claimSupportRows, citationNeededRows) {
-        const enrichment = data.enrichment || {};
-        const recoverySourceCount = recoveryRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
-        const claimSourceCount = claimSupportRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
-        const citationNeededSourceCount = citationNeededRows.reduce((sum, row) => sum + getDeepSources(row).length, 0);
-        const enrichedRecoveryRows = recoveryRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
-        const enrichedClaimRows = claimSupportRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
-        const enrichedCitationNeededRows = citationNeededRows.filter(row => getDeepSources(row).length || row.enriched === true).length;
-
-        return `
-            <div class="kpi-grid" style="grid-template-columns:repeat(5,minmax(130px,1fr)); margin-bottom:14px;">
-                <div class="kpi"><div class="kpi-value">${esc(enrichment.state || "idle")}</div><div class="kpi-label">Enrichment status</div></div>
-                <div class="kpi"><div class="kpi-value">${esc(enrichedRecoveryRows)}</div><div class="kpi-label">Recovery rows updated</div></div>
-                <div class="kpi"><div class="kpi-value">${esc(enrichedClaimRows)}</div><div class="kpi-label">Claim rows updated</div></div>
-                <div class="kpi"><div class="kpi-value">${esc(enrichedCitationNeededRows)}</div><div class="kpi-label">Citation-needed rows updated</div></div>
-                <div class="kpi"><div class="kpi-value">${esc(recoverySourceCount + claimSourceCount + citationNeededSourceCount)}</div><div class="kpi-label">Source suggestions shown</div></div>
-            </div>
-        `;
-    }
-
-    function renderRecoveryEnrichmentTable(rows) {
-        if (!rows.length) {
-            return `<div class="empty">No Recovery rows match the selected enrichment option yet.</div>`;
-        }
-        return `
-            <h3 style="margin:14px 0 8px;">Recovery enrichment results</h3>
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr><th>No.</th><th>Section</th><th>Status</th><th>Citation</th><th>Reference / Context</th><th>Advanced source suggestions</th></tr>
-                    </thead>
-                    <tbody>
-                        ${rows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY).map((row, i) => `
-                            <tr>
-                                <td>${i + 1}</td>
-                                <td>${esc(row._section || "Recovery")}</td>
-                                <td>${formatBadge(row.status || (row._section || "recovery"))}</td>
-                                <td>${esc(row.citation || row.in_text || "")}</td>
-                                <td>${esc(row.reference || row.context || row.claim || "")}</td>
-                                <td>${renderSuggestionList(getDeepSources(row), row.enrichment_note || row.enrichment_error || "")}</td>
-                            </tr>
-                        `).join("")}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-
-    function renderClaimEnrichmentTable(rows) {
-        if (!rows.length) {
-            return `<div class="empty">No Claim Support rows match the selected enrichment option yet.</div>`;
-        }
-        return `
-            <h3 style="margin:18px 0 8px;">Claim Support enrichment results</h3>
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr><th>No.</th><th>Citation</th><th>Claim</th><th>Current source</th><th>Status</th><th>Advanced alternative sources</th></tr>
-                    </thead>
-                    <tbody>
-                        ${rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY).map((row, i) => {
-                            const status = getSupportStatus(row);
-                            return `
-                                <tr data-status="${esc(status)}">
-                                    <td>${i + 1}</td>
-                                    <td>${esc(row.citation || "")}</td>
-                                    <td>${esc(getClaimText(row))}</td>
-                                    <td>${esc(getSourceTitle(row))}</td>
-                                    <td>${formatBadge(status)}</td>
-                                    <td>${renderSuggestionList(getDeepSources(row), row.enrichment_note || row.enrichment_error || "")}</td>
-                                </tr>
-                            `;
-                        }).join("")}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-
-    function renderCitationNeededEnrichmentTable(rows) {
-        if (!rows.length) {
-            return `<div class="empty">No Citation Needed rows match the selected enrichment option yet.</div>`;
-        }
-        return `
-            <h3 style="margin:18px 0 8px;">Citation Needed enrichment results</h3>
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr><th>No.</th><th>Priority</th><th>Claim needing citation</th><th>Reason</th><th>Advanced source suggestions</th></tr>
-                    </thead>
-                    <tbody>
-                        ${rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY).map((row, i) => `
-                            <tr>
-                                <td>${i + 1}</td>
-                                <td>${formatBadge(row.priority || "review")}</td>
-                                <td>${esc(row.claim || row.context || "")}</td>
-                                <td>${esc(row.reason || "Evidence-based claim without visible citation.")}</td>
-                                <td>${renderSuggestionList(getDeepSources(row), row.enrichment_note || row.enrichment_error || "")}</td>
-                            </tr>
-                        `).join("")}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-
-    function renderAdvancedEnrichment(data) {
-        const target = $("enrichmentResults");
-        if (!target) return;
-
-        const { scope, recoveryRows, claimSupportRows, citationNeededRows } = getEnrichmentRowsByScope(data);
-        const enrichment = data.enrichment || {};
-        const hasStarted = Boolean(enrichment.state);
-
-        if (!hasStarted && !recoveryRows.length && !claimSupportRows.length && !citationNeededRows.length) {
-            target.innerHTML = "";
+        if (isLockedPayload(rec)) {
+            if (missingBody) missingBody.innerHTML = lockRow(4, rec.feature || "Recovery Suggestions", rec.message);
+            if (verifyBody) verifyBody.innerHTML = lockRow(5, rec.feature || "Recovery Suggestions", rec.message);
             return;
         }
 
-        target.innerHTML = `
-            <div class="section-title" style="margin-top:10px;">
-                <div>
-                    <h2>Advanced enrichment results</h2>
-                    <p>Showing results for: <strong>${esc(scope)}</strong>. Change the dropdown to view another option.</p>
-                </div>
-            </div>
-            ${renderEnrichmentSummary(data, recoveryRows, claimSupportRows, citationNeededRows)}
-            ${!["claim_only", "citation_needed_only"].includes(scope) ? renderRecoveryEnrichmentTable(recoveryRows) : ""}
-            ${!["recovery_only", "citation_needed_only"].includes(scope) ? renderClaimEnrichmentTable(claimSupportRows) : ""}
-            ${["citation_needed_only", "all_problem_rows"].includes(scope) ? renderCitationNeededEnrichmentTable(citationNeededRows) : ""}
-        `;
-    }
-
-    function renderRecovery(data) {
-        const rec = data.recovery || {};
         const missingRows = rec.missing_recovery || [];
         const verifyRows = rec.verification_recovery || [];
-        const missingBody = $("recoveryMissingBody");
-        const verifyBody = $("recoveryVerifyBody");
 
         if (missingBody) {
             if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
             else {
                 const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                missingBody.innerHTML = visibleMissingRows.map((row, i) => {
-                    const suggestions = row.deep_suggestions || row.alternative_sources || row.suggestions || [];
-                    return `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(suggestions, row.enrichment_note || "")}</td></tr>`;
-                }).join("");
+                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
                 if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
             }
         }
@@ -1972,19 +2009,22 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
             else {
                 const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => {
-                    const suggestions = row.deep_suggestions || row.alternative_sources || row.suggestions || [];
-                    return `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(suggestions, row.enrichment_note || "")}</td></tr>`;
-                }).join("");
+                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
                 if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
             }
         }
     }
 
     function renderClaimSupport(data) {
-        const rows = data.claim_support || [];
         const body = $("claimBody");
         if (!body) return;
+
+        if (isLockedPayload(data.claim_support)) {
+            body.innerHTML = lockRow(6, data.claim_support.feature || "Claim Support", data.claim_support.message);
+            return;
+        }
+
+        const rows = getSafeRows(data.claim_support);
         if (!rows.length) {
             body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`;
             return;
@@ -2004,55 +2044,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
         if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) {
             body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
-        }
-    }
-
-    function getCitationNeededRows(data) {
-        return data.citation_needed_claims || data.citation_needed || data.claims_needing_citation || [];
-    }
-
-    function renderCitationNeeded(data) {
-        const rows = getCitationNeededRows(data);
-        const body = $("citationNeededBody");
-        if (!body) return;
-
-        const search = String($("citationNeededSearch")?.value || "").toLowerCase().trim();
-        const priorityFilter = String($("citationNeededFilter")?.value || "").toLowerCase().trim();
-
-        let filtered = rows.filter(row => {
-            const claim = String(row.claim || row.context || "").toLowerCase();
-            const reason = String(row.reason || "").toLowerCase();
-            const priority = String(row.priority || "").toLowerCase();
-            const matchesSearch = !search || claim.includes(search) || reason.includes(search);
-            const matchesPriority = !priorityFilter || priority === priorityFilter;
-            return matchesSearch && matchesPriority;
-        });
-
-        if (!filtered.length) {
-            body.innerHTML = `<tr><td colspan="6"><div class="empty">No uncited evidence-claim rows found. This may mean the manuscript is adequately cited, or the sentences are too general to flag automatically.</div></td></tr>`;
-            return;
-        }
-
-        body.innerHTML = filtered.slice(0, CONFIG.MAX_CLAIM_DISPLAY).map((row, i) => {
-            const priority = row.priority || "review";
-            const claim = row.claim || row.context || "";
-            const confidence = row.confidence !== undefined ? `${Math.round(Number(row.confidence || 0) * 100)}%` : "Review";
-            const sources = getDeepSources(row);
-            const sourceNote = row.enrichment_note || row.enrichment_error || "Run Advanced Enrichment with 'Citation-needed claims only' to retrieve possible sources.";
-            return `
-                <tr data-priority="${esc(priority)}">
-                    <td>${i + 1}</td>
-                    <td>${formatBadge(priority)}</td>
-                    <td>${esc(claim)}<div class="small-muted" style="margin-top:6px;">${esc(row.suggested_action || "Add a citation or revise the claim if it is your own interpretation.")}</div></td>
-                    <td>${esc(row.reason || "Evidence-based claim without a visible citation.")}</td>
-                    <td><strong>${esc(confidence)}</strong></td>
-                    <td>${renderSuggestionList(sources, sourceNote)}</td>
-                </tr>
-            `;
-        }).join("");
-
-        if (filtered.length > CONFIG.MAX_CLAIM_DISPLAY) {
-            body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${filtered.length} citation-needed rows.</div></td></tr>`;
         }
     }
 
@@ -2077,7 +2068,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function updateCounts(data) {
-        const rec = data.recovery || {};
+        const rec = isLockedPayload(data.recovery) ? {} : (data.recovery || {});
         const suggestions = getSuggestions(data);
         const suggestionCount = (suggestions.citations || []).length + (suggestions.references || []).length;
         setCount("countSummary", "OK");
@@ -2091,8 +2082,7 @@ document.addEventListener("DOMContentLoaded", function () {
         setCount("countR2C", data.reconciliation_reference_to_intext?.length || 0);
         setCount("countVerify", data.online_verification?.rows?.length || 0);
         setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
-        setCount("countClaim", data.claim_support?.length || 0);
-        setCount("countCitationNeeded", getCitationNeededRows(data).length || 0);
+        setCount("countClaim", getSafeRows(data.claim_support).length || (isLockedPayload(data.claim_support) ? "🔒" : 0));
 
         const enrichment = data.enrichment || {};
         const enrichmentState = String(enrichment.state || "optional").replaceAll("_", " ");
@@ -2390,6 +2380,12 @@ document.addEventListener("DOMContentLoaded", function () {
             setStatus("No job ID found.", "bad");
             return;
         }
+        if (!hasPaidAccess(latestResults)) {
+            setStatus("Advanced Enrichment is available after Full Review payment.", "warn");
+            renderPaywall(latestResults || {});
+            $("paywallPanel")?.scrollIntoView({ behavior: "smooth", block: "center" });
+            return;
+        }
     
         const scope = $("enrichmentScope")?.value || "weak_only";
         const box = $("enrichmentStatusBox");
@@ -2489,17 +2485,9 @@ document.addEventListener("DOMContentLoaded", function () {
                 
                     const box = $("enrichmentStatusBox");
                     if (box) {
-                        const rec = hydrated.recovery || {};
-                        const recoverySourceCount = [
-                            ...(rec.missing_recovery || []),
-                            ...(rec.verification_recovery || [])
-                        ].reduce((sum, row) => sum + (Array.isArray(row.deep_suggestions || row.suggestions) ? (row.deep_suggestions || row.suggestions).length : 0), 0);
-                        const claimSourceCount = (hydrated.claim_support || [])
-                            .reduce((sum, row) => sum + getDeepSources(row).length, 0);
                         box.innerHTML = `
                             <strong>Advanced enrichment completed.</strong><br>
-                            Recovery source suggestions: ${esc(recoverySourceCount)}<br>
-                            Claim-support alternative sources: ${esc(claimSourceCount)}
+                            Deeper Recovery and Claim Support suggestions have been updated.
                         `;
                     }
                 
@@ -2566,7 +2554,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (js.status === "completed") {
                 const result = js.data || js.result;
                 renderAll(result);
-                setStatus("Results loaded.", "good");
+                setStatus(hasPaidAccess(latestResults) ? "Full Review results loaded." : "Free Preview loaded. Unlock Full Review to see all results.", hasPaidAccess(latestResults) ? "good" : "warn");
                 return result;
             }
             if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
@@ -2586,6 +2574,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function exportCSV() {
+        if (!hasPaidAccess(latestResults)) { alert("Unlock Full Review to export reports."); renderPaywall(latestResults || {}); return; }
         if (!latestResults) { alert("No data to export."); return; }
 
         const s = latestResults.summary || {};
@@ -2655,6 +2644,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function exportWord() {
+        if (!hasPaidAccess(latestResults)) { alert("Unlock Full Review to export reports."); renderPaywall(latestResults || {}); return; }
         if (!latestResults) { alert("No data to export."); return; }
 
         const s = latestResults.summary || {};
@@ -2751,6 +2741,7 @@ ${claimTable}
     }
 
     async function exportVerifiedReferences(formatType) {
+        if (!hasPaidAccess(latestResults)) { alert("Unlock Full Review to export verified references."); renderPaywall(latestResults || {}); return; }
         const style = $("exportStyleSelect")?.value || "apa7";
         const formData = new FormData();
         formData.append("job_id", JOB_ID);
@@ -2814,12 +2805,6 @@ ${claimTable}
         $("btnVerify")?.addEventListener("click", startVerification);
         $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
         $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
-        $("claimFilter")?.addEventListener("change", () => renderClaimSupport(latestResults || {}));
-        $("citationNeededSearch")?.addEventListener("input", () => renderCitationNeeded(latestResults || {}));
-        $("citationNeededFilter")?.addEventListener("change", () => renderCitationNeeded(latestResults || {}));
-        $("enrichmentScope")?.addEventListener("change", () => {
-            if (latestResults) renderAdvancedEnrichment(hydrateFinalDefaults(latestResults));
-        });
         $("btnExportCsv")?.addEventListener("click", exportCSV);
         $("btnExportWord")?.addEventListener("click", exportWord);
         $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
