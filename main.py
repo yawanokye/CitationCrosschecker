@@ -2804,48 +2804,78 @@ async def paystack_initialize(payload: dict = Body(...)):
 
 
 @app.get("/payment/paystack/callback")
-async def paystack_callback(reference: str):
-    if not (COMMERCIAL_FEATURES_AVAILABLE and verify_and_activate_purchase):
-        return HTMLResponse(
-            "<h2>Payment service unavailable</h2><p>Please contact support.</p>",
-            status_code=503,
-        )
+async def paystack_callback(request: Request, reference: str = "", trxref: str = ""):
+    payment_reference = (reference or trxref or "").strip()
 
-    if not DATABASE_URL:
-        raise HTTPException(status_code=500, detail="DATABASE_URL is not configured.")
-
-    result = verify_and_activate_purchase(
-        database_url=DATABASE_URL,
-        reference=reference,
-    )
-
-    if not result.get("activated"):
+    if not payment_reference:
         return HTMLResponse(
             """
-            <h2>Payment could not be confirmed</h2>
-            <p>Please contact support with your payment reference.</p>
+            <h2>Payment reference missing</h2>
+            <p>Paystack did not return a valid payment reference. Please contact support.</p>
             """,
             status_code=400,
         )
 
-    purchase = result.get("purchase") or {}
-    preview_job_id = purchase.get("preview_job_id") or ""
-
-    if preview_job_id:
+    if not DATABASE_URL:
         return HTMLResponse(
-            f"""
+            """
+            <h2>Database unavailable</h2>
+            <p>Payment was received, but CiteIntegrity could not access the database.</p>
+            """,
+            status_code=500,
+        )
+
+    try:
+        result = verify_and_activate_purchase(
+            database_url=DATABASE_URL,
+            reference=payment_reference,
+        )
+
+        if not result.get("activated"):
+            message = (
+                result.get("message")
+                or "Payment could not be confirmed."
+            )
+
+            return HTMLResponse(
+                f"""
+                <h2>Payment could not be confirmed</h2>
+                <p>{message}</p>
+                <p>Reference: {payment_reference}</p>
+                """,
+                status_code=400,
+            )
+
+        purchase = result.get("purchase") or {}
+        preview_job_id = purchase.get("preview_job_id") or ""
+
+        if preview_job_id:
+            return RedirectResponse(
+                url=f"/new/results/{preview_job_id}?verify=1&paid=1",
+                status_code=303,
+            )
+
+        return HTMLResponse(
+            """
             <h2>Payment successful</h2>
             <p>Your CiteIntegrity review has been unlocked.</p>
-            <p><a href=\"/new/results/{preview_job_id}\">Return to your results</a></p>
+            <p>Please return to your results page and refresh.</p>
             """
         )
 
-    return HTMLResponse(
-        """
-        <h2>Payment successful</h2>
-        <p>Your CiteIntegrity review access has been activated.</p>
-        """
-    )
+    except Exception as e:
+        print(f"[PAYSTACK CALLBACK ERROR] {type(e).__name__}: {e}")
+
+        return HTMLResponse(
+            f"""
+            <h2>Payment received, but activation failed</h2>
+            <p>Your payment may have been successful, but CiteIntegrity could not unlock the result automatically.</p>
+            <p>Please contact support with this reference:</p>
+            <p><strong>{payment_reference}</strong></p>
+            <p>Error: {type(e).__name__}</p>
+            """,
+            status_code=500,
+        )
 
 
 @app.post("/webhooks/paystack")
