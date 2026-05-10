@@ -4,7 +4,12 @@ import hashlib, secrets
 from typing import Any, Dict, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from entitlements import can_use_purchase_for_document, get_package, normalise_currency
+from entitlements import (
+    ANALYSES_PER_PURCHASE,
+    can_use_purchase_for_document,
+    get_package,
+    normalise_currency,
+)
 
 def generate_access_token() -> str:
     return secrets.token_urlsafe(32)
@@ -22,11 +27,24 @@ def init_commercial_tables(database_url: str) -> None:
             cursor.execute(PURCHASES_TABLE_SQL)
         conn.commit()
 
-def create_pending_purchase(database_url: str, *, user_email: str, tier_key: str, currency: str = "GHS", provider_reference: str, payment_provider: str = "") -> Dict[str, Any]:
+def create_pending_purchase(
+    database_url: str,
+    *,
+    user_email: str,
+    tier_key: str,
+    currency: str = "GHS",
+    provider_reference: str,
+    payment_provider: str = "",
+    preview_job_id: str = "",
+    preview_file_name: str = "",
+    preview_reference_count: int = 0,
+    preview_citation_count: int = 0,
+) -> Dict[str, Any]:
     currency = normalise_currency(currency)
     package = get_package(tier_key, paid=True, currency=currency)
     token = generate_access_token()
     token_hash = hash_access_token(token)
+
     with get_conn(database_url) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -34,16 +52,35 @@ def create_pending_purchase(database_url: str, *, user_email: str, tier_key: str
                 INSERT INTO purchases (
                     user_email, payment_type, package_key, document_tier, review_type,
                     amount, currency, status, payment_provider, provider_reference,
-                    access_token_hash, analyses_total, analyses_used, expires_at
+                    access_token_hash,
+                    preview_job_id, preview_file_name, preview_reference_count, preview_citation_count,
+                    analyses_total, analyses_used, expires_at
                 )
                 VALUES (%s, 'one_off', %s, %s, 'full', %s, %s, 'pending',
-                        %s, %s, %s, %s, 0, NOW() + INTERVAL '90 days')
+                        %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, 0, NOW() + INTERVAL '90 days')
                 RETURNING *
                 """,
-                (user_email, package["package_key"], tier_key, package["amount"], package["currency"], payment_provider, provider_reference, token_hash, package["analysis_runs"]),
+                (
+                    user_email,
+                    package["package_key"],
+                    tier_key,
+                    package["amount"],
+                    package["currency"],
+                    payment_provider,
+                    provider_reference,
+                    token_hash,
+                    preview_job_id,
+                    preview_file_name,
+                    preview_reference_count,
+                    preview_citation_count,
+                    package["analysis_runs"],
+                ),
             )
             purchase = dict(cursor.fetchone())
         conn.commit()
+
     purchase["access_token"] = token
     return purchase
 
@@ -96,12 +133,28 @@ def validate_purchase_for_new_run(database_url: str, *, token: str, reference_co
     check["purchase"] = purchase
     return check
 
-def record_purchase_run(database_url: str, *, purchase_id: int, job_id: str, file_name: str = "", reference_count: int = 0, citation_count: int = 0) -> Dict[str, Any]:
+def record_purchase_run(
+    database_url: str,
+    *,
+    purchase_id: int,
+    job_id: str,
+    file_name: str = "",
+    reference_count: int = 0,
+    citation_count: int = 0,
+) -> Dict[str, Any]:
+    """
+    Attach a job to a paid purchase and consume one analysis run.
+
+    The analysis count increases only when a new job_id is inserted.
+    This prevents Paystack callback and webhook from double-counting the same job.
+    """
     with get_conn(database_url) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO purchase_runs (purchase_id, job_id, file_name, reference_count, citation_count)
+                INSERT INTO purchase_runs (
+                    purchase_id, job_id, file_name, reference_count, citation_count
+                )
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (job_id) DO NOTHING
                 RETURNING *
@@ -109,18 +162,36 @@ def record_purchase_run(database_url: str, *, purchase_id: int, job_id: str, fil
                 (purchase_id, job_id, file_name, reference_count, citation_count),
             )
             run_row = cursor.fetchone()
-            cursor.execute(
-                """
-                UPDATE purchases
-                SET analyses_used = analyses_used + 1
-                WHERE id = %s AND analyses_used < analyses_total
-                RETURNING *
-                """,
-                (purchase_id,),
-            )
-            purchase_row = cursor.fetchone()
+
+            if run_row:
+                cursor.execute(
+                    """
+                    UPDATE purchases
+                    SET analyses_used = analyses_used + 1
+                    WHERE id = %s
+                      AND analyses_used < analyses_total
+                    RETURNING *
+                    """,
+                    (purchase_id,),
+                )
+                purchase_row = cursor.fetchone()
+            else:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM purchases
+                    WHERE id = %s
+                    """,
+                    (purchase_id,),
+                )
+                purchase_row = cursor.fetchone()
+
         conn.commit()
-    return {"run": dict(run_row) if run_row else None, "purchase": dict(purchase_row) if purchase_row else None}
+
+    return {
+        "run": dict(run_row) if run_row else None,
+        "purchase": dict(purchase_row) if purchase_row else None,
+    }
 
 def purchase_is_paid_for_job(database_url: str, *, job_id: str) -> Dict[str, Any]:
     purchase = get_purchase_for_job(database_url, job_id=job_id)
