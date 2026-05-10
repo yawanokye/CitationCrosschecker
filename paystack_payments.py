@@ -9,6 +9,11 @@ PAYSTACK_BASE_URL = "https://api.paystack.co"
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "").strip()
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 
+PAYSTACK_USER_AGENT = os.environ.get(
+    "PAYSTACK_USER_AGENT",
+    "CiteIntegrity/1.0 (+https://citeintegrity.org; payments@citeintegrity.org)"
+).strip()
+
 class PaystackError(Exception):
     pass
 
@@ -29,7 +34,12 @@ def _paystack_request(method: str, path: str, payload: Optional[Dict[str, Any]] 
     secret = _require_secret_key()
     url = f"{PAYSTACK_BASE_URL}{path}"
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Authorization": f"Bearer {secret}", "Content-Type": "application/json", "Accept": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": PAYSTACK_USER_AGENT,
+    }
     req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
