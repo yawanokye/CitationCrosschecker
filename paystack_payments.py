@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib, hmac, json, os, secrets, urllib.error, urllib.parse, urllib.request
 from typing import Any, Dict, Optional
 from entitlements import DEFAULT_CURRENCY, get_price, normalise_currency, validate_paid_package_for_document
-from access_control import create_pending_purchase, mark_purchase_paid
+from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
 
 PAYSTACK_BASE_URL = "https://api.paystack.co"
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "").strip()
@@ -40,24 +40,65 @@ def _paystack_request(method: str, path: str, payload: Optional[Dict[str, Any]] 
     except Exception as e:
         raise PaystackError(f"Paystack request failed: {e}") from e
 
-def initialize_citeintegrity_payment(*, database_url: str, user_email: str, tier_key: str, reference_count: int, citation_count: int, selected_currency: str = DEFAULT_CURRENCY, callback_path: str = "/payment/paystack/callback") -> Dict[str, Any]:
+def initialize_citeintegrity_payment(
+    *,
+    database_url: str,
+    user_email: str,
+    tier_key: str,
+    reference_count: int,
+    citation_count: int,
+    selected_currency: str = DEFAULT_CURRENCY,
+    job_id: str = "",
+    file_name: str = "",
+    callback_path: str = "/payment/paystack/callback",
+) -> Dict[str, Any]:
     selected_currency = normalise_currency(selected_currency)
-    tier_check = validate_paid_package_for_document(tier_key, reference_count, citation_count)
+
+    tier_check = validate_paid_package_for_document(
+        tier_key,
+        reference_count,
+        citation_count
+    )
+
     if not tier_check.get("allowed"):
-        return {"ok": False, "error": tier_check.get("message"), "tier_check": tier_check}
+        return {
+            "ok": False,
+            "error": tier_check.get("message"),
+            "tier_check": tier_check
+        }
+
     charge = get_paystack_charge_amount(tier_key, selected_currency)
-    provider_reference = f"CI-{secrets.token_urlsafe(16).replace('_', '').replace('-', '')}"
-    purchase = create_pending_purchase(database_url, user_email=user_email, tier_key=tier_key, currency=selected_currency, provider_reference=provider_reference, payment_provider="paystack")
+
+    provider_reference = (
+        f"CI-{secrets.token_urlsafe(16).replace('_', '').replace('-', '')}"
+    )
+
+    purchase = create_pending_purchase(
+        database_url,
+        user_email=user_email,
+        tier_key=tier_key,
+        currency=selected_currency,
+        provider_reference=provider_reference,
+        payment_provider="paystack",
+        preview_job_id=job_id,
+        preview_file_name=file_name,
+        preview_reference_count=reference_count,
+        preview_citation_count=citation_count,
+    )
+
     metadata = {
         "product": "CiteIntegrity",
         "purchase_id": purchase["id"],
         "tier_key": tier_key,
         "package_key": purchase["package_key"],
+        "job_id": job_id,
+        "file_name": file_name,
         "reference_count": reference_count,
         "citation_count": citation_count,
         "analysis_runs": purchase["analyses_total"],
         "selected_currency": selected_currency,
     }
+
     payload = {
         "email": user_email,
         "amount": str(charge["amount_subunit"]),
@@ -66,10 +107,18 @@ def initialize_citeintegrity_payment(*, database_url: str, user_email: str, tier
         "callback_url": f"{APP_BASE_URL}{callback_path}",
         "metadata": metadata,
     }
+
     response = _paystack_request("POST", "/transaction/initialize", payload)
+
     if not response.get("status"):
-        return {"ok": False, "error": response.get("message", "Paystack initialization failed."), "paystack_response": response}
+        return {
+            "ok": False,
+            "error": response.get("message", "Paystack initialization failed."),
+            "paystack_response": response
+        }
+
     data = response.get("data") or {}
+
     return {
         "ok": True,
         "authorization_url": data.get("authorization_url"),
