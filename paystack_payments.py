@@ -141,14 +141,79 @@ def verify_paystack_transaction(reference: str) -> Dict[str, Any]:
     status = str(data.get("status") or "").lower()
     return {"ok": True, "verified": status == "success", "transaction_status": status, "reference": data.get("reference"), "amount": data.get("amount"), "currency": data.get("currency"), "customer_email": ((data.get("customer") or {}).get("email") or ""), "paystack_data": data}
 
+def _attach_preview_job_to_purchase(database_url: str, purchase: Dict[str, Any], source: str = "paystack") -> Dict[str, Any]:
+    """
+    Attach the paid preview job to purchase_runs and consume one analysis run.
+
+    This is safe to call from both callback and webhook because record_purchase_run()
+    uses job_id uniqueness and should only increment analyses_used when a new row is inserted.
+    """
+    if not purchase or not purchase.get("preview_job_id"):
+        return {
+            "attached": False,
+            "reason": "no_preview_job_id",
+        }
+
+    try:
+        attached = record_purchase_run(
+            database_url,
+            purchase_id=purchase["id"],
+            job_id=purchase.get("preview_job_id", ""),
+            file_name=purchase.get("preview_file_name", ""),
+            reference_count=purchase.get("preview_reference_count", 0),
+            citation_count=purchase.get("preview_citation_count", 0),
+        )
+
+        return {
+            "attached": bool(attached.get("run")),
+            "source": source,
+            "run": attached.get("run"),
+            "purchase": attached.get("purchase"),
+        }
+
+    except Exception as e:
+        print(f"[PAYSTACK] Could not attach preview job to purchase from {source}: {e}")
+        return {
+            "attached": False,
+            "reason": str(e),
+            "source": source,
+        }
+
+
 def verify_and_activate_purchase(*, database_url: str, reference: str) -> Dict[str, Any]:
     verification = verify_paystack_transaction(reference)
+
     if not verification.get("verified"):
-        return {"ok": False, "activated": False, "message": "Payment was not successful.", "verification": verification}
+        return {
+            "ok": False,
+            "activated": False,
+            "message": "Payment was not successful.",
+            "verification": verification,
+        }
+
     purchase = mark_purchase_paid(database_url, provider_reference=reference)
+
     if not purchase:
-        return {"ok": False, "activated": False, "message": "Payment verified, but no matching purchase was found.", "verification": verification}
-    return {"ok": True, "activated": True, "purchase": purchase, "verification": verification}
+        return {
+            "ok": False,
+            "activated": False,
+            "message": "Payment verified, but no matching purchase was found.",
+            "verification": verification,
+        }
+
+    attached = _attach_preview_job_to_purchase(
+        database_url,
+        purchase,
+        source="callback",
+    )
+
+    return {
+        "ok": True,
+        "activated": True,
+        "purchase": attached.get("purchase") or purchase,
+        "preview_job_attached": attached,
+        "verification": verification,
+    }
 
 def verify_paystack_webhook_signature(raw_body: bytes, signature: str) -> bool:
     secret = _require_secret_key().encode("utf-8")
@@ -157,12 +222,40 @@ def verify_paystack_webhook_signature(raw_body: bytes, signature: str) -> bool:
 
 def handle_paystack_webhook(*, database_url: str, raw_body: bytes, signature: str) -> Dict[str, Any]:
     if not verify_paystack_webhook_signature(raw_body, signature):
-        return {"ok": False, "status_code": 401, "message": "Invalid Paystack webhook signature."}
+        return {
+            "ok": False,
+            "status_code": 401,
+            "message": "Invalid Paystack webhook signature.",
+        }
+
     event = json.loads(raw_body.decode("utf-8"))
     event_type = event.get("event")
     data = event.get("data") or {}
     reference = data.get("reference")
+
     if event_type == "charge.success" and reference:
         purchase = mark_purchase_paid(database_url, provider_reference=reference)
-        return {"ok": True, "status_code": 200, "event": event_type, "reference": reference, "purchase_activated": bool(purchase)}
-    return {"ok": True, "status_code": 200, "event": event_type, "message": "Webhook received. No purchase activation required."}
+        attached = {}
+
+        if purchase:
+            attached = _attach_preview_job_to_purchase(
+                database_url,
+                purchase,
+                source="webhook",
+            )
+
+        return {
+            "ok": True,
+            "status_code": 200,
+            "event": event_type,
+            "reference": reference,
+            "purchase_activated": bool(purchase),
+            "preview_job_attached": attached,
+        }
+
+    return {
+        "ok": True,
+        "status_code": 200,
+        "event": event_type,
+        "message": "Webhook received. No purchase activation required.",
+    }
