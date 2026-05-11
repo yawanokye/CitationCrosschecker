@@ -1373,6 +1373,8 @@ document.addEventListener("DOMContentLoaded", function () {
     };
 
     let latestResults = null;
+    let manualVerifyRows = [];
+    let manualSearchCandidates = {};
     let pollingTimer = null;
     let verificationInProgress = false;
     let finalisingCount = 0;
@@ -1819,6 +1821,340 @@ document.addEventListener("DOMContentLoaded", function () {
         return Array.from(map.values());
     }
 
+    function manualQueryFromRow(row) {
+        return (
+            row.reference ||
+            row.original_reference ||
+            row.matched_reference ||
+            row.matched_title ||
+            row.source_title ||
+            row.title ||
+            row.claim ||
+            row.context ||
+            ""
+        );
+    }
+    
+    function manualRowStatus(row) {
+        return String(
+            row.display_status ||
+            row.manual_decision ||
+            row.status ||
+            row.support_status ||
+            "needs_review"
+        ).toLowerCase();
+    }
+    
+    function isManualReviewRow(row) {
+        const status = manualRowStatus(row);
+        return [
+            "needs_review",
+            "not_found",
+            "offline",
+            "not_indexed",
+            "weak_match",
+            "manual_review_required",
+            "manual_not_verified",
+            "not_indexed_but_plausible"
+        ].includes(status);
+    }
+    
+    function googleScholarUrl(query) {
+        return "https://scholar.google.com/scholar?q=" + encodeURIComponent(query || "");
+    }
+    
+    function googleSearchUrl(query) {
+        return "https://www.google.com/search?q=" + encodeURIComponent(query || "");
+    }
+    
+    function doiSearchUrl(row) {
+        const doi = row.doi || row.DOI || row.reference_doi || "";
+        if (doi) return normalizeDoiUrl(doi);
+        return "https://www.google.com/search?q=" + encodeURIComponent("DOI " + manualQueryFromRow(row));
+    }
+    
+    function titleSearchUrl(row) {
+        const title =
+            row.matched_title ||
+            row.reference_title ||
+            row.title ||
+            row.source_title ||
+            manualQueryFromRow(row);
+    
+        return "https://www.google.com/search?q=" + encodeURIComponent('"' + title + '"');
+    }
+    
+    function getManualVerificationRows(data) {
+        const rows = [];
+    
+        const verifyRows = data?.online_verification?.rows || [];
+        verifyRows.forEach((row) => {
+            if (isManualReviewRow(row)) {
+                rows.push({
+                    ...row,
+                    _manual_row_type: "verification"
+                });
+            }
+        });
+    
+        const recoveryRows = data?.recovery?.verification_recovery || [];
+        recoveryRows.forEach((row) => {
+            if (isManualReviewRow(row)) {
+                rows.push({
+                    ...row,
+                    _manual_row_type: "recovery"
+                });
+            }
+        });
+    
+        return rows;
+    }
+    
+    function renderManualVerification(data) {
+        const box = $("manualVerificationBox") || $("enrichmentStatusBox");
+        if (!box) return;
+    
+        manualVerifyRows = getManualVerificationRows(data);
+        manualSearchCandidates = {};
+    
+        if (!manualVerifyRows.length) {
+            box.innerHTML = `
+                <div class="empty">
+                    <strong>No manual verification rows found.</strong><br>
+                    Manual verification appears when references are marked needs_review, not_found, or offline.
+                </div>
+            `;
+            return;
+        }
+    
+        const cards = manualVerifyRows.map((row, i) => {
+            const query = manualQueryFromRow(row);
+            const status = manualRowStatus(row);
+            const manualDecision = row.manual_decision_label || row.manual_decision || "";
+    
+            return `
+                <div class="manual-card" data-manual-index="${i}" style="border:1px solid #dbeafe; border-left:4px solid #4f46e5; border-radius:20px; padding:18px; margin:14px 0; background:#f8fbff;">
+                    <h3 style="font-size:16px; margin-bottom:8px;">
+                        ${i + 1}. ${esc(query || "Reference not available")}
+                    </h3>
+    
+                    <div class="small-muted" style="margin-bottom:10px;">
+                        Automated status: ${formatBadge(status)}
+                        ${manualDecision ? `<span class="badge verified" style="margin-left:8px;">${esc(manualDecision)}</span>` : ""}
+                    </div>
+    
+                    <div class="small-muted" style="margin-bottom:10px;">Manual search:</div>
+    
+                    <div class="filters" style="margin-bottom:12px;">
+                        <a class="btn btn-outline" href="${googleScholarUrl(query)}" target="_blank" rel="noopener">Search Google Scholar</a>
+                        <a class="btn btn-outline" href="${googleSearchUrl(query)}" target="_blank" rel="noopener">Search Google</a>
+                        <a class="btn btn-outline" href="${doiSearchUrl(row)}" target="_blank" rel="noopener">Search DOI</a>
+                        <a class="btn btn-outline" href="${titleSearchUrl(row)}" target="_blank" rel="noopener">Search title</a>
+                    </div>
+    
+                    <div class="filters" style="margin-bottom:12px;">
+                        <button class="btn btn-outline manual-action" data-action="manual-search" data-index="${i}">
+                            Search OpenAlex/Crossref/Semantic Scholar/DataCite
+                        </button>
+    
+                        <button class="btn btn-green manual-action" data-action="manual-verified" data-index="${i}">
+                            Mark as manually verified
+                        </button>
+    
+                        <button class="btn btn-secondary manual-action" data-action="manual-plausible" data-index="${i}">
+                            Mark as plausible
+                        </button>
+    
+                        <button class="btn btn-secondary manual-action" data-action="manual-not-verified" data-index="${i}">
+                            Not verified
+                        </button>
+    
+                        <button class="btn btn-outline manual-action" data-action="manual-needs-review" data-index="${i}">
+                            Keep as needs review
+                        </button>
+                    </div>
+    
+                    <div class="manual-search-results" id="manualSearchResults_${i}"></div>
+                </div>
+            `;
+        }).join("");
+    
+        box.innerHTML = `
+            <div style="margin-bottom:12px;">
+                <strong>Manual Verification</strong><br>
+                <span class="small-muted">
+                    These references were not confidently verified automatically. Use the search links, review the source, then record your manual decision.
+                </span>
+            </div>
+            ${cards}
+        `;
+    }
+
+    async function runManualSourceSearch(index) {
+        const row = manualVerifyRows[index];
+        if (!row) return;
+    
+        const query = manualQueryFromRow(row);
+        const resultBox = $(`manualSearchResults_${index}`);
+    
+        if (!query) {
+            if (resultBox) resultBox.innerHTML = `<div class="empty">No query available for this row.</div>`;
+            return;
+        }
+    
+        if (resultBox) {
+            resultBox.innerHTML = `<div class="empty">Searching scholarly sources...</div>`;
+        }
+    
+        try {
+            const response = await fetch("/api/manual-search", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    job_id: JOB_ID,
+                    query,
+                    sources: ["openalex", "crossref", "semantic_scholar", "datacite"],
+                    rows_per_source: 5
+                })
+            });
+    
+            const js = await response.json().catch(() => ({}));
+    
+            if (!response.ok) {
+                throw new Error(js.detail || js.error || "Manual search failed.");
+            }
+    
+            const candidates = js.candidates || [];
+            manualSearchCandidates[index] = candidates;
+    
+            if (!candidates.length) {
+                if (resultBox) {
+                    resultBox.innerHTML = `<div class="empty">No additional scholarly source found. You may still verify manually through Google Scholar or publisher search.</div>`;
+                }
+                return;
+            }
+    
+            if (resultBox) {
+                resultBox.innerHTML = candidates.slice(0, 5).map((c, cIndex) => `
+                    <div class="alt-source-item">
+                        <div class="alt-source-title">${cIndex + 1}. ${esc(c.title || "Untitled source")}</div>
+                        <div class="alt-source-meta"><strong>Authors:</strong> ${esc(Array.isArray(c.authors) ? c.authors.join(", ") : (c.authors || ""))}</div>
+                        <div class="alt-source-meta"><strong>Year:</strong> ${esc(c.year || "")}</div>
+                        <div class="alt-source-meta"><strong>Source:</strong> ${esc(c.source || "")}</div>
+                        <div class="alt-source-meta"><strong>Score:</strong> ${esc(c.match_score || c.relevance || "")}</div>
+                        ${c.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(c.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : ""}
+                        ${c.url ? `<div><a class="doi-link" href="${esc(c.url)}" target="_blank" rel="noopener">Open source</a></div>` : ""}
+    
+                        <button class="btn btn-green manual-action" data-action="manual-verified-candidate" data-index="${index}" data-candidate-index="${cIndex}" style="margin-top:8px;">
+                            Mark this source as manually verified
+                        </button>
+                    </div>
+                `).join("");
+            }
+    
+            setStatus(`Manual search completed. ${candidates.length} possible source(s) found.`, "good");
+    
+        } catch (error) {
+            console.error(error);
+            if (resultBox) {
+                resultBox.innerHTML = `<div class="empty">Manual source search failed: ${esc(error.message)}</div>`;
+            }
+            setStatus("Manual search failed: " + error.message, "bad");
+        }
+    }
+    
+    async function saveManualDecision(index, decision, candidate = {}) {
+        const row = manualVerifyRows[index];
+        if (!row) return;
+    
+        const reference = manualQueryFromRow(row) || candidate.title || candidate.doi || "";
+    
+        if (!reference) {
+            setStatus("No reference text available for manual decision.", "bad");
+            return;
+        }
+    
+        try {
+            const response = await fetch("/api/manual-verify/decision", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    job_id: JOB_ID,
+                    reference,
+                    decision,
+                    candidate,
+                    row_type: row._manual_row_type || "verification",
+                    row_id: String(index),
+                    note: "Decision recorded from Advanced Enrichment manual verification."
+                })
+            });
+    
+            const js = await response.json().catch(() => ({}));
+    
+            if (!response.ok || js.ok === false) {
+                throw new Error(js.detail || js.error || "Could not record manual decision.");
+            }
+    
+            setStatus(js.message || "Manual verification decision recorded.", "good");
+    
+            if (js.result) {
+                latestResults = js.result;
+                window.latestResults = js.result;
+                renderAll(js.result);
+            } else {
+                loadExistingResult(false);
+            }
+    
+        } catch (error) {
+            console.error(error);
+            setStatus("Manual decision failed: " + error.message, "bad");
+        }
+    }
+    
+    document.addEventListener("click", function (event) {
+        const btn = event.target.closest(".manual-action");
+        if (!btn) return;
+    
+        event.preventDefault();
+    
+        const index = Number(btn.dataset.index);
+        const action = btn.dataset.action;
+    
+        if (!Number.isInteger(index)) return;
+    
+        if (action === "manual-search") {
+            runManualSourceSearch(index);
+            return;
+        }
+    
+        if (action === "manual-verified") {
+            saveManualDecision(index, "manual_verified", {});
+            return;
+        }
+    
+        if (action === "manual-plausible") {
+            saveManualDecision(index, "not_indexed_but_plausible", {});
+            return;
+        }
+    
+        if (action === "manual-not-verified") {
+            saveManualDecision(index, "manual_not_verified", {});
+            return;
+        }
+    
+        if (action === "manual-needs-review") {
+            saveManualDecision(index, "keep_needs_review", {});
+            return;
+        }
+    
+        if (action === "manual-verified-candidate") {
+            const cIndex = Number(btn.dataset.candidateIndex);
+            const candidate = (manualSearchCandidates[index] || [])[cIndex] || {};
+            saveManualDecision(index, "manual_verified", candidate);
+        }
+    });
+    
+    
     function renderAll(rawData) {
         if (!rawData) return;
         const data = hydrateFinalDefaults(normalizeData(rawData));
@@ -1837,8 +2173,8 @@ document.addEventListener("DOMContentLoaded", function () {
         renderVerification(data);
         renderRecovery(data);
         renderClaimSupport(data);
-        renderManualVerification(data);
         renderSuggestions(data);
+        renderManualVerification(data);
         updateCounts(data);
         maybeStartEnrichmentPolling(data);
     }
@@ -2070,276 +2406,8 @@ document.addEventListener("DOMContentLoaded", function () {
         "not_indexed_but_plausible"
     ]);
 
-    function attrJson(value) {
-        return encodeURIComponent(JSON.stringify(value || {}));
-    }
 
-    function fromAttrJson(value) {
-        try { return JSON.parse(decodeURIComponent(value || "%7B%7D")); }
-        catch (e) { return {}; }
-    }
-
-    function normaliseManualStatus(value) {
-        return String(value || "").trim().toLowerCase();
-    }
-
-    function getManualDisplayStatus(row) {
-        return row.manual_decision || row.display_status || row.status || "needs_review";
-    }
-
-    function manualQueryForRow(row) {
-        return (
-            row.reference ||
-            row.original_reference ||
-            row.matched_reference ||
-            row.matched_title ||
-            row.title ||
-            row.source_title ||
-            row.citation ||
-            row.claim ||
-            row.context ||
-            ""
-        );
-    }
-
-    function searchUrl(kind, row) {
-        const doi = row.doi || row.reference_doi || "";
-        const title = row.matched_title || row.title || row.reference_title || manualQueryForRow(row);
-        const query = manualQueryForRow(row);
-
-        if (kind === "scholar") return "https://scholar.google.com/scholar?q=" + encodeURIComponent(query);
-        if (kind === "google") return "https://www.google.com/search?q=" + encodeURIComponent(query);
-        if (kind === "doi") return doi ? normalizeDoiUrl(doi) : "https://www.google.com/search?q=" + encodeURIComponent("doi " + query);
-        if (kind === "title") return "https://www.google.com/search?q=" + encodeURIComponent('"' + title + '"');
-        return "https://www.google.com/search?q=" + encodeURIComponent(query);
-    }
-
-    function collectManualVerificationRows(data) {
-        const rows = data?.online_verification?.rows || [];
-        const out = [];
-        const seen = new Set();
-
-        rows.forEach((row, idx) => {
-            const status = normaliseManualStatus(getManualDisplayStatus(row));
-            const automated = normaliseManualStatus(row.status || row.automated_status || "");
-            const include = MANUAL_REVIEW_STATUSES.has(status) || MANUAL_REVIEW_STATUSES.has(automated);
-            if (!include) return;
-
-            const ref = manualQueryForRow(row);
-            const key = (ref || "row_" + idx).toLowerCase().slice(0, 260);
-            if (seen.has(key)) return;
-            seen.add(key);
-            out.push({ ...row, _manual_index: idx });
-        });
-
-        return out;
-    }
-
-    function renderManualDecisionBadge(row) {
-        const decision = row.manual_decision || row.display_status || "";
-        if (!decision) return "";
-        const label = row.manual_decision_label || decision.replaceAll("_", " ");
-        return `<span class="badge ${esc(decision)}">${esc(label)}</span>`;
-    }
-
-    function renderManualVerification(data) {
-        const box = $("manualVerificationBox");
-        if (!box) return;
-
-        if (!hasPaidAccess(data)) {
-            box.innerHTML = lockHtml("Manual Verification", "Unlock Full Review to manually verify unresolved references.");
-            return;
-        }
-
-        const rows = collectManualVerificationRows(data);
-
-        if (!rows.length) {
-            box.innerHTML = `
-                <div class="empty">
-                    No unresolved references require manual verification. References marked verified or likely do not appear here.
-                </div>
-            `;
-            return;
-        }
-
-        box.innerHTML = `
-            <div class="section-title" style="margin-top:18px; margin-bottom:10px;">
-                <div>
-                    <h2>Manual Verification</h2>
-                    <p>Use external search links or the extended scholarly search to verify unresolved references. Manual decisions are recorded separately from automated verification.</p>
-                </div>
-            </div>
-            ${rows.map((row, i) => renderManualReferenceCard(row, i)).join("")}
-        `;
-    }
-
-    function renderManualReferenceCard(row, i) {
-        const query = manualQueryForRow(row);
-        const status = getManualDisplayStatus(row);
-        const rowId = String(row._manual_index ?? i);
-        const rowEncoded = attrJson(row);
-        const targetId = `manualCandidateResults_${rowId}`;
-
-        return `
-            <div class="manual-ref-card" id="manualRef_${rowId}">
-                <div class="manual-ref-head">
-                    <div>
-                        <div class="manual-ref-title">${i + 1}. ${esc(query || "Reference unavailable")}</div>
-                        <div class="small-muted">Automated status: ${formatBadge(row.status || "needs_review")} ${renderManualDecisionBadge(row)}</div>
-                    </div>
-                </div>
-
-                <div class="small-muted">Manual search:</div>
-                <div class="manual-search-links">
-                    <a href="${esc(searchUrl("scholar", row))}" target="_blank" rel="noopener">Search Google Scholar</a>
-                    <a href="${esc(searchUrl("google", row))}" target="_blank" rel="noopener">Search Google</a>
-                    <a href="${esc(searchUrl("doi", row))}" target="_blank" rel="noopener">Search DOI</a>
-                    <a href="${esc(searchUrl("title", row))}" target="_blank" rel="noopener">Search title</a>
-                </div>
-
-                <div class="manual-actions">
-                    <button class="btn btn-outline" type="button" onclick="runManualSourceSearch('${rowEncoded}', '${rowId}')">Search OpenAlex/Crossref/Semantic Scholar/DataCite</button>
-                    <button class="btn btn-green" type="button" onclick="recordManualDecision('${rowEncoded}', '%7B%7D', 'manual_verified', '${rowId}')">Mark as manually verified</button>
-                    <button class="btn btn-secondary" type="button" onclick="recordManualDecision('${rowEncoded}', '%7B%7D', 'not_indexed_but_plausible', '${rowId}')">Mark as plausible</button>
-                    <button class="btn btn-outline" type="button" onclick="recordManualDecision('${rowEncoded}', '%7B%7D', 'manual_not_verified', '${rowId}')">Not verified</button>
-                    <button class="btn btn-outline" type="button" onclick="recordManualDecision('${rowEncoded}', '%7B%7D', 'keep_needs_review', '${rowId}')">Keep as needs review</button>
-                </div>
-
-                <div class="manual-candidate-results" id="${targetId}"></div>
-            </div>
-        `;
-    }
-
-    async function runManualSourceSearch(rowEncoded, rowId) {
-        const row = fromAttrJson(rowEncoded);
-        const query = manualQueryForRow(row);
-        const target = $(`manualCandidateResults_${rowId}`);
-
-        if (!hasPaidAccess(latestResults)) {
-            setStatus("Manual Verification is available after Full Review payment.", "warn");
-            renderPaywall(latestResults || {});
-            $("paywallPanel")?.scrollIntoView({ behavior: "smooth", block: "center" });
-            return;
-        }
-
-        if (!query) {
-            if (target) target.innerHTML = `<div class="empty">No searchable reference text found.</div>`;
-            return;
-        }
-
-        if (target) target.innerHTML = `<div class="empty">Searching OpenAlex, Crossref, Semantic Scholar, and DataCite...</div>`;
-
-        try {
-            const response = await fetch("/api/manual-search", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    job_id: JOB_ID,
-                    query,
-                    sources: ["openalex", "crossref", "semantic_scholar", "datacite"],
-                    rows_per_source: 5
-                })
-            });
-
-            const js = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(js.detail || js.error || "Manual source search failed.");
-            }
-
-            const candidates = js.candidates || [];
-            if (!candidates.length) {
-                if (target) target.innerHTML = `
-                    <div class="empty">
-                        No additional candidate was found. Use Google Scholar or Google links above, then record a manual decision.
-                    </div>
-                `;
-                return;
-            }
-
-            if (target) {
-                target.innerHTML = candidates.map((candidate, idx) => renderManualCandidate(row, candidate, idx, rowId)).join("");
-            }
-        } catch (error) {
-            console.error(error);
-            if (target) target.innerHTML = `<div class="empty">Manual source search failed: ${esc(error.message)}</div>`;
-        }
-    }
-
-    function renderManualCandidate(row, candidate, idx, rowId) {
-        const rowEncoded = attrJson(row);
-        const candEncoded = attrJson(candidate);
-        const authors = Array.isArray(candidate.authors) ? candidate.authors.join(", ") : (candidate.authors || "");
-        const doi = candidate.doi || "";
-        const url = candidate.url || (doi ? normalizeDoiUrl(doi) : "");
-
-        return `
-            <div class="manual-candidate-card">
-                <h4>${idx + 1}. ${esc(candidate.title || "Untitled source")}</h4>
-                <div class="small-muted"><strong>Authors:</strong> ${esc(authors || "Authors not available")}</div>
-                <div class="small-muted"><strong>Year:</strong> ${esc(candidate.year || "")}</div>
-                <div class="small-muted"><strong>Source:</strong> ${esc(candidate.source || "")}</div>
-                <div class="small-muted"><strong>Score:</strong> ${esc(candidate.match_score ?? candidate.relevance ?? "")}</div>
-                ${doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a></div>` : ""}
-                ${url ? `<div><a class="doi-link" href="${esc(url)}" target="_blank" rel="noopener">Open source</a></div>` : ""}
-                <div class="manual-actions">
-                    <button class="btn btn-green" type="button" onclick="recordManualDecision('${rowEncoded}', '${candEncoded}', 'manual_verified', '${rowId}')">Accept as manually verified</button>
-                    <button class="btn btn-secondary" type="button" onclick="recordManualDecision('${rowEncoded}', '${candEncoded}', 'not_indexed_but_plausible', '${rowId}')">Accept as plausible</button>
-                    <button class="btn btn-outline" type="button" onclick="recordManualDecision('${rowEncoded}', '${candEncoded}', 'manual_not_verified', '${rowId}')">Reject candidate</button>
-                </div>
-            </div>
-        `;
-    }
-
-    async function recordManualDecision(rowEncoded, candidateEncoded, decision, rowId) {
-        const row = fromAttrJson(rowEncoded);
-        const candidate = fromAttrJson(candidateEncoded);
-        const reference = manualQueryForRow(row) || candidate.title || candidate.doi || "";
-
-        if (!hasPaidAccess(latestResults)) {
-            setStatus("Manual verification decisions require Full Review payment.", "warn");
-            renderPaywall(latestResults || {});
-            return;
-        }
-
-        if (!reference && !candidate.title) {
-            alert("No reference or candidate was available for this decision.");
-            return;
-        }
-
-        try {
-            const response = await fetch("/api/manual-verify/decision", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    job_id: JOB_ID,
-                    reference,
-                    decision,
-                    candidate,
-                    row_type: "verification",
-                    row_id: String(rowId || ""),
-                    note: "Decision recorded from Advanced Enrichment manual verification."
-                })
-            });
-
-            const js = await response.json().catch(() => ({}));
-            if (!response.ok || js.ok === false) {
-                throw new Error(js.detail || js.error || "Could not record manual decision.");
-            }
-
-            setStatus(js.message || "Manual verification decision recorded.", "good");
-
-            if (js.result) {
-                latestResults = hydrateFinalDefaults(normalizeData(js.result));
-                window.latestResults = latestResults;
-                renderAll(latestResults);
-            } else {
-                await loadExistingResult(false);
-            }
-        } catch (error) {
-            console.error(error);
-            setStatus("Manual decision could not be recorded: " + error.message, "bad");
-        }
-    }
+    // Old inline onclick manual verification block removed.
 
     function renderRecovery(data) {
         const rec = data.recovery || {};
