@@ -238,7 +238,7 @@ def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
             [ref],
             style=style,
             use_crossref=True,
-            use_openalex=False,
+            use_openalex=True,
             job_id=None,
             enrich_metadata=enrich_metadata
         ) or []
@@ -278,7 +278,7 @@ def _verify_chunk_parallel(chunk, style="apa", enrich_metadata=False):
             chunk,
             style=style,
             use_crossref=True,
-            use_openalex=False,
+            use_openalex=True,
             job_id=None,
             enrich_metadata=enrich_metadata
         ) or []
