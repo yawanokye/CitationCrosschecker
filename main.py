@@ -32,6 +32,7 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from engine import run_crosscheck, run_crosscheck_with_autofix, recover_references_for_verification
 from manual_scholar_search import manual_scholar_search
+from certificate_builder import build_citation_integrity_certificate, render_certificate_html
 # Your custom modules
 from engine import run_crosscheck, run_crosscheck_with_autofix
 from verify import (
@@ -721,8 +722,8 @@ async def security_middleware(request: Request, call_next):
         "/apply-autofix",
         "/queue/status",
         "/api/enrichment",
-	"/api/manual-search",
-	"/api/manual-verify",
+		"/api/manual-search",
+		"/api/manual-verify",
         "/api/plans",
         "/api/paystack",
         "/payment/paystack",
@@ -733,6 +734,7 @@ async def security_middleware(request: Request, call_next):
         "/features",
         "/pricing",
         "/contact",
+		"/api/certificate",
         "/private-stats"
     ]
     
