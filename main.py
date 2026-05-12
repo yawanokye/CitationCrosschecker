@@ -3610,6 +3610,88 @@ async def api_manual_search(payload: dict = Body(...)):
     )
 
 
+# ============================================================
+# MANUAL VERIFICATION DECISION ENDPOINT
+# ============================================================
+
+MANUAL_DECISIONS = {
+    "manual_verified",
+    "manual_not_verified",
+    "not_indexed_but_plausible",
+    "keep_needs_review",
+}
+
+
+def _manual_norm_text(value: str) -> str:
+    value = str(value or "").lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _manual_decision_label(decision: str) -> str:
+    labels = {
+        "manual_verified": "Manually verified",
+        "manual_not_verified": "Not verified after manual search",
+        "not_indexed_but_plausible": "Not indexed but plausible",
+        "keep_needs_review": "Manual review still required",
+    }
+    return labels.get(decision, decision)
+
+
+def _manual_row_matches(row: dict, reference_text: str, row_id: str = "") -> bool:
+    if row_id:
+        possible_ids = {
+            str(row.get("row_id") or ""),
+            str(row.get("id") or ""),
+            str(row.get("reference_id") or ""),
+        }
+        if str(row_id) in possible_ids:
+            return True
+
+    target = _manual_norm_text(reference_text)
+    if not target:
+        return False
+
+    row_ref = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or ""
+    )
+
+    row_norm = _manual_norm_text(row_ref)
+
+    if not row_norm:
+        return False
+
+    return (
+        row_norm == target
+        or target[:120] in row_norm
+        or row_norm[:120] in target
+    )
+
+
+def _save_manual_result_to_db_and_cache(job_id: str, result: dict):
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[MANUAL VERIFY] Redis refresh failed: {e}")
+
+
 @app.post("/api/manual-verify/decision")
 async def api_manual_verify_decision(payload: dict = Body(...)):
     job_id = (payload.get("job_id") or "").strip()
@@ -3643,22 +3725,116 @@ async def api_manual_verify_decision(payload: dict = Body(...)):
         raise HTTPException(status_code=404, detail="Job not found.")
 
     result = job.get("result") or {}
+
     purchase = access.get("purchase") or {}
     user_email = purchase.get("user_email") or ""
 
     if not reference_text:
         reference_text = candidate.get("title") or candidate.get("doi") or ""
 
-    result = _update_manual_decision_in_result(
-        result,
-        reference_text=reference_text,
-        decision=decision,
-        candidate=candidate,
-        note=note,
-        user_email=user_email,
-        row_id=row_id,
-        row_type=row_type,
-    )
+    created_at = datetime.utcnow().isoformat()
+
+    decision_record = {
+        "reference": reference_text,
+        "decision": decision,
+        "decision_label": _manual_decision_label(decision),
+        "candidate": candidate or {},
+        "note": note,
+        "row_id": row_id,
+        "row_type": row_type,
+        "user_email": user_email,
+        "created_at": created_at,
+    }
+
+    # 1. Update the relevant online verification row.
+    ov = result.get("online_verification") or {}
+    rows = ov.get("rows") or []
+
+    row_updated = False
+
+    for row in rows:
+        if _manual_row_matches(row, reference_text, row_id=row_id):
+            row.setdefault("automated_status", row.get("status", ""))
+
+            row["manual_decision"] = decision
+            row["manual_decision_label"] = _manual_decision_label(decision)
+            row["manual_verified"] = decision == "manual_verified"
+            row["manual_not_verified"] = decision == "manual_not_verified"
+            row["manual_candidate"] = candidate or {}
+            row["manual_note"] = note
+            row["manual_verified_by"] = user_email
+            row["manual_verified_at"] = created_at
+
+            if decision == "manual_verified":
+                row["display_status"] = "manual_verified"
+                row["verification_basis"] = "manual_search"
+            elif decision == "manual_not_verified":
+                row["display_status"] = "manual_not_verified"
+                row["verification_basis"] = "manual_search"
+            elif decision == "not_indexed_but_plausible":
+                row["display_status"] = "not_indexed_but_plausible"
+                row["verification_basis"] = "manual_bibliographic_review"
+            else:
+                row["display_status"] = row.get("status", "needs_review")
+
+            row_updated = True
+            break
+
+    # If no row matched, keep the decision as a manual verification row.
+    if not row_updated:
+        rows.append({
+            "reference": reference_text,
+            "status": "needs_review",
+            "automated_status": "",
+            "display_status": decision,
+            "manual_decision": decision,
+            "manual_decision_label": _manual_decision_label(decision),
+            "manual_verified": decision == "manual_verified",
+            "manual_not_verified": decision == "manual_not_verified",
+            "manual_candidate": candidate or {},
+            "manual_note": note,
+            "manual_verified_by": user_email,
+            "manual_verified_at": created_at,
+            "verification_basis": "manual_search",
+            "source": "manual_verification",
+        })
+
+    ov["rows"] = rows
+    result["online_verification"] = ov
+
+    # 2. Keep full click history for audit purposes.
+    audit_trail = result.get("manual_verification_audit") or []
+    audit_trail.append(decision_record)
+    result["manual_verification_audit"] = audit_trail
+
+    # 3. Keep only latest decision per unique reference for dashboard/certificate.
+    decisions = result.get("manual_verification_decisions") or []
+    current_key = _manual_norm_text(reference_text)
+
+    updated_existing = False
+
+    for idx, existing in enumerate(decisions):
+        existing_key = _manual_norm_text(existing.get("reference", ""))
+
+        if existing_key and current_key and existing_key == current_key:
+            decisions[idx] = decision_record
+            updated_existing = True
+            break
+
+    if not updated_existing:
+        decisions.append(decision_record)
+
+    result["manual_verification_decisions"] = decisions
+
+    # 4. Summary should count unique references, not repeated clicks.
+    result["manual_verification_summary"] = {
+        "unique_manual_decisions": len(decisions),
+        "total_manual_clicks": len(audit_trail),
+        "manual_verified": sum(1 for d in decisions if d.get("decision") == "manual_verified"),
+        "manual_not_verified": sum(1 for d in decisions if d.get("decision") == "manual_not_verified"),
+        "not_indexed_but_plausible": sum(1 for d in decisions if d.get("decision") == "not_indexed_but_plausible"),
+        "keep_needs_review": sum(1 for d in decisions if d.get("decision") == "keep_needs_review"),
+    }
 
     _save_manual_result_to_db_and_cache(job_id, result)
 
