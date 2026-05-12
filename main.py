@@ -704,7 +704,7 @@ async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
     if path.startswith("/api/certificate/"):
-    return await call_next(request)
+    	return await call_next(request)
     # ✅ ALLOW LIST - Critical endpoints that must work
     ALLOWED_PATHS = [
         "/",
