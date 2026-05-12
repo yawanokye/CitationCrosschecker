@@ -703,7 +703,8 @@ BAD_AGENTS = [
 async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
-    
+    if path.startswith("/api/certificate/"):
+    return await call_next(request)
     # ✅ ALLOW LIST - Critical endpoints that must work
     ALLOWED_PATHS = [
         "/",
@@ -2980,7 +2981,135 @@ async def paystack_initialize(payload: dict = Body(...)):
         )
 
     return init
+# ============================================================
+# CITATION INTEGRITY CERTIFICATE ENDPOINTS
+# ============================================================
 
+def _certificate_access_for_job(job_id: str) -> Dict[str, Any]:
+    try:
+        if "get_access_for_job" in globals():
+            return get_access_for_job(job_id) or {}
+    except Exception as e:
+        print(f"[CERTIFICATE] get_access_for_job failed: {e}")
+
+    try:
+        return build_access_response(job_id) or {}
+    except Exception as e:
+        print(f"[CERTIFICATE] build_access_response failed: {e}")
+
+    return {}
+
+
+def _certificate_is_paid(access: Dict[str, Any]) -> bool:
+    if not isinstance(access, dict):
+        return False
+
+    if access.get("paid") is True:
+        return True
+
+    nested = access.get("access")
+    if isinstance(nested, dict) and nested.get("paid") is True:
+        return True
+
+    return False
+
+
+def _save_certificate_result_to_db_and_cache(job_id: str, result: dict):
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[CERTIFICATE] Redis refresh failed: {e}")
+
+
+@app.get("/api/certificate/{job_id}")
+async def get_citation_integrity_certificate(job_id: str):
+    access = _certificate_access_for_job(job_id)
+
+    if not _certificate_is_paid(access):
+        return JSONResponse(
+            {
+                "ok": False,
+                "locked": True,
+                "error": "Citation Integrity Certificate is available after Full Review payment.",
+            },
+            status_code=402,
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+
+    certificate = build_citation_integrity_certificate(
+        result,
+        job_id=job_id,
+        access=access,
+    )
+
+    result["citation_integrity_certificate"] = certificate
+
+    try:
+        _save_certificate_result_to_db_and_cache(job_id, result)
+    except Exception as e:
+        print(f"[CERTIFICATE] Could not persist certificate: {e}")
+
+    return {
+        "ok": True,
+        "certificate": certificate,
+    }
+
+
+@app.get("/api/certificate/{job_id}/download")
+async def download_citation_integrity_certificate(job_id: str):
+    access = _certificate_access_for_job(job_id)
+
+    if not _certificate_is_paid(access):
+        return JSONResponse(
+            {
+                "ok": False,
+                "locked": True,
+                "error": "Citation Integrity Certificate is available after Full Review payment.",
+            },
+            status_code=402,
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+
+    certificate = result.get("citation_integrity_certificate") or build_citation_integrity_certificate(
+        result,
+        job_id=job_id,
+        access=access,
+    )
+
+    html_doc = render_certificate_html(certificate)
+    filename = f"CiteIntegrity_Certificate_{job_id[:8]}.doc"
+
+    return Response(
+        content=html_doc,
+        media_type="application/msword",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
 
 @app.get("/payment/paystack/callback")
 async def paystack_callback(request: Request, reference: str = "", trxref: str = ""):
