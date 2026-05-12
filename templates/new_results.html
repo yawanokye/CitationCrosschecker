@@ -1521,7 +1521,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function setPaidOnlyButtons(isPaid) {
-        ["btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment"].forEach(id => {
+        ["btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment", "btnDownloadCertificate"].forEach(id => {
             const btn = $(id);
             if (!btn) return;
             btn.disabled = !isPaid;
@@ -2170,6 +2170,117 @@ document.addEventListener("DOMContentLoaded", function () {
     });
     
     
+
+    async function renderCertificate(data) {
+        const box = $("certificateContent");
+        const btn = $("btnDownloadCertificate");
+
+        if (!box) return;
+
+        if (!hasPaidAccess(data)) {
+            box.innerHTML = lockHtml(
+                "Citation Integrity Certificate",
+                "Unlock Full Review to generate and download the certificate."
+            );
+            if (btn) btn.disabled = true;
+            setCount("countCertificate", "Locked");
+            return;
+        }
+
+        if (btn) btn.disabled = false;
+
+        try {
+            const js = await fetchJsonNoCache(`/api/certificate/${encodeURIComponent(JOB_ID)}`);
+
+            if (!js.ok || !js.certificate) {
+                throw new Error(js.error || "Certificate could not be generated.");
+            }
+
+            const c = js.certificate;
+            const s = c.summary || {};
+            const r = c.risk_counts || {};
+            const logo = c.logo_svg || "";
+
+            box.innerHTML = `
+                <div class="paywall-card">
+                    <div class="paywall-head">
+                        <div>
+                            <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+                                <span style="width:70px; height:44px; display:inline-flex;">${logo}</span>
+                                <div>
+                                    <h2 class="paywall-title" style="margin:0;">CiteIntegrity</h2>
+                                    <div class="small-muted">Citation Integrity Certificate</div>
+                                </div>
+                            </div>
+                            <p class="paywall-subtitle">
+                                Certificate ID: <strong>${esc(c.certificate_id)}</strong><br>
+                                Timestamp: <strong>${esc(c.generated_at_display || c.generated_at || "")}</strong><br>
+                                ACII Score: <strong>${esc(c.acii_score ?? "Not available")}</strong>
+                                (${esc(c.acii_rating || "")})<br>
+                                Clearance Status: <strong>${esc(c.clearance_status || "")}</strong>
+                            </p>
+                        </div>
+                        <span class="paywall-badge unlocked">✅ Generated</span>
+                    </div>
+
+                    <div class="paywall-grid">
+                        <div class="paywall-mini"><strong>Total in-text citations</strong><br>${esc(c.total_in_text_citations ?? s.total_in_text_citations ?? 0)}</div>
+                        <div class="paywall-mini"><strong>Total references</strong><br>${esc(c.total_references ?? s.total_references ?? 0)}</div>
+                        <div class="paywall-mini"><strong>Clearance status</strong><br>${esc(c.clearance_status || "")}</div>
+                    </div>
+
+                    <div class="paywall-grid" style="margin-top:12px;">
+                        <div class="paywall-mini"><strong>Critical risks</strong><br>${esc(r.critical || 0)}</div>
+                        <div class="paywall-mini"><strong>Moderate risks</strong><br>${esc(r.moderate || 0)}</div>
+                        <div class="paywall-mini"><strong>Minor risks</strong><br>${esc(r.minor || 0)}</div>
+                    </div>
+
+                    <div class="table-wrap" style="margin-top:16px;">
+                        <table>
+                            <thead><tr><th>Required certificate item</th><th>Value</th></tr></thead>
+                            <tbody>
+                                <tr><td>Total in-text citations</td><td>${esc(c.total_in_text_citations ?? s.total_in_text_citations ?? 0)}</td></tr>
+                                <tr><td>Total references</td><td>${esc(c.total_references ?? s.total_references ?? 0)}</td></tr>
+                                <tr><td>ACII score</td><td>${esc(c.acii_score ?? "Not available")}</td></tr>
+                                <tr><td>Clearance status</td><td>${esc(c.clearance_status || "")}</td></tr>
+                                <tr><td>Automatically verified references</td><td>${esc(s.automatically_verified_references || 0)}</td></tr>
+                                <tr><td>Manually verified references</td><td>${esc(s.manually_verified_references || 0)}</td></tr>
+                                <tr><td>Not indexed but plausible references</td><td>${esc(s.not_indexed_but_plausible_references || 0)}</td></tr>
+                                <tr><td>References still needing review</td><td>${esc(s.references_still_needing_review || 0)}</td></tr>
+                                <tr><td>Not found references</td><td>${esc(s.not_found_references || 0)}</td></tr>
+                                <tr><td>Missing references</td><td>${esc(s.missing_references || 0)}</td></tr>
+                                <tr><td>Uncited references</td><td>${esc(s.uncited_references || 0)}</td></tr>
+                                <tr><td>Claim-support issues</td><td>${esc(s.claim_support_issues || 0)}</td></tr>
+                                <tr><td>Citation-needed claims</td><td>${esc(s.citation_needed_claims || 0)}</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div style="margin-top:16px;">
+                        <h3>Required corrections</h3>
+                        <ol>
+                            ${(c.clearance_requirements || []).map(x => `<li>${esc(x)}</li>`).join("")}
+                        </ol>
+                    </div>
+
+                    <div class="small-muted" style="margin-top:14px;">
+                        <strong>Coverage note:</strong> ${esc(c.coverage_note || "")}
+                    </div>
+                    <div class="small-muted" style="margin-top:8px;">
+                        <strong>Validity note:</strong> ${esc(c.validity_note || "")}
+                    </div>
+                </div>
+            `;
+
+            setCount("countCertificate", "Ready");
+
+        } catch (error) {
+            console.error(error);
+            box.innerHTML = `<div class="empty">Certificate could not be generated: ${esc(error.message)}</div>`;
+            setCount("countCertificate", "Error");
+        }
+    }
+
     function renderAll(rawData) {
         if (!rawData) return;
         const data = hydrateFinalDefaults(normalizeData(rawData));
@@ -2190,6 +2301,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderClaimSupport(data);
         renderSuggestions(data);
         renderManualVerification(data);
+        renderCertificate(data);
         updateCounts(data);
         maybeStartEnrichmentPolling(data);
     }
@@ -3251,6 +3363,14 @@ ${claimTable}
         $("btnExportWord")?.addEventListener("click", exportWord);
         $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
         $("btnExportRefsHtml")?.addEventListener("click", () => exportVerifiedReferences("html"));
+        $("btnDownloadCertificate")?.addEventListener("click", function () {
+            if (!hasPaidAccess(latestResults || {})) {
+                renderPaywall(latestResults || {});
+                setStatus("Certificate download requires Full Review payment.", "warn");
+                return;
+            }
+            window.location.href = `/api/certificate/${encodeURIComponent(JOB_ID)}/download`;
+        });
         const mobileToggle = $("mobileToggle");
         const mainNav = $("mainNav");
         if(mobileToggle && mainNav) mobileToggle.addEventListener("click", () => mainNav.classList.toggle("open"));
