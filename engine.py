@@ -76,12 +76,17 @@ DISCOURSE_PREFIXES = {
     "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
     "according", "adapted", "based", "cited", "citing", "reported",
     "like",
+
+    # discourse / transition words
     "however", "similarly", "regrettably", "traditionally", "notably",
     "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
-    "for instance", "instance", "for example", "example", "likely", 
-    "for instance,", "for example,", "uncertainty", "likewise", "Moreover,",
+    "likely", "likewise", "uncertainty",
+
+    # phrases
+    "for instance", "instance",
+    "for example", "example",
 }
 
 REF_END_HEADINGS = [
@@ -96,15 +101,28 @@ REF_END_HEADINGS = [
 REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
 
 NON_NAME_AUTHOR_KEYS = {
-    "survey", "field", "work", "fieldwork", "data", "dataset", "table", "tables", 
-    "figure", "fig", "figures", "chapter", "section", "appendix", "appendices", 
-    "annex", "equation", "eq", "model", "models", "analysis", "results", "method", 
-    "methods", "discussion", "introduction", "conclusion", "study", "paper", "thesis", 
-    "report", "source", "sources", "author", "authors",
-    "however", "similarly", "regrettably", "traditionally", "therefore", "thus", "hence",
-    "consequently", "moreover", "furthermore", "additionally", "meanwhile", "nonetheless",
-    "nevertheless", "overall", "generally", "specifically", "particularly", "importantly",
-    "indeed", "instance", "example",
+    # data / method / document words
+    "survey", "field", "work", "fieldwork", "fieldwork", "data", "dataset",
+    "sample", "sampling", "questionnaire", "respondent", "respondents",
+    "interview", "interviews", "observation", "observations",
+    "experiment", "experiments", "variable", "variables",
+
+    # research/reporting words
+    "table", "tables", "figure", "fig", "figures",
+    "chapter", "section", "appendix", "appendices", "annex",
+    "equation", "eq", "model", "models", "analysis", "analyses",
+    "results", "result", "finding", "findings",
+    "method", "methods", "methodology", "discussion",
+    "introduction", "conclusion", "study", "studies",
+    "paper", "thesis", "dissertation", "report",
+    "source", "sources", "author", "authors",
+
+    # discourse words
+    "however", "similarly", "regrettably", "traditionally", "notably",
+    "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
+    "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
+    "generally", "specifically", "particularly", "importantly", "indeed",
+    "instance", "example", "likely", "likewise", "uncertainty",
 }
 
 NARRATIVE_SINGLE_TOKENS = {
@@ -146,7 +164,103 @@ def strip_punct(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+def _clean_discourse_token(s: str) -> str:
+    return strip_punct(s).strip(" ,.;:()[]{}")
 
+
+def _strip_discourse_prefixes(left: str) -> str:
+    """
+    Remove leading discourse words/phrases before author parsing.
+
+    This catches:
+    - "Similarly, Smith, 2020" -> "Smith"
+    - "Likely, 2020" -> ""
+    - "For example, Adam, 2021" -> "Adam"
+    """
+    left = norm_space(left)
+    if not left:
+        return ""
+
+    prefixes = sorted(
+        {_clean_discourse_token(x) for x in DISCOURSE_PREFIXES if x},
+        key=len,
+        reverse=True
+    )
+
+    for _ in range(5):
+        old = left
+
+        for pref in prefixes:
+            if not pref:
+                continue
+
+            pat = re.compile(
+                r"^\s*" + re.escape(pref) + r"(?:\s*,\s*|\s+|[,:;.\-]+\s*|$)",
+                re.I
+            )
+            left = pat.sub("", left, count=1).strip(" ,;:()[]{}")
+
+            if left != old:
+                break
+
+        if left == old:
+            break
+
+    return left
+
+
+def _is_non_author_key(key: str) -> bool:
+    """
+    Prevent ordinary discourse, method, and document words from becoming author keys.
+    """
+    k = strip_punct(key)
+    if not k:
+        return True
+
+    block = {
+        strip_punct(x)
+        for x in (set(NON_NAME_AUTHOR_KEYS) | set(DISCOURSE_PREFIXES))
+        if x
+    }
+
+    extra_phrases = {
+        "field survey", "survey field", "survey data", "field data",
+        "field work", "fieldwork data", "research survey",
+        "questionnaire survey", "sample survey",
+        "likely similarly", "similarly likely",
+    }
+
+    if k in block or k in extra_phrases:
+        return True
+
+    toks = [t for t in k.split() if t]
+    if toks and all(t in block for t in toks):
+        return True
+
+    if toks and toks[-1] in block and len(toks) <= 3:
+        return True
+
+    return False
+
+
+def _is_bad_author_left(left: str) -> bool:
+    """
+    Reject full author-left phrases that are clearly not author names.
+    """
+    l = strip_punct(left)
+    if not l:
+        return True
+
+    if _is_non_author_key(l):
+        return True
+
+    bad_patterns = [
+        r"^(field|survey|data|sample|questionnaire)\s+",
+        r"\s+(survey|field|data|sample|questionnaire)$",
+        r"^(likely|similarly|however|moreover|therefore|thus|hence)$",
+    ]
+
+    return any(re.search(p, l, re.I) for p in bad_patterns)
 def _base_year(y: str) -> str:
     y = (y or "").strip()
     m = re.match(r"^((?:19|20)\d{2})", y)
@@ -157,6 +271,12 @@ def _surnames_from_author_blob(left: str) -> List[str]:
     s = (left or "").strip()
     if not s:
         return []
+
+    s = _strip_discourse_prefixes(s)
+
+    if _is_bad_author_left(s):
+        return []
+
     s = s.replace("&", " and ")
     s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
     s = re.sub(r"(’s|'s)\b", "", s)
@@ -179,6 +299,10 @@ def _surnames_from_author_blob(left: str) -> List[str]:
             continue
         if cand.lower() in {"available", "ssrn", "university", "press", "journal"}:
             continue
+        
+        if _is_non_author_key(cand):
+            continue
+        
         out.append(cand.lower())
     seen = set()
     final = []
@@ -359,25 +483,46 @@ def _is_plausible_reference_entry(s: str) -> bool:
 def _first_author_or_org_key(author_left: str) -> str:
     s = norm_space(author_left)
 
+    s = _strip_discourse_prefixes(s)
+
+    if _is_bad_author_left(s):
+        return ""
+
     m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", s)
     if m:
-        return strip_punct(m.group(1))
+        key = strip_punct(m.group(1))
+        return "" if _is_non_author_key(key) else key
 
     s = _strip_leading_reference_number(s)
     s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
     s = re.sub(r"(’s|'s)\b", "", s)
 
+    s = _strip_discourse_prefixes(s)
+
+    if _is_bad_author_left(s):
+        return ""
+
     m_si = re.match(r"^\s*([A-Z][A-Za-z'\-]+)\s+[A-Z]{1,3}\b", s)
     if m_si:
-        return strip_punct(m_si.group(1))
+        key = strip_punct(m_si.group(1))
+        return "" if _is_non_author_key(key) else key
 
     s0 = re.split(r"\s+(?:&|and|＆)\s+|,", s, maxsplit=1)[0].strip()
     s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
 
+    if _is_bad_author_left(s0):
+        return ""
+
     toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
     if not toks:
         return ""
-    return strip_punct(toks[-1])
+
+    key = strip_punct(toks[-1])
+
+    if _is_non_author_key(key):
+        return ""
+
+    return key
 
 
 def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
@@ -1039,13 +1184,7 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
         left = ""
 
     if left:
-        prefixes = sorted([re.escape(x) for x in DISCOURSE_PREFIXES], key=len, reverse=True)
-        pref_re = re.compile(r"^(?:" + "|".join(prefixes) + r")\b", re.I)
-        while True:
-            new_left = pref_re.sub("", left).strip(" ,;()")
-            if new_left == left:
-                break
-            left = new_left
+        left = _strip_discourse_prefixes(left)
 
     for _ in range(3):
         if "," not in left:
@@ -1056,14 +1195,17 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
         left = rest.strip(" ,;()")
 
     left = re.sub(r"(’s|'s)\b", "", left).strip()
+    left = _strip_discourse_prefixes(left)
 
+    if _is_bad_author_left(left):
+        return None
     if _is_likely_narrative_citation(left, year, s):
         return None
 
     author_key = _first_author_or_org_key(left)
     if not author_key:
         return None
-    if author_key.lower() in NON_NAME_AUTHOR_KEYS:
+    if _is_non_author_key(author_key):
         return None
     return author_key, year
 
@@ -1113,7 +1255,20 @@ def extract_author_year_citations(text: str) -> List[str]:
             if YEAR_RE.fullmatch(y):
                 out.append(norm_space(f"{author}, {y}"))
 
-    return [c for c in out if c]
+    cleaned = []
+    seen = set()
+    
+    for c in out:
+        c = norm_space(c)
+        if not c or c in seen:
+            continue
+    
+        # Filter false positives early so they do not appear in Missing Citations.
+        if _parse_author_year_from_cite(c):
+            cleaned.append(c)
+            seen.add(c)
+    
+    return cleaned
 
 
 def parse_reference_author_year(ref: str) -> Optional[RefAY]:
