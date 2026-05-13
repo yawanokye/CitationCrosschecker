@@ -975,6 +975,405 @@
             color: #c2410c;
         }
 
+
+        /* Commercial compact results dashboard refinements */
+        .header-inner {
+            max-width: 1460px;
+            padding: 9px 18px;
+        }
+
+        .brand-mark {
+            width: 44px;
+            height: 30px;
+        }
+
+        .brand-name {
+            font-size: 20px;
+            font-weight: 900;
+        }
+
+        .brand-badge {
+            padding: 4px 10px;
+            font-size: 11px;
+            background: var(--green-soft);
+            color: var(--green-dark);
+        }
+
+        .nav {
+            gap: 14px;
+            font-size: 13px;
+        }
+
+        .container {
+            max-width: 1460px;
+            padding: 14px 18px 30px;
+        }
+
+        .topbar {
+            grid-template-columns: minmax(0, 0.85fr) minmax(380px, auto);
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .page-title h1 {
+            font-size: clamp(24px, 2.6vw, 34px);
+            margin-bottom: 5px;
+        }
+
+        .page-title p {
+            display: none;
+        }
+
+        .status-box {
+            margin-top: 4px;
+            padding: 7px 11px;
+            font-size: 12px;
+            box-shadow: none;
+        }
+
+        .actions {
+            gap: 7px;
+        }
+
+        .btn {
+            padding: 9px 12px;
+            font-size: 12px;
+            gap: 6px;
+        }
+
+        .actions select,
+        .search-input,
+        select {
+            padding: 8px 11px;
+            font-size: 12px;
+            min-width: 170px;
+        }
+
+        .progress-card {
+            padding: 10px 12px;
+            border-radius: 16px;
+            margin-bottom: 10px;
+        }
+
+        .progress-track {
+            height: 8px;
+        }
+
+        .progress-text {
+            margin-top: 6px;
+            font-size: 12px;
+        }
+
+        .paywall-panel {
+            margin: 10px 0 12px;
+        }
+
+        .paywall-card {
+            padding: 14px;
+            border-radius: 18px;
+        }
+
+        .paywall-title {
+            font-size: 18px;
+        }
+
+        .paywall-subtitle {
+            font-size: 12.5px;
+            line-height: 1.45;
+        }
+
+        .paywall-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .paywall-mini {
+            padding: 10px;
+            border-radius: 14px;
+            font-size: 12.5px;
+        }
+
+        .paywall-controls {
+            margin-top: 10px;
+            gap: 8px;
+        }
+
+        .paywall-controls input,
+        .paywall-controls select {
+            padding: 9px 11px;
+            border-radius: 12px;
+            font-size: 12.5px;
+        }
+
+        .insights-grid {
+            grid-template-columns: 235px minmax(0, 1fr);
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .card {
+            border-radius: 20px;
+            padding: 14px;
+        }
+
+        .insights-grid .acii-card {
+            min-height: 150px;
+        }
+
+        .acii-score {
+            font-size: 42px;
+            margin-top: 4px;
+        }
+
+        .acii-label {
+            margin-top: 4px;
+            font-size: 12px;
+        }
+
+        .acii-rating {
+            margin-top: 8px;
+            padding: 5px 12px;
+            font-size: 12px;
+        }
+
+        .acii-rec {
+            display: none;
+        }
+
+        .insights-grid .kpi-grid {
+            grid-template-columns: repeat(4, minmax(110px, 1fr));
+            gap: 8px;
+        }
+
+        .kpi {
+            padding: 9px;
+            border-radius: 14px;
+        }
+
+        .kpi-value,
+        .insights-grid .kpi-value {
+            font-size: 22px;
+        }
+
+        .kpi-label {
+            font-size: 10.5px;
+        }
+
+        .dashboard-grid {
+            grid-template-columns: 218px minmax(0, 1fr);
+            gap: 10px;
+            padding: 10px;
+            border-radius: 22px;
+        }
+
+        .sidebar {
+            top: 68px;
+        }
+
+        .dashboard-grid .card {
+            border-radius: 16px;
+            padding: 10px;
+        }
+
+        .workspace-label {
+            margin-bottom: 8px;
+        }
+
+        .workspace-label h2 {
+            font-size: 15px;
+        }
+
+        .workspace-label p {
+            display: none;
+        }
+
+        .nav-tabs {
+            gap: 5px;
+        }
+
+        .tab-btn {
+            padding: 8px 9px;
+            border-radius: 11px;
+            font-size: 12px;
+            gap: 6px;
+        }
+
+        .tab-title {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            min-width: 0;
+        }
+
+        .tab-help {
+            width: 17px;
+            height: 17px;
+            display: inline-grid;
+            place-items: center;
+            border-radius: 50%;
+            border: 1px solid currentColor;
+            font-size: 10px;
+            font-weight: 950;
+            opacity: 0.75;
+            cursor: help;
+            flex: 0 0 auto;
+        }
+
+        .tab-btn.active .tab-help {
+            opacity: 0.9;
+        }
+
+        .count-pill {
+            padding: 2px 7px;
+            font-size: 10px;
+            min-width: 28px;
+        }
+
+        .main-panel > .tab-pane > .card {
+            min-height: 420px;
+        }
+
+        .section-title {
+            margin-bottom: 10px;
+            gap: 8px;
+        }
+
+        .section-title h2 {
+            font-size: 18px;
+        }
+
+        .section-title p {
+            font-size: 12px;
+            margin-top: 2px;
+        }
+
+        .filters {
+            gap: 7px;
+            margin-bottom: 9px;
+        }
+
+        .table-wrap {
+            max-height: 530px;
+            border-radius: 14px;
+        }
+
+        table {
+            font-size: 12px;
+            min-width: 720px;
+        }
+
+        th, td {
+            padding: 8px 10px;
+        }
+
+        th {
+            font-size: 11px;
+        }
+
+        .badge {
+            padding: 3px 8px;
+            font-size: 10.5px;
+        }
+
+        .empty {
+            padding: 18px;
+            border-radius: 14px;
+            font-size: 12.5px;
+        }
+
+        .suggestion-item,
+        .alt-source-box,
+        .alt-source-item,
+        .manual-ref-card,
+        .manual-candidate-card {
+            border-radius: 12px;
+            padding: 10px;
+        }
+
+        .manual-card {
+            border-radius: 14px !important;
+            padding: 12px !important;
+            margin: 10px 0 !important;
+        }
+
+        .manual-card h3 {
+            font-size: 14px !important;
+            margin-bottom: 6px !important;
+        }
+
+        .manual-action.selected-decision {
+            background: linear-gradient(135deg, var(--green), var(--green-dark)) !important;
+            color: #ffffff !important;
+            border-color: transparent !important;
+            opacity: 1 !important;
+        }
+
+        .manual-action.locked-choice {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .manual-card.manual-decision-made {
+            border-left-color: var(--green) !important;
+            background: #f8fffb !important;
+        }
+
+        .manual-decision-badge {
+            margin-left: 8px;
+        }
+
+        .footer {
+            padding: 18px 20px;
+            font-size: 12px;
+        }
+
+        .footer-links {
+            margin-top: 5px;
+            gap: 14px;
+        }
+
+        @media (max-width: 1120px) {
+            .topbar {
+                grid-template-columns: 1fr;
+            }
+
+            .insights-grid,
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .nav-tabs {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
+            .actions {
+                justify-content: flex-start;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .container {
+                padding: 12px 12px 26px;
+            }
+
+            .nav-tabs,
+            .kpi-grid,
+            .insights-grid .kpi-grid,
+            .paywall-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .actions .btn {
+                width: 100%;
+            }
+
+            .search-input, select {
+                min-width: 100%;
+            }
+        }
+
     </style>
 </head>
 
@@ -998,7 +1397,6 @@
             <a href="/new">Home</a>
             <a href="/new/analyse">New Analysis</a>
             <a href="/privacy">Privacy</a>
-            <a href="/" class="nav-cta">Old Interface</a>
         </nav>
     </div>
 </header>
@@ -1007,7 +1405,6 @@
     <section class="topbar">
         <div class="page-title">
             <h1>Results Dashboard</h1>
-            <p>Review citation integrity, ACII score, missing citations, verification, recovery, claim support, and exportable reports.</p>
             <div class="status-box">
                 <span>●</span>
                 <span class="status info" id="status">Loading results...</span>
@@ -1069,22 +1466,51 @@
                         <h2>Sections</h2>
                         <p>Open each result area.</p>
                     </div>
-                </div>
-
-                <div class="nav-tabs">
-                    <button class="tab-btn active" data-tab="summaryPane">Summary <span class="count-pill" id="countSummary">--</span></button>
-                    <button class="tab-btn" data-tab="missingPane">Missing Citations <span class="count-pill" id="countMissing">0</span></button>
-                    <button class="tab-btn" data-tab="uncitedPane">Uncited References <span class="count-pill" id="countUncited">0</span></button>
-                    <button class="tab-btn" data-tab="c2rPane">Citations → References <span class="count-pill" id="countC2R">0</span></button>
-                    <button class="tab-btn" data-tab="r2cPane">References → Citations <span class="count-pill" id="countR2C">0</span></button>
-                    <button class="tab-btn" data-tab="verifyPane">Verification <span class="count-pill" id="countVerify">0</span></button>
-                    <button class="tab-btn" data-tab="recoveryPane">Recovery <span class="count-pill" id="countRecovery">0</span></button>
-                    <button class="tab-btn" data-tab="claimPane">Claim Support <span class="count-pill" id="countClaim">0</span></button>
-                    <button class="tab-btn" data-tab="enrichmentPane">
-                        Advanced Enrichment <span class="count-pill" id="countEnrichment">Optional</span>
+                </div>                <div class="nav-tabs">
+                    <button class="tab-btn active" data-tab="summaryPane">
+                        <span class="tab-title">Summary <span class="tab-help" title="Overall citation counts, match rate, ACII summary, and key dashboard interpretation." aria-label="Overall citation counts, match rate, ACII summary, and key dashboard interpretation.">?</span></span>
+                        <span class="count-pill" id="countSummary">--</span>
                     </button>
-                    <button class="tab-btn" data-tab="suggestionsPane">Suggestions <span class="count-pill" id="countSuggestions">0</span></button>
-                    <button class="tab-btn" data-tab="certificatePane">Certificate <span class="count-pill" id="countCertificate">Paid</span></button>
+                    <button class="tab-btn" data-tab="missingPane">
+                        <span class="tab-title">Missing Citations <span class="tab-help" title="In-text citations found in the manuscript but not found in the reference list." aria-label="In-text citations found in the manuscript but not found in the reference list.">?</span></span>
+                        <span class="count-pill" id="countMissing">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="uncitedPane">
+                        <span class="tab-title">Uncited References <span class="tab-help" title="References listed in the reference section but not cited in the manuscript body." aria-label="References listed in the reference section but not cited in the manuscript body.">?</span></span>
+                        <span class="count-pill" id="countUncited">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="c2rPane">
+                        <span class="tab-title">Citations → References <span class="tab-help" title="Shows how each in-text citation maps to a matching reference entry." aria-label="Shows how each in-text citation maps to a matching reference entry.">?</span></span>
+                        <span class="count-pill" id="countC2R">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="r2cPane">
+                        <span class="tab-title">References → Citations <span class="tab-help" title="Shows how often each reference is cited and which citations point to it." aria-label="Shows how often each reference is cited and which citations point to it.">?</span></span>
+                        <span class="count-pill" id="countR2C">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="verifyPane">
+                        <span class="tab-title">Verification <span class="tab-help" title="Online metadata verification results, including DOI, title, author, year, and confidence status." aria-label="Online metadata verification results, including DOI, title, author, year, and confidence status.">?</span></span>
+                        <span class="count-pill" id="countVerify">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="recoveryPane">
+                        <span class="tab-title">Recovery <span class="tab-help" title="Context-specific recovery suggestions for missing citations and references needing review." aria-label="Context-specific recovery suggestions for missing citations and references needing review.">?</span></span>
+                        <span class="count-pill" id="countRecovery">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="claimPane">
+                        <span class="tab-title">Claim Support <span class="tab-help" title="Checks whether the cited source appears to support the claim around each citation." aria-label="Checks whether the cited source appears to support the claim around each citation.">?</span></span>
+                        <span class="count-pill" id="countClaim">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="enrichmentPane">
+                        <span class="tab-title">Advanced Enrichment <span class="tab-help" title="Deeper source suggestions and manual verification tools for weak or unresolved cases." aria-label="Deeper source suggestions and manual verification tools for weak or unresolved cases.">?</span></span>
+                        <span class="count-pill" id="countEnrichment">Optional</span>
+                    </button>
+                    <button class="tab-btn" data-tab="suggestionsPane">
+                        <span class="tab-title">Suggestions <span class="tab-help" title="Non-invasive citation and reference improvement suggestions for user review." aria-label="Non-invasive citation and reference improvement suggestions for user review.">?</span></span>
+                        <span class="count-pill" id="countSuggestions">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="certificatePane">
+                        <span class="tab-title">Certificate <span class="tab-help" title="Paid Full Review certificate summarising citation integrity, verification, and correction status." aria-label="Paid Full Review certificate summarising citation integrity, verification, and correction status.">?</span></span>
+                        <span class="count-pill" id="countCertificate">Paid</span>
+                    </button>
                 </div>
             </div>
         </aside>
@@ -1363,7 +1789,6 @@
         <a href="/new">New Landing Page</a>
         <a href="/new/analyse">New Analysis</a>
         <a href="/privacy">Privacy Policy</a>
-        <a href="/">Old Interface</a>
     </div>
 </footer>
 
@@ -1925,6 +2350,71 @@ document.addEventListener("DOMContentLoaded", function () {
         return rows;
     }
     
+
+    function manualDecisionLabel(decision) {
+        const clean = String(decision || "").toLowerCase();
+        if (clean === "manual_verified") return "Verified";
+        if (clean === "not_indexed_but_plausible") return "Plausible";
+        if (clean === "manual_not_verified") return "Not verified";
+        if (clean === "keep_needs_review") return "Needs review";
+        return clean ? clean.replaceAll("_", " ") : "";
+    }
+
+    function manualDecisionAction(decision) {
+        const clean = String(decision || "").toLowerCase();
+        if (clean === "manual_verified") return "manual-verified";
+        if (clean === "not_indexed_but_plausible") return "manual-plausible";
+        if (clean === "manual_not_verified") return "manual-not-verified";
+        if (clean === "keep_needs_review") return "manual-needs-review";
+        return "";
+    }
+
+    function applyManualDecisionUI(index, decision) {
+        const card = document.querySelector(`.manual-card[data-manual-index="${index}"]`);
+        if (!card) return;
+
+        const label = manualDecisionLabel(decision);
+        if (!label) return;
+
+        card.classList.add("manual-decision-made");
+        card.dataset.manualDecision = decision;
+
+        const decisionActions = card.querySelectorAll(".manual-decision-action");
+        decisionActions.forEach(btn => {
+            btn.disabled = true;
+            btn.classList.add("locked-choice");
+            btn.classList.remove("selected-decision");
+        });
+
+        let selected = null;
+        const mainAction = manualDecisionAction(decision);
+        if (mainAction) {
+            selected = card.querySelector(`.manual-decision-action[data-action="${mainAction}"]`);
+        }
+        if (!selected && String(decision).toLowerCase() === "manual_verified") {
+            selected = card.querySelector('.manual-decision-action[data-action="manual-verified-candidate"]');
+        }
+
+        if (selected) {
+            selected.disabled = false;
+            selected.classList.remove("locked-choice");
+            selected.classList.add("selected-decision");
+            selected.textContent = label;
+        }
+
+        const statusLine = card.querySelector(".manual-status-line");
+        if (statusLine) {
+            let badge = statusLine.querySelector(".manual-decision-badge");
+            if (!badge) {
+                badge = document.createElement("span");
+                badge.className = "badge verified manual-decision-badge";
+                statusLine.appendChild(badge);
+            }
+            badge.textContent = label;
+        }
+    }
+
+
     function renderManualVerification(data) {
         const box = $("manualVerificationBox") || $("enrichmentStatusBox");
         if (!box) return;
@@ -1945,7 +2435,8 @@ document.addEventListener("DOMContentLoaded", function () {
         const cards = manualVerifyRows.map((row, i) => {
             const query = manualQueryFromRow(row);
             const status = manualRowStatus(row);
-            const manualDecision = row.manual_decision_label || row.manual_decision || "";
+            const manualDecisionRaw = row.manual_decision || "";
+            const manualDecision = row.manual_decision_label || manualDecisionLabel(manualDecisionRaw);
     
             return `
                 <div class="manual-card" data-manual-index="${i}" style="border:1px solid #dbeafe; border-left:4px solid #4f46e5; border-radius:20px; padding:18px; margin:14px 0; background:#f8fbff;">
@@ -1953,9 +2444,9 @@ document.addEventListener("DOMContentLoaded", function () {
                         ${i + 1}. ${esc(query || "Reference not available")}
                     </h3>
     
-                    <div class="small-muted" style="margin-bottom:10px;">
+                    <div class="small-muted manual-status-line" style="margin-bottom:10px;">
                         Automated status: ${formatBadge(status)}
-                        ${manualDecision ? `<span class="badge verified" style="margin-left:8px;">${esc(manualDecision)}</span>` : ""}
+                        ${manualDecision ? `<span class="badge verified manual-decision-badge">${esc(manualDecision)}</span>` : ""}
                     </div>
     
                     <div class="small-muted" style="margin-bottom:10px;">Manual search:</div>
@@ -1972,19 +2463,19 @@ document.addEventListener("DOMContentLoaded", function () {
                             Search OpenAlex/Crossref/Semantic Scholar/DataCite
                         </button>
     
-                        <button class="btn btn-green manual-action" data-action="manual-verified" data-index="${i}">
+                        <button class="btn btn-green manual-action manual-decision-action" data-action="manual-verified" data-index="${i}">
                             Mark as manually verified
                         </button>
     
-                        <button class="btn btn-secondary manual-action" data-action="manual-plausible" data-index="${i}">
+                        <button class="btn btn-secondary manual-action manual-decision-action" data-action="manual-plausible" data-index="${i}">
                             Mark as plausible
                         </button>
     
-                        <button class="btn btn-secondary manual-action" data-action="manual-not-verified" data-index="${i}">
+                        <button class="btn btn-secondary manual-action manual-decision-action" data-action="manual-not-verified" data-index="${i}">
                             Not verified
                         </button>
     
-                        <button class="btn btn-outline manual-action" data-action="manual-needs-review" data-index="${i}">
+                        <button class="btn btn-outline manual-action manual-decision-action" data-action="manual-needs-review" data-index="${i}">
                             Keep as needs review
                         </button>
                     </div>
@@ -1995,14 +2486,19 @@ document.addEventListener("DOMContentLoaded", function () {
         }).join("");
     
         box.innerHTML = `
-            <div style="margin-bottom:12px;">
+            <div style="margin-bottom:10px;">
                 <strong>Manual Verification</strong><br>
                 <span class="small-muted">
-                    These references were not confidently verified automatically. Use the search links, review the source, then record your manual decision.
+                    These references were not confidently verified automatically. Use the search links, review the source, then record one manual decision.
                 </span>
             </div>
             ${cards}
         `;
+
+        manualVerifyRows.forEach((row, idx) => {
+            const decision = row.manual_decision || "";
+            if (decision) applyManualDecisionUI(idx, decision);
+        });
     }
 
     async function runManualSourceSearch(index) {
@@ -2060,7 +2556,7 @@ document.addEventListener("DOMContentLoaded", function () {
                         ${c.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(c.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : ""}
                         ${c.url ? `<div><a class="doi-link" href="${esc(c.url)}" target="_blank" rel="noopener">Open source</a></div>` : ""}
     
-                        <button class="btn btn-green manual-action" data-action="manual-verified-candidate" data-index="${index}" data-candidate-index="${cIndex}" style="margin-top:8px;">
+                        <button class="btn btn-green manual-action manual-decision-action" data-action="manual-verified-candidate" data-index="${index}" data-candidate-index="${cIndex}" style="margin-top:8px;">
                             Mark this source as manually verified
                         </button>
                     </div>
@@ -2142,29 +2638,42 @@ document.addEventListener("DOMContentLoaded", function () {
             return;
         }
     
-        if (action === "manual-verified") {
-            saveManualDecision(index, "manual_verified", {});
+        const decisionMap = {
+            "manual-verified": "manual_verified",
+            "manual-plausible": "not_indexed_but_plausible",
+            "manual-not-verified": "manual_not_verified",
+            "manual-needs-review": "keep_needs_review"
+        };
+
+        if (decisionMap[action]) {
+            const decision = decisionMap[action];
+            const card = document.querySelector(`.manual-card[data-manual-index="${index}"]`);
+            const existingDecision = card?.dataset?.manualDecision || "";
+            if (existingDecision && existingDecision !== decision) {
+                setStatus("Only one manual decision can be recorded for each reference.", "warn");
+                return;
+            }
+
+            applyManualDecisionUI(index, decision);
+            saveManualDecision(index, decision, {});
             return;
         }
-    
-        if (action === "manual-plausible") {
-            saveManualDecision(index, "not_indexed_but_plausible", {});
-            return;
-        }
-    
-        if (action === "manual-not-verified") {
-            saveManualDecision(index, "manual_not_verified", {});
-            return;
-        }
-    
-        if (action === "manual-needs-review") {
-            saveManualDecision(index, "keep_needs_review", {});
-            return;
-        }
-    
+
         if (action === "manual-verified-candidate") {
+            const card = document.querySelector(`.manual-card[data-manual-index="${index}"]`);
+            const existingDecision = card?.dataset?.manualDecision || "";
+            if (existingDecision && existingDecision !== "manual_verified") {
+                setStatus("Only one manual decision can be recorded for each reference.", "warn");
+                return;
+            }
+
             const cIndex = Number(btn.dataset.candidateIndex);
             const candidate = (manualSearchCandidates[index] || [])[cIndex] || {};
+            applyManualDecisionUI(index, "manual_verified");
+            btn.disabled = false;
+            btn.classList.remove("locked-choice");
+            btn.classList.add("selected-decision");
+            btn.textContent = "Verified";
             saveManualDecision(index, "manual_verified", candidate);
         }
     });
