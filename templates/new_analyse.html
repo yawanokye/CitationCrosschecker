@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Upload Manuscript | CiteIntegrity</title>
-    <meta name="description" content="Upload a thesis, dissertation, or manuscript for citation integrity analysis.">
+    <title>Analyse Manuscript | CiteIntegrity</title>
+    <meta name="description" content="Upload a thesis, dissertation, article, or manuscript for citation integrity analysis with CiteIntegrity.">
 
     <style>
         :root {
@@ -34,9 +34,9 @@
 
         body {
             font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-            background: var(--soft-bg);
+            background: linear-gradient(180deg, #ffffff 0%, var(--soft-bg) 42%, #ffffff 100%);
             color: var(--navy);
-            line-height: 1.6;
+            line-height: 1.55;
             font-size: 15px;
         }
 
@@ -49,7 +49,7 @@
             position: sticky;
             top: 0;
             z-index: 50;
-            background: rgba(255, 255, 255, 0.94);
+            background: rgba(255, 255, 255, 0.96);
             backdrop-filter: blur(14px);
             border-bottom: 1px solid var(--line);
         }
@@ -57,49 +57,49 @@
         .header-inner {
             max-width: 1220px;
             margin: 0 auto;
-            padding: 16px 24px;
+            padding: 10px 24px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 20px;
+            gap: 18px;
         }
 
         .brand {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
             min-width: max-content;
         }
 
         .brand-mark {
-            width: 56px;
-            height: 38px;
+            width: 46px;
+            height: 32px;
             display: block;
         }
 
         .brand-name {
-            font-size: 22px;
-            font-weight: 800;
-            letter-spacing: -0.5px;
+            font-size: 21px;
+            font-weight: 900;
+            letter-spacing: -0.6px;
         }
 
         .brand-badge {
-            background: var(--blue-soft);
-            color: var(--blue);
-            padding: 5px 12px;
+            background: var(--green-soft);
+            color: var(--green-dark);
+            padding: 5px 11px;
             border-radius: 999px;
             font-size: 12px;
-            font-weight: 700;
+            font-weight: 850;
             white-space: nowrap;
         }
 
         .nav {
             display: flex;
             align-items: center;
-            gap: 22px;
+            gap: 18px;
             color: var(--slate);
             font-size: 14px;
-            font-weight: 650;
+            font-weight: 750;
         }
 
         .nav a:hover {
@@ -109,7 +109,7 @@
         .nav-cta {
             background: var(--navy);
             color: white !important;
-            padding: 10px 18px;
+            padding: 9px 16px;
             border-radius: 999px;
             box-shadow: var(--shadow-soft);
         }
@@ -131,57 +131,62 @@
         }
 
         .page-hero {
-            padding: 54px 0 26px;
+            padding: 28px 0 12px;
             text-align: center;
         }
 
-        .preview-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: #fff7ed;
-            border: 1px solid #fed7aa;
-            color: #c2410c;
-            border-radius: 999px;
-            padding: 8px 14px;
-            font-weight: 800;
-            font-size: 13px;
-            margin-bottom: 14px;
-        }
-
         .page-hero h1 {
-            font-size: clamp(34px, 5vw, 56px);
-            line-height: 1.08;
-            font-weight: 900;
-            letter-spacing: -1.5px;
-            margin-bottom: 14px;
+            font-size: clamp(30px, 4.4vw, 48px);
+            line-height: 1.05;
+            font-weight: 950;
+            letter-spacing: -1.7px;
+            margin-bottom: 10px;
         }
 
         .page-hero p {
-            max-width: 760px;
+            max-width: 790px;
             margin: 0 auto;
             color: #475569;
-            font-size: 18px;
+            font-size: 16px;
+        }
+
+        .trust-line {
+            margin: 14px auto 0;
+            max-width: 850px;
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .trust-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: white;
+            border: 1px solid var(--line);
+            color: var(--slate);
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 12px;
+            font-weight: 800;
+            box-shadow: var(--shadow-soft);
         }
 
         .layout {
             display: grid;
-            grid-template-columns: 1.45fr 0.75fr;
-            gap: 24px;
+            grid-template-columns: minmax(0, 1.28fr) 360px;
+            gap: 18px;
             align-items: start;
-            padding: 28px 0 60px;
+            padding: 18px 0 42px;
         }
 
         .card {
             background: white;
             border: 1px solid var(--line);
-            border-radius: 28px;
+            border-radius: 24px;
             box-shadow: var(--shadow-soft);
-            padding: 26px;
-        }
-
-        .upload-card {
-            min-height: 460px;
+            padding: 20px;
         }
 
         .card-title {
@@ -189,11 +194,11 @@
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            margin-bottom: 18px;
+            margin-bottom: 14px;
         }
 
         .card-title h2 {
-            font-size: 22px;
+            font-size: 20px;
             font-weight: 900;
             letter-spacing: -0.4px;
         }
@@ -201,7 +206,7 @@
         .small-pill {
             background: var(--green-soft);
             color: var(--green-dark);
-            padding: 6px 12px;
+            padding: 5px 11px;
             border-radius: 999px;
             font-size: 12px;
             font-weight: 850;
@@ -210,8 +215,8 @@
 
         .file-area {
             border: 2px dashed #cbd5e1;
-            border-radius: 24px;
-            padding: 42px 22px;
+            border-radius: 22px;
+            padding: 30px 20px;
             text-align: center;
             background: #fbfdff;
             cursor: pointer;
@@ -231,14 +236,14 @@
         }
 
         .file-icon {
-            font-size: 48px;
-            margin-bottom: 12px;
+            font-size: 40px;
+            margin-bottom: 8px;
         }
 
         .file-main {
             font-size: 17px;
-            font-weight: 850;
-            margin-bottom: 6px;
+            font-weight: 900;
+            margin-bottom: 5px;
         }
 
         .file-sub {
@@ -249,9 +254,9 @@
         }
 
         .file-name {
-            margin-top: 14px;
+            margin-top: 11px;
             color: var(--green-dark);
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 850;
             word-break: break-word;
         }
@@ -261,29 +266,29 @@
         }
 
         .helper-box {
-            margin-top: 16px;
+            margin-top: 12px;
             background: #f8fafc;
             border: 1px solid #eef2f6;
-            border-radius: 18px;
-            padding: 14px 16px;
+            border-radius: 16px;
+            padding: 11px 14px;
             color: var(--slate);
-            font-size: 13px;
+            font-size: 12.5px;
         }
 
         .options-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-            margin-top: 18px;
+            gap: 10px;
+            margin-top: 12px;
         }
 
         .option-card {
             border: 1px solid var(--line);
             background: #fbfdff;
-            border-radius: 18px;
-            padding: 14px;
+            border-radius: 16px;
+            padding: 11px;
             display: flex;
-            gap: 10px;
+            gap: 9px;
             align-items: flex-start;
             cursor: pointer;
         }
@@ -295,46 +300,49 @@
 
         .option-card strong {
             display: block;
-            font-size: 14px;
-            margin-bottom: 3px;
+            font-size: 13px;
+            margin-bottom: 2px;
         }
 
         .option-card span {
             display: block;
             color: var(--slate);
-            font-size: 12px;
-            line-height: 1.4;
+            font-size: 11.5px;
+            line-height: 1.35;
         }
 
         .progress-panel {
             display: grid;
-            gap: 12px;
-            margin-top: 18px;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-top: 12px;
         }
 
         .step {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             background: #f8fafc;
             border: 1px solid #eef2f6;
-            border-radius: 16px;
-            padding: 12px 14px;
+            border-radius: 14px;
+            padding: 10px;
             color: var(--slate);
-            font-weight: 750;
-            font-size: 13px;
+            font-weight: 800;
+            font-size: 12px;
+            min-height: 48px;
         }
 
         .step .circle {
-            width: 26px;
-            height: 26px;
+            width: 24px;
+            height: 24px;
             border-radius: 999px;
             background: #e2e8f0;
             color: #475569;
             display: grid;
             place-items: center;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 900;
+            flex: 0 0 auto;
         }
 
         .step.active {
@@ -361,7 +369,7 @@
 
         .button-row {
             display: grid;
-            gap: 12px;
+            gap: 10px;
         }
 
         .btn {
@@ -369,11 +377,11 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 9px;
-            padding: 14px 22px;
+            gap: 8px;
+            padding: 13px 18px;
             border-radius: 999px;
-            font-weight: 850;
-            font-size: 15px;
+            font-weight: 900;
+            font-size: 14px;
             border: 1px solid transparent;
             cursor: pointer;
             transition: 0.2s ease;
@@ -385,16 +393,9 @@
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, var(--navy), #1e3a5f);
+            background: linear-gradient(135deg, var(--navy), #1e3a8a);
             color: white;
             box-shadow: 0 14px 30px rgba(15, 23, 42, 0.20);
-        }
-
-        .btn-secondary {
-            background: white;
-            color: var(--navy);
-            border-color: var(--line);
-            box-shadow: var(--shadow-soft);
         }
 
         .btn-green {
@@ -411,17 +412,17 @@
         }
 
         .status-box {
-            margin-top: 16px;
-            border-radius: 18px;
-            padding: 14px 16px;
+            margin-top: 12px;
+            border-radius: 16px;
+            padding: 12px 14px;
             background: #f8fafc;
             border: 1px solid #eef2f6;
         }
 
         .status {
             color: var(--slate);
-            font-weight: 750;
-            font-size: 13px;
+            font-weight: 800;
+            font-size: 12.5px;
         }
 
         .status.good { color: var(--green-dark); }
@@ -431,12 +432,12 @@
 
         .progress-wrap {
             display: none;
-            margin-top: 14px;
+            margin-top: 11px;
         }
 
         .progress-track {
             width: 100%;
-            height: 9px;
+            height: 8px;
             background: #e2e8f0;
             border-radius: 999px;
             overflow: hidden;
@@ -451,79 +452,85 @@
         }
 
         .progress-text {
-            margin-top: 8px;
+            margin-top: 7px;
             font-size: 12px;
             color: var(--slate);
             font-weight: 750;
         }
 
         .queue-box {
-            margin-top: 16px;
+            margin-top: 12px;
             background: #eff6ff;
             border: 1px solid #bfdbfe;
             color: #1d4ed8;
-            border-radius: 18px;
-            padding: 13px 15px;
-            font-size: 13px;
+            border-radius: 16px;
+            padding: 11px 13px;
+            font-size: 12.5px;
+            font-weight: 800;
+        }
+
+        .trust-badge {
+            margin-top: 12px;
+            padding: 12px 13px;
+            border-radius: 16px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            color: var(--slate);
+            font-size: 12.5px;
             font-weight: 750;
         }
 
         .feature-list {
             display: grid;
-            gap: 14px;
-            margin-top: 10px;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 4px;
         }
 
         .feature-item {
             display: flex;
-            gap: 12px;
-            padding: 14px;
-            border-radius: 18px;
+            gap: 10px;
+            padding: 11px;
+            border-radius: 16px;
             background: #f8fafc;
             border: 1px solid #eef2f6;
         }
 
         .feature-icon {
-            width: 38px;
-            height: 38px;
-            border-radius: 14px;
+            width: 34px;
+            height: 34px;
+            border-radius: 13px;
             background: var(--green-soft);
             display: grid;
             place-items: center;
             flex: 0 0 auto;
-            font-size: 19px;
+            font-size: 17px;
         }
 
         .feature-item strong {
             display: block;
-            font-size: 14px;
+            font-size: 13px;
             margin-bottom: 2px;
         }
 
         .feature-item span {
             color: var(--slate);
-            font-size: 12.5px;
-            line-height: 1.4;
+            font-size: 11.5px;
+            line-height: 1.35;
         }
 
-        .trust-badge {
-            margin-top: 16px;
-            padding: 14px;
-            border-radius: 18px;
-            background: #f8fafc;
-            border: 1px solid #eef2f6;
-            color: var(--slate);
-            font-size: 13px;
-            font-weight: 700;
+        .side-stack {
+            display: grid;
+            gap: 16px;
         }
 
         .footer {
             border-top: 1px solid var(--line);
             background: white;
-            padding: 30px 24px;
+            padding: 20px 24px;
             color: var(--slate);
             text-align: center;
-            font-size: 13px;
+            font-size: 12.5px;
         }
 
         .footer a {
@@ -534,21 +541,29 @@
         .footer-links {
             display: flex;
             justify-content: center;
-            gap: 18px;
+            gap: 16px;
             flex-wrap: wrap;
-            margin-top: 8px;
+            margin-top: 6px;
         }
 
-        @media (max-width: 980px) {
+        @media (max-width: 1080px) {
             .layout {
                 grid-template-columns: 1fr;
             }
 
+            .side-stack {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 860px) {
             .brand-badge {
                 display: none;
             }
 
-            .options-grid {
+            .progress-panel,
+            .feature-list,
+            .side-stack {
                 grid-template-columns: 1fr;
             }
         }
@@ -576,17 +591,25 @@
                 display: flex;
             }
 
+            .container {
+                padding: 0 16px;
+            }
+
             .page-hero {
-                padding: 42px 0 18px;
+                padding: 24px 0 10px;
             }
 
             .card {
-                padding: 20px;
+                padding: 16px;
                 border-radius: 22px;
             }
 
             .file-area {
-                padding: 32px 18px;
+                padding: 26px 16px;
+            }
+
+            .options-grid {
+                grid-template-columns: 1fr;
             }
         }
     </style>
@@ -603,7 +626,7 @@
                 <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span class="brand-name">CiteIntegrity</span>
-            <span class="brand-badge">Manuscript and Thesis Readiness Platform</span>
+            <span class="brand-badge">Citation Integrity Analysis</span>
         </a>
 
         <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
@@ -613,7 +636,7 @@
             <a href="/new#features">Features</a>
             <a href="/new#pricing">Pricing</a>
             <a href="/privacy">Privacy</a>
-            <a href="/" class="nav-cta">Old Interface</a>
+            <a href="/new#faq" class="nav-cta">FAQ</a>
         </nav>
     </div>
 </header>
@@ -621,11 +644,16 @@
 <main>
     <section class="page-hero">
         <div class="container">
-            <div class="preview-badge">New upload page preview. Old interface remains active.</div>
-            <h1>Upload your manuscript for citation integrity analysis</h1>
+            <h1>Analyse your manuscript for citation integrity</h1>
             <p>
-                Analyse citation-reference matching, missing citations, uncited references, ACII readiness, and optional online verification.
+                Upload a DOCX manuscript to check citation-reference matching, missing citations, uncited references, ACII readiness, and optional online verification.
             </p>
+            <div class="trust-line" aria-label="CiteIntegrity assurances">
+                <span class="trust-pill">🔒 Private processing</span>
+                <span class="trust-pill">✓ Review-only suggestions</span>
+                <span class="trust-pill">✓ Exportable results</span>
+                <span class="trust-pill">✓ No plagiarism database submission</span>
+            </div>
         </div>
     </section>
 
@@ -642,14 +670,14 @@
                     <div class="file-icon">📑</div>
                     <div class="file-main">Drag and drop your manuscript here</div>
                     <div class="file-sub">
-                        Upload a thesis, dissertation, project report, or journal manuscript in DOCX format.
+                        Upload a thesis, dissertation, project report, article, or journal manuscript in DOCX format.
                     </div>
                     <div class="file-name" id="fileName"></div>
                     <input type="file" id="file" accept=".docx">
                 </div>
 
                 <div class="helper-box">
-                    <strong>PDF users:</strong> Open the PDF in Microsoft Word, then save it as DOCX before uploading. DOCX gives better citation and reference extraction.
+                    <strong>PDF users:</strong> Open the PDF in Microsoft Word and save it as DOCX before uploading. DOCX gives better citation and reference extraction.
                 </div>
 
                 <div class="options-grid">
@@ -673,12 +701,12 @@
                 <div class="progress-panel">
                     <div class="step" id="stepUpload"><span class="circle">1</span> Document selected</div>
                     <div class="step" id="stepQueue"><span class="circle">2</span> Document queued</div>
-                    <div class="step" id="stepProcess"><span class="circle">3</span> Citation analysis running</div>
+                    <div class="step" id="stepProcess"><span class="circle">3</span> Analysis running</div>
                     <div class="step" id="stepDone"><span class="circle">4</span> Results ready</div>
                 </div>
             </div>
 
-            <aside>
+            <aside class="side-stack">
                 <div class="card">
                     <div class="card-title">
                         <h2>Run analysis</h2>
@@ -686,7 +714,6 @@
 
                     <div class="button-row">
                         <button class="btn btn-primary" id="btnCheck" disabled>📊 Analyse Document</button>
-                        <a class="btn btn-secondary" href="/new">Back to Landing Page</a>
                     </div>
 
                     <div class="status-box">
@@ -705,11 +732,11 @@
                     </div>
 
                     <div class="trust-badge">
-                        🔒 Your document is processed securely. Do not store manuscripts permanently unless your Privacy Policy states a specific retention period.
+                        🔒 Your document is processed securely and used only for citation integrity analysis.
                     </div>
                 </div>
 
-                <div class="card" style="margin-top: 20px;">
+                <div class="card">
                     <div class="card-title">
                         <h2>What this checks</h2>
                     </div>
@@ -735,7 +762,7 @@
                             <div class="feature-icon">📈</div>
                             <div>
                                 <strong>ACII readiness</strong>
-                                <span>Prepare data for citation integrity scoring and dashboard review.</span>
+                                <span>Prepare citation integrity scoring and dashboard review.</span>
                             </div>
                         </div>
 
@@ -755,11 +782,11 @@
 </main>
 
 <footer class="footer">
-    <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
+    <p>© 2026 CiteIntegrity. Thesis, manuscript readiness and citation integrity analysis platform.</p>
     <div class="footer-links">
-        <a href="/new">New Landing Page</a>
+        <a href="/new">Landing Page</a>
         <a href="/privacy">Privacy Policy</a>
-        <a href="/">Old Interface</a>
+        <a href="/new#pricing">Pricing</a>
     </div>
 </footer>
 
@@ -1057,7 +1084,7 @@ document.addEventListener("DOMContentLoaded", function () {
     updateQueueStatus();
     setInterval(updateQueueStatus, 8000);
 
-    console.log("[CiteIntegrity] New analyse page ready");
+    console.log("[CiteIntegrity] Commercial analyse page ready");
 });
 </script>
 
