@@ -3,42 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Results Dashboard | CiteIntegrity</title>
-    <meta name="description" content="CiteIntegrity results dashboard for citation integrity, verification, recovery, claim support, and ACII review.">
+    <title>CiteIntegrity | Citation Checker, Reference Verifier and Source Finder</title>
+    <meta name="description" content="CiteIntegrity helps students, supervisors, researchers and journals check citation integrity, verify references, recover missing sources, assess claim support and generate submission-ready reports.">
+    <meta name="keywords" content="citation checker, reference verifier, source finder, fake citation checker, thesis citation checker, manuscript reference checker, APA citation checker, Harvard citation checker, citation integrity">
 
     <style>
         :root {
             --navy: #0f172a;
-            --navy-soft: #1e293b;
+            --navy-2: #172554;
             --blue: #2563eb;
-            --blue-soft: #eff6ff;
+            --blue-2: #1d4ed8;
             --green: #19b36b;
-            --green-dark: #13855a;
-            --green-soft: #ecfdf5;
-            --amber: #f59e0b;
-            --amber-soft: #fffbeb;
-            --red: #ef4444;
-            --red-soft: #fef2f2;
+            --green-dark: #128457;
             --slate: #64748b;
+            --slate-dark: #334155;
             --line: #e2e8f0;
-            --soft-bg: #f8fafc;
+            --soft: #f8fafc;
+            --soft-blue: #eff6ff;
+            --soft-green: #ecfdf5;
+            --amber: #f59e0b;
+            --red: #ef4444;
             --white: #ffffff;
-            --shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
-            --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+            --shadow: 0 24px 70px rgba(15, 23, 42, 0.12);
+            --shadow-soft: 0 12px 30px rgba(15, 23, 42, 0.08);
+            --radius: 28px;
         }
 
         * {
+            box-sizing: border-box;
             margin: 0;
             padding: 0;
-            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
         }
 
         body {
             font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-            background: var(--soft-bg);
             color: var(--navy);
-            line-height: 1.5;
-            font-size: 14px;
+            background: var(--white);
+            line-height: 1.55;
+            overflow-x: hidden;
         }
 
         a {
@@ -46,19 +52,35 @@
             text-decoration: none;
         }
 
+        img, svg {
+            max-width: 100%;
+        }
+
+        .top-notice {
+            background: linear-gradient(90deg, #0f172a, #172554, #0f172a);
+            color: rgba(255,255,255,0.92);
+            text-align: center;
+            font-size: 13px;
+            padding: 9px 16px;
+        }
+
+        .top-notice strong {
+            color: white;
+        }
+
         .site-header {
             position: sticky;
             top: 0;
             z-index: 50;
-            background: rgba(255, 255, 255, 0.94);
-            backdrop-filter: blur(14px);
-            border-bottom: 1px solid var(--line);
+            background: rgba(255,255,255,0.92);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(226,232,240,0.85);
         }
 
         .header-inner {
-            max-width: 1500px;
+            max-width: 1240px;
             margin: 0 auto;
-            padding: 14px 24px;
+            padding: 14px 22px;
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -68,2472 +90,1567 @@
         .brand {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 11px;
             min-width: max-content;
         }
 
         .brand-mark {
-            width: 54px;
-            height: 36px;
+            width: 48px;
+            height: 34px;
             display: block;
         }
 
         .brand-name {
-            font-size: 21px;
-            font-weight: 850;
-            letter-spacing: -0.5px;
+            font-weight: 900;
+            font-size: 22px;
+            letter-spacing: -0.7px;
         }
 
-        .brand-badge {
-            background: #e8f0fe;
-            color: var(--blue);
-            padding: 5px 12px;
+        .brand-sub {
+            display: inline-flex;
+            padding: 4px 9px;
             border-radius: 999px;
-            font-size: 12px;
-            font-weight: 800;
+            background: var(--soft-green);
+            color: var(--green-dark);
+            font-size: 11px;
+            font-weight: 850;
             white-space: nowrap;
         }
 
         .nav {
             display: flex;
             align-items: center;
-            gap: 18px;
-            color: var(--slate);
+            gap: 22px;
+            color: var(--slate-dark);
+            font-weight: 750;
             font-size: 14px;
-            font-weight: 700;
         }
 
         .nav a:hover {
-            color: var(--navy);
+            color: var(--blue);
         }
 
-        .nav-cta {
-            background: var(--navy);
-            color: white !important;
-            padding: 10px 18px;
-            border-radius: 999px;
-            box-shadow: var(--shadow-soft);
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
         .mobile-toggle {
             display: none;
             border: 1px solid var(--line);
             background: white;
-            border-radius: 12px;
+            color: var(--navy);
+            border-radius: 13px;
             padding: 8px 11px;
-            cursor: pointer;
             font-size: 18px;
-        }
-
-        .container {
-            max-width: 1500px;
-            margin: 0 auto;
-            padding: 22px 24px 48px;
-        }
-
-        .topbar {
-            display: grid;
-            grid-template-columns: 1fr auto;
-            gap: 18px;
-            align-items: start;
-            margin-bottom: 18px;
-        }
-
-        .page-title h1 {
-            font-size: clamp(28px, 4vw, 42px);
-            line-height: 1.1;
-            font-weight: 900;
-            letter-spacing: -1px;
-            margin-bottom: 8px;
-        }
-
-        .page-title p {
-            color: var(--slate);
-            font-size: 15px;
-        }
-
-        .status-box {
-            margin-top: 12px;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: white;
-            border: 1px solid var(--line);
-            border-radius: 999px;
-            padding: 9px 14px;
-            box-shadow: var(--shadow-soft);
-            font-weight: 750;
-            color: var(--slate);
-        }
-
-        .status.good { color: var(--green-dark); }
-        .status.warn { color: #c2410c; }
-        .status.bad { color: var(--red); }
-        .status.info { color: var(--blue); }
-
-        .actions {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
+            cursor: pointer;
         }
 
         .btn {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            padding: 11px 16px;
-            border-radius: 999px;
+            gap: 9px;
             border: 1px solid transparent;
+            border-radius: 999px;
+            padding: 13px 20px;
             font-weight: 850;
-            font-size: 13px;
             cursor: pointer;
+            transition: 0.22s ease;
             font-family: inherit;
-            transition: 0.2s ease;
             white-space: nowrap;
         }
 
-        .btn:hover:not(:disabled) {
+        .btn:hover {
             transform: translateY(-2px);
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, var(--navy), #1e3a5f);
+            background: linear-gradient(135deg, var(--navy), var(--blue-2));
             color: white;
-            box-shadow: 0 10px 22px rgba(15, 23, 42, 0.18);
+            box-shadow: 0 16px 36px rgba(37, 99, 235, 0.24);
         }
 
         .btn-green {
             background: linear-gradient(135deg, var(--green), var(--green-dark));
             color: white;
-            box-shadow: 0 10px 22px rgba(25, 179, 107, 0.20);
+            box-shadow: 0 16px 36px rgba(25, 179, 107, 0.24);
         }
 
-        .btn-secondary {
+        .btn-light {
             background: white;
             color: var(--navy);
             border-color: var(--line);
             box-shadow: var(--shadow-soft);
         }
 
-        .btn-outline {
+        .btn-ghost {
             background: transparent;
-            color: var(--navy-soft);
-            border-color: #cbd5e1;
+            color: var(--slate-dark);
+            border-color: var(--line);
         }
 
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
-        }
-
-        .progress-card {
-            display: none;
-            background: white;
-            border: 1px solid var(--line);
-            border-radius: 22px;
-            padding: 16px;
-            box-shadow: var(--shadow-soft);
-            margin-bottom: 18px;
-        }
-
-        .progress-track {
-            width: 100%;
-            height: 10px;
-            background: #e2e8f0;
-            border-radius: 999px;
+        .page {
+            position: relative;
             overflow: hidden;
         }
 
-        .progress-bar {
-            width: 0%;
-            height: 100%;
-            background: linear-gradient(90deg, var(--green), var(--green-dark));
-            border-radius: 999px;
-            transition: width 0.25s ease;
+        .hero-wrap {
+            position: relative;
+            background:
+                radial-gradient(circle at 15% 10%, rgba(37,99,235,0.10), transparent 30%),
+                radial-gradient(circle at 92% 15%, rgba(25,179,107,0.12), transparent 34%),
+                linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+            border-bottom: 1px solid #edf2f7;
         }
 
-        .progress-text {
-            margin-top: 8px;
-            color: var(--slate);
-            font-weight: 750;
-            font-size: 13px;
+        .section {
+            max-width: 1240px;
+            margin: 0 auto;
+            padding: 86px 22px;
         }
 
-        .insights-grid {
+        .hero {
             display: grid;
-            grid-template-columns: 300px minmax(0, 1fr);
-            gap: 12px;
-            align-items: stretch;
-            margin-bottom: 14px;
-        }
-
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: 250px minmax(0, 1fr);
-            gap: 12px;
-            align-items: start;
-            background: white;
-            border: 1px solid var(--line);
-            border-radius: 28px;
-            box-shadow: var(--shadow-soft);
-            padding: 12px;
-        }
-
-        .sidebar {
-            position: sticky;
-            top: 82px;
-            display: grid;
-            gap: 10px;
-        }
-
-        .card {
-            background: white;
-            border: 1px solid var(--line);
-            border-radius: 26px;
-            box-shadow: var(--shadow-soft);
-            padding: 20px;
-        }
-
-        .dashboard-grid .card {
-            box-shadow: none;
-            border-radius: 20px;
-            padding: 14px;
-        }
-
-        .insights-panel {
-            display: grid;
-            align-content: start;
-            min-width: 0;
-        }
-
-        .insights-grid .kpi-grid {
-            grid-template-columns: repeat(4, minmax(120px, 1fr));
-        }
-
-        .insights-grid .kpi {
-            padding: 12px 10px;
-            border-radius: 16px;
-        }
-
-        .insights-grid .kpi-value {
-            font-size: 26px;
-        }
-
-        .workspace-label {
-            display: flex;
+            grid-template-columns: minmax(0, 980px);
+            justify-content: center;
+            text-align: center;
+            gap: 28px;
             align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            margin-bottom: 10px;
+            min-height: 650px;
+            padding-top: 70px;
+            padding-bottom: 70px;
         }
 
-        .workspace-label h2 {
-            font-size: 17px;
-            font-weight: 900;
-            letter-spacing: -0.3px;
-        }
-
-        .workspace-label p {
-            color: var(--slate);
-            font-size: 12px;
-        }
-
-        .acii-card {
-            background: linear-gradient(135deg, var(--navy), #1e3a5f);
-            color: white;
-            text-align: center;
-            border: none;
-        }
-
-        .insights-grid .acii-card {
-            display: grid;
-            align-content: center;
-            min-height: 210px;
-        }
-
-        .acii-score {
-            font-size: 54px;
-            line-height: 1;
-            font-weight: 950;
-            letter-spacing: -2px;
-            margin-top: 8px;
-        }
-
-        .acii-label {
-            margin-top: 8px;
-            color: rgba(255,255,255,0.84);
-            font-weight: 750;
-        }
-
-        .acii-rating {
+        .eyebrow {
             display: inline-flex;
-            margin-top: 14px;
-            padding: 7px 18px;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 12px;
             border-radius: 999px;
+            background: white;
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow-soft);
+            color: var(--slate-dark);
             font-size: 13px;
-            font-weight: 850;
-            background: var(--blue);
+            font-weight: 800;
+            margin-bottom: 22px;
         }
 
-        .acii-rating.excellent { background: #16a34a; }
-        .acii-rating.very-good { background: #22c55e; }
-        .acii-rating.good { background: #2563eb; }
-        .acii-rating.moderate { background: #f59e0b; }
-        .acii-rating.weak { background: #f97316; }
-        .acii-rating.poor { background: #ef4444; }
-
-        .acii-rec {
-            text-align: left;
-            margin-top: 16px;
-            background: rgba(255,255,255,0.12);
-            border-radius: 16px;
-            padding: 14px;
-            color: rgba(255,255,255,0.9);
-            font-size: 13px;
+        .eyebrow .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 0 5px rgba(25,179,107,0.12);
         }
 
-        .kpi-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-        }
-
-        .kpi {
-            background: #f8fafc;
-            border: 1px solid #eef2f6;
-            border-radius: 18px;
-            padding: 14px;
-            text-align: center;
-        }
-
-        .kpi-value {
-            font-size: 28px;
+        h1 {
+            font-size: clamp(48px, 6vw, 78px);
+            line-height: 0.98;
+            letter-spacing: -3.6px;
             font-weight: 950;
+            margin-bottom: 22px;
+        }
+
+        .text-gradient {
+            color: var(--blue);
+            position: relative;
+            display: inline-block;
+        }
+
+        .text-gradient::after {
+            content: "";
+            position: absolute;
+            left: 1%;
+            right: 2%;
+            bottom: 4px;
+            height: 12px;
+            background: rgba(37,99,235,0.16);
+            border-radius: 999px;
+            z-index: -1;
+            transform: rotate(-1.3deg);
+        }
+
+        .hero-copy {
+            font-size: 20px;
+            color: var(--slate-dark);
+            max-width: 820px;
+            margin: 0 auto 28px;
+        }
+
+        .hero-copy strong {
             color: var(--navy);
         }
 
-        .kpi-label {
-            margin-top: 4px;
-            font-size: 11px;
-            font-weight: 800;
-            color: var(--slate);
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 14px;
+            margin-bottom: 24px;
         }
 
-        .nav-tabs {
-            display: grid;
+        .trust-row {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .trust-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 8px 11px;
+            border: 1px solid var(--line);
+            background: rgba(255,255,255,0.78);
+            border-radius: 999px;
+            color: var(--slate-dark);
+            font-size: 13px;
+            font-weight: 750;
+        }
+
+        .hero-panel {
+            position: relative;
+        }
+
+        .product-card {
+            background: rgba(255,255,255,0.92);
+            border: 1px solid rgba(226,232,240,0.95);
+            border-radius: 34px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            transform: rotate(1deg);
+        }
+
+        .mock-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 18px;
+            border-bottom: 1px solid var(--line);
+            background: #f8fafc;
+        }
+
+        .traffic {
+            display: flex;
             gap: 7px;
         }
 
-        .tab-btn {
-            width: 100%;
-            text-align: left;
-            border: 1px solid #eef2f6;
-            background: #f8fafc;
-            border-radius: 13px;
-            padding: 10px 11px;
-            cursor: pointer;
-            font-family: inherit;
-            font-size: 13px;
-            font-weight: 850;
+        .traffic span {
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            background: #cbd5e1;
+        }
+
+        .traffic span:nth-child(1) { background: #ef4444; }
+        .traffic span:nth-child(2) { background: #f59e0b; }
+        .traffic span:nth-child(3) { background: #22c55e; }
+
+        .mock-title {
             color: var(--slate);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 8px;
+            font-weight: 800;
+            font-size: 13px;
         }
 
-        .tab-btn:hover {
-            background: #f0fdf4;
-            color: var(--green-dark);
+        .mock-content {
+            padding: 22px;
         }
 
-        .tab-btn.active {
-            background: var(--navy);
-            color: white;
-            border-color: var(--navy);
-        }
-
-        .count-pill {
-            background: rgba(100, 116, 139, 0.14);
-            color: inherit;
-            border-radius: 999px;
-            padding: 3px 8px;
-            font-size: 11px;
-            min-width: 34px;
-            text-align: center;
-        }
-
-        .main-panel {
-            min-width: 0;
-        }
-
-        .main-panel > .tab-pane > .card {
-            min-height: 560px;
-        }
-
-        .tab-pane {
-            display: none;
-        }
-
-        .tab-pane.active {
-            display: block;
-            animation: fadeIn 0.2s ease;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(4px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .section-title {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
+        .score-row {
+            display: grid;
+            grid-template-columns: 170px 1fr;
+            gap: 16px;
             margin-bottom: 16px;
         }
 
-        .section-title h2 {
-            font-size: 22px;
-            font-weight: 900;
-            letter-spacing: -0.4px;
+        .score-card {
+            background: linear-gradient(135deg, var(--navy), #1e3a8a);
+            border-radius: 24px;
+            padding: 20px;
+            color: white;
+            min-height: 150px;
         }
 
-        .section-title p {
+        .score-label {
+            color: rgba(255,255,255,0.74);
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .score-number {
+            font-size: 58px;
+            font-weight: 950;
+            letter-spacing: -2px;
+            line-height: 1;
+            margin: 11px 0;
+        }
+
+        .score-badge {
+            display: inline-flex;
+            background: var(--green);
+            padding: 5px 11px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 850;
+        }
+
+        .mini-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .mini-card {
+            border: 1px solid #e9eef6;
+            background: #fbfdff;
+            border-radius: 18px;
+            padding: 14px;
+        }
+
+        .mini-value {
+            font-size: 27px;
+            font-weight: 950;
+            letter-spacing: -0.7px;
+        }
+
+        .mini-label {
             color: var(--slate);
-            margin-top: 4px;
+            font-size: 11px;
+            font-weight: 800;
+        }
+
+        .mock-table {
+            border: 1px solid #e9eef6;
+            border-radius: 18px;
+            overflow: hidden;
+            margin-top: 12px;
+        }
+
+        .mock-table-row {
+            display: grid;
+            grid-template-columns: 105px 1fr 86px;
+            gap: 10px;
+            padding: 12px 14px;
+            border-bottom: 1px solid #eef2f6;
+            font-size: 12px;
+            align-items: center;
+        }
+
+        .mock-table-row:last-child {
+            border-bottom: none;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            width: max-content;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 900;
+        }
+
+        .ok { background: var(--soft-green); color: var(--green-dark); }
+        .warn { background: #fff7ed; color: #c2410c; }
+        .bad { background: #fef2f2; color: #b91c1c; }
+        .info { background: var(--soft-blue); color: var(--blue-2); }
+
+        .floating-card {
+            position: absolute;
+            left: -24px;
+            bottom: 32px;
+            width: 250px;
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            box-shadow: var(--shadow);
+            padding: 16px;
+            transform: rotate(-4deg);
+        }
+
+        .floating-card strong {
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .floating-card p {
+            color: var(--slate);
             font-size: 13px;
         }
 
-        .filters {
+        .trust-statement-band {
+            background: white;
+            border-bottom: 1px solid #edf2f7;
+        }
+
+        .trust-statement {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 26px 22px;
+        }
+
+        .trust-statement-card {
+            display: grid;
+            grid-template-columns: 58px 1fr;
+            gap: 18px;
+            align-items: center;
+            background: linear-gradient(135deg, #f8fafc, #ffffff);
+            border: 1px solid var(--line);
+            border-radius: 26px;
+            padding: 22px 24px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .trust-statement-icon {
+            width: 58px;
+            height: 58px;
+            display: grid;
+            place-items: center;
+            border-radius: 20px;
+            background: var(--soft-green);
+            color: var(--green-dark);
+            font-size: 28px;
+            font-weight: 950;
+        }
+
+        .trust-statement-card h2 {
+            font-size: 22px;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .trust-statement-card p {
+            color: var(--slate-dark);
+            font-size: 16px;
+            max-width: 940px;
+        }
+
+        .logo-strip {
+            border-top: 1px solid #edf2f7;
+            background: white;
+        }
+
+        .logo-inner {
+            max-width: 1240px;
+            margin: 0 auto;
+            padding: 24px 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+            color: var(--slate);
+            font-size: 13px;
+            font-weight: 800;
+        }
+
+        .audience-pills {
             display: flex;
             gap: 10px;
             flex-wrap: wrap;
+        }
+
+        .audience-pills span {
+            padding: 8px 12px;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: #f8fafc;
+            color: var(--slate-dark);
+        }
+
+        .section-title {
+            text-align: center;
+            max-width: 820px;
+            margin: 0 auto 42px;
+        }
+
+        .section-title .small-title {
+            color: var(--blue);
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 1.3px;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+
+        .section-title h2 {
+            font-size: clamp(32px, 4.4vw, 52px);
+            line-height: 1.05;
+            letter-spacing: -2px;
+            font-weight: 950;
+            margin-bottom: 16px;
+        }
+
+        .section-title p {
+            color: var(--slate-dark);
+            font-size: 18px;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+        }
+
+        .feature-card {
+            border: 1px solid var(--line);
+            border-radius: 28px;
+            padding: 24px;
+            background: white;
+            box-shadow: var(--shadow-soft);
+            min-height: 250px;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            transition: 0.22s ease;
+            box-shadow: var(--shadow);
+        }
+
+        .icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 16px;
+            display: grid;
+            place-items: center;
+            background: var(--soft-blue);
+            color: var(--blue);
+            font-size: 23px;
+            margin-bottom: 16px;
+        }
+
+        .feature-card:nth-child(2n) .icon {
+            background: var(--soft-green);
+            color: var(--green-dark);
+        }
+
+        .feature-card h3 {
+            font-size: 20px;
+            margin-bottom: 9px;
+            letter-spacing: -0.4px;
+        }
+
+        .feature-card p {
+            color: var(--slate-dark);
             margin-bottom: 14px;
         }
 
-        .search-input, select {
-            border: 1px solid #cbd5e1;
+        .feature-list {
+            list-style: none;
+            display: grid;
+            gap: 8px;
+            color: var(--slate-dark);
+            font-size: 14px;
+        }
+
+        .feature-list li::before {
+            content: "✓";
+            color: var(--green-dark);
+            font-weight: 950;
+            margin-right: 8px;
+        }
+
+        .workflow {
+            background: var(--soft);
+            border-top: 1px solid #edf2f7;
+            border-bottom: 1px solid #edf2f7;
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+
+        .step {
+            position: relative;
             background: white;
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 23px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .step-number {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            display: grid;
+            place-items: center;
+            background: var(--navy);
+            color: white;
+            font-weight: 950;
+            margin-bottom: 15px;
+        }
+
+        .step h3 {
+            font-size: 18px;
+            margin-bottom: 7px;
+        }
+
+        .step p {
+            color: var(--slate-dark);
+            font-size: 14px;
+        }
+
+        .split {
+            display: grid;
+            grid-template-columns: 0.9fr 1.1fr;
+            gap: 36px;
+            align-items: center;
+        }
+
+        .proof-card {
+            background: linear-gradient(135deg, var(--navy), #1e3a8a);
+            color: white;
+            border-radius: 34px;
+            padding: 34px;
+            box-shadow: var(--shadow);
+        }
+
+        .proof-card h2 {
+            font-size: clamp(32px, 4vw, 48px);
+            line-height: 1.08;
+            letter-spacing: -1.6px;
+            margin-bottom: 16px;
+        }
+
+        .proof-card p {
+            color: rgba(255,255,255,0.82);
+            font-size: 17px;
+            margin-bottom: 22px;
+        }
+
+        .proof-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-top: 22px;
+        }
+
+        .proof-metric {
+            background: rgba(255,255,255,0.10);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 20px;
+            padding: 16px;
+        }
+
+        .proof-metric strong {
+            font-size: 28px;
+            display: block;
+            letter-spacing: -0.6px;
+        }
+
+        .use-cases {
+            display: grid;
+            gap: 14px;
+        }
+
+        .use-case {
+            display: grid;
+            grid-template-columns: 46px 1fr;
+            gap: 14px;
+            padding: 18px;
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            background: white;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .use-case .mini-icon {
+            width: 46px;
+            height: 46px;
+            display: grid;
+            place-items: center;
+            border-radius: 15px;
+            background: var(--soft-blue);
+        }
+
+        .use-case h3 {
+            font-size: 18px;
+            margin-bottom: 4px;
+        }
+
+        .use-case p {
+            color: var(--slate-dark);
+            font-size: 14px;
+        }
+
+        .privacy-band {
+            background:
+                radial-gradient(circle at 5% 10%, rgba(25,179,107,0.18), transparent 28%),
+                radial-gradient(circle at 95% 60%, rgba(37,99,235,0.13), transparent 34%),
+                #07111f;
+            color: white;
+        }
+
+        .privacy-panel {
+            display: grid;
+            grid-template-columns: 0.9fr 1.1fr;
+            gap: 34px;
+            align-items: center;
+        }
+
+        .privacy-panel h2 {
+            font-size: clamp(32px, 4vw, 50px);
+            line-height: 1.08;
+            letter-spacing: -1.6px;
+            margin-bottom: 16px;
+        }
+
+        .privacy-panel p {
+            color: rgba(255,255,255,0.76);
+            font-size: 17px;
+        }
+
+        .privacy-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 14px;
+        }
+
+        .privacy-item {
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.08);
+            border-radius: 22px;
+            padding: 20px;
+        }
+
+        .privacy-item strong {
+            display: block;
+            font-size: 17px;
+            margin-bottom: 7px;
+        }
+
+        .privacy-item span {
+            color: rgba(255,255,255,0.72);
+            font-size: 14px;
+        }
+
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 18px;
+            align-items: stretch;
+        }
+
+        .price-card {
+            position: relative;
+            border: 1px solid var(--line);
+            border-radius: 30px;
+            padding: 28px;
+            background: white;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .price-card.featured {
+            border-color: rgba(37,99,235,0.32);
+            box-shadow: var(--shadow);
+            transform: translateY(-8px);
+        }
+
+        .popular {
+            position: absolute;
+            top: 18px;
+            right: 18px;
+            padding: 6px 10px;
+            background: var(--soft-green);
+            color: var(--green-dark);
             border-radius: 999px;
-            padding: 10px 14px;
-            font-family: inherit;
-            font-size: 13px;
-            min-width: 220px;
-        }
-
-        .table-wrap {
-            overflow: auto;
-            max-height: 620px;
-            border: 1px solid #eef2f6;
-            border-radius: 18px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            min-width: 780px;
-            font-size: 13px;
-        }
-
-        th, td {
-            padding: 12px 14px;
-            border-bottom: 1px solid #eef2f6;
-            text-align: left;
-            vertical-align: top;
-        }
-
-        th {
-            position: sticky;
-            top: 0;
-            z-index: 1;
-            background: #f8fafc;
-            color: var(--navy);
             font-size: 12px;
             font-weight: 900;
         }
 
-        tr:hover td {
-            background: #fcfdff;
+        .price-card h3 {
+            font-size: 24px;
+            letter-spacing: -0.6px;
+            margin-bottom: 7px;
         }
 
-        .badge {
-            display: inline-flex;
-            align-items: center;
-            border-radius: 999px;
-            padding: 4px 10px;
-            font-size: 11px;
-            font-weight: 850;
-            white-space: nowrap;
+        .price-desc {
+            color: var(--slate-dark);
+            min-height: 48px;
+            margin-bottom: 18px;
         }
 
-        .badge.verified,
-        .badge.matched,
-        .badge.strong_support {
-            background: var(--green-soft);
-            color: var(--green-dark);
+        .price {
+            font-size: 42px;
+            font-weight: 950;
+            letter-spacing: -1.2px;
+            margin-bottom: 18px;
         }
 
-        .badge.likely,
-        .badge.moderate_support {
-            background: var(--amber-soft);
-            color: #b45309;
-        }
-
-        .badge.needs_review,
-        .badge.related_evidence,
-        .badge.weak_or_unclear {
-            background: #fff7ed;
-            color: #c2410c;
-        }
-
-        .badge.not_found,
-        .badge.insufficient_evidence,
-        .badge.no_evidence_found {
-            background: var(--red-soft);
-            color: #b91c1c;
-        }
-
-        .badge.offline {
-            background: #f1f5f9;
-            color: #475569;
-        }
-
-        .doi-link {
-            color: var(--blue);
-            font-weight: 850;
-        }
-
-        .small-muted {
+        .price span {
+            font-size: 15px;
             color: var(--slate);
-            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0;
         }
 
-        .suggestion-box {
-            border-left: 4px solid var(--green);
-            background: #f8fafc;
-            padding: 10px 12px;
-            border-radius: 12px;
+        .price-card .btn {
+            width: 100%;
+            margin-bottom: 20px;
         }
 
-        .suggestion-item {
-            background: #f8fafc;
-            border: 1px solid #eef2f6;
-            border-radius: 16px;
-            padding: 14px;
+        .faq {
+            background: var(--soft);
+            border-top: 1px solid #edf2f7;
+        }
+
+        .faq-list {
+            max-width: 900px;
+            margin: 0 auto;
+            display: grid;
+            gap: 12px;
+        }
+
+        details {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 20px;
+            padding: 18px 20px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: 900;
+            font-size: 17px;
+        }
+
+        details p {
+            color: var(--slate-dark);
+            margin-top: 12px;
+        }
+
+        .final-cta {
+            background: linear-gradient(135deg, var(--blue-2), var(--navy));
+            color: white;
+            border-radius: 36px;
+            padding: 54px;
+            box-shadow: var(--shadow);
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 30px;
+            align-items: center;
+        }
+
+        .final-cta h2 {
+            font-size: clamp(34px, 4.5vw, 56px);
+            line-height: 1.05;
+            letter-spacing: -2px;
             margin-bottom: 12px;
         }
 
-        .suggestion-item.high { border-left: 5px solid var(--green); }
-        .suggestion-item.medium { border-left: 5px solid var(--amber); }
-        .suggestion-item.low { border-left: 5px solid var(--red); }
-
-        .line-through {
-            color: var(--red);
-            text-decoration: line-through;
-        }
-
-        .suggested {
-            color: var(--green-dark);
-            font-weight: 850;
-            margin-top: 6px;
-        }
-
-        .empty {
-            padding: 26px;
-            text-align: center;
-            color: var(--slate);
-            background: #f8fafc;
-            border-radius: 18px;
-            border: 1px dashed #cbd5e1;
-        }
-
-
-        .alt-source-box {
-            margin-top: 10px;
-            padding: 10px 12px;
-            border: 1px solid #dbeafe;
-            border-left: 4px solid var(--blue);
-            border-radius: 14px;
-            background: #f8fbff;
-            font-size: 12px;
-        }
-
-        .alt-source-box summary {
-            cursor: pointer;
-            font-weight: 850;
-            color: #1e3a5f;
-        }
-
-        .alt-source-note {
-            margin: 8px 0 10px 0;
-            color: var(--slate);
-            line-height: 1.4;
-        }
-
-        .alt-source-item {
-            padding: 8px;
-            margin-top: 8px;
-            border-radius: 10px;
-            background: white;
-            border: 1px solid #eef2f6;
-        }
-
-        .alt-source-title {
-            font-weight: 850;
-            color: var(--navy);
-            margin-bottom: 4px;
-        }
-
-        .alt-source-meta {
-            color: var(--slate);
-            font-size: 11px;
-            margin-bottom: 3px;
-        }
-
-        .claim-note {
-            margin-top: 8px;
-            color: var(--slate);
-            font-size: 12px;
-            line-height: 1.4;
+        .final-cta p {
+            color: rgba(255,255,255,0.78);
+            font-size: 18px;
+            max-width: 760px;
         }
 
         .footer {
-            border-top: 1px solid var(--line);
-            background: white;
-            padding: 30px 24px;
-            color: var(--slate);
-            text-align: center;
-            font-size: 13px;
+            background: #07111f;
+            color: rgba(255,255,255,0.74);
+            padding: 54px 22px 32px;
         }
 
-        .footer a {
-            color: var(--green-dark);
-            font-weight: 750;
+        .footer-inner {
+            max-width: 1240px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1.1fr repeat(3, 1fr);
+            gap: 30px;
+        }
+
+        .footer .brand-name {
+            color: white;
+        }
+
+        .footer p {
+            margin-top: 12px;
+            max-width: 390px;
+        }
+
+        .footer h4 {
+            color: white;
+            margin-bottom: 12px;
         }
 
         .footer-links {
+            list-style: none;
+            display: grid;
+            gap: 9px;
+        }
+
+        .footer-links a:hover {
+            color: white;
+        }
+
+        .footer-bottom {
+            max-width: 1240px;
+            margin: 34px auto 0;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255,255,255,0.10);
             display: flex;
-            justify-content: center;
+            justify-content: space-between;
             gap: 18px;
             flex-wrap: wrap;
-            margin-top: 8px;
+            font-size: 13px;
         }
 
-        @media (max-width: 1120px) {
-            .insights-grid,
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .sidebar {
-                position: static;
-            }
-
-            .nav-tabs {
-                grid-template-columns: repeat(3, 1fr);
-            }
-
-            .topbar {
-                grid-template-columns: 1fr;
-            }
-
-            .actions {
-                justify-content: flex-start;
-            }
-        }
-
-        @media (max-width: 760px) {
-            .header-inner {
-                align-items: flex-start;
-                flex-wrap: wrap;
+        @media (max-width: 1040px) {
+            .nav {
+                display: none;
             }
 
             .mobile-toggle {
-                display: block;
+                display: inline-flex;
             }
 
-            .nav {
-                display: none;
-                width: 100%;
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 12px;
-                padding-top: 12px;
+            .header-inner {
+                flex-wrap: wrap;
             }
 
             .nav.open {
                 display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                width: 100%;
+                padding-top: 12px;
+                gap: 13px;
             }
 
-            .brand-badge {
-                display: none;
-            }
-
-            .container {
-                padding: 18px 16px 38px;
-            }
-
-            .nav-tabs,
-            .kpi-grid,
-            .insights-grid .kpi-grid {
+            .hero,
+            .split,
+            .privacy-panel,
+            .final-cta {
                 grid-template-columns: 1fr;
             }
 
-            .dashboard-grid {
-                padding: 10px;
-                border-radius: 22px;
+            .hero {
+                min-height: auto;
             }
 
-            .actions .btn {
+            .score-row,
+            .features-grid,
+            .steps,
+            .pricing-grid,
+            .footer-inner {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .floating-card {
+                display: none;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .trust-statement-card {
+                grid-template-columns: 1fr;
+                text-align: left;
+                padding: 20px;
+            }
+
+            .trust-statement-icon {
+                width: 50px;
+                height: 50px;
+                font-size: 24px;
+            }
+
+            .top-notice {
+                font-size: 12px;
+            }
+
+            .header-actions .btn-light {
+                display: none;
+            }
+
+            .brand-sub {
+                display: none;
+            }
+
+            .section {
+                padding: 62px 16px;
+            }
+
+            .hero {
+                padding-top: 44px;
+                gap: 28px;
+            }
+
+            h1 {
+                letter-spacing: -2.2px;
+            }
+
+            .hero-copy,
+            .section-title p,
+            .privacy-panel p,
+            .final-cta p {
+                font-size: 16px;
+            }
+
+            .hero-actions .btn,
+            .final-cta .btn {
                 width: 100%;
             }
 
-            .search-input, select {
-                min-width: 100%;
+            .product-card {
+                transform: none;
+                border-radius: 26px;
             }
 
-            .card {
-                padding: 16px;
-                border-radius: 22px;
+            .score-row,
+            .mini-grid,
+            .features-grid,
+            .steps,
+            .proof-metrics,
+            .privacy-grid,
+            .pricing-grid,
+            .footer-inner {
+                grid-template-columns: 1fr;
+            }
+
+            .mock-table-row {
+                grid-template-columns: 1fr;
+            }
+
+            .price-card.featured {
+                transform: none;
+            }
+
+            .final-cta {
+                padding: 34px 22px;
+                border-radius: 28px;
+            }
+
+            .footer-bottom {
+                flex-direction: column;
             }
         }
     </style>
 </head>
-
 <body>
-
-<header class="site-header">
-    <div class="header-inner">
-        <a class="brand" href="/new" aria-label="CiteIntegrity home">
-            <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
-                <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
-                <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span class="brand-name">CiteIntegrity</span>
-            <span class="brand-badge">Results Dashboard</span>
-        </a>
-
-        <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
-
-        <nav class="nav" id="mainNav">
-            <a href="/new">Home</a>
-            <a href="/new/analyse">New Analysis</a>
-            <a href="/privacy">Privacy</a>
-            <a href="/" class="nav-cta">Old Interface</a>
-        </nav>
+    <div class="top-notice">
+        <strong>New:</strong> verify references, recover missing sources, review claim support and export citation integrity reports before submission.
     </div>
-</header>
 
-<main class="container">
-    <section class="topbar">
-        <div class="page-title">
-            <h1>Results Dashboard</h1>
-            <p>Review citation integrity, ACII score, missing citations, verification, recovery, claim support, and exportable reports.</p>
-            <div class="status-box">
-                <span>●</span>
-                <span class="status info" id="status">Loading results...</span>
-            </div>
+    <header class="site-header">
+        <div class="header-inner">
+            <a class="brand" href="/new" aria-label="CiteIntegrity home">
+                <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
+                    <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
+                    <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="brand-name">CiteIntegrity</span>
+                <span class="brand-sub">Commercial Beta</span>
+            </a>
+
+            <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
+
+            <nav class="nav" id="mainNav">
+                <a href="#features">Features</a>
+                <a href="#workflow">How it works</a>
+                <a href="#pricing">Pricing</a>
+                <a href="#faq">FAQ</a>
+                <a href="/contact">Contact</a>
+            </nav>
         </div>
+    </header>
 
-        <div class="actions">
-            <button class="btn btn-green" id="btnVerify">🌐 Verify References</button>
-            <button class="btn btn-secondary" id="btnRefresh">↻ Refresh</button>
-            <button class="btn btn-outline" id="btnExportCsv">📊 CSV Report</button>
-            <button class="btn btn-outline" id="btnExportWord">📄 Word Report</button>
-
-            <select id="exportStyleSelect" title="Reference style">
-                <option value="apa7">APA 7th Edition</option>
-                <option value="apa6">APA 6th Edition</option>
-                <option value="harvard">Harvard Style</option>
-            </select>
-
-            <button class="btn btn-outline" id="btnExportRefsDocx">📄 Verified Refs DOCX</button>
-            <button class="btn btn-outline" id="btnExportRefsHtml">🌐 Verified Refs HTML</button>
-        </div>
-    </section>
-
-    <section class="progress-card" id="progressCard">
-        <div class="progress-track">
-            <div class="progress-bar" id="progressBar"></div>
-        </div>
-        <div class="progress-text" id="progressText">Preparing...</div>
-    </section>
-
-    <section class="insights-grid">
-        <div class="card acii-card">
-            <div class="small-muted" style="color: rgba(255,255,255,0.72);">Academic Citation Integrity Index</div>
-            <div class="acii-score" id="aciiScore">--</div>
-            <div class="acii-label">ACII Score</div>
-            <div class="acii-rating" id="aciiRating">Not available</div>
-            <div class="acii-rec" id="aciiRecommendation">Run analysis and verification to improve citation integrity evidence.</div>
-        </div>
-
-        <div class="card insights-panel">
-            <div class="section-title" style="margin-bottom:12px;">
+    <main class="page">
+        <section class="hero-wrap">
+            <div class="section hero">
                 <div>
-                    <h2 style="font-size:18px;">Summary Cards</h2>
-                    <p>Key dashboard counts.</p>
-                </div>
-            </div>
+                    <div class="eyebrow"><span class="dot"></span> Built for theses, dissertations, manuscripts and journal workflows</div>
+                    <h1>Fix, verify and elevate your <span class="text-gradient">citations before submission.</span></h1>
+                    <p class="hero-copy">
+                        CiteIntegrity helps researchers detect missing references, verify sources online, recover possible source links, review claim support and generate a professional citation integrity report with the <strong>ACII score</strong>.
+                    </p>
 
-            <div class="kpi-grid" id="kpiGrid"></div>
-        </div>
-    </section>
-
-    <section class="dashboard-grid">
-        <aside class="sidebar">
-            <div class="card sections-card">
-                <div class="workspace-label">
-                    <div>
-                        <h2>Sections</h2>
-                        <p>Open each result area.</p>
-                    </div>
-                </div>
-
-                <div class="nav-tabs">
-                    <button class="tab-btn active" data-tab="summaryPane">Summary <span class="count-pill" id="countSummary">--</span></button>
-                    <button class="tab-btn" data-tab="missingPane">Missing Citations <span class="count-pill" id="countMissing">0</span></button>
-                    <button class="tab-btn" data-tab="uncitedPane">Uncited References <span class="count-pill" id="countUncited">0</span></button>
-                    <button class="tab-btn" data-tab="c2rPane">Citations → References <span class="count-pill" id="countC2R">0</span></button>
-                    <button class="tab-btn" data-tab="r2cPane">References → Citations <span class="count-pill" id="countR2C">0</span></button>
-                    <button class="tab-btn" data-tab="verifyPane">Verification <span class="count-pill" id="countVerify">0</span></button>
-                    <button class="tab-btn" data-tab="recoveryPane">Recovery <span class="count-pill" id="countRecovery">0</span></button>
-                    <button class="tab-btn" data-tab="claimPane">Claim Support <span class="count-pill" id="countClaim">0</span></button>
-                    <button class="tab-btn" data-tab="enrichmentPane">
-                        Advanced Enrichment <span class="count-pill" id="countEnrichment">Optional</span>
-                    </button>
-                    <button class="tab-btn" data-tab="suggestionsPane">Suggestions <span class="count-pill" id="countSuggestions">0</span></button>
-                    
-                </div>
-            </div>
-        </aside>
-
-        <section class="main-panel">
-
-            <div class="tab-pane active" id="summaryPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Summary</h2>
-                            <p>Overall citation and reference health of the uploaded manuscript.</p>
-                        </div>
+                    <div class="hero-actions">
+                        <a class="btn btn-primary" href="https://citeintegrity.org/new/analyse">Start checking</a>
+                        <a class="btn btn-light" href="#features">Explore features</a>
+                        <a class="btn btn-ghost" href="/demo">Watch demo</a>
                     </div>
 
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr><th>Item</th><th>Value</th><th>Interpretation</th></tr>
-                            </thead>
-                            <tbody id="summaryBody"></tbody>
-                        </table>
-                    </div>
-
-                    <div class="card" id="aciiComponentsCard" style="margin-top:16px;">
-                        <div class="section-title">
-                            <div>
-                                <h2>ACII Components</h2>
-                                <p>Component-level interpretation of the citation integrity score.</p>
-                            </div>
-                        </div>
-
-                        <div class="table-wrap">
-                            <table>
-                                <thead>
-                                    <tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr>
-                                </thead>
-                                <tbody id="aciiComponentsBody"></tbody>
-                            </table>
-                        </div>
+                    <div class="trust-row" aria-label="Trust indicators">
+                        <span class="trust-pill">✓ Citation integrity workflow</span>
+                        <span class="trust-pill">✓ APA, Harvard and numeric styles</span>
+                        <span class="trust-pill">✓ Review-only suggestions</span>
+                        <span class="trust-pill">✓ Exportable reports</span>
                     </div>
                 </div>
             </div>
-
-            <div class="tab-pane" id="missingPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Missing Citations</h2>
-                            <p>In-text citations that do not appear in the reference list.</p>
-                        </div>
-                    </div>
-                    <div class="filters">
-                        <input class="search-input" id="missingSearch" placeholder="Search missing citations...">
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Citation in Text</th><th>Count</th></tr></thead>
-                            <tbody id="missingBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="uncitedPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Uncited References</h2>
-                            <p>References listed in the reference section but not cited in the manuscript body.</p>
-                        </div>
-                    </div>
-                    <div class="filters">
-                        <input class="search-input" id="uncitedSearch" placeholder="Search uncited references...">
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Reference</th></tr></thead>
-                            <tbody id="uncitedBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="c2rPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Citations → References</h2>
-                            <p>Mapping of in-text citations to their matched reference entries.</p>
-                        </div>
-                    </div>
-                    <div class="filters">
-                        <input class="search-input" id="c2rSearch" placeholder="Search mappings...">
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Status</th><th>In-text Citation</th><th>Count</th><th>Matched Reference</th><th>Flags</th></tr></thead>
-                            <tbody id="c2rBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="r2cPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>References → Citations</h2>
-                            <p>How often each reference appears to be cited in the manuscript.</p>
-                        </div>
-                    </div>
-                    <div class="filters">
-                        <input class="search-input" id="r2cSearch" placeholder="Search references...">
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Times Cited</th><th>Reference</th><th>Cited By</th></tr></thead>
-                            <tbody id="r2cBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="verifyPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Online Verification</h2>
-                            <p>Reference verification results and scholarly metadata matches.</p>
-                        </div>
-                    </div>
-
-                    <div class="kpi-grid" id="verifyKpis" style="grid-template-columns: repeat(4, 1fr); margin-bottom:16px;"></div>
-
-                    <div class="filters">
-                        <input class="search-input" id="verifySearch" placeholder="Search verification rows...">
-                        <select id="verifyFilter">
-                            <option value="">All statuses</option>
-                            <option value="verified">Verified</option>
-                            <option value="likely">Likely</option>
-                            <option value="needs_review">Needs review</option>
-                            <option value="not_found">Not found</option>
-                            <option value="offline">Offline</option>
-                        </select>
-                    </div>
-
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th></tr></thead>
-                            <tbody id="verifyBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="recoveryPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Recovery</h2>
-                            <p>Suggestions for missing citations and unverifiable references.</p>
-                        </div>
-                    </div>
-
-                    <h3 style="margin-bottom:10px;">Missing Citation Recovery</h3>
-                    <div class="table-wrap" style="margin-bottom:20px;">
-                        <table>
-                            <thead><tr><th>No.</th><th>Citation</th><th>Count</th><th>Suggestions</th></tr></thead>
-                            <tbody id="recoveryMissingBody"></tbody>
-                        </table>
-                    </div>
-
-                    <h3 style="margin-bottom:10px;">Needs Review / Not Found Recovery</h3>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Status</th><th>Citation</th><th>Reference</th><th>Context Suggestions</th></tr></thead>
-                            <tbody id="recoveryVerifyBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="claimPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Claim Support</h2>
-                            <p>Claim-to-source support review for cited statements.</p>
-                        </div>
-                    </div>
-                    <div class="filters">
-                        <input class="search-input" id="claimSearch" placeholder="Search claims...">
-                        <select id="claimFilter">
-                            <option value="">All support statuses</option>
-                            <option value="strong_support">Strong support</option>
-                            <option value="moderate_support">Moderate support</option>
-                            <option value="related_evidence">Related evidence</option>
-                            <option value="weak_or_unclear">Weak or unclear</option>
-                            <option value="insufficient_evidence">Insufficient evidence</option>
-                        </select>
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th></tr></thead>
-                            <tbody id="claimBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-                        <div class="tab-pane" id="enrichmentPane">
-                        <div class="card">
-                            <div class="section-title">
-                                <div>
-                                    <h2>Advanced Enrichment</h2>
-                                    <p>Generate deeper source suggestions only for weak, insufficient, or no-evidence cases.</p>
-                                </div>
-                            </div>
-        
-                            <div class="filters">
-                                <select id="enrichmentScope">
-                                    <option value="weak_only">Only weak / insufficient / no evidence</option>
-                                    <option value="recovery_only">Recovery rows only</option>
-                                    <option value="claim_only">Claim-support rows only</option>
-                                    <option value="all_problem_rows">All problem rows</option>
-                                </select>
-        
-                                <button class="btn btn-primary" id="btnStartEnrichment">
-                            ✨ Start Advanced Enrichment
-                        </button>
-                    </div>
-
-                    <div class="empty" id="enrichmentStatusBox">
-                        Advanced enrichment has not been started. Run it after verification is complete.
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="suggestionsPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Suggestions</h2>
-                            <p>Citation and reference suggestions returned by the analysis engine.</p>
-                        </div>
-                    </div>
-                    <div id="suggestionsContent"></div>
-                </div>
-            </div>
-
         </section>
-    </section>
-</main>
 
-<footer class="footer">
-    <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
-    <div class="footer-links">
-        <a href="/new">New Landing Page</a>
-        <a href="/new/analyse">New Analysis</a>
-        <a href="/privacy">Privacy Policy</a>
-        <a href="/">Old Interface</a>
-    </div>
-</footer>
+        <section class="trust-statement-band" aria-labelledby="trustStatementTitle">
+            <div class="trust-statement">
+                <div class="trust-statement-card">
+                    <div class="trust-statement-icon" aria-hidden="true">🔒</div>
+                    <div>
+                        <h2 id="trustStatementTitle">CiteIntegrity Trust Statement</h2>
+                        <p>Your work remains yours. CiteIntegrity analyses your document privately and does not use uploaded documents for AI training, plagiarism databases, public indexing, or permanent storage. Your document is processed securely and used only for citation integrity analysis.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-<script>
-document.addEventListener("DOMContentLoaded", function () {
-    "use strict";
+        <div class="logo-strip">
+            <div class="logo-inner">
+                <span>Designed for academic quality assurance across:</span>
+                <div class="audience-pills">
+                    <span>Graduate students</span>
+                    <span>Supervisors</span>
+                    <span>Journal editors</span>
+                    <span>Research offices</span>
+                    <span>Universities</span>
+                </div>
+            </div>
+        </div>
 
-    const JOB_ID = "{{ job_id }}";
-    const AUTO_VERIFY = "{{ auto_verify | default('false') }}" === "true";
+        <section class="section" id="features">
+            <div class="section-title">
+                <div class="small-title">Core platform</div>
+                <h2>Everything needed to check citation integrity in one professional workflow.</h2>
+                <p>Move beyond ordinary reference formatting. CiteIntegrity connects in-text citations, reference entries, source verification, claim support and reporting.</p>
+            </div>
 
-    const $ = (id) => document.getElementById(id);
+            <div class="features-grid">
+                <article class="feature-card">
+                    <div class="icon">🔎</div>
+                    <h3>Citation to reference matching</h3>
+                    <p>Detect whether every in-text citation has a matching reference entry and whether listed references are actually cited.</p>
+                    <ul class="feature-list">
+                        <li>Missing citations</li>
+                        <li>Uncited references</li>
+                        <li>Author-year mismatch alerts</li>
+                    </ul>
+                </article>
 
-    // ======================== UPDATED CONFIG ========================
-    const CONFIG = {
-        MAX_VERIFY_DISPLAY: 600,
-        MAX_CLAIM_DISPLAY: 500,
-        MAX_RECOVERY_DISPLAY: 500,
-        POLL_INTERVAL: 2500,
-        MAX_FINAL_ATTEMPTS: 180,
-        FINAL_RETRY_DELAY: 3000,
-        MAX_STATUS_ERRORS: 12
-    };
+                <article class="feature-card">
+                    <div class="icon">🌐</div>
+                    <h3>Online reference verification</h3>
+                    <p>Check references against scholarly metadata sources and flag records that need manual review.</p>
+                    <ul class="feature-list">
+                        <li>Verified, likely and not found statuses</li>
+                        <li>DOI and title matching</li>
+                        <li>Metadata-based confidence scoring</li>
+                    </ul>
+                </article>
 
-    let latestResults = null;
-    let pollingTimer = null;
-    let verificationInProgress = false;
-    let finalisingCount = 0;
+                <article class="feature-card">
+                    <div class="icon">🧭</div>
+                    <h3>Source recovery</h3>
+                    <p>When a citation is missing or a reference cannot be verified, generate review-only possible sources for the author to inspect.</p>
+                    <ul class="feature-list">
+                        <li>Context-specific source suggestions</li>
+                        <li>Possible DOI links</li>
+                        <li>Manual confirmation required</li>
+                    </ul>
+                </article>
 
-    let progressHighWater = 0;
-    let lastKnownProgress = 0;
-    let lastKnownTotal = 0;
-    let statusErrorCount = 0;
-    let finalFetchRunning = false;
-    let partialFinalRendered = false;
-    let enrichmentPollTimer = null;
-    let enrichmentPollCount = 0;
-    const MAX_ENRICHMENT_POLLS = 80;
-    // ================================================================
+                <article class="feature-card">
+                    <div class="icon">🧠</div>
+                    <h3>Claim support review</h3>
+                    <p>Extract the claim around a citation and assess whether the cited source appears to support that claim.</p>
+                    <ul class="feature-list">
+                        <li>Strong, moderate and weak support labels</li>
+                        <li>Insufficient evidence flags</li>
+                        <li>Alternative source suggestions</li>
+                    </ul>
+                </article>
 
-    function esc(value) {
-        return String(value ?? "")
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;");
-    }
+                <article class="feature-card">
+                    <div class="icon">📊</div>
+                    <h3>ACII score</h3>
+                    <p>Use the Academic Citation Integrity Index to summarise manuscript citation health in a clear, reportable score.</p>
+                    <ul class="feature-list">
+                        <li>Integrity score</li>
+                        <li>Component interpretation</li>
+                        <li>Priority recommendations</li>
+                    </ul>
+                </article>
 
-    function toNum(value, fallback = 0) {
-        const n = Number(value);
-        return Number.isFinite(n) ? n : fallback;
-    }
+                <article class="feature-card">
+                    <div class="icon">📄</div>
+                    <h3>Exportable reports</h3>
+                    <p>Download structured outputs for students, supervisors, examiners, editors and quality assurance teams.</p>
+                    <ul class="feature-list">
+                        <li>CSV and Word reports</li>
+                        <li>Verified references export</li>
+                        <li>Submission-readiness evidence</li>
+                    </ul>
+                </article>
+            </div>
+        </section>
 
-    function setStatus(message, tone = "info") {
-        const status = $("status");
-        if (!status) return;
-        status.className = `status ${tone}`;
-        status.textContent = message || "";
-        console.log("[Status]", message);
-    }
+        <section class="workflow" id="workflow">
+            <div class="section">
+                <div class="section-title">
+                    <div class="small-title">How it works</div>
+                    <h2>From upload to citation integrity report in minutes.</h2>
+                    <p>A simple commercial workflow suitable for individual researchers and institutional review pipelines. The landing page stays promotional, while document handling remains in the analysis area.</p>
+                </div>
 
-    // ======================== NEW PROGRESS HELPERS ========================
-    function resetProgress(text = "Preparing...") {
-        progressHighWater = 0;
-        lastKnownProgress = 0;
-        lastKnownTotal = 0;
-        statusErrorCount = 0;
+                <div class="steps">
+                    <article class="step">
+                        <div class="step-number">1</div>
+                        <h3>Start checking</h3>
+                        <p>Begin from the dedicated analysis page and choose the document workflow used by your manuscript.</p>
+                    </article>
 
-        const card = $("progressCard");
-        const bar = $("progressBar");
-        const progressText = $("progressText");
+                    <article class="step">
+                        <div class="step-number">2</div>
+                        <h3>Extract</h3>
+                        <p>The system separates body text from references and identifies citations, authors, years and reference entries.</p>
+                    </article>
 
-        if (card) card.style.display = "block";
-        if (bar) bar.style.width = "0%";
-        if (progressText) progressText.textContent = text;
-    }
+                    <article class="step">
+                        <div class="step-number">3</div>
+                        <h3>Verify</h3>
+                        <p>References are checked online and classified as verified, likely, needs review, not found or offline.</p>
+                    </article>
 
-    function showProgress(percent, text, options = {}) {
-        const card = $("progressCard");
-        const bar = $("progressBar");
-        const progressText = $("progressText");
+                    <article class="step">
+                        <div class="step-number">4</div>
+                        <h3>Report</h3>
+                        <p>Review ACII score, missing citations, source recovery, claim support and downloadable reports.</p>
+                    </article>
+                </div>
+            </div>
+        </section>
 
-        let safePercent = Number(percent);
-        if (!Number.isFinite(safePercent)) safePercent = progressHighWater;
+        <section class="section">
+            <div class="split">
+                <div class="proof-card">
+                    <h2>Built for the citation problems that delay approval and publication.</h2>
+                    <p>Fake citations, missing references, weak source support and inconsistent reference lists reduce credibility. CiteIntegrity turns those risks into visible checks and corrective actions.</p>
+                    <a class="btn btn-green" href="https://citeintegrity.org/new/analyse">Start checking</a>
 
-        safePercent = Math.max(0, Math.min(100, safePercent));
+                    <div class="proof-metrics">
+                        <div class="proof-metric">
+                            <strong>ACII</strong>
+                            <span>Citation integrity scoring</span>
+                        </div>
+                        <div class="proof-metric">
+                            <strong>4-way</strong>
+                            <span>Verified, likely, review, not found</span>
+                        </div>
+                        <div class="proof-metric">
+                            <strong>3+</strong>
+                            <span>Possible source links where available</span>
+                        </div>
+                        <div class="proof-metric">
+                            <strong>Export</strong>
+                            <span>Reports for review and evidence</span>
+                        </div>
+                    </div>
+                </div>
 
-        if (!options.allowBackward) {
-            safePercent = Math.max(progressHighWater, safePercent);
-        }
+                <div class="use-cases">
+                    <article class="use-case">
+                        <div class="mini-icon">🎓</div>
+                        <div>
+                            <h3>For graduate students</h3>
+                            <p>Check citation problems before supervisor review, viva submission or journal manuscript preparation.</p>
+                        </div>
+                    </article>
 
-        progressHighWater = safePercent;
+                    <article class="use-case">
+                        <div class="mini-icon">🧑‍🏫</div>
+                        <div>
+                            <h3>For supervisors and examiners</h3>
+                            <p>Use a clear report to identify missing citations, unverifiable references and weak claim support.</p>
+                        </div>
+                    </article>
 
-        if (card) card.style.display = "block";
-        if (bar) bar.style.width = `${safePercent}%`;
-        if (progressText) progressText.textContent = text || "";
-    }
+                    <article class="use-case">
+                        <div class="mini-icon">🏛️</div>
+                        <div>
+                            <h3>For universities</h3>
+                            <p>Add citation integrity checks to thesis submission, graduate school screening and quality assurance workflows.</p>
+                        </div>
+                    </article>
 
-    function hideProgress(delay = 3500) {
-        const card = $("progressCard");
-        setTimeout(() => {
-            if (!verificationInProgress && card) {
-                card.style.display = "none";
-            }
-        }, delay);
-    }
-    // ======================================================================
+                    <article class="use-case">
+                        <div class="mini-icon">📰</div>
+                        <div>
+                            <h3>For journals and editors</h3>
+                            <p>Screen manuscripts for reference credibility before peer review and reduce preventable editorial delays.</p>
+                        </div>
+                    </article>
+                </div>
+            </div>
+        </section>
 
-    function formatBadge(status) {
-        const clean = String(status || "offline").toLowerCase();
-        return `<span class="badge ${esc(clean)}">${esc(status || "offline")}</span>`;
-    }
+        <section class="section" id="pricing">
+            <div class="section-title">
+                <div class="small-title">Pricing</div>
+                <h2>Available plans for every researcher.</h2>
+                <p>Start with a free preview, then choose the full review size that fits your document. Each paid package includes two full review runs for correction and re-checking.</p>
+            </div>
 
-    function normalizeDoiUrl(doi) {
-        if (!doi) return "";
-        const clean = String(doi).trim().replace(/^https?:\/\/doi\.org\//i, "");
-        return `https://doi.org/${encodeURIComponent(clean)}`;
-    }
+            <div class="pricing-grid">
+                <article class="price-card">
+                    <h3>Free Preview</h3>
+                    <p class="price-desc">For testing the platform before buying a full review package.</p>
+                    <div class="price">Free <span>/ limited preview</span></div>
+                    <a class="btn btn-ghost" href="https://citeintegrity.org/new/analyse">Start free</a>
+                    <ul class="feature-list">
+                        <li>Up to 10 references</li>
+                        <li>Up to 20 in-text citations</li>
+                        <li>Limited preview results</li>
+                        <li>Basic citation-reference matching</li>
+                        <li>Upgrade for full verification and export</li>
+                    </ul>
+                </article>
 
-    function setCount(id, count) {
-        const el = $(id);
-        if (el) el.textContent = count ?? 0;
-    }
+                <article class="price-card">
+                    <h3>Article Full Review</h3>
+                    <p class="price-desc">For journal articles, essays and short academic manuscripts.</p>
+                    <div class="price">US$2.99 <span>/ package</span></div>
+                    <a class="btn btn-ghost" href="/checkout?plan=article_full_review">Buy now</a>
+                    <ul class="feature-list">
+                        <li>Up to 50 references</li>
+                        <li>Up to 120 in-text citations</li>
+                        <li>2 full review runs</li>
+                        <li>Citation-reference matching</li>
+                        <li>Verification and exportable report</li>
+                    </ul>
+                </article>
 
-    function getACIIRating(score) {
-        score = Number(score);
-        if (!Number.isFinite(score)) return { text: "Not available", className: "offline" };
-        if (score >= 90) return { text: "Excellent", className: "excellent" };
-        if (score >= 80) return { text: "Very Good", className: "very-good" };
-        if (score >= 70) return { text: "Good", className: "good" };
-        if (score >= 60) return { text: "Moderate", className: "moderate" };
-        if (score >= 50) return { text: "Weak", className: "weak" };
-        return { text: "Poor", className: "poor" };
-    }
+                <article class="price-card">
+                    <h3>Research Paper Full Review</h3>
+                    <p class="price-desc">For extended research papers, project reports and standard manuscripts.</p>
+                    <div class="price">US$5.99 <span>/ package</span></div>
+                    <a class="btn btn-primary" href="/checkout?plan=research_paper_full_review">Buy now</a>
+                    <ul class="feature-list">
+                        <li>Up to 120 references</li>
+                        <li>Up to 300 in-text citations</li>
+                        <li>2 full review runs</li>
+                        <li>Source recovery suggestions</li>
+                        <li>ACII score and downloadable report</li>
+                    </ul>
+                </article>
 
-    function normalizeData(payload) {
-        const base = payload?.result || payload?.data || payload || {};
-        const s = base.summary || {};
+                <article class="price-card featured">
+                    <span class="popular">Best for theses</span>
+                    <h3>Thesis Full Review</h3>
+                    <p class="price-desc">For undergraduate, master’s and professional thesis submissions.</p>
+                    <div class="price">US$12.99 <span>/ package</span></div>
+                    <a class="btn btn-primary" href="/checkout?plan=thesis_full_review">Buy now</a>
+                    <ul class="feature-list">
+                        <li>Up to 300 references</li>
+                        <li>Up to 800 in-text citations</li>
+                        <li>2 full review runs</li>
+                        <li>Claim support review</li>
+                        <li>Full citation integrity report</li>
+                    </ul>
+                </article>
 
-        return {
-            ...base,
-            summary: {
-                in_text_citations_found: toNum(s.in_text_citations_found ?? base.in_text_citations_found ?? base.intext_count ?? 0),
-                reference_entries_found: toNum(s.reference_entries_found ?? base.reference_entries_found ?? base.references_raw?.length ?? 0),
-                missing_in_references: toNum(s.missing_in_references ?? base.missing_in_references?.length ?? 0),
-                uncited_references: toNum(s.uncited_references ?? base.uncited_references?.length ?? 0),
-                match_rate: toNum(s.match_rate ?? base.match_rate ?? 0)
-            }
-        };
-    }
+                <article class="price-card">
+                    <h3>PhD / Large Document Full Review</h3>
+                    <p class="price-desc">For PhD theses, large dissertations and long institutional reports.</p>
+                    <div class="price">US$24.99 <span>/ package</span></div>
+                    <a class="btn btn-green" href="/checkout?plan=phd_large_document_full_review">Buy now</a>
+                    <ul class="feature-list">
+                        <li>Up to 700 references</li>
+                        <li>Up to 1,800 in-text citations</li>
+                        <li>2 full review runs</li>
+                        <li>Large-document verification</li>
+                        <li>Advanced citation integrity report</li>
+                    </ul>
+                </article>
+            </div>
+        </section>
 
-    // --------------------- FINAL READINESS HELPERS ---------------------
-    function hasVerificationRows(result) {
-        return Array.isArray(result?.online_verification?.rows) &&
-               result.online_verification.rows.length > 0;
-    }
+        <section class="faq" id="faq">
+            <div class="section">
+                <div class="section-title">
+                    <div class="small-title">FAQ</div>
+                    <h2>Frequently Asked Questions</h2>
+                </div>
 
-    function hasRecoveryPayload(result) {
-        return !!result?.recovery &&
-            (
-                Array.isArray(result.recovery.missing_recovery) ||
-                Array.isArray(result.recovery.verification_recovery)
-            );
-    }
+                <div class="faq-list">
+                    <details open>
+                        <summary>Is CiteIntegrity the same as plagiarism detection?</summary>
+                        <p>No. CiteIntegrity focuses on citation integrity. It checks whether in-text citations match references, whether references can be verified, whether possible sources can be recovered, and whether cited sources appear to support the surrounding claim.</p>
+                    </details>
 
-    function hasClaimPayload(result) {
-        return Array.isArray(result?.claim_support);
-    }
+                    <details>
+                        <summary>Does uploading my document to CiteIntegrity make it AI-generated?</summary>
+                        <p>No. Uploading your document to CiteIntegrity does not make it AI-generated. CiteIntegrity analyses the document you already wrote. It does not change your writing style, rewrite your work, or convert your thesis, dissertation, or manuscript into AI-generated content.</p>
+                    </details>
 
-    function isFinalReady(result) {
-        if (!result) return false;
+                    <details>
+                        <summary>Does CiteIntegrity rewrite my thesis or manuscript?</summary>
+                        <p>No. CiteIntegrity does not automatically rewrite your thesis, dissertation, manuscript, or research paper. It checks citation and reference issues such as missing citations, uncited references, citation-reference mismatches, author and year inconsistencies, online reference verification, claim-to-source support, and citation integrity using the ACII score.</p>
+                    </details>
 
-        const verification = result.verification || {};
-        const state = String(
-            verification.state ||
-            result.online?.state ||
-            result.status ||
-            ""
-        ).toLowerCase();
+                    <details>
+                        <summary>Are uploaded documents used to train AI models?</summary>
+                        <p>No. Uploaded documents are not used to train AI models. Your document remains your intellectual property. CiteIntegrity does not use uploaded theses, dissertations, manuscripts, or research reports to train, fine-tune, or improve AI models.</p>
+                    </details>
 
-        const finalTablesReady =
-            verification.final_tables_ready === true ||
-            result.final_tables_ready === true ||
-            Boolean(result.verification_completed_at);
+                    <details>
+                        <summary>Does CiteIntegrity submit my document to Turnitin, iThenticate, or plagiarism databases?</summary>
+                        <p>No. CiteIntegrity does not submit uploaded documents to Turnitin, iThenticate, plagiarism databases, institutional repositories, public indexes, or search engines. Your document is processed privately for citation and reference analysis only.</p>
+                    </details>
 
-        const completedSignal =
-            finalTablesReady ||
-            state === "completed" ||
-            result.status === "completed";
+                    <details>
+                        <summary>Can my upload cause my own work to appear as plagiarised later?</summary>
+                        <p>No. CiteIntegrity does not publish, index, share, or deposit your document in any plagiarism repository. Because your document is not submitted to plagiarism databases, institutional repositories, search engines, or public indexes, uploading it to CiteIntegrity should not cause your own work to appear as plagiarised later.</p>
+                    </details>
 
-        return (
-            completedSignal &&
-            hasVerificationRows(result) &&
-            hasRecoveryPayload(result) &&
-            hasClaimPayload(result)
-        );
-    }
+                    <details>
+                        <summary>Is my document indexed online?</summary>
+                        <p>No. Uploaded documents are not indexed by Google, Bing, institutional repositories, search engines, or public databases. Your document is analysed privately and is not made publicly searchable.</p>
+                    </details>
 
-    function hydrateFinalDefaults(result) {
-        if (!result) return result;
+                    <details>
+                        <summary>Does CiteIntegrity store my document permanently?</summary>
+                        <p>No. CiteIntegrity is designed for temporary document processing. The original uploaded document and extracted text are used only to generate the citation integrity analysis and report. Results summaries and report metadata may be kept temporarily by job ID within the active session or retention period.</p>
+                    </details>
 
-        if (!result.online_verification) {
-            result.online_verification = { rows: [], summary: {} };
-        }
+                    <details>
+                        <summary>What information may CiteIntegrity keep temporarily?</summary>
+                        <p>CiteIntegrity may temporarily keep limited processing information such as the job ID, citation counts, reference verification status, ACII score, report metadata, and export status. CiteIntegrity avoids storing full thesis text, full chapters, unpublished findings, student names, supervisor comments, or institution-sensitive content unless such storage is clearly required and authorised.</p>
+                    </details>
 
-        if (!result.recovery) {
-            result.recovery = {
-                missing_recovery: [],
-                verification_recovery: []
-            };
-        }
+                    <details>
+                        <summary>Does CiteIntegrity send my full thesis to external services?</summary>
+                        <p>No. CiteIntegrity should not send your full thesis or manuscript to external services. Where online reference verification is required, only limited citation metadata may be used, such as title, author, year, DOI, journal name, or publisher information. The full document remains private.</p>
+                    </details>
 
-        if (!Array.isArray(result.recovery.missing_recovery)) {
-            result.recovery.missing_recovery = [];
-        }
+                    <details>
+                        <summary>Can AI detectors flag my work because I used CiteIntegrity?</summary>
+                        <p>No. AI detectors assess the language, style, and statistical features of the writing itself. Simply uploading a document to CiteIntegrity does not make the document AI-generated. Since CiteIntegrity does not rewrite your work, it does not alter your authorship style.</p>
+                    </details>
 
-        if (!Array.isArray(result.recovery.verification_recovery)) {
-            result.recovery.verification_recovery = [];
-        }
+                    <details>
+                        <summary>Is CiteIntegrity safe for unpublished work?</summary>
+                        <p>Yes. CiteIntegrity is designed for unpublished academic work, including theses, dissertations, journal manuscripts, proposals, project reports, and research papers. CiteIntegrity does not publish, index, sell, share, or reuse uploaded documents.</p>
+                    </details>
 
-        if (!Array.isArray(result.claim_support)) {
-            result.claim_support = [];
-        }
+                    <details>
+                        <summary>Does CiteIntegrity replace my supervisor, examiner, or editor?</summary>
+                        <p>No. CiteIntegrity is a support tool. It helps you identify citation and reference issues before submission, but final academic judgement remains with you, your supervisor, examiner, editor, or institution.</p>
+                    </details>
 
-        return result;
-    }
+                    <details>
+                        <summary>Can it find sources for missing citations?</summary>
+                        <p>Yes, where sufficient context exists. CiteIntegrity can suggest possible sources for missing citations or weak support cases, but the user must confirm that the source is correct before citing it.</p>
+                    </details>
 
-    async function fetchJsonNoCache(url) {
-        const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`, {
-            cache: "no-store"
-        });
+                    <details>
+                        <summary>Can universities use it before thesis submission?</summary>
+                        <p>Yes. The platform is suitable for pre-submission screening, supervisor review, graduate school quality checks, and journal editorial workflows.</p>
+                    </details>
 
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
+                    <details>
+                        <summary>Which document types and styles are supported?</summary>
+                        <p>The landing page presents the product and sends users to the dedicated analysis page. Supported document types and styles should be shown inside the analysis workflow where document analysis actually happens.</p>
+                    </details>
 
-        return await response.json();
-    }
+                    <details>
+                        <summary>What should I tell my supervisor or institution?</summary>
+                        <p>You may say: I used CiteIntegrity only to check citation integrity, reference matching, source verification, and claim-support readiness. CiteIntegrity does not rewrite the thesis, does not submit it to plagiarism databases, does not index it online, and does not use uploaded documents for AI training.</p>
+                    </details>
 
-    function handleStatusPollingError(error) {
-        statusErrorCount += 1;
+                    <details>
+                        <summary>What is the safest way to use CiteIntegrity?</summary>
+                        <p>For maximum privacy and responsible use, upload only the document you want analysed and ensure you have the right to submit it for citation integrity checking. After analysis, download your report and keep it for your own academic records.</p>
+                    </details>
+                </div>
+            </div>
+        </section>
 
-        console.warn(`Temporary polling error ${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS}:`, error);
+        <section class="section">
+            <div class="final-cta">
+                <div>
+                    <h2>Ready to make citation integrity a standard before submission?</h2>
+                    <p>Start with a manuscript check, review the ACII score and download a professional report for correction, supervision or editorial screening.</p>
+                </div>
+                <div>
+                    <a class="btn btn-green" href="https://citeintegrity.org/new/analyse">Start checking now</a>
+                </div>
+            </div>
+        </section>
+    </main>
 
-        if (statusErrorCount < CONFIG.MAX_STATUS_ERRORS) {
-            showProgress(
-                Math.max(progressHighWater, 6),
-                `Temporary connection issue. Still checking verification status... (${statusErrorCount}/${CONFIG.MAX_STATUS_ERRORS})`
-            );
-            setStatus("Still checking verification status. The server may be busy with a large reference list.", "warn");
-            return;
-        }
+    <footer class="footer">
+        <div class="footer-inner">
+            <div>
+                <a class="brand" href="/new" aria-label="CiteIntegrity home">
+                    <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <text x="2" y="38" font-size="44" font-weight="800" fill="#ffffff" font-family="Georgia, serif">C</text>
+                        <text x="40" y="38" font-size="44" font-weight="800" fill="#ffffff" font-family="Georgia, serif">I</text>
+                        <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span class="brand-name">CiteIntegrity</span>
+                </a>
+                <p>Thesis and manuscript readiness platform for citation integrity, reference verification, source recovery and claim-support review.</p>
+            </div>
 
-        setStatus("Verification status could not be checked repeatedly. The backend may still be running. Use Refresh in a moment.", "bad");
-        finishVerification(false);
-    }
+            <div>
+                <h4>Product</h4>
+                <ul class="footer-links">
+                    <li><a href="#features">Features</a></li>
+                    <li><a href="#workflow">How it works</a></li>
+                    <li><a href="#pricing">Pricing</a></li>
+                    <li><a href="https://citeintegrity.org/new/analyse">New analysis</a></li>
+                </ul>
+            </div>
 
-    // --------------------- RENDER FUNCTIONS ---------------------
-    function getUniqueCitationsWithCount(rows) {
-        const map = new Map();
-        (rows || []).forEach(row => {
-            const cite = row.in_text || row.citation || row.citation_in_text || "";
-            const matched = row.matched_reference || "";
-            const status = row.status || "";
-            const flags = row.flags || "";
-            const key = `${cite.toLowerCase()}|${matched}|${status}|${flags}`;
-            if (map.has(key)) {
-                map.get(key).count += 1;
-            } else {
-                map.set(key, {
-                    citation: cite,
-                    matched_reference: matched,
-                    status,
-                    flags,
-                    count: row.count || 1
+            <div>
+                <h4>Use cases</h4>
+                <ul class="footer-links">
+                    <li><a href="/students">Students</a></li>
+                    <li><a href="/supervisors">Supervisors</a></li>
+                    <li><a href="/universities">Universities</a></li>
+                    <li><a href="/journals">Journals</a></li>
+                </ul>
+            </div>
+
+            <div>
+                <h4>Company</h4>
+                <ul class="footer-links">
+                    <li><a href="/about">About</a></li>
+                    <li><a href="/privacy">Privacy</a></li>
+                    <li><a href="/terms">Terms</a></li>
+                    <li><a href="/contact">Contact</a></li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="footer-bottom">
+            <span>© 2026 CiteIntegrity. Part of Anovlad Technologies.</span>
+            <span>Professional citation integrity analysis for credible academic writing.</span>
+        </div>
+    </footer>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const toggle = document.getElementById("mobileToggle");
+            const nav = document.getElementById("mainNav");
+
+            if (toggle && nav) {
+                toggle.addEventListener("click", function () {
+                    nav.classList.toggle("open");
                 });
             }
-        });
-        return Array.from(map.values());
-    }
 
-    function renderAll(rawData) {
-        if (!rawData) return;
-        const data = hydrateFinalDefaults(normalizeData(rawData));
-        data.job_id = data.job_id || JOB_ID;
-        latestResults = data;
-        window.latestResults = data;
-
-        renderACII(data);
-        renderKpis(data);
-        renderSummary(data);
-        renderMissing(data);
-        renderUncited(data);
-        renderC2R(data);
-        renderR2C(data);
-        renderVerification(data);
-        renderRecovery(data);
-        renderClaimSupport(data);
-        renderSuggestions(data);
-        updateCounts(data);
-        maybeStartEnrichmentPolling(data);
-    }
-
-    function renderACII(data) {
-        const acii = data.acii || {};
-        const score = acii.ACII ?? acii.score ?? "--";
-        const scoreEl = $("aciiScore");
-        const ratingEl = $("aciiRating");
-        const recEl = $("aciiRecommendation");
-        if (scoreEl) scoreEl.textContent = score;
-        const rating = getACIIRating(score);
-        if (ratingEl) {
-            ratingEl.textContent = rating.text;
-            ratingEl.className = `acii-rating ${rating.className}`;
-        }
-        if (recEl) {
-            const recs = acii.recommendations || {};
-            let html = "";
-            if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
-            if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
-            if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
-            if (recs.priority) html += `<div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.18);">🎯 ${esc(recs.priority)}</div>`;
-            recEl.innerHTML = html || "Review missing citations, uncited references, verification gaps, and claim-support issues to improve citation integrity.";
-        }
-    }
-
-    function renderKpis(data) {
-        const s = data.summary || {};
-        const ovRows = data.online_verification?.rows || [];
-        const claimRows = data.claim_support || [];
-        const rec = data.recovery || {};
-        const kpis = [
-            ["In-text citations", s.in_text_citations_found],
-            ["References", s.reference_entries_found],
-            ["Missing citations", s.missing_in_references],
-            ["Uncited references", s.uncited_references],
-            ["Match rate", `${s.match_rate}%`],
-            ["Verified rows", ovRows.length],
-            ["Recovery rows", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length],
-            ["Claim rows", claimRows.length]
-        ];
-        const grid = $("kpiGrid");
-        if (!grid) return;
-        grid.innerHTML = kpis.map(([label, value]) => `
-            <div class="kpi">
-                <div class="kpi-value">${esc(value)}</div>
-                <div class="kpi-label">${esc(label)}</div>
-            </div>
-        `).join("");
-    }
-
-    function renderSummary(data) {
-        const s = data.summary || {};
-        const body = $("summaryBody");
-        if (!body) return;
-        body.innerHTML = `
-            <tr><td>In-text citation occurrences</td><td><strong>${esc(s.in_text_citations_found)}</strong></td><td>Total citation occurrences extracted from the manuscript.</td></tr>
-            <tr><td>Reference entries found</td><td><strong>${esc(s.reference_entries_found)}</strong></td><td>Total reference entries detected in the reference list.</td></tr>
-            <tr><td>Missing citations</td><td><strong style="color:#b91c1c;">${esc(s.missing_in_references)}</strong></td><td>Citations in the text that need corresponding references.</td></tr>
-            <tr><td>Uncited references</td><td><strong style="color:#c2410c;">${esc(s.uncited_references)}</strong></td><td>References listed but not cited in the manuscript body.</td></tr>
-            <tr><td>Match rate</td><td><strong>${esc(s.match_rate)}%</strong></td><td>Estimated citation-reference reconciliation rate.</td></tr>
-        `;
-        const components = data.acii?.components || {};
-        const compBody = $("aciiComponentsBody");
-        if (compBody) {
-            const rows = Object.entries(components);
-            if (!rows.length) {
-                compBody.innerHTML = `<tr><td colspan="4"><div class="empty">ACII components are not available yet.</div></td></tr>`;
-            } else {
-                compBody.innerHTML = rows.map(([name, item]) => `
-                    <tr>
-                        <td>${esc(name.replaceAll("_", " "))}</td>
-                        <td><strong>${esc(item?.score ?? "--")}</strong></td>
-                        <td>${esc(item?.category ?? "--")}</td>
-                        <td>${esc(item?.remark ?? "--")}</td>
-                    </tr>
-                `).join("");
-            }
-        }
-    }
-
-    function renderMissing(data) { /* unchanged, omitted for brevity but identical to original logic */ 
-        const rows = data.missing_in_references || [];
-        const body = $("missingBody");
-        if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="3"><div class="empty">No missing citations detected.</div></td></tr>`; return; }
-        body.innerHTML = rows.map((row, i) => {
-            const citation = typeof row === "string" ? row : (row.citation_in_text || row.citation || row.in_text || "");
-            const count = typeof row === "string" ? "" : (row.count_in_text || row.count || 1);
-            return `<tr><td>${i+1}</td><td>${esc(citation)}</td><td>${esc(count)}</td></tr>`;
-        }).join("");
-    }
-
-    function renderUncited(data) { 
-        const rows = data.uncited_references || [];
-        const body = $("uncitedBody");
-        if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="2"><div class="empty">No uncited references detected.</div></td></tr>`; return; }
-        body.innerHTML = rows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.reference || row)}</td></tr>`).join("");
-    }
-
-    function renderC2R(data) {
-        const raw = data.reconciliation_intext_to_reference || [];
-        const rows = getUniqueCitationsWithCount(raw);
-        const body = $("c2rBody");
-        if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="6"><div class="empty">No citation-reference mapping available.</div></td></tr>`; return; }
-        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "not_found")}</td><td>${esc(row.citation)}</td><td>${esc(row.count)}</td><td>${esc(row.matched_reference || "")}</td><td>${esc(row.flags || "")}</td></tr>`).join("");
-    }
-
-    function renderR2C(data) {
-        const rows = data.reconciliation_reference_to_intext || [];
-        const body = $("r2cBody");
-        if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="4"><div class="empty">No reference-citation mapping available.</div></td></tr>`; return; }
-        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td><strong>${esc(row.times_cited ?? 0)}</strong></td><td>${esc(row.reference || "")}</td><td>${esc((row.cited_by || []).slice(0, 8).join("; "))}</td></tr>`).join("");
-    }
-
-    function renderVerification(data) {
-        const ov = data.online_verification || {};
-        const rows = ov.rows || [];
-        const summary = ov.summary || {};
-        const body = $("verifyBody");
-        const kpis = $("verifyKpis");
-        if (kpis) {
-            const items = [
-                ["Verified", summary.verified ?? rows.filter(r => r.status === "verified").length],
-                ["Likely", summary.likely ?? rows.filter(r => r.status === "likely").length],
-                ["Needs review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
-                ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length]
-            ];
-            kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
-        }
-        if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="8"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
-        body.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((row, i) => {
-            const doi = row.doi || "";
-            const doiHtml = doi ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a><div class="small-muted">${esc(doi)}</div>` : "—";
-            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td></tr>`;
-        }).join("");
-    }
-
-    function csvCell(value) {
-        return `"${String(value ?? "").replaceAll('"', '""')}"`;
-    }
-
-    function reportText(value) {
-        return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    }
-
-    function getClaimText(row) {
-        return row.claim || row.claim_extracted || row.extracted_claim || row.context || "No evidence found";
-    }
-
-    function getSourceTitle(row) {
-        return row.source_title || row.matched_source || row.matched_title || row.title || "No source title available";
-    }
-
-    function getSupportScore(row) {
-        const score = row.support_score ?? row.score ?? row.supportScore ?? 0;
-        const numeric = Number(score);
-        return Number.isFinite(numeric) ? numeric : score;
-    }
-
-    function getSupportStatus(row) {
-        return row.support_status || row.status || "offline";
-    }
-
-    function getDeepSources(row) {
-        const sources = row.alternative_sources || row.alternativeSources || row.deep_suggestions || row.suggestions || [];
-        return Array.isArray(sources) ? sources : [];
-    }
-
-    function renderAlternativeSources(row) {
-        const alternatives = getDeepSources(row);
-        if (!Array.isArray(alternatives) || !alternatives.length) {
-            return row.enrichment_note
-                ? `<div class="small-muted" style="margin-top:8px;">${esc(row.enrichment_note)}</div>`
-                : "";
-        }
-
-        const items = alternatives.slice(0, 3).map((src, index) => {
-            const title = src.title || src.suggested || "Untitled source";
-            const year = src.year || "Year not available";
-            const authors = Array.isArray(src.authors) ? src.authors.join(", ") : (src.authors || "Authors not available");
-            const relevance = src.relevance ?? src.confidence ?? src.score ?? "Not scored";
-            const doi = src.doi || "";
-            const url = src.url || src.source_url || "";
-            const doiHtml = doi
-                ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a>`
-                : (url ? `<a class="doi-link" href="${esc(url)}" target="_blank" rel="noopener">View source</a>` : `<span class="small-muted">DOI not available</span>`);
-
-            return `
-                <div class="alt-source-item">
-                    <div class="alt-source-title">${index + 1}. ${esc(title)}</div>
-                    <div class="alt-source-meta"><strong>Authors:</strong> ${esc(authors)}</div>
-                    <div class="alt-source-meta"><strong>Year:</strong> ${esc(year)}</div>
-                    <div class="alt-source-meta"><strong>Relevance:</strong> ${esc(relevance)}</div>
-                    <div>${doiHtml}</div>
-                </div>
-            `;
-        }).join("");
-
-        const note = row.enrichment_note ? `<p class="alt-source-note">${esc(row.enrichment_note)}</p>` : "";
-        return `
-            <details class="alt-source-box" open>
-                <summary>Possible alternative supporting sources (${alternatives.slice(0, 3).length})</summary>
-                <p class="alt-source-note">These are review-only suggestions. Confirm the source before using it.</p>
-                ${note}
-                ${items}
-            </details>
-        `;
-    }
-
-    function renderSuggestionList(suggestions, note = "") {
-        if (!suggestions || !suggestions.length) {
-            return `
-                <span class="badge no_evidence_found">No context-specific source found</span>
-                ${note ? `<div class="small-muted" style="margin-top:6px;">${esc(note)}</div>` : ""}
-            `;
-        }
-        return `<div class="suggestion-box">${suggestions.slice(0, 3).map((s, i) => {
-            const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
-            const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
-            const reason = s.reason ? `<div class="small-muted">${esc(s.reason)}</div>` : "";
-            return `<div style="margin-bottom:10px;"><strong>${i+1}. ${esc(s.title || s.suggested || "Untitled suggestion")}</strong><div class="small-muted">${esc(authors)} ${s.year ? "(" + esc(s.year) + ")" : ""}</div>${reason}${doi}</div>`;
-        }).join("")}</div>`;
-    }
-
-    function renderRecovery(data) {
-        const rec = data.recovery || {};
-        const missingRows = rec.missing_recovery || [];
-        const verifyRows = rec.verification_recovery || [];
-        const missingBody = $("recoveryMissingBody");
-        const verifyBody = $("recoveryVerifyBody");
-
-        if (missingBody) {
-            if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
-            else {
-                const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                missingBody.innerHTML = visibleMissingRows.map((row, i) => {
-                    const suggestions = row.deep_suggestions || row.alternative_sources || row.suggestions || [];
-                    return `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(suggestions, row.enrichment_note || "")}</td></tr>`;
-                }).join("");
-                if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
-            }
-        }
-
-        if (verifyBody) {
-            if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
-            else {
-                const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => {
-                    const suggestions = row.deep_suggestions || row.alternative_sources || row.suggestions || [];
-                    return `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(suggestions, row.enrichment_note || "")}</td></tr>`;
-                }).join("");
-                if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
-            }
-        }
-    }
-
-    function renderClaimSupport(data) {
-        const rows = data.claim_support || [];
-        const body = $("claimBody");
-        if (!body) return;
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`;
-            return;
-        }
-
-        const visibleRows = rows.slice(0, CONFIG.MAX_CLAIM_DISPLAY);
-        body.innerHTML = visibleRows.map((row, i) => {
-            const doi = row.doi || "";
-            const doiHtml = doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
-            const sourceTitle = getSourceTitle(row);
-            const note = row.note ? `<div class="claim-note">${esc(row.note)}</div>` : "";
-            const alternatives = renderAlternativeSources(row);
-            const score = getSupportScore(row);
-            const status = getSupportStatus(row);
-            return `<tr data-status="${esc(status)}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(getClaimText(row))}</td><td>${esc(sourceTitle)}${doiHtml}${note}${alternatives}</td><td>${formatBadge(status)}</td><td>${esc(score)}</td></tr>`;
-        }).join("");
-
-        if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) {
-            body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
-        }
-    }
-
-    function getSuggestions(data) {
-        if (data.autofix?.suggestions) return data.autofix.suggestions;
-        if (data.suggestions) return data.suggestions;
-        if (data.autofix?.citations || data.autofix?.references) return data.autofix;
-        return { citations: [], references: [] };
-    }
-
-    function renderSuggestions(data) {
-        const content = $("suggestionsContent");
-        if (!content) return;
-        const suggestions = getSuggestions(data);
-        const items = [...(suggestions.citations || []), ...(suggestions.references || [])];
-        if (!items.length) { content.innerHTML = `<div class="empty">No suggestions were returned. This may mean no fixable citation issues were detected, or suggestions were not enabled during upload.</div>`; return; }
-        content.innerHTML = `<div style="margin-bottom:16px;" class="small-muted">Total suggestions: <strong>${items.length}</strong></div>${items.slice(0, 500).map((s, i) => {
-            const confidence = Number(s.confidence || 0);
-            const level = confidence >= 0.85 ? "high" : confidence >= 0.7 ? "medium" : "low";
-            return `<div class="suggestion-item ${level}"><div><strong>${i+1}. ${esc(s.issue_type || s.type || "Suggestion")}</strong></div><div class="line-through">Original: ${esc(s.original || s.citation || "")}</div><div class="suggested">Suggested: ${esc(s.suggested || s.title || "Review required")}</div><div class="small-muted" style="margin-top:8px;">Reason: ${esc(s.reason || "Citation/reference issue detected.")}${confidence ? ` | Confidence: ${Math.round(confidence * 100)}%` : ""}</div></div>`;
-        }).join("")}`;
-    }
-
-    function updateCounts(data) {
-        const rec = data.recovery || {};
-        const suggestions = getSuggestions(data);
-        const suggestionCount = (suggestions.citations || []).length + (suggestions.references || []).length;
-        setCount("countSummary", "OK");
-        setCount("countMissing", data.missing_in_references?.length || 0);
-        setCount("countUncited", data.uncited_references?.length || 0);
-        const c2rUniqueRows = getUniqueCitationsWithCount(
-            data.reconciliation_intext_to_reference || []
-        );
-        
-        setCount("countC2R", c2rUniqueRows.length);
-        setCount("countR2C", data.reconciliation_reference_to_intext?.length || 0);
-        setCount("countVerify", data.online_verification?.rows?.length || 0);
-        setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
-        setCount("countClaim", data.claim_support?.length || 0);
-
-        const enrichment = data.enrichment || {};
-        const enrichmentState = String(enrichment.state || "optional").replaceAll("_", " ");
-        setCount("countEnrichment", enrichmentState || "Optional");
-        
-        setCount("countSuggestions", suggestionCount);
-    }
-
-    // --------------------- VERIFICATION API ---------------------
-    async function startVerification() {
-        if (!JOB_ID) { setStatus("No job ID found.", "bad"); return; }
-        if (verificationInProgress) { setStatus("Verification already in progress.", "warn"); return; }
-
-        verificationInProgress = true;
-        finalisingCount = 0;
-        finalFetchRunning = false;
-        partialFinalRendered = false;
-
-        resetProgress("Starting online verification...");
-        showProgress(2, "Starting online verification...");
-        setStatus("Starting online verification...", "info");
-
-        const btn = $("btnVerify");
-        if (btn) btn.disabled = true;
-
-        const formData = new FormData();
-        formData.append("job_id", JOB_ID);
-
-        try {
-            const res = await fetch("/verify-online", { method: "POST", body: formData });
-            const js = await res.json();
-            console.log("Verify response:", js);
-
-            if (js.completed === true) {
-                setStatus("Verification already completed. Loading final dashboard tables...", "good");
-                showProgress(96, "Verification already completed. Loading final tables...");
-                await fetchFinalResultWithRetry();
-                return;
-            }
-
-            if (js.started === true) {
-                const total = Number(js.total_references || 0);
-                lastKnownTotal = total;
-                setStatus(total ? `Verification started: 0/${total}` : "Verification started.", "info");
-                showProgress(4, total ? `Verification started: 0/${total}` : "Verification started. Waiting for reference count...");
-                startPollingStatus();
-                return;
-            }
-
-            setStatus(js.message || "Verification could not start.", "warn");
-            showProgress(progressHighWater, js.message || "Verification could not start.");
-            verificationInProgress = false;
-            if (btn) btn.disabled = false;
-        } catch (error) {
-            console.error(error);
-            setStatus("Verification error: " + error.message, "bad");
-            verificationInProgress = false;
-            if (btn) btn.disabled = false;
-        }
-    }
-
-    function startPollingStatus() {
-        stopPollingStatus();
-        statusErrorCount = 0;
-        fetchVerificationStatus();
-        pollingTimer = setInterval(() => fetchVerificationStatus(), CONFIG.POLL_INTERVAL);
-    }
-
-    function stopPollingStatus() {
-        if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; }
-    }
-
-    async function fetchVerificationStatus() {
-        try {
-            const js = await fetchJsonNoCache(`/online/status?job_id=${encodeURIComponent(JOB_ID)}`);
-            statusErrorCount = 0;
-            console.log("Online status:", js);
-
-            if (js.result && hasVerificationRows(js.result)) {
-                const result = js.result;
-                const onlineMeta = js.online || js.verification || {};
-                const onlineState = String(onlineMeta.state || onlineMeta.status || "").toLowerCase();
-
-                result.verification = result.verification || {};
-                if (!result.verification.state && onlineState) {
-                    result.verification.state = onlineState;
-                }
-                if (onlineMeta.final_tables_ready === true) {
-                    result.verification.final_tables_ready = true;
-                    result.final_tables_ready = true;
-                }
-
-                const hydrated = hydrateFinalDefaults(result);
-                const rows = hydrated.online_verification.rows || [];
-                latestResults = hydrated;
-                window.latestResults = hydrated;
-
-                if (isFinalReady(hydrated)) {
-                    renderAll(hydrated);
-                    showProgress(100, `Verification complete. ${rows.length} references verified.`);
-                    setStatus(`Results ready. ${rows.length} references verified and ${(hydrated.claim_support || []).length} claim-support rows populated.`, "good");
-                    finishVerification(true);
-                    return;
-                }
-
-                if (!partialFinalRendered) {
-                    renderVerification(hydrated);
-                    updateCounts(hydrated);
-                    partialFinalRendered = true;
-                }
-                
-                const metaProgress = Number(
-                    onlineMeta.progress ??
-                    result.verification?.progress ??
-                    rows.length ??
-                    0
-                );
-                
-                const metaTotal = Number(
-                    onlineMeta.total ??
-                    result.verification?.total ??
-                    result.online_verification?.summary?.total ??
-                    lastKnownTotal ??
-                    rows.length ??
-                    0
-                );
-                
-                if (metaTotal > 0) {
-                    lastKnownTotal = Math.max(lastKnownTotal, metaTotal);
-                }
-                
-                if (metaProgress > 0 || rows.length > 0) {
-                    lastKnownProgress = Math.max(lastKnownProgress, metaProgress, rows.length);
-                }
-                
-                const liveTotal = lastKnownTotal || metaTotal || rows.length;
-                const liveProgress = Math.min(
-                    liveTotal || rows.length,
-                    Math.max(lastKnownProgress, rows.length)
-                );
-                
-                let livePercent = 8;
-                if (liveTotal > 0) {
-                    livePercent = Math.round((liveProgress / liveTotal) * 92);
-                    livePercent = Math.min(94, Math.max(8, livePercent));
-                }
-                
-                if (onlineState === "completed" || onlineState === "finalising") {
-                    showProgress(96, "Verification complete. Finalising Recovery and Claim Support tables...");
-                    setStatus("Verification complete. Finalising Recovery and Claim Support results...", "warn");
-                    if (!finalFetchRunning) fetchFinalResultWithRetry();
-                    return;
-                }
-                
-                showProgress(
-                    livePercent,
-                    `Verifying references: ${liveProgress}/${liveTotal}. Partial results are loading.`
-                );
-                
-                setStatus(
-                    `Verification in progress: ${liveProgress}/${liveTotal}. Partial verification rows loaded: ${rows.length}.`,
-                    "info"
-                );
-                
-                return;
-            }
-
-            const online = js.online || js.verification || js;
-            const state = String(online.state || online.status || "running").toLowerCase();
-            let progress = Number(online.progress || 0);
-            let total = Number(online.total || 0);
-            if (total > 0) lastKnownTotal = Math.max(lastKnownTotal, total);
-            if (progress > 0) lastKnownProgress = Math.max(lastKnownProgress, progress);
-            total = lastKnownTotal || total;
-            progress = Math.max(lastKnownProgress, progress);
-
-            if (state === "completed") {
-                showProgress(96, total ? `Verification complete: ${total}/${total}. Loading dashboard tables...` : "Verification complete. Loading dashboard tables...");
-                setStatus("Verification complete. Loading final dashboard tables...", "good");
-                if (!finalFetchRunning) await fetchFinalResultWithRetry();
-                return;
-            }
-
-            if (state === "error" || state === "failed") {
-                setStatus(online.message || online.error || "Verification failed.", "bad");
-                finishVerification(false);
-                return;
-            }
-
-            let percent;
-            if (total > 0) {
-                percent = Math.round((progress / total) * 92);
-                percent = Math.min(94, Math.max(4, percent));
-            } else {
-                percent = Math.max(progressHighWater, 6);
-            }
-            const message = total ? `Verifying references: ${progress}/${total}. Large documents may take several minutes.` : "Verification running. Waiting for reference count...";
-            showProgress(percent, message);
-            setStatus(total ? `Verification in progress: ${progress}/${total}` : "Verification in progress...", "info");
-        } catch (error) {
-            handleStatusPollingError(error);
-        }
-    }
-
-    async function fetchFinalResultWithRetry() {
-        if (finalFetchRunning) return null;
-        finalFetchRunning = true;
-        stopPollingStatus();
-
-        for (let attempt = 1; attempt <= CONFIG.MAX_FINAL_ATTEMPTS; attempt++) {
-            try {
-                let bestResult = null;
-                let envelopeStatus = "";
-
-                // Use /result as the primary source for the new interface.
-                // Do not call /job here, because /result already works with the current main.py.
-                try {
-                    const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}`);
-                    envelopeStatus = String(resultData.status || "").toLowerCase();
-                    bestResult = resultData.data || resultData.result || null;
-
-                    if (bestResult) {
-                        bestResult.status = bestResult.status || envelopeStatus;
-                        bestResult.verification = bestResult.verification || {};
-
-                        if (!bestResult.verification.state && envelopeStatus === "completed") {
-                            bestResult.verification.state = "completed";
-                        }
-
-                        // If /result says completed and the tables exist, treat the dashboard as ready.
-                        // This mirrors the old interface without requiring any main.py change.
-                        if (envelopeStatus === "completed" && hasVerificationRows(bestResult)) {
-                            bestResult.verification.final_tables_ready =
-                                bestResult.verification.final_tables_ready === true ||
-                                bestResult.final_tables_ready === true ||
-                                Boolean(bestResult.verification_completed_at) ||
-                                (hasRecoveryPayload(bestResult) && hasClaimPayload(bestResult));
-                        }
-                    }
-                } catch (e) {
-                    console.warn("Result endpoint fetch failed:", e);
-                }
-
-                if (bestResult) {
-                    const hydrated = hydrateFinalDefaults(bestResult);
-                    latestResults = hydrated;
-                    window.latestResults = hydrated;
-
-                    const rows = hydrated.online_verification?.rows || [];
-                    const claimRows = hydrated.claim_support || [];
-
-                    if (isFinalReady(hydrated)) {
-                        renderAll(hydrated);
-                        showProgress(100, `Complete. ${rows.length} references verified.`);
-                        setStatus(`Results ready. ${rows.length} references verified and ${claimRows.length} claim-support rows populated.`, "good");
-                        finishVerification(true);
-                        finalFetchRunning = false;
-                        return hydrated;
-                    }
-
-                    // Render available data so the user is not left waiting even while the final flag is absent.
-                    if (hasVerificationRows(hydrated) && !partialFinalRendered) {
-                        renderAll(hydrated);
-                        partialFinalRendered = true;
-                    }
-                }
-
-                const percent = Math.min(99, 96 + Math.floor(attempt / 45));
-                showProgress(percent, `Finalising Recovery and Claim Support tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
-                setStatus("Verification is complete. Waiting for Recovery and Claim Support tables to populate...", "warn");
-            } catch (error) {
-                console.error("Final fetch error:", error);
-                showProgress(Math.max(progressHighWater, 96), `Still waiting for final tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
-            }
-            await new Promise(resolve => setTimeout(resolve, CONFIG.FINAL_RETRY_DELAY));
-        }
-
-        if (latestResults) {
-            const hydrated = hydrateFinalDefaults(latestResults);
-            renderAll(hydrated);
-            const rows = hydrated.online_verification?.rows?.length || 0;
-            const claimRows = hydrated.claim_support?.length || 0;
-            setStatus(`Results loaded. ${rows} references verified and ${claimRows} claim-support rows currently available.`, "good");
-            showProgress(100, "Verification results loaded.");
-        } else {
-            setStatus("Verification completed, but final results could not be loaded. Please refresh in a moment.", "warn");
-        }
-        finishVerification(true);
-        finalFetchRunning = false;
-        return latestResults;
-    }
-
-    async function startAdvancedEnrichment() {
-        if (!JOB_ID) {
-            setStatus("No job ID found.", "bad");
-            return;
-        }
-    
-        const scope = $("enrichmentScope")?.value || "weak_only";
-        const box = $("enrichmentStatusBox");
-        const btn = $("btnStartEnrichment");
-    
-        if (btn) btn.disabled = true;
-        if (box) {
-            box.innerHTML = "Queuing advanced enrichment...";
-        }
-    
-        try {
-            const response = await fetch(`/api/enrichment/start/${encodeURIComponent(JOB_ID)}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ scope })
-            });
-    
-            const js = await response.json();
-    
-            if (!response.ok || js.ok === false) {
-                throw new Error(js.error || "Could not start advanced enrichment.");
-            }
-    
-            setStatus("Advanced enrichment queued. Results will update in the background.", "good");
-    
-            if (box) {
-                box.innerHTML = `
-                    <strong>Advanced enrichment queued.</strong><br>
-                    Scope: ${esc(scope)}<br>
-                    The dashboard will update when deeper suggestions arrive.
-                `;
-            }
-    
-            const tempResult = latestResults || {};
-            tempResult.enrichment = {
-                ...(tempResult.enrichment || {}),
-                state: "queued",
-                scope,
-                rq_job_id: js.rq_job_id || "",
-                message: js.message || "Advanced enrichment queued."
-            };
-    
-            latestResults = tempResult;
-            window.latestResults = tempResult;
-    
-            updateCounts(tempResult);
-            maybeStartEnrichmentPolling(tempResult);
-    
-        } catch (error) {
-            console.error(error);
-            setStatus("Advanced enrichment could not start: " + error.message, "bad");
-    
-            if (box) {
-                box.innerHTML = `Advanced enrichment could not start: ${esc(error.message)}`;
-            }
-    
-            if (btn) btn.disabled = false;
-        }
-    }
-
-    function getEnrichmentState(result) {
-        return String(result?.enrichment?.state || "").toLowerCase();
-    }
-
-    function maybeStartEnrichmentPolling(result) {
-        const state = getEnrichmentState(result);
-        if (!["queued", "running"].includes(state)) return;
-        if (enrichmentPollTimer) return;
-
-        enrichmentPollCount = 0;
-        setStatus("Results ready. Advanced enrichment is running in the background.", "good");
-
-        enrichmentPollTimer = setInterval(async () => {
-            enrichmentPollCount += 1;
-
-            if (enrichmentPollCount > MAX_ENRICHMENT_POLLS) {
-                clearInterval(enrichmentPollTimer);
-                enrichmentPollTimer = null;
-                setStatus("Results ready. Advanced enrichment is still running. Refresh later to update enriched suggestions.", "warn");
-                return;
-            }
-
-            try {
-                const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}?fresh=1`);
-                const freshResult = resultData.data || resultData.result || null;
-                if (!freshResult) return;
-
-                const hydrated = hydrateFinalDefaults(freshResult);
-                latestResults = hydrated;
-                window.latestResults = hydrated;
-
-                const enrichment = hydrated.enrichment || {};
-                const freshState = String(enrichment.state || "").toLowerCase();
-
-                if (freshState === "completed") {
-                    renderAll(hydrated);
-                
-                    const box = $("enrichmentStatusBox");
-                    if (box) {
-                        const rec = hydrated.recovery || {};
-                        const recoverySourceCount = [
-                            ...(rec.missing_recovery || []),
-                            ...(rec.verification_recovery || [])
-                        ].reduce((sum, row) => sum + (Array.isArray(row.deep_suggestions || row.suggestions) ? (row.deep_suggestions || row.suggestions).length : 0), 0);
-                        const claimSourceCount = (hydrated.claim_support || [])
-                            .reduce((sum, row) => sum + getDeepSources(row).length, 0);
-                        box.innerHTML = `
-                            <strong>Advanced enrichment completed.</strong><br>
-                            Recovery source suggestions: ${esc(recoverySourceCount)}<br>
-                            Claim-support alternative sources: ${esc(claimSourceCount)}
-                        `;
-                    }
-                
-                    clearInterval(enrichmentPollTimer);
-                    enrichmentPollTimer = null;
-                    setStatus("Results ready. Advanced enrichment completed.", "good");
-                    return;
-                }
-
-                if (freshState === "error" || freshState === "failed") {
-                    clearInterval(enrichmentPollTimer);
-                    enrichmentPollTimer = null;
-                    setStatus("Results ready. Advanced enrichment could not complete.", "warn");
-                    return;
-                }
-
-                if (freshState === "running" || freshState === "queued") {
-                    const progress = enrichment.progress ?? "";
-                    const total = enrichment.total ?? "";
-                    const scope = enrichment.scope || "weak_only";
-                
-                    const msg = progress && total
-                        ? `Results ready. Advanced enrichment running: ${progress}/${total}.`
-                        : "Results ready. Advanced enrichment is running in the background.";
-                
-                    const box = $("enrichmentStatusBox");
-                    if (box) {
-                        box.innerHTML = `
-                            <strong>Advanced enrichment ${esc(freshState)}.</strong><br>
-                            Scope: ${esc(scope)}<br>
-                            ${progress && total ? `Progress: ${esc(progress)}/${esc(total)}` : "Waiting for progress update..."}
-                        `;
-                    }
-                
-                    setStatus(msg, "good");
-                }
-            } catch (e) {
-                console.warn("Enrichment polling issue:", e);
-            }
-        }, 12000);
-    }
-
-    function stopEnrichmentPolling() {
-        if (enrichmentPollTimer) {
-            clearInterval(enrichmentPollTimer);
-            enrichmentPollTimer = null;
-        }
-    }
-
-    function finishVerification(keepProgressVisible = true) {
-        stopPollingStatus();
-        verificationInProgress = false;
-        finalFetchRunning = false;
-        const btn = $("btnVerify");
-        if (btn) btn.disabled = false;
-        if (!keepProgressVisible) hideProgress();
-    }
-
-    async function loadExistingResult(showMessage = true) {
-        if (!JOB_ID) { setStatus("No job ID found in URL.", "bad"); return null; }
-        try {
-            if (showMessage) setStatus("Loading results...", "info");
-            const js = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}?fresh=1`);
-            if (js.status === "completed") {
-                const result = js.data || js.result;
-                renderAll(result);
-                setStatus("Results loaded.", "good");
-                return result;
-            }
-            if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
-                setStatus(js.message || "Results are still processing. Refreshing shortly...", "warn");
-                showProgress(35, "Waiting for analysis result...");
-                setTimeout(() => loadExistingResult(false), 2500);
-                return null;
-            }
-            if (js.status === "failed" || js.status === "error") { setStatus(js.error || "Analysis failed.", "bad"); return null; }
-            setStatus(js.error || "Result not found.", "bad");
-            return null;
-        } catch (error) {
-            console.error(error);
-            setStatus("Could not load results: " + error.message, "bad");
-            return null;
-        }
-    }
-
-    function exportCSV() {
-        if (!latestResults) { alert("No data to export."); return; }
-
-        const s = latestResults.summary || {};
-        const acii = latestResults.acii || {};
-        const missing = latestResults.missing_in_references || [];
-        const uncited = latestResults.uncited_references || [];
-        const c2rRows = latestResults.reconciliation_intext_to_reference || [];
-        const r2cRows = latestResults.reconciliation_reference_to_intext || [];
-        const verifyRows = latestResults.online_verification?.rows || [];
-        const rec = latestResults.recovery || {};
-        const recoveryMissing = rec.missing_recovery || [];
-        const recoveryVerify = rec.verification_recovery || [];
-        const claimRows = latestResults.claim_support || [];
-
-        const lines = [];
-        lines.push(`${csvCell("CiteIntegrity Report")},${csvCell(new Date().toLocaleString())}`);
-        lines.push(`${csvCell("Job ID")},${csvCell(JOB_ID)}`);
-        lines.push("");
-
-        lines.push(`${csvCell("Metric")},${csvCell("Value")}`);
-        lines.push(`${csvCell("In-text citations")},${csvCell(s.in_text_citations_found)}`);
-        lines.push(`${csvCell("References")},${csvCell(s.reference_entries_found)}`);
-        lines.push(`${csvCell("Missing citations")},${csvCell(s.missing_in_references)}`);
-        lines.push(`${csvCell("Uncited references")},${csvCell(s.uncited_references)}`);
-        lines.push(`${csvCell("Match rate")},${csvCell((s.match_rate ?? "") + "%")}`);
-        lines.push(`${csvCell("ACII")},${csvCell(acii.ACII ?? acii.score ?? "")}`);
-        lines.push(`${csvCell("Verification rows")},${csvCell(verifyRows.length)}`);
-        lines.push(`${csvCell("Recovery rows")},${csvCell(recoveryMissing.length + recoveryVerify.length)}`);
-        lines.push(`${csvCell("Claim support rows")},${csvCell(claimRows.length)}`);
-
-        lines.push("", csvCell("Missing Citations"));
-        lines.push(`${csvCell("No.")},${csvCell("Citation")},${csvCell("Count")}`);
-        missing.forEach((item, i) => lines.push(`${csvCell(i+1)},${csvCell(item.citation_in_text || item.citation || item)},${csvCell(item.count || item.count_in_text || 1)}`));
-
-        lines.push("", csvCell("Uncited References"));
-        lines.push(`${csvCell("No.")},${csvCell("Reference")}`);
-        uncited.forEach((item, i) => lines.push(`${csvCell(i+1)},${csvCell(item.reference || item)}`));
-
-        lines.push("", csvCell("Citations to References"));
-        lines.push(`${csvCell("No.")},${csvCell("Status")},${csvCell("Citation")},${csvCell("Count")},${csvCell("Matched Reference")},${csvCell("Flags")}`);
-        c2rRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.in_text || row.citation)},${csvCell(row.count || 1)},${csvCell(row.matched_reference || row.reference)},${csvCell(row.flags || row.issue || "")}`));
-
-        lines.push("", csvCell("References to Citations"));
-        lines.push(`${csvCell("No.")},${csvCell("Times Cited")},${csvCell("Reference")},${csvCell("Cited By")}`);
-        r2cRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.times_cited || row.count || 0)},${csvCell(row.reference || "")},${csvCell(Array.isArray(row.cited_by) ? row.cited_by.join("; ") : (row.cited_by || ""))}`));
-
-        lines.push("", csvCell("Online Verification"));
-        lines.push(`${csvCell("No.")},${csvCell("Status")},${csvCell("Source")},${csvCell("Score")},${csvCell("DOI")},${csvCell("Year")},${csvCell("Authors")},${csvCell("Matched Title")}`);
-        verifyRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.source)},${csvCell(row.score)},${csvCell(row.doi)},${csvCell(row.matched_year || row.year)},${csvCell(row.matched_authors || row.authors)},${csvCell(row.matched_title || row.title || row.reference)}`));
-
-        lines.push("", csvCell("Recovery, Missing Citation"));
-        lines.push(`${csvCell("No.")},${csvCell("Citation")},${csvCell("Count")},${csvCell("Suggestions")}`);
-        recoveryMissing.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.citation)},${csvCell(row.count || 1)},${csvCell((row.suggestions || []).map(s => s.title || s.suggested || "").join(" | "))}`));
-
-        lines.push("", csvCell("Recovery, Needs Review or Not Found"));
-        lines.push(`${csvCell("No.")},${csvCell("Status")},${csvCell("Citation")},${csvCell("Reference")},${csvCell("Context Suggestions")}`);
-        recoveryVerify.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.citation)},${csvCell(row.reference)},${csvCell((row.suggestions || []).map(s => s.title || s.suggested || "").join(" | "))}`));
-
-        lines.push("", csvCell("Claim Support"));
-        lines.push(`${csvCell("No.")},${csvCell("Citation")},${csvCell("Claim")},${csvCell("Matched Source")},${csvCell("Support Status")},${csvCell("Score")},${csvCell("Note")},${csvCell("Alternative Sources")}`);
-        claimRows.forEach((row, i) => {
-            const alternatives = (row.alternative_sources || []).map(src => `${src.title || src.suggested || "Untitled"} (${src.year || ""})`).join(" | ");
-            lines.push(`${csvCell(i+1)},${csvCell(row.citation)},${csvCell(getClaimText(row))},${csvCell(getSourceTitle(row))},${csvCell(getSupportStatus(row))},${csvCell(getSupportScore(row))},${csvCell(row.note || "")},${csvCell(alternatives)}`);
-        });
-
-        downloadBlob(lines.join("\n"), `citeintegrity_report_${JOB_ID.slice(0, 8)}.csv`, "text/csv");
-    }
-
-    function exportWord() {
-        if (!latestResults) { alert("No data to export."); return; }
-
-        const s = latestResults.summary || {};
-        const acii = latestResults.acii || {};
-        const missing = latestResults.missing_in_references || [];
-        const uncited = latestResults.uncited_references || [];
-        const c2rRows = latestResults.reconciliation_intext_to_reference || [];
-        const verifyRows = latestResults.online_verification?.rows || [];
-        const rec = latestResults.recovery || {};
-        const recoveryMissing = rec.missing_recovery || [];
-        const recoveryVerify = rec.verification_recovery || [];
-        const claimRows = latestResults.claim_support || [];
-
-        const tableStyle = `border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:11pt;`;
-        const cellStyle = `border:1px solid #cccccc;padding:6px;vertical-align:top;`;
-        const thStyle = `border:1px solid #cccccc;padding:6px;background:#f1f5f9;text-align:left;`;
-
-        const verificationTable = verifyRows.length ? `
-            <table style="${tableStyle}">
-                <tr><th style="${thStyle}">No.</th><th style="${thStyle}">Status</th><th style="${thStyle}">Score</th><th style="${thStyle}">DOI</th><th style="${thStyle}">Matched Title</th></tr>
-                ${verifyRows.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.score)}</td><td style="${cellStyle}">${reportText(r.doi)}</td><td style="${cellStyle}">${reportText(r.matched_title || r.title || r.reference)}</td></tr>`).join("")}
-            </table>` : `<p>No online verification rows available.</p>`;
-
-        const recoveryTable = `
-            <h3>Missing Citation Recovery</h3>
-            ${recoveryMissing.length ? `<table style="${tableStyle}"><tr><th style="${thStyle}">No.</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Count</th><th style="${thStyle}">Suggestions</th></tr>${recoveryMissing.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.citation)}</td><td style="${cellStyle}">${reportText(r.count || 1)}</td><td style="${cellStyle}">${reportText((r.suggestions || []).map(x => x.title || x.suggested || "").join("; "))}</td></tr>`).join("")}</table>` : `<p>No missing citation recovery rows available.</p>`}
-            <h3>Needs Review / Not Found Recovery</h3>
-            ${recoveryVerify.length ? `<table style="${tableStyle}"><tr><th style="${thStyle}">No.</th><th style="${thStyle}">Status</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Reference</th><th style="${thStyle}">Context Suggestions</th></tr>${recoveryVerify.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.citation)}</td><td style="${cellStyle}">${reportText(r.reference)}</td><td style="${cellStyle}">${reportText((r.suggestions || []).map(x => x.title || x.suggested || "").join("; "))}</td></tr>`).join("")}</table>` : `<p>No verification recovery rows available.</p>`}
-        `;
-
-        const claimTable = claimRows.length ? `
-            <table style="${tableStyle}">
-                <tr><th style="${thStyle}">No.</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Claim</th><th style="${thStyle}">Matched Source</th><th style="${thStyle}">Support Status</th><th style="${thStyle}">Score</th><th style="${thStyle}">Alternative Sources</th></tr>
-                ${claimRows.map((r, i) => {
-                    const alternatives = (r.alternative_sources || []).map(src => `${src.title || src.suggested || "Untitled"} (${src.year || ""})`).join("; ");
-                    return `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.citation)}</td><td style="${cellStyle}">${reportText(getClaimText(r))}</td><td style="${cellStyle}">${reportText(getSourceTitle(r))}</td><td style="${cellStyle}">${reportText(getSupportStatus(r))}</td><td style="${cellStyle}">${reportText(getSupportScore(r))}</td><td style="${cellStyle}">${reportText(alternatives)}</td></tr>`;
-                }).join("")}
-            </table>` : `<p>No claim-support rows available.</p>`;
-
-        const html = `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>CiteIntegrity Report</title></head>
-<body style="font-family:Arial,sans-serif;color:#0f172a;">
-<h1>CiteIntegrity Results Report</h1>
-<p><strong>Generated:</strong> ${reportText(new Date().toLocaleString())}</p>
-<p><strong>Job ID:</strong> ${reportText(JOB_ID)}</p>
-
-<h2>Summary</h2>
-<table style="${tableStyle}">
-<tr><th style="${thStyle}">Metric</th><th style="${thStyle}">Value</th></tr>
-<tr><td style="${cellStyle}">In-text citations</td><td style="${cellStyle}">${reportText(s.in_text_citations_found)}</td></tr>
-<tr><td style="${cellStyle}">References</td><td style="${cellStyle}">${reportText(s.reference_entries_found)}</td></tr>
-<tr><td style="${cellStyle}">Missing citations</td><td style="${cellStyle}">${reportText(s.missing_in_references)}</td></tr>
-<tr><td style="${cellStyle}">Uncited references</td><td style="${cellStyle}">${reportText(s.uncited_references)}</td></tr>
-<tr><td style="${cellStyle}">Match rate</td><td style="${cellStyle}">${reportText(s.match_rate)}%</td></tr>
-<tr><td style="${cellStyle}">ACII</td><td style="${cellStyle}">${reportText(acii.ACII ?? acii.score ?? "--")}</td></tr>
-<tr><td style="${cellStyle}">Verification rows</td><td style="${cellStyle}">${verifyRows.length}</td></tr>
-<tr><td style="${cellStyle}">Recovery rows</td><td style="${cellStyle}">${recoveryMissing.length + recoveryVerify.length}</td></tr>
-<tr><td style="${cellStyle}">Claim-support rows</td><td style="${cellStyle}">${claimRows.length}</td></tr>
-</table>
-
-<h2>Missing Citations</h2>
-<ol>${missing.map(m => `<li>${reportText(m.citation_in_text || m.citation || m)}</li>`).join("")}</ol>
-
-<h2>Uncited References</h2>
-<ol>${uncited.map(u => `<li>${reportText(u.reference || u)}</li>`).join("")}</ol>
-
-<h2>Citations to References</h2>
-${c2rRows.length ? `<table style="${tableStyle}"><tr><th style="${thStyle}">No.</th><th style="${thStyle}">Status</th><th style="${thStyle}">Citation</th><th style="${thStyle}">Matched Reference</th></tr>${c2rRows.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.in_text || r.citation)}</td><td style="${cellStyle}">${reportText(r.matched_reference || r.reference)}</td></tr>`).join("")}</table>` : `<p>No citation-to-reference mapping rows available.</p>`}
-
-<h2>Online Verification</h2>
-${verificationTable}
-
-<h2>Recovery</h2>
-${recoveryTable}
-
-<h2>Claim Support</h2>
-${claimTable}
-</body></html>`;
-
-        downloadBlob(html, `citeintegrity_report_${JOB_ID.slice(0, 8)}.doc`, "application/msword");
-    }
-
-    function downloadBlob(content, filename, type) {
-        const blob = new Blob([content], { type });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-    }
-
-    async function exportVerifiedReferences(formatType) {
-        const style = $("exportStyleSelect")?.value || "apa7";
-        const formData = new FormData();
-        formData.append("job_id", JOB_ID);
-        formData.append("style", style);
-        formData.append("format_type", formatType);
-        try {
-            setStatus(`Exporting verified references as ${formatType.toUpperCase()}...`, "info");
-            const res = await fetch("/export-references", { method: "POST", body: formData });
-            if (!res.ok) throw new Error("Export failed.");
-            const blob = await res.blob();
-            const filename = `citeintegrity_references_${JOB_ID.slice(0, 8)}.${formatType === "docx" ? "docx" : "html"}`;
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-            setStatus("Verified references exported successfully.", "good");
-        } catch (error) { setStatus("Export failed: " + error.message, "bad"); }
-    }
-
-    function setupTabs() {
-        document.querySelectorAll(".tab-btn").forEach(btn => {
-            btn.addEventListener("click", () => {
-                const target = btn.dataset.tab;
-                document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-                document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
-                btn.classList.add("active");
-                const pane = $(target);
-                if (pane) {
-                    pane.classList.add("active");
-                    const mainPanel = document.querySelector(".main-panel");
-                    if (mainPanel && window.innerWidth <= 1120) {
-                        mainPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-                    }
-                }
+            document.querySelectorAll('a[href^="#"]').forEach(function (link) {
+                link.addEventListener("click", function () {
+                    if (nav) nav.classList.remove("open");
+                });
             });
         });
-    }
-
-    function setupFilters() { /* simplified but retains search & filter */
-        ["missingSearch","uncitedSearch","c2rSearch","r2cSearch","verifySearch","claimSearch"].forEach(id => {
-            const input = $(id);
-            if (!input) return;
-            const bodyId = id.replace("Search", "Body");
-            input.addEventListener("input", () => {
-                const q = input.value.toLowerCase();
-                const body = $(bodyId);
-                if(body) body.querySelectorAll("tr").forEach(row => row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none");
-            });
-        });
-        const verifyFilter = $("verifyFilter");
-        if(verifyFilter) verifyFilter.addEventListener("change", () => { const body=$("verifyBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !verifyFilter.value || (row.dataset.status === verifyFilter.value) ? "" : "none"); });
-        const claimFilter = $("claimFilter");
-        if(claimFilter) claimFilter.addEventListener("change", () => { const body=$("claimBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !claimFilter.value || (row.dataset.status === claimFilter.value) ? "" : "none"); });
-    }
-
-    function setupActions() {
-        $("btnVerify")?.addEventListener("click", startVerification);
-        $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
-        $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
-        $("btnExportCsv")?.addEventListener("click", exportCSV);
-        $("btnExportWord")?.addEventListener("click", exportWord);
-        $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
-        $("btnExportRefsHtml")?.addEventListener("click", () => exportVerifiedReferences("html"));
-        const mobileToggle = $("mobileToggle");
-        const mainNav = $("mainNav");
-        if(mobileToggle && mainNav) mobileToggle.addEventListener("click", () => mainNav.classList.toggle("open"));
-    }
-
-    async function init() {
-        setupTabs();
-        setupFilters();
-        setupActions();
-        await loadExistingResult(true);
-        if (AUTO_VERIFY && (!latestResults?.online_verification?.rows?.length)) startVerification();
-        console.log("[CiteIntegrity] Results dashboard ready for job:", JOB_ID);
-    }
-
-    init();
-});
-</script>
+    </script>
 </body>
 </html>
