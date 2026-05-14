@@ -713,7 +713,12 @@ BAD_AGENTS = [
 async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
-
+	    # Redirect old /new landing page to main homepage
+    if path in {"/new", "/new/"}:
+        return RedirectResponse(
+            url="https://citeintegrity.org/",
+            status_code=301
+        )
     if path.startswith("/api/certificate/"):
         return await call_next(request)
 
