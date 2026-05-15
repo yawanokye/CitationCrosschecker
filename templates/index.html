@@ -817,9 +817,9 @@
         <div class="upload-card">
             <div class="file-area" id="fileArea">
                 <div class="file-icon">📑</div>
-                <div class="file-message">Upload your thesis, dissertation, or manuscript to begin (.docx recommended)</div>
-                <div class="file-message" style="font-size: 12px; margin-top: 6px;">DOCX is recommended for accurate citation analysis. Ideal for theses, dissertations, project reports, and journal manuscripts</div>
-                <div style="font-size: 12px; margin-top: 8px; color: #666;">Convert PDF in Word: Open Word → File → Open → Select PDF → OK → Save as .docx</div>
+                <div class="file-message">Upload your thesis, dissertation, or manuscript to begin (.docx recommended, .pdf supported)</div>
+                <div class="file-message" style="font-size: 12px; margin-top: 6px;">DOCX is recommended for the most accurate citation analysis. Text-based PDFs are supported, but PDF formatting may affect extraction quality.</div>
+                <div style="font-size: 12px; margin-top: 8px; color: #666;">For best PDF results, upload a text-based PDF, not a scanned image PDF. If extraction is weak, open the PDF in Word, save as .docx, and upload again.</div>
                 <div class="file-name" id="fileName"></div>
                 <input type="file" id="file" accept=".docx,.pdf">
             </div>
@@ -1236,18 +1236,28 @@ function setupFileArea() {
     fileInput.addEventListener('change', function() {
         const file = fileInput.files[0];
         if (file) {
-            if (file.name.toLowerCase().endsWith('.docx')) {
+            const lowerName = file.name.toLowerCase();
+            const isDocx = lowerName.endsWith('.docx');
+            const isPdf = lowerName.endsWith('.pdf');
+
+            if (isDocx || isPdf) {
                 if (fileNameSpan) {
                     fileNameSpan.textContent = `✅ ${file.name}`;
                 }
-                setStatus("DOCX file selected. Ready to run check.", "good");
+
+                if (isPdf) {
+                    setStatus("PDF file selected. Text-based PDFs are supported, but DOCX gives the most accurate analysis.", "warn");
+                } else {
+                    setStatus("DOCX file selected. Ready to run check.", "good");
+                }
+
                 const btnCheck = document.getElementById("btnCheck");
                 if (btnCheck) btnCheck.disabled = false;
             } else {
                 if (fileNameSpan) {
-                    fileNameSpan.textContent = `❌ Please select a DOCX file`;
+                    fileNameSpan.textContent = `❌ Please select a DOCX or PDF file`;
                 }
-                setStatus("Only DOCX files are accepted.", "warn");
+                setStatus("Only DOCX and PDF files are accepted.", "warn");
                 fileInput.value = '';
                 const btnCheck = document.getElementById("btnCheck");
                 if (btnCheck) btnCheck.disabled = true;
@@ -2243,11 +2253,17 @@ async function runInitialCheck() {
         return;
     }
 
-    const fileName = file.name.toLowerCase();
+    const lowerName = file.name.toLowerCase();
+    const isDocx = lowerName.endsWith(".docx");
+    const isPdf = lowerName.endsWith(".pdf");
 
-    if (!fileName.endsWith(".docx") && !fileName.endsWith(".pdf")) {
-        alert("Please upload a DOCX or PDF file.");
+    if (!isDocx && !isPdf) {
+        setStatus("Only DOCX and PDF files are accepted.", "warn");
         return;
+    }
+
+    if (isPdf) {
+        setStatus("PDF upload accepted. Analysis quality depends on whether the PDF contains extractable text.", "warn");
     }
 
     resetProcessFeedback();
