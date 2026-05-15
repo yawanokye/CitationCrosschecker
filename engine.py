@@ -82,7 +82,7 @@ DISCOURSE_PREFIXES = {
     "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
-    "likely", "likewise", "uncertainty",
+    "likely", "likewise", "uncertainty", "meanwhile", "firstly", "lastly",
 
     # phrases
     "for instance", "instance",
