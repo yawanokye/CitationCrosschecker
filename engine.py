@@ -7,7 +7,12 @@ import unicodedata
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
 from collections import defaultdict, Counter
-from pdf_to_docx_pipeline import process_pdf
+try:
+    from pdf_to_docx_pipeline import process_pdf
+    PDF_PIPELINE_OK = True
+except Exception:
+    process_pdf = None
+    PDF_PIPELINE_OK = False
 
 ENGINE_BUILD = "commercial-2026-03-01-final"
 
@@ -30,6 +35,15 @@ try:
     PDF_OK = True
 except Exception:
     PDF_OK = False
+
+try:
+    import fitz  # PyMuPDF, used for commercial-grade PDF extraction
+    PYMUPDF_OK = True
+except Exception:
+    fitz = None
+    PYMUPDF_OK = False
+
+PDF_PARSE_BUILD = "commercial-pdf-parser-2026-05-15"
 
 
 # ============================================================================
@@ -83,6 +97,11 @@ DISCOURSE_PREFIXES = {
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
     "likely", "likewise", "uncertainty", "meanwhile", "firstly", "lastly",
+    "finally", "also", "then", "next", "again", "still", "subsequently",
+    "previously", "earlier", "later", "recently", "currently", "today",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "last", "initially", "subsequent",
+    "comparatively", "conversely", "alternatively", "accordingly",
 
     # phrases
     "for instance", "instance",
@@ -123,6 +142,11 @@ NON_NAME_AUTHOR_KEYS = {
     "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
     "generally", "specifically", "particularly", "importantly", "indeed",
     "instance", "example", "likely", "likewise", "uncertainty",
+    "finally", "also", "then", "next", "again", "still", "subsequently",
+    "previously", "earlier", "later", "recently", "currently", "today",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "last", "initially", "subsequent",
+    "comparatively", "conversely", "alternatively", "accordingly",
 }
 
 NARRATIVE_SINGLE_TOKENS = {
@@ -209,6 +233,79 @@ def _strip_discourse_prefixes(left: str) -> str:
     return left
 
 
+def _normalise_extracted_author_year_citation(cite: str) -> str:
+    """
+    Clean display text for extracted APA/Harvard citations.
+
+    Commercial purpose:
+    - Keeps genuine author-year citations.
+    - Removes transition/narrative lead-ins that PDF extraction often attaches.
+
+    Examples:
+    - "Meanwhile, Claessens and Djankov, 1999" -> "Claessens and Djankov, 1999"
+    - "Lastly, Baiden, 2020" -> "Baiden, 2020"
+    """
+    s = norm_space(cite)
+    if not s:
+        return ""
+
+    s = s.strip(" ,;:()[]{}")
+    s = re.sub(r"^(?:and|but|or)\s+", "", s, flags=re.I).strip(" ,;:")
+    s = _strip_discourse_prefixes(s).strip(" ,;:()[]{}")
+
+    # Remove one or more transition words that may remain before the real author.
+    noise_words = sorted(
+        {_clean_discourse_token(x) for x in DISCOURSE_PREFIXES if x},
+        key=len,
+        reverse=True,
+    )
+
+    for _ in range(4):
+        old = s
+        for word in noise_words:
+            if not word:
+                continue
+            s = re.sub(
+                r"^" + re.escape(word) + r"(?:\s*,\s*|\s+|[,:;.\-]+\s*)",
+                "",
+                s,
+                count=1,
+                flags=re.I,
+            ).strip(" ,;:()[]{}")
+            if s != old:
+                break
+        if s == old:
+            break
+
+    # Correct common malformed joins introduced by PDF extraction.
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+,", ",", s)
+    s = re.sub(r",\s*,+", ",", s)
+    return s.strip(" ,;:()[]{}")
+
+
+def _citation_has_blocked_narrative_lead(cite: str) -> bool:
+    """
+    Reject extracted strings where the only author-like token is a narrative word.
+    Do not reject when a real author remains after cleaning.
+    """
+    raw = norm_space(cite)
+    cleaned = _normalise_extracted_author_year_citation(raw)
+    if not cleaned:
+        return True
+
+    ym = YEAR_RE.search(cleaned)
+    if not ym:
+        return False
+
+    left = cleaned[: ym.start()].strip(" ,;:()[]{}")
+    if not left:
+        return True
+
+    left_key = strip_punct(left)
+    return _is_non_author_key(left_key)
+
+
 def _is_non_author_key(key: str) -> bool:
     """
     Prevent ordinary discourse, method, and document words from becoming author keys.
@@ -257,7 +354,7 @@ def _is_bad_author_left(left: str) -> bool:
     bad_patterns = [
         r"^(field|survey|data|sample|questionnaire)\s+",
         r"\s+(survey|field|data|sample|questionnaire)$",
-        r"^(likely|similarly|however|moreover|therefore|thus|hence)$",
+        r"^(likely|similarly|however|moreover|therefore|thus|hence|meanwhile|lastly|finally|also|then|next|first|second|third|last)$",
     ]
 
     return any(re.search(p, l, re.I) for p in bad_patterns)
@@ -732,6 +829,505 @@ def read_pdf_text(file_bytes: bytes) -> str:
     return "\n".join(out)
 
 
+
+# -----------------------------
+# Commercial PDF parser for CiteIntegrity
+# -----------------------------
+def parse_pdf_commercial(
+    file_bytes: bytes,
+    filename: str = "document.pdf",
+    style_hint: str = "apa",
+    min_page_chars: int = 120,
+) -> Dict[str, Any]:
+    """
+    Commercial-grade PDF parsing wrapper for CiteIntegrity.
+
+    Design:
+    - Runs the existing PDF-to-DOCX pipeline when available.
+    - Runs a hybrid page-level PyMuPDF/pdfplumber extraction.
+    - Scores all candidates and chooses the strongest one.
+    - Returns PDF quality metadata and caution warnings for the UI.
+
+    Important product rule:
+    Even strong PDF parsing is not treated as equal to DOCX. The returned
+    pdf_quality field should be shown to users when the file is a PDF.
+    """
+    warnings: List[str] = []
+    candidates: List[Dict[str, Any]] = []
+
+    if not file_bytes:
+        return {
+            "ok": False,
+            "main_text": "",
+            "references": [],
+            "ref_msg": "PDF parsing failed: empty file.",
+            "pdf_quality": _pdf_quality_report(filename, 0, "none", "", [], [], ["No PDF bytes received."]),
+            "pdf_warnings": ["No PDF bytes received."],
+        }
+
+    # Candidate 1: existing conversion pipeline, if installed.
+    if PDF_PIPELINE_OK and process_pdf is not None:
+        try:
+            converted = process_pdf(file_bytes)
+            conv_main = norm_space(converted.get("main_text", ""))
+            conv_refs = converted.get("references", []) or []
+            conv_refs = [norm_space(str(r)) for r in conv_refs if norm_space(str(r))]
+            if style_hint == "numeric":
+                conv_refs = _split_embedded_numeric_refs(conv_refs)
+            if conv_main or conv_refs:
+                candidates.append(_make_pdf_candidate(
+                    source="pdf_to_docx_pipeline",
+                    main_text=conv_main,
+                    references=conv_refs,
+                    page_texts=[],
+                    style_hint=style_hint,
+                    message=f"PDF conversion pipeline extracted {len(conv_refs)} references.",
+                ))
+        except Exception as exc:
+            warnings.append(f"PDF conversion pipeline failed: {exc}")
+    else:
+        warnings.append("PDF conversion pipeline is not available. Hybrid text extraction was used.")
+
+    # Candidate 2: hybrid page-level extraction.
+    try:
+        hybrid = _extract_pdf_hybrid_text(file_bytes)
+        hybrid_text = hybrid.get("text", "")
+        page_texts = hybrid.get("page_texts", []) or []
+        page_engines = hybrid.get("page_engines", []) or []
+        if hybrid_text:
+            h_main, h_refs, h_msg = _split_pdf_text_main_refs(
+                hybrid_text,
+                style_hint=style_hint,
+            )
+            if style_hint == "numeric":
+                h_refs = _split_embedded_numeric_refs(h_refs)
+            candidates.append(_make_pdf_candidate(
+                source="hybrid_pymupdf_pdfplumber",
+                main_text=h_main,
+                references=h_refs,
+                page_texts=page_texts,
+                style_hint=style_hint,
+                message=f"{h_msg} Hybrid extraction used {len(set(page_engines))} engine(s).",
+            ))
+    except Exception as exc:
+        warnings.append(f"Hybrid PDF extraction failed: {exc}")
+
+    if not candidates:
+        warnings.append("No usable text could be extracted from the PDF. The file may be scanned or image-based.")
+        return {
+            "ok": False,
+            "main_text": "",
+            "references": [],
+            "ref_msg": "PDF parsing failed. Upload the DOCX version for reliable analysis.",
+            "pdf_quality": _pdf_quality_report(filename, 0, "none", "", [], [], warnings),
+            "pdf_warnings": warnings,
+        }
+
+    best = max(candidates, key=lambda c: c.get("score", 0.0))
+
+    # Use the strongest reference list if it is clearly better than the selected candidate.
+    best_ref_candidate = max(candidates, key=lambda c: len(c.get("references", []) or []))
+    if len(best_ref_candidate.get("references", []) or []) > len(best.get("references", []) or []) + 2:
+        best["references"] = best_ref_candidate.get("references", [])
+        best["message"] = (
+            f"{best.get('message', '')} Reference list strengthened using "
+            f"{best_ref_candidate.get('source', 'another PDF parser')} extraction."
+        )
+
+    main_text = best.get("main_text", "") or ""
+    references = best.get("references", []) or []
+    page_texts = best.get("page_texts", []) or []
+
+    if style_hint == "apa":
+        references = [r for r in references if _is_plausible_reference_entry(r)]
+    else:
+        references = [r for r in references if norm_space(r)]
+
+    references = _dedupe_keep_order(references)
+
+    quality = _pdf_quality_report(
+        filename=filename,
+        page_count=len(page_texts),
+        source=best.get("source", "unknown"),
+        main_text=main_text,
+        references=references,
+        page_texts=page_texts,
+        warnings=warnings,
+    )
+
+    warnings = list(dict.fromkeys(warnings + quality.get("warnings", [])))
+
+    ref_msg = (
+        f"PDF parsed with commercial hybrid parser ({best.get('source', 'unknown')}). "
+        f"Found {len(references)} references. "
+        f"PDF quality: {quality.get('extraction_quality', 'unknown')} "
+        f"({quality.get('confidence_score', 0)}%). "
+        f"{best.get('message', '')}"
+    ).strip()
+
+    return {
+        "ok": True,
+        "main_text": main_text,
+        "references": references,
+        "ref_msg": ref_msg,
+        "pdf_quality": quality,
+        "pdf_warnings": warnings,
+        "pdf_parser_build": PDF_PARSE_BUILD,
+    }
+
+
+def _make_pdf_candidate(
+    source: str,
+    main_text: str,
+    references: List[str],
+    page_texts: List[str],
+    style_hint: str,
+    message: str,
+) -> Dict[str, Any]:
+    main_text = _normalise_pdf_extracted_text(main_text or "")
+    references = [norm_space(str(r)) for r in (references or []) if norm_space(str(r))]
+    references = _dedupe_keep_order(references)
+
+    citation_count = len(extract_author_year_citations(main_text)) if style_hint == "apa" else len(extract_ieee_citations(main_text))
+    word_count = len(re.findall(r"\b[\w'-]+\b", main_text))
+    char_count = len(main_text)
+
+    score = 0.0
+    score += min(char_count / 5000.0, 20.0)
+    score += min(word_count / 1000.0, 20.0)
+    score += min(len(references) * 2.5, 35.0)
+    score += min(citation_count * 0.75, 20.0)
+
+    if source == "pdf_to_docx_pipeline":
+        score += 3.0
+    if page_texts:
+        weak_ratio = sum(1 for p in page_texts if len(norm_space(p)) < 120) / max(1, len(page_texts))
+        score -= min(weak_ratio * 20.0, 20.0)
+
+    return {
+        "source": source,
+        "main_text": main_text,
+        "references": references,
+        "page_texts": page_texts,
+        "score": round(max(score, 0.0), 3),
+        "message": message,
+    }
+
+
+def _extract_pdf_hybrid_text(file_bytes: bytes) -> Dict[str, Any]:
+    pymu_pages = _extract_pdf_pages_pymupdf(file_bytes) if PYMUPDF_OK else []
+    plumber_pages = _extract_pdf_pages_pdfplumber(file_bytes) if PDF_OK else []
+
+    page_count = max(len(pymu_pages), len(plumber_pages))
+    selected_pages: List[str] = []
+    page_engines: List[str] = []
+
+    for i in range(page_count):
+        choices: List[Tuple[str, str, float]] = []
+        if i < len(pymu_pages):
+            txt = pymu_pages[i]
+            choices.append(("pymupdf", txt, _score_pdf_page_text(txt)))
+        if i < len(plumber_pages):
+            txt = plumber_pages[i]
+            choices.append(("pdfplumber", txt, _score_pdf_page_text(txt)))
+
+        if not choices:
+            selected_pages.append("")
+            page_engines.append("none")
+            continue
+
+        engine, text, _score = max(choices, key=lambda item: item[2])
+        selected_pages.append(_clean_pdf_page_text(text))
+        page_engines.append(engine)
+
+    selected_pages = _remove_repeated_pdf_headers_footers(selected_pages)
+
+    full_text = "\n\n".join(
+        f"[PAGE {i + 1}]\n{txt.strip()}"
+        for i, txt in enumerate(selected_pages)
+        if txt and txt.strip()
+    )
+
+    return {
+        "text": _normalise_pdf_extracted_text(full_text),
+        "page_texts": selected_pages,
+        "page_engines": page_engines,
+    }
+
+
+def _extract_pdf_pages_pymupdf(file_bytes: bytes) -> List[str]:
+    pages: List[str] = []
+    if not PYMUPDF_OK or fitz is None:
+        return pages
+
+    doc = None
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        for page in doc:
+            block_text = ""
+            plain_text = ""
+            try:
+                blocks = page.get_text("blocks", sort=True) or []
+                block_parts: List[Tuple[float, float, str]] = []
+                for block in blocks:
+                    if len(block) < 5:
+                        continue
+                    x0, y0, _x1, _y1, txt = block[:5]
+                    block_type = block[6] if len(block) >= 7 else 0
+                    if block_type != 0:
+                        continue
+                    txt = _clean_pdf_page_text(str(txt))
+                    if txt:
+                        block_parts.append((float(y0), float(x0), txt))
+                block_parts.sort(key=lambda item: (item[0], item[1]))
+                block_text = "\n".join(part[2] for part in block_parts)
+            except Exception:
+                block_text = ""
+
+            try:
+                plain_text = page.get_text("text", sort=True) or ""
+            except Exception:
+                plain_text = ""
+
+            best = block_text if _score_pdf_page_text(block_text) >= _score_pdf_page_text(plain_text) else plain_text
+            pages.append(_clean_pdf_page_text(best))
+    finally:
+        try:
+            if doc is not None:
+                doc.close()
+        except Exception:
+            pass
+
+    return pages
+
+
+def _extract_pdf_pages_pdfplumber(file_bytes: bytes) -> List[str]:
+    pages: List[str] = []
+    if not PDF_OK:
+        return pages
+
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            text_default = ""
+            text_layout = ""
+            try:
+                text_default = page.extract_text(x_tolerance=1.5, y_tolerance=3, layout=False) or ""
+            except Exception:
+                text_default = ""
+            try:
+                text_layout = page.extract_text(x_tolerance=1.5, y_tolerance=3, layout=True) or ""
+            except Exception:
+                text_layout = ""
+
+            best = text_layout if _score_pdf_page_text(text_layout) > _score_pdf_page_text(text_default) else text_default
+            pages.append(_clean_pdf_page_text(best))
+
+    return pages
+
+
+def _split_pdf_text_main_refs(text: str, style_hint: str = "apa") -> Tuple[str, List[str], str]:
+    text = _normalise_pdf_extracted_text(text)
+    lines = [ln.strip() for ln in text.splitlines() if ln and ln.strip()]
+
+    if not lines:
+        return "", [], "No extractable PDF text was found."
+
+    idx, tail = _find_reference_heading(lines, style_hint=style_hint)
+    if idx >= 0:
+        main_lines = lines[:idx]
+        ref_lines = []
+        if tail:
+            ref_lines.append(tail)
+        ref_lines.extend(lines[idx + 1:])
+        ref_lines = _truncate_reference_block(ref_lines, style_hint=style_hint)
+        refs = _merge_reference_lines(ref_lines)
+        if style_hint == "numeric":
+            refs = _split_embedded_numeric_refs(refs)
+        refs = _dedupe_keep_order(refs)
+        return "\n".join(main_lines).strip(), refs, "Reference heading detected in PDF text."
+
+    recovered = recover_references_for_verification(text, style_hint=style_hint)
+    recovered = _dedupe_keep_order(recovered)
+    msg = "No reliable reference heading detected in PDF text. Used reference recovery heuristics."
+    return text, recovered, msg
+
+
+def _normalise_pdf_extracted_text(text: str) -> str:
+    text = text or ""
+    text = text.replace("\x00", " ")
+    text = text.replace("\u00a0", " ")
+    text = text.replace("ﬁ", "fi").replace("ﬂ", "fl")
+    text = text.replace("\u2019", "'")
+    text = re.sub(r"([A-Za-z])-\s*\n\s*([a-z])", r"\1\2", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _clean_pdf_page_text(text: str) -> str:
+    text = _normalise_pdf_extracted_text(text)
+    lines: List[str] = []
+    for line in text.splitlines():
+        s = norm_space(line)
+        if not s:
+            lines.append("")
+            continue
+        if re.fullmatch(r"\d{1,4}", s):
+            continue
+        s = re.sub(r"\s+", " ", s)
+        lines.append(s)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _score_pdf_page_text(text: str) -> float:
+    text = _clean_pdf_page_text(text)
+    if not text:
+        return 0.0
+
+    chars = len(text)
+    words = len(re.findall(r"\b[\w'-]+\b", text))
+    years = len(YEAR_RE.findall(text))
+    citations = len(re.findall(r"\([^)]{1,180}\b(?:19|20)\d{2}[a-z]?\b[^)]{0,180}\)", text))
+    doi_count = len(re.findall(r"\b10\.\d{4,9}/\S+", text, flags=re.I))
+    replacement = text.count(" ")
+    odd_spacing = len(re.findall(r"\b[A-Za-z]\s+[A-Za-z]\s+[A-Za-z]\b", text))
+
+    score = 0.0
+    score += min(chars / 500.0, 10.0)
+    score += min(words / 100.0, 10.0)
+    score += min(years * 0.5, 5.0)
+    score += min(citations * 1.0, 5.0)
+    score += min(doi_count * 1.5, 5.0)
+    score -= min(replacement * 0.5, 5.0)
+    score -= min(odd_spacing * 0.35, 6.0)
+    return round(max(score, 0.0), 3)
+
+
+def _remove_repeated_pdf_headers_footers(page_texts: List[str]) -> List[str]:
+    if len(page_texts) < 3:
+        return page_texts
+
+    counts: Dict[str, int] = defaultdict(int)
+    for text in page_texts:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for line in (lines[:4] + lines[-4:]):
+            key = _normalise_repeated_pdf_line(line)
+            if 4 <= len(key) <= 120:
+                counts[key] += 1
+
+    threshold = max(3, int(len(page_texts) * 0.45))
+    repeated = {k for k, v in counts.items() if v >= threshold}
+    if not repeated:
+        return page_texts
+
+    cleaned_pages: List[str] = []
+    for text in page_texts:
+        kept = []
+        for line in text.splitlines():
+            key = _normalise_repeated_pdf_line(line)
+            if key in repeated:
+                continue
+            kept.append(line)
+        cleaned_pages.append("\n".join(kept).strip())
+    return cleaned_pages
+
+
+def _normalise_repeated_pdf_line(line: str) -> str:
+    s = soft_lower(line)
+    s = re.sub(r"\bpage\s+\d+\b", "page #", s)
+    s = re.sub(r"^\d{1,4}$", "#", s)
+    s = re.sub(r"\b\d{1,4}\b", "#", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _pdf_quality_report(
+    filename: str,
+    page_count: int,
+    source: str,
+    main_text: str,
+    references: List[str],
+    page_texts: List[str],
+    warnings: List[str],
+) -> Dict[str, Any]:
+    main_text = main_text or ""
+    page_count = int(page_count or len(page_texts or []) or 0)
+    total_chars = len(main_text)
+    total_words = len(re.findall(r"\b[\w'-]+\b", main_text))
+    refs_count = len(references or [])
+    citation_count = len(extract_author_year_citations(main_text)) if main_text else 0
+
+    low_text_pages = 0
+    if page_texts:
+        low_text_pages = sum(1 for p in page_texts if len(norm_space(p)) < 120)
+    low_ratio = low_text_pages / max(1, len(page_texts)) if page_texts else (1.0 if total_chars < 500 else 0.0)
+
+    avg_chars = total_chars / max(1, page_count)
+    confidence = 100.0
+    quality_warnings = list(warnings or [])
+
+    if total_chars < 500 or avg_chars < 120:
+        confidence -= 45
+        quality_warnings.append("The PDF has very little extractable text. It may be scanned or image-based.")
+    elif avg_chars < 350:
+        confidence -= 20
+        quality_warnings.append("The PDF text extraction is weak on some pages.")
+
+    if low_ratio >= 0.60:
+        confidence -= 30
+        quality_warnings.append("Most PDF pages have low text extraction quality. DOCX is strongly recommended.")
+    elif low_ratio >= 0.30:
+        confidence -= 15
+        quality_warnings.append("Several PDF pages have low text extraction quality. Some citations may be missed.")
+
+    if refs_count == 0:
+        confidence -= 25
+        quality_warnings.append("No reference entries were confidently reconstructed from the PDF.")
+    elif refs_count < 3:
+        confidence -= 10
+        quality_warnings.append("Only a small number of reference entries were reconstructed from the PDF.")
+
+    if citation_count == 0 and total_words > 300:
+        confidence -= 15
+        quality_warnings.append("No author-year in-text citations were confidently detected in the extracted PDF text.")
+
+    confidence = round(max(0.0, min(100.0, confidence)), 2)
+
+    if confidence >= 80 and refs_count > 0:
+        extraction_quality = "good"
+        pdf_type = "text_based"
+    elif confidence >= 55:
+        extraction_quality = "moderate"
+        pdf_type = "mixed_or_layout_complex"
+    else:
+        extraction_quality = "poor"
+        pdf_type = "scanned_or_poorly_structured"
+
+    if extraction_quality != "good":
+        quality_warnings.append("PDF analysis is less reliable than DOCX. Ask the user to upload DOCX for the most accurate report.")
+
+    quality_warnings = list(dict.fromkeys([w for w in quality_warnings if w]))
+
+    return {
+        "filename": filename,
+        "parser_build": PDF_PARSE_BUILD,
+        "source": source,
+        "page_count": page_count,
+        "total_chars": total_chars,
+        "total_words": total_words,
+        "average_chars_per_page": round(avg_chars, 2),
+        "low_text_pages": low_text_pages,
+        "low_text_page_ratio": round(low_ratio, 3),
+        "reference_entries_found": refs_count,
+        "estimated_author_year_citations": citation_count,
+        "pdf_type": pdf_type,
+        "extraction_quality": extraction_quality,
+        "confidence_score": confidence,
+        "recommended_format": "DOCX",
+        "caution": "PDF output depends on extraction quality. DOCX remains the recommended format for full CiteIntegrity analysis.",
+        "warnings": quality_warnings,
+    }
+
 def _looks_like_new_numeric_reference_start(s: str) -> bool:
     s0 = (s or "").strip()
     if not s0:
@@ -1142,6 +1738,7 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     Now handles malformed years (2-3 digits like '204' -> '2024')
     """
     s = norm_space(cite)
+    s = _normalise_extracted_author_year_citation(s)
     if not s:
         return None
 
@@ -1259,8 +1856,11 @@ def extract_author_year_citations(text: str) -> List[str]:
     seen = set()
     
     for c in out:
-        c = norm_space(c)
+        c = _normalise_extracted_author_year_citation(c)
         if not c or c in seen:
+            continue
+
+        if _citation_has_blocked_narrative_lead(c):
             continue
     
         # Filter false positives early so they do not appear in Missing Citations.
@@ -2339,6 +2939,10 @@ def run_crosscheck(
     is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
     style_hint = "numeric" if is_numeric else "apa"
 
+    pdf_quality = None
+    pdf_warnings: List[str] = []
+    pdf_parser_build = ""
+
     if name.endswith(".docx"):
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
         references_raw = _merge_reference_lines(ref_block_lines)
@@ -2358,19 +2962,36 @@ def run_crosscheck(
                 ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
 
     elif name.endswith(".pdf"):
-        try:
-            pdf_data = process_pdf(file_bytes)
-            main_text = pdf_data["main_text"]
-            references_raw = pdf_data["references"]
-            ref_msg = f"PDF converted to DOCX and cleaned. Found {len(references_raw)} references."
-        except Exception as e:
+        pdf_data = parse_pdf_commercial(
+            file_bytes=file_bytes,
+            filename=filename,
+            style_hint=style_hint,
+        )
+
+        pdf_quality = pdf_data.get("pdf_quality")
+        pdf_warnings = pdf_data.get("pdf_warnings", []) or []
+        pdf_parser_build = pdf_data.get("pdf_parser_build", PDF_PARSE_BUILD)
+
+        if not pdf_data.get("ok"):
             return {
-                "error": "PDF conversion failed",
-                "note": str(e),
-                "filename": filename
+                "error": "PDF parsing failed",
+                "note": pdf_data.get("ref_msg") or "The PDF could not be reliably parsed.",
+                "filename": filename,
+                "pdf_quality": pdf_quality,
+                "pdf_warnings": pdf_warnings,
+                "recommendation": "Upload the DOCX version for the most reliable CiteIntegrity report.",
             }
+
+        main_text = pdf_data.get("main_text", "")
+        references_raw = pdf_data.get("references", []) or []
+        ref_msg = pdf_data.get("ref_msg") or f"PDF parsed. Found {len(references_raw)} references."
+
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
+        else:
+            references_raw = [r for r in references_raw if _is_plausible_reference_entry(r)]
+
+        references_raw = _dedupe_keep_order(references_raw)
         
         # Fallback recovery for weak or failed extraction
         if style_hint == "apa" and len(references_raw) < 2:
@@ -2475,6 +3096,15 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+
+    if pdf_quality is not None:
+        result["pdf_quality"] = pdf_quality
+        result["pdf_warnings"] = pdf_warnings
+        result["pdf_parser_build"] = pdf_parser_build
+        result["pdf_caution"] = (
+            "PDF analysis is supported for text-based PDFs, but DOCX remains the recommended "
+            "format for full citation integrity analysis."
+        )
     
     return result
 
