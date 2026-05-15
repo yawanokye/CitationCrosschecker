@@ -2367,11 +2367,25 @@ async def verify(
             content={"error": "No file provided", "message": "Please select a file to upload"}
         )
     
-    if not file.filename.lower().endswith('.docx'):
+    filename_lower = (file.filename or "").lower().strip()
+    is_docx = filename_lower.endswith(".docx")
+    is_pdf = filename_lower.endswith(".pdf")
+
+    if not (is_docx or is_pdf):
         return JSONResponse(
             status_code=400,
-            content={"error": "Invalid file format", "message": "Only DOCX files are accepted"}
+            content={
+                "error": "Invalid file format",
+                "message": "Only DOCX and PDF files are accepted",
+                "instruction": (
+                    "Please upload a .docx file for best accuracy or a text-based .pdf file. "
+                    "Scanned or image-based PDFs may produce incomplete results."
+                )
+            }
         )
+
+    if is_pdf:
+        print(f"[PDF UPLOAD] Accepted PDF for cautious analysis: {file.filename}")
     
     if is_server_busy():
         return JSONResponse(
@@ -2481,7 +2495,12 @@ async def verify(
         "status": "queued",
         "message": "Document queued. Poll /job/{job_id} for status.",
         "file_name": file.filename,
+        "file_type": "pdf" if is_pdf else "docx",
         "file_size_mb": file_size_mb,
+        "pdf_caution": (
+            "PDF accepted for cautious analysis. Text-based PDFs work best. DOCX remains recommended for the most accurate citation analysis."
+            if is_pdf else ""
+        ),
         "autofix_enabled": autofix_enabled  # Include for debugging
     }
 # ============================================================
