@@ -646,7 +646,7 @@
         <div class="container">
             <h1>Analyse your manuscript for citation integrity</h1>
             <p>
-                Upload a DOCX manuscript to check citation-reference matching, missing citations, uncited references, ACII readiness, and optional online verification.
+                Upload a DOCX manuscript or text-based PDF to check citation-reference matching, missing citations, uncited references, ACII readiness, and optional online verification.
             </p>
             <div class="trust-line" aria-label="CiteIntegrity assurances">
                 <span class="trust-pill">🔒 Private processing</span>
@@ -663,21 +663,21 @@
             <div class="card upload-card">
                 <div class="card-title">
                     <h2>Document upload</h2>
-                    <span class="small-pill">DOCX recommended</span>
+                    <span class="small-pill">DOCX recommended, PDF supported</span>
                 </div>
 
                 <div class="file-area" id="fileArea">
                     <div class="file-icon">📑</div>
                     <div class="file-main">Drag and drop your manuscript here</div>
                     <div class="file-sub">
-                        Upload a thesis, dissertation, project report, article, or journal manuscript in DOCX format.
+                        Upload a thesis, dissertation, project report, article, or journal manuscript in DOCX or text-based PDF format.
                     </div>
                     <div class="file-name" id="fileName"></div>
-                    <input type="file" id="file" accept=".docx">
+                    <input type="file" id="file" accept=".docx,.pdf">
                 </div>
 
                 <div class="helper-box">
-                    <strong>PDF users:</strong> Open the PDF in Microsoft Word and save it as DOCX before uploading. DOCX gives better citation and reference extraction.
+                    <strong>PDF support:</strong> Text-based PDFs are accepted for cautious analysis. DOCX remains recommended for the most accurate citation and reference extraction. Scanned or image-based PDFs may produce incomplete results. If PDF results are weak, open the PDF in Microsoft Word and save it as DOCX before uploading again.
                 </div>
 
                 <div class="options-grid">
@@ -717,7 +717,7 @@
                     </div>
 
                     <div class="status-box">
-                        <div class="status" id="status">System ready. Select a DOCX file to begin.</div>
+                        <div class="status" id="status">System ready. Select a DOCX or text-based PDF file to begin.</div>
 
                         <div class="progress-wrap" id="progressWrap">
                             <div class="progress-track">
@@ -850,11 +850,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
     function validateFile(file) {
         if (!file) {
-            return { valid: false, message: "Please select a DOCX file." };
+            return { valid: false, message: "Please select a DOCX or PDF file." };
         }
 
-        if (!file.name.toLowerCase().endsWith(".docx")) {
-            return { valid: false, message: "Only DOCX files are accepted." };
+        const lowerName = file.name.toLowerCase();
+        const isDocx = lowerName.endsWith(".docx");
+        const isPdf = lowerName.endsWith(".pdf");
+
+        if (!isDocx && !isPdf) {
+            return { valid: false, message: "Only DOCX and PDF files are accepted." };
         }
 
         const maxSizeMB = 35;
@@ -864,7 +868,12 @@ document.addEventListener("DOMContentLoaded", function () {
             return { valid: false, message: `File is too large. Maximum allowed size is ${maxSizeMB}MB.` };
         }
 
-        return { valid: true, message: "DOCX file selected. Ready to analyse." };
+        return {
+            valid: true,
+            message: isPdf
+                ? "PDF file selected. Text-based PDFs are supported, but DOCX gives the most accurate analysis."
+                : "DOCX file selected. Ready to analyse."
+        };
     }
 
     function handleFileSelected() {
