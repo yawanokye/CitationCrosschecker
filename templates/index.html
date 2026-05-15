@@ -821,7 +821,7 @@
                 <div class="file-message" style="font-size: 12px; margin-top: 6px;">DOCX is recommended for accurate citation analysis. Ideal for theses, dissertations, project reports, and journal manuscripts</div>
                 <div style="font-size: 12px; margin-top: 8px; color: #666;">Convert PDF in Word: Open Word → File → Open → Select PDF → OK → Save as .docx</div>
                 <div class="file-name" id="fileName"></div>
-                <input type="file" id="file" accept=".docx">
+                <input type="file" id="file" accept=".docx,.pdf">
             </div>
 
             <div class="options-row">
@@ -2243,8 +2243,10 @@ async function runInitialCheck() {
         return;
     }
 
-    if (!file.name.toLowerCase().endsWith(".docx")) {
-        setStatus("Only DOCX files are accepted.", "warn");
+    const fileName = file.name.toLowerCase();
+
+    if (!fileName.endsWith(".docx") && !fileName.endsWith(".pdf")) {
+        alert("Please upload a DOCX or PDF file.");
         return;
     }
 
