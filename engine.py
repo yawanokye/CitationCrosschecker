@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-03-01-final"
+ENGINE_BUILD = "commercial-2026-05-16-false-positive-reduction"
 
 # Fuzzy matching (optional)
 try:
@@ -69,6 +69,12 @@ class RefNum:
 YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
 YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
 
+DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s]+", re.I)
+DOI_ONLY_RE = re.compile(
+    r"^\s*(?:doi\s*:\s*|https?://(?:dx\.)?doi\.org/)?10\.\d{4,9}/\S+\s*$",
+    re.I,
+)
+
 REF_HEADINGS = [
     r"^\s*references?\s*(?:list)?\s*$",
     r"^\s*bibliograph(?:y|ies)\s*$",
@@ -102,10 +108,12 @@ DISCOURSE_PREFIXES = {
     "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
     "eighth", "ninth", "tenth", "last", "initially", "subsequent",
     "comparatively", "conversely", "alternatively", "accordingly",
+    "interestingly", "relatedly", "moreso",
 
     # phrases
     "for instance", "instance",
     "for example", "example",
+    "more so",
 }
 
 REF_END_HEADINGS = [
@@ -147,6 +155,7 @@ NON_NAME_AUTHOR_KEYS = {
     "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
     "eighth", "ninth", "tenth", "last", "initially", "subsequent",
     "comparatively", "conversely", "alternatively", "accordingly",
+    "interestingly", "relatedly", "moreso", "more so",
 }
 
 NARRATIVE_SINGLE_TOKENS = {
@@ -177,16 +186,69 @@ def norm_space(s: str) -> str:
     return s.strip()
 
 
+def _fold_diacritics(s: str) -> str:
+    """Remove accents/diacritics for matching only, not for display."""
+    s = unicodedata.normalize("NFKD", s or "")
+    return "".join(ch for ch in s if not unicodedata.combining(ch))
+
+
+def _is_doi_only_reference(s: str) -> bool:
+    return bool(DOI_ONLY_RE.match(norm_space(s or "")))
+
+
+def _is_digitised_artifact_line(s: str) -> bool:
+    """
+    Remove repository/header/footer artefacts that come from digitised theses.
+    Kept narrow so legitimate references mentioning universities are preserved.
+    """
+    x = soft_lower(s or "")
+    if not x:
+        return False
+    if "https://ir.ucc.edu.gh/xmlui" in x:
+        return True
+    if x.startswith("digitized by sam jonah library"):
+        return True
+    if x in {"digitized by sam jonah library", "digitised by sam jonah library"}:
+        return True
+    return False
+
+
+def _clean_extracted_lines(lines: List[str]) -> List[str]:
+    out = []
+    for line in lines or []:
+        s = norm_space(line)
+        if not s:
+            continue
+        if _is_digitised_artifact_line(s):
+            continue
+        out.append(s)
+    return out
+
+
 def soft_lower(s: str) -> str:
     return norm_space(s).lower()
 
 
 def strip_punct(s: str) -> str:
-    s = soft_lower(s)
+    s = _fold_diacritics(soft_lower(s))
     s = re.sub(r"[“”\"'’`]", "", s)
     s = re.sub(r"[^a-z0-9\s\-&/\u2013\u2014-]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+_CLEAN_DISCOURSE_PREFIX_CACHE: Optional[List[str]] = None
+
+
+def _clean_discourse_prefixes() -> List[str]:
+    global _CLEAN_DISCOURSE_PREFIX_CACHE
+    if _CLEAN_DISCOURSE_PREFIX_CACHE is None:
+        _CLEAN_DISCOURSE_PREFIX_CACHE = sorted(
+            {_clean_discourse_token(x) for x in DISCOURSE_PREFIXES if x},
+            key=len,
+            reverse=True,
+        )
+    return _CLEAN_DISCOURSE_PREFIX_CACHE
+
 
 def _clean_discourse_token(s: str) -> str:
     return strip_punct(s).strip(" ,.;:()[]{}")
@@ -205,11 +267,7 @@ def _strip_discourse_prefixes(left: str) -> str:
     if not left:
         return ""
 
-    prefixes = sorted(
-        {_clean_discourse_token(x) for x in DISCOURSE_PREFIXES if x},
-        key=len,
-        reverse=True
-    )
+    prefixes = _clean_discourse_prefixes()
 
     for _ in range(5):
         old = left
@@ -249,16 +307,18 @@ def _normalise_extracted_author_year_citation(cite: str) -> str:
     if not s:
         return ""
 
+    # Common extraction/typing variants that should not create false misses.
+    s = re.sub(r"\bet\s*\.?\s*al\s*\.?", "et al.", s, flags=re.I)
+    s = re.sub(r"(?<=\S)&", " &", s)
+    s = re.sub(r"&(?=\S)", "& ", s)
+    s = re.sub(r"\s+", " ", s)
+
     s = s.strip(" ,;:()[]{}")
     s = re.sub(r"^(?:and|but|or)\s+", "", s, flags=re.I).strip(" ,;:")
     s = _strip_discourse_prefixes(s).strip(" ,;:()[]{}")
 
     # Remove one or more transition words that may remain before the real author.
-    noise_words = sorted(
-        {_clean_discourse_token(x) for x in DISCOURSE_PREFIXES if x},
-        key=len,
-        reverse=True,
-    )
+    noise_words = _clean_discourse_prefixes()
 
     for _ in range(4):
         old = s
@@ -306,6 +366,20 @@ def _citation_has_blocked_narrative_lead(cite: str) -> bool:
     return _is_non_author_key(left_key)
 
 
+_NON_AUTHOR_BLOCK_CACHE: Optional[set] = None
+
+
+def _non_author_block() -> set:
+    global _NON_AUTHOR_BLOCK_CACHE
+    if _NON_AUTHOR_BLOCK_CACHE is None:
+        _NON_AUTHOR_BLOCK_CACHE = {
+            strip_punct(x)
+            for x in (set(NON_NAME_AUTHOR_KEYS) | set(DISCOURSE_PREFIXES))
+            if x
+        }
+    return _NON_AUTHOR_BLOCK_CACHE
+
+
 def _is_non_author_key(key: str) -> bool:
     """
     Prevent ordinary discourse, method, and document words from becoming author keys.
@@ -314,11 +388,7 @@ def _is_non_author_key(key: str) -> bool:
     if not k:
         return True
 
-    block = {
-        strip_punct(x)
-        for x in (set(NON_NAME_AUTHOR_KEYS) | set(DISCOURSE_PREFIXES))
-        if x
-    }
+    block = _non_author_block()
 
     extra_phrases = {
         "field survey", "survey field", "survey data", "field data",
@@ -374,8 +444,10 @@ def _surnames_from_author_blob(left: str) -> List[str]:
     if _is_bad_author_left(s):
         return []
 
+    s = re.sub(r"(?<=\S)&", " &", s)
+    s = re.sub(r"&(?=\S)", "& ", s)
     s = s.replace("&", " and ")
-    s = re.sub(r"\bet\s+al\.?\b", "", s, flags=re.I)
+    s = re.sub(r"\bet\s*\.?\s*al\.?\b", "", s, flags=re.I)
     s = re.sub(r"(’s|'s)\b", "", s)
     s = re.sub(r"\b(and|for|instance|see|e\.g\.|i\.e\.)\b", " ", s, flags=re.I)
     s = re.sub(r"\b[A-Z]\.\b", " ", s)
@@ -622,6 +694,122 @@ def _first_author_or_org_key(author_left: str) -> str:
     return key
 
 
+def _org_acronym(text: str) -> str:
+    """
+    Build an acronym from an organisation name.
+    Example: United Nations Conference on Trade and Development -> UNCTAD.
+    """
+    text = norm_space(text or "")
+    if not text:
+        return ""
+
+    # If an explicit acronym is given in brackets, prefer it.
+    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", text)
+    if m:
+        return strip_punct(m.group(1))
+
+    # Preserve all-uppercase author tokens such as IFC, GSS, NEIP.
+    head_tokens = re.findall(r"\b[A-Z][A-Z0-9/&\-]{1,15}\b", text)
+    if head_tokens:
+        joined = "".join(head_tokens)
+        if 2 <= len(joined) <= 15:
+            return strip_punct(joined)
+
+    words = re.findall(r"\b[A-Za-z][A-Za-z\-]*\b", text)
+    stop = {
+        "the", "of", "and", "for", "in", "on", "at", "to", "a", "an",
+        "from", "with", "by", "department", "ministry", "press", "limited",
+    }
+    letters = []
+    for w in words[:18]:
+        wl = w.lower().strip("-")
+        if wl in stop:
+            continue
+        if len(wl) <= 1:
+            continue
+        letters.append(w[0].lower())
+
+    acr = "".join(letters)
+    if 2 <= len(acr) <= 15:
+        return acr
+    return ""
+
+
+_INSTITUTIONAL_ALIAS_PHRASES = {
+    "unctad": [
+        "united nations conference on trade and development",
+    ],
+    "neip": [
+        "national entrepreneurship and innovation programme",
+        "national entrepreneurship and innovation program",
+    ],
+    "gifec": [
+        "ghana investment fund for electronic communications",
+        "ghana investment funds for electronic communication",
+        "ghana investment fund for electronic communication",
+    ],
+    "ifc": [
+        "international finance corporation",
+    ],
+    "gss": [
+        "ghana statistical service",
+    ],
+    "pwc": [
+        "pricewaterhousecoopers",
+        "price waterhouse coopers",
+    ],
+    "isser": [
+        "institute of statistical social and economic research",
+        "institute of statistical, social and economic research",
+    ],
+    "worldbank": [
+        "world bank",
+    ],
+}
+
+
+def _institution_acronym_aliases(text: str) -> List[str]:
+    raw = norm_space(text or "")
+    folded = strip_punct(_fold_diacritics(raw))
+    aliases = []
+
+    generic = _org_acronym(raw)
+    if generic:
+        aliases.append(generic)
+
+    for acr, phrases in _INSTITUTIONAL_ALIAS_PHRASES.items():
+        for phrase in phrases:
+            if strip_punct(phrase) in folded:
+                aliases.append(acr)
+                break
+
+    # Also support "Ghana, G. S. S." style malformed institutional references.
+    compact_caps = re.sub(r"[^A-Z]", "", raw)
+    if 2 <= len(compact_caps) <= 12:
+        aliases.append(compact_caps.lower())
+
+    seen = set()
+    out = []
+    for a in aliases:
+        a = strip_punct(a)
+        if a and a not in seen and not _is_non_author_key(a):
+            seen.add(a)
+            out.append(a)
+    return out
+
+
+def _normalise_author_for_matching(value: str) -> str:
+    value = norm_space(value or "")
+    value = _fold_diacritics(value)
+    value = re.sub(r"\bet\s*\.?\s*al\s*\.?", "", value, flags=re.I)
+    value = re.sub(r"(?<=\S)&", " &", value)
+    value = re.sub(r"&(?=\S)", "& ", value)
+    value = value.replace("&", " and ")
+    value = re.sub(r"[^A-Za-z0-9\s\-]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip().lower()
+    return value
+
+
 def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
     out: List[str] = []
     ref_like_seen = 0
@@ -727,6 +915,8 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
     if not lines:
         doc = Document(io.BytesIO(file_bytes))
         lines = list(_iter_docx_text(doc))
+
+    lines = _clean_extracted_lines(lines)
 
     def _ref_like(line: str) -> bool:
         s = (line or "").strip()
@@ -1173,6 +1363,8 @@ def _clean_pdf_page_text(text: str) -> str:
             lines.append("")
             continue
         if re.fullmatch(r"\d{1,4}", s):
+            continue
+        if _is_digitised_artifact_line(s):
             continue
         s = re.sub(r"\s+", " ", s)
         lines.append(s)
@@ -1651,6 +1843,76 @@ def recover_references_for_verification(text: str, style_hint: str = "apa") -> L
 
     return refs
     
+def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
+    """
+    Split reference blocks where PDF/DOCX extraction merged two APA references.
+    Conservative rule: split only at an embedded author-year start.
+    """
+    out: List[str] = []
+
+    # Person-author APA start: "Smith, J. (2020)" embedded after another reference.
+    person_start = re.compile(
+        r"(?=(?:[A-Z][A-Za-z'’\-]+,\s*(?:[A-Z]\.\s*){1,5}"
+        r"(?:,\s*(?:&|and)\s*[A-Z][A-Za-z'’\-]+,\s*(?:[A-Z]\.\s*){1,5})*"
+        r"\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)))"
+    )
+
+    # Institutional author APA start: "Ghana Statistical Service. (2021)"
+    org_start = re.compile(
+        r"(?=(?:[A-Z][A-Za-z&/\-]+(?:\s+[A-Z][A-Za-z&/\-]+){1,10}"
+        r"\.\s*\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)))"
+    )
+
+    for ref in merged or []:
+        s = norm_space(ref)
+        if not s:
+            continue
+
+        cuts = []
+        for pat in (person_start, org_start):
+            for m in pat.finditer(s):
+                pos = m.start()
+                if pos <= 0:
+                    continue
+                prefix = s[max(0, pos - 4):pos]
+                # Require a boundary that looks like the end of a previous reference.
+                if re.search(r"[\.\?\!]\s*$", prefix) or DOI_RE.search(s[:pos]):
+                    cuts.append(pos)
+
+        cuts = sorted(set(cuts))
+        if not cuts:
+            out.append(s)
+            continue
+
+        prev = 0
+        for pos in cuts:
+            part = norm_space(s[prev:pos])
+            if part:
+                out.append(part)
+            prev = pos
+        tail = norm_space(s[prev:])
+        if tail:
+            out.append(tail)
+
+    return [x for x in out if x]
+
+
+def _clean_reference_list(refs: List[str], style_hint: str = "apa") -> List[str]:
+    cleaned: List[str] = []
+    for ref in refs or []:
+        s = norm_space(str(ref))
+        if not s:
+            continue
+        if _is_digitised_artifact_line(s):
+            continue
+        if _is_doi_only_reference(s):
+            continue
+        if style_hint == "apa" and not _is_plausible_reference_entry(s):
+            continue
+        cleaned.append(s)
+    return _dedupe_keep_order(cleaned)
+
+
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
@@ -1681,7 +1943,10 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     if cur:
         merged.append(norm_space(cur))
 
-    return [m for m in merged if m and len(m) >= 8]
+    merged = [m for m in merged if m and len(m) >= 8]
+    merged = _split_embedded_apa_refs(merged)
+    merged = _clean_reference_list(merged, style_hint="apa")
+    return merged
 
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
@@ -1725,7 +1990,9 @@ def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
         if tail:
             out.append(tail)
 
-    return [x for x in out if x and len(x) >= 10]
+    out = [x for x in out if x and len(x) >= 10 and not _is_doi_only_reference(x)]
+    out = [x for x in out if not _is_digitised_artifact_line(x)]
+    return _dedupe_keep_order(out)
 
 
 # ============================================================================
@@ -1929,6 +2196,13 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         year_base = _base_year(year_full)
 
         left = s_full[: ym.start()].strip(" ,;()")
+
+        # Institutional acronym aliases, e.g. UNCTAD -> United Nations Conference...
+        for alias in _institution_acronym_aliases(left):
+            alias_map[f"{alias}|{year_full}".lower()] = r.reference_full
+            if year_base and year_base != year_full:
+                alias_map[f"{alias}|{year_base}".lower()] = r.reference_full
+
         names = _surnames_from_author_blob(left)
         if not names:
             continue
@@ -2598,6 +2872,220 @@ def generate_reference_suggestions(
 # MASTER SUGGESTION ENGINE
 # ============================================================
 
+def _citation_text_from_missing_item(item: Any) -> str:
+    if isinstance(item, dict):
+        return (
+            item.get("citation_in_text")
+            or item.get("citation")
+            or item.get("in_text")
+            or ""
+        )
+    return str(item or "")
+
+
+def _reference_author_year(ref: RefAY) -> Dict[str, Any]:
+    ref_text = ref.reference_full or ""
+    ym = YEAR_RE.search(ref_text)
+    if not ym:
+        return {"author": "", "year": "", "reference": ref_text, "left": "", "aliases": []}
+
+    year = _base_year(ym.group(1))
+    left = ref_text[:ym.start()].strip(" ,.;:()[]{}")
+    author = _first_author_or_org_key(left)
+
+    aliases = _institution_acronym_aliases(left)
+    if author:
+        aliases.append(author)
+
+    seen = set()
+    clean_aliases = []
+    for a in aliases:
+        a = strip_punct(a)
+        if a and a not in seen and not _is_non_author_key(a):
+            seen.add(a)
+            clean_aliases.append(a)
+
+    return {
+        "author": author or "",
+        "year": year or "",
+        "reference": ref_text,
+        "left": left,
+        "aliases": clean_aliases,
+        "acronym": clean_aliases[0] if clean_aliases else "",
+    }
+
+
+def _generate_possible_match_for_missing(
+    citation: str,
+    references: List[RefAY],
+    reference_infos: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    parsed = _parse_author_year_from_cite(citation)
+    if not parsed:
+        return None
+
+    cite_author, cite_year = parsed
+    cite_author_norm = _normalise_author_for_matching(cite_author)
+
+    ym_raw = YEAR_RE.search(citation or "")
+    raw_left = (citation[:ym_raw.start()] if ym_raw else citation).strip(" ,;:()[]{}")
+    raw_alpha = re.sub(r"[^A-Za-z]", "", raw_left)
+    is_upper_acronym_citation = bool(
+        2 <= len(raw_alpha) <= 8
+        and raw_alpha.upper() == raw_alpha
+        and raw_alpha.lower() == cite_author_norm
+    )
+
+    cite_year_base = _base_year(cite_year)
+
+    best = None
+    best_score = 0.0
+
+    if reference_infos is None:
+        reference_infos = [_reference_author_year(ref) for ref in (references or [])]
+
+    for info in reference_infos or []:
+        ref_author = info.get("author", "")
+        ref_year = info.get("year", "")
+        ref_text = info.get("reference", "")
+        ref_left = info.get("left", "")
+        ref_aliases = info.get("aliases", []) or []
+
+        if not ref_year or not ref_text:
+            continue
+
+        author_score = 0.0
+        matched_alias = ref_author or ""
+
+        for alias in ref_aliases or [ref_author]:
+            alias_norm = _normalise_author_for_matching(alias)
+            if not alias_norm:
+                continue
+
+            score = 0.0
+            if cite_author_norm == alias_norm:
+                score = 100.0
+            elif not is_upper_acronym_citation and cite_author_norm and alias_norm and (
+                len(cite_author_norm) >= 5
+                and len(alias_norm) >= 5
+                and (cite_author_norm in alias_norm or alias_norm in cite_author_norm)
+            ):
+                score = 88.0
+            elif not is_upper_acronym_citation and FUZZ_OK and fuzz and cite_author_norm and alias_norm:
+                # Avoid partial_ratio because it creates false positives:
+                # e.g., Ghannajeh -> Ghana, Amu -> a long author list.
+                score = max(
+                    fuzz.ratio(cite_author_norm, alias_norm),
+                    fuzz.token_set_ratio(cite_author_norm, alias_norm),
+                )
+
+            if score > author_score:
+                author_score = float(score)
+                matched_alias = alias
+
+        # Compare against full institutional author text only for non-acronym citations.
+        full_author_norm = _normalise_author_for_matching(ref_left)
+        if (
+            not is_upper_acronym_citation
+            and FUZZ_OK and fuzz
+            and full_author_norm and cite_author_norm
+            and len(cite_author_norm) >= 5
+        ):
+            full_score = fuzz.token_set_ratio(cite_author_norm, full_author_norm)
+            if full_score > author_score:
+                author_score = float(full_score)
+                matched_alias = ref_left
+
+        try:
+            year_gap = abs(int(cite_year_base[:4]) - int(ref_year[:4]))
+        except Exception:
+            year_gap = 999
+
+        same_year = cite_year_base == ref_year
+        close_year = year_gap <= 5
+
+        if is_upper_acronym_citation and author_score < 100:
+            continue
+
+        required_author_score = 84 if same_year else 92
+
+        if author_score >= required_author_score and (same_year or close_year):
+            score = author_score - min(year_gap * 4, 24)
+
+            if score > best_score:
+                best_score = score
+
+                display_author = matched_alias or ref_author or ref_left or cite_author
+                if len(display_author) > 80:
+                    display_author = display_author[:77] + "..."
+
+                if same_year and author_score < 100:
+                    issue_type = "possible_match_name_variation"
+                    reason = (
+                        f"Possible reference match found for '{citation}', "
+                        f"but the author name appears differently in the reference list."
+                    )
+                    suggested = citation.replace(cite_author, display_author, 1)
+
+                elif not same_year and author_score >= 90:
+                    issue_type = "possible_match_year_variation"
+                    reason = (
+                        f"Possible reference match found for '{citation}', "
+                        f"but the reference year appears as {ref_year}."
+                    )
+                    suggested = citation.replace(cite_year, ref_year, 1)
+
+                else:
+                    issue_type = "possible_match_name_year_variation"
+                    reason = (
+                        f"Possible reference match found for '{citation}', "
+                        f"but author form and year may differ in the reference list."
+                    )
+                    suggested = citation.replace(cite_author, display_author, 1).replace(cite_year, ref_year, 1)
+
+                best = {
+                    "original": citation,
+                    "suggested": suggested,
+                    "confidence": round(max(min(score / 100.0, 0.95), 0.65), 2),
+                    "issue_type": issue_type,
+                    "reason": reason,
+                    "fix_type": "review_required",
+                    "possible_reference": ref_text,
+                    "matched_author_in_reference": ref_left or ref_author,
+                    "matched_year_in_reference": ref_year,
+                    "apply": {
+                        "type": "replace_text",
+                        "target": citation,
+                        "replacement": suggested,
+                    },
+                }
+
+    return best
+
+
+def _split_missing_possible_matches(
+    missing_rows: List[Dict[str, Any]],
+    references: List[RefAY],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    remaining_missing: List[Dict[str, Any]] = []
+    possible_matches: List[Dict[str, Any]] = []
+    reference_infos = [_reference_author_year(ref) for ref in (references or [])]
+
+    for item in missing_rows or []:
+        cite = _citation_text_from_missing_item(item)
+        possible = _generate_possible_match_for_missing(cite, references, reference_infos)
+
+        if possible and float(possible.get("confidence", 0) or 0) >= 0.78:
+            row = dict(item) if isinstance(item, dict) else {"citation_in_text": cite}
+            row["status"] = "possible_match_with_year_or_name_variation"
+            row["possible_match"] = possible
+            possible_matches.append(row)
+        else:
+            remaining_missing.append(item)
+
+    return remaining_missing, possible_matches
+
+
 def generate_suggestions(
     citations: List[str],
     c2r: List[Dict[str, Any]],
@@ -2654,6 +3142,37 @@ def generate_suggestions(
                 }
             })
     # ============================================================
+    # 1B. POSSIBLE MATCHES FROM MISSING CITATIONS
+    # ============================================================
+    possible_match_suggestions = []
+    existing_originals = {
+        s.get("original")
+        for s in citation_suggestions
+        if isinstance(s, dict)
+    }
+    reference_infos = [_reference_author_year(ref) for ref in (references or [])]
+
+    for item in missing_rows or []:
+        missing_citation = _citation_text_from_missing_item(item)
+
+        if not missing_citation or missing_citation in existing_originals:
+            continue
+
+        if isinstance(item, dict) and isinstance(item.get("possible_match"), dict):
+            possible = item.get("possible_match")
+        else:
+            possible = _generate_possible_match_for_missing(
+                missing_citation,
+                references,
+                reference_infos,
+            )
+
+        if possible:
+            citation_suggestions.append(possible)
+            possible_match_suggestions.append(possible)
+            existing_originals.add(missing_citation)
+
+    # ============================================================
     # 2. REFERENCE FIXES (FORMATTING / STYLE)
     # ============================================================
 
@@ -2705,7 +3224,11 @@ def generate_suggestions(
         "citations": citation_suggestions,
         "references": reference_suggestions,
 
-        # ❌ REMOVED: missing + unmatched (handled elsewhere)
+        # Possible matches are separate so the UI can show:
+        # "the reference may exist, but year/name/acronym varies".
+        "missing": possible_match_suggestions,
+        "possible_matches": possible_match_suggestions,
+        "unmatched": [],
 
         "statistics": {
             "total": len(all_suggestions),
@@ -2952,6 +3475,7 @@ def run_crosscheck(
         # Fallback recovery for weak or failed extraction
         if style_hint == "apa" and len(references_raw) < 2:
             recovered = recover_references_for_verification(main_text, style_hint="apa")
+            recovered = _clean_reference_list(_split_embedded_apa_refs(recovered), style_hint="apa")
             if len(recovered) > len(references_raw):
                 references_raw = recovered
                 ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
@@ -2989,13 +3513,15 @@ def run_crosscheck(
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
         else:
-            references_raw = [r for r in references_raw if _is_plausible_reference_entry(r)]
+            references_raw = _split_embedded_apa_refs(references_raw)
+            references_raw = _clean_reference_list(references_raw, style_hint="apa")
 
         references_raw = _dedupe_keep_order(references_raw)
         
         # Fallback recovery for weak or failed extraction
         if style_hint == "apa" and len(references_raw) < 2:
             recovered = recover_references_for_verification(main_text, style_hint="apa")
+            recovered = _clean_reference_list(_split_embedded_apa_refs(recovered), style_hint="apa")
             if len(recovered) > len(references_raw):
                 references_raw = recovered
                 ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
@@ -3011,12 +3537,19 @@ def run_crosscheck(
     main_text_len = len(main_text or "")
     too_large = main_text_len > 2_000_000
 
+    possible_match_rows: List[Dict[str, Any]] = []
+
     if style_hint == "apa":
         cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
         refs = [parse_reference_author_year(r) for r in references_raw]
         refs = [r for r in refs if r is not None]
 
         c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
+
+        # Separate likely false positives into a review-required category.
+        # They are not counted as ordinary missing citations.
+        missing_rows, possible_match_rows = _split_missing_possible_matches(missing_rows, refs)
+
         ref_count = len(refs)
 
     elif style_s == "ieee":
@@ -3087,10 +3620,12 @@ def run_crosscheck(
             "in_text_citations_found": int(intext_count),
             "reference_entries_found": int(ref_count),
             "missing_in_references": int(missing_unique),
+            "possible_match_variations": int(len(possible_match_rows or [])),
             "uncited_references": int(len(uncited_refs)),
             "match_rate": float(round(match_rate, 1)),
         },
         "missing_in_references": missing_rows,
+        "possible_match_variations": possible_match_rows,
         "uncited_references": uncited_refs,
         "reconciliation_intext_to_reference": c2r,
         "reconciliation_reference_to_intext": r2c,
@@ -3166,10 +3701,56 @@ def run_crosscheck_with_autofix(
         # -----------------------------
         # 2. Extract CORRECT data
         # -----------------------------
-        citations = result.get("citations", []) or result.get("in_text_citations", [])
-        references_raw = result.get("references_raw", [])
-        missing = result.get("missing", [])
-        c2r = result.get("c2r", [])
+        references_raw = result.get("references_raw", []) or []
+
+        c2r = (
+            result.get("reconciliation_intext_to_reference", [])
+            or result.get("c2r", [])
+            or []
+        )
+
+        missing_base = (
+            result.get("missing_in_references", [])
+            or result.get("missing", [])
+            or []
+        )
+        possible_base = result.get("possible_match_variations", []) or []
+        missing = list(missing_base) + list(possible_base)
+
+        citations = []
+
+        for row in c2r:
+            if isinstance(row, dict):
+                cite = (
+                    row.get("in_text")
+                    or row.get("citation")
+                    or row.get("citation_in_text")
+                    or ""
+                )
+                if cite:
+                    citations.append(cite)
+            elif row:
+                citations.append(str(row))
+
+        for row in missing:
+            if isinstance(row, dict):
+                cite = (
+                    row.get("citation_in_text")
+                    or row.get("citation")
+                    or row.get("in_text")
+                    or ""
+                )
+                if cite:
+                    citations.append(cite)
+            elif row:
+                citations.append(str(row))
+
+        # Deduplicate while preserving order
+        seen_cites = set()
+        citations = [
+            c for c in citations
+            if c and not (c in seen_cites or seen_cites.add(c))
+        ]
 
         # -----------------------------
         # 3. Parse references
@@ -3203,17 +3784,10 @@ def run_crosscheck_with_autofix(
         )
 
         # -----------------------------
-        # 6. SAFETY TEST (UI check)
+        # 6. Production safety
         # -----------------------------
-        if not suggestions_data["citations"] and not suggestions_data["missing"]:
-            print("⚠️ No suggestions generated — injecting test")
-
-            suggestions_data["citations"].append({
-                "original": "Test (2020)",
-                "suggested": "Test (2021)",
-                "confidence": 0.8,
-                "reason": "Test suggestion to confirm UI rendering"
-            })
+        if not suggestions_data.get("citations") and not suggestions_data.get("missing"):
+            print("ℹ️ No citation correction suggestions generated.")
 
         # -----------------------------
         # 7. Attach to result
