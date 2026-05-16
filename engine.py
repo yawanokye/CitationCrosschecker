@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.2"
+__version__ = "1.5.5"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-16-uncited-ref-split-duplicate-key-fix"
+ENGINE_BUILD = "commercial-2026-05-16-non-citation-filter-alias-fix"
 
 # Fuzzy matching (optional)
 try:
@@ -108,7 +108,7 @@ DISCOURSE_PREFIXES = {
     "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
     "eighth", "ninth", "tenth", "last", "initially", "subsequent",
     "comparatively", "conversely", "alternatively", "accordingly",
-    "interestingly", "relatedly", "moreso",
+    "interestingly", "relatedly", "moreso", "state",
 
     # phrases
     "for instance", "instance",
@@ -141,8 +141,10 @@ NON_NAME_AUTHOR_KEYS = {
     "results", "result", "finding", "findings",
     "method", "methods", "methodology", "discussion",
     "introduction", "conclusion", "study", "studies",
-    "paper", "thesis", "dissertation", "report",
+    "paper", "thesis", "dissertation", "report", "policy", "policies",
     "source", "sources", "author", "authors",
+    "construct", "constructs", "estimation", "estimated", "estimate", "estimates",
+    "trend", "trends", "state", "states", "census", "survey", "surveys",
 
     # discourse words
     "however", "similarly", "regrettably", "traditionally", "notably",
@@ -291,6 +293,106 @@ def _strip_discourse_prefixes(left: str) -> str:
     return left
 
 
+
+_COMMON_CITATION_TYPO_REPLACEMENTS = [
+    # Keep these narrow. They correct common OCR/typing errors observed in thesis PDFs.
+    (re.compile(r"\bOCED\b", re.I), "OECD"),
+    (re.compile(r"\bHail\s+Jr\s+et\s+la\b", re.I), "Hair Jr et al."),
+    (re.compile(r"\bHail\s+et\s+la\b", re.I), "Hair et al."),
+    (re.compile(r"\bet\s+la\b", re.I), "et al."),
+]
+
+
+def _normalise_common_citation_typos(s: str) -> str:
+    s = norm_space(s or "")
+    for pat, repl in _COMMON_CITATION_TYPO_REPLACEMENTS:
+        s = pat.sub(repl, s)
+    s = re.sub(r"\b(Hair)\s+Jr\.?\s+et\s+al\.", r"\1 et al.", s, flags=re.I)
+    return s
+
+
+def _citation_context_is_non_citation(text: str, start: int, end: int, candidate: str = "") -> bool:
+    """
+    Suppress table notes, figure notes, field-survey notes and source labels.
+    These often look like author-year citations but are not references.
+    """
+    text = text or ""
+    candidate_key = strip_punct(candidate or "")
+    blocked_candidate_heads = {
+        "construct", "author construct", "authors construct",
+        "field survey", "survey", "field", "source", "table", "figure",
+        "estimation", "estimated", "trend", "state", "policy", "census",
+    }
+    if candidate_key in blocked_candidate_heads:
+        return True
+
+    before = text[max(0, start - 180):start]
+    after = text[end:min(len(text), end + 80)]
+    ctx = soft_lower(before + " " + after)
+
+    context_patterns = [
+        r"source\s*:\s*$",
+        r"source\s*:\s*.{0,90}$",
+        r"author[’'`s]*\s+construct\s*$",
+        r"author[’'`s]*\s+computation\s*$",
+        r"field\s+survey\s*$",
+        r"estimated\s+from\s+field\s+data\s*$",
+        r"table\s+\d+[\w\.:-]*\s*$",
+        r"figure\s+\d+[\w\.:-]*\s*$",
+        r"valid\s+n\s*\(listwise\)\s*$",
+    ]
+    return any(re.search(p, ctx, flags=re.I | re.S) for p in context_patterns)
+
+
+def _split_author_year_chunk(chunk: str) -> List[str]:
+    """
+    Split malformed/joined APA-Harvard chunks before matching.
+
+    Examples:
+    - "OECD, 2019, 2020" -> ["OECD, 2019", "OECD, 2020"]
+    - "Aiko & Logan 2014, Besley & Persson, 2014" -> two citations
+    - "Integrated Business Establishment Survey II, 2014: Minta, 2020" -> two citations
+    """
+    s = _normalise_extracted_author_year_citation(chunk)
+    if not s:
+        return []
+
+    s = re.sub(r"\s*:\s*(?=[A-ZÀ-ÖØ-Þ])", "; ", s)
+    years = list(YEAR_RE.finditer(s))
+    if len(years) <= 1:
+        return [s]
+
+    out: List[str] = []
+    last_author = ""
+    prev_end = 0
+
+    for ym in years:
+        left = s[prev_end:ym.start()].strip(" ,;:()[]{}")
+        year = ym.group(1)
+
+        # If this is a second year for the same author, reuse the previous author.
+        if not left or not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", left):
+            author = last_author
+        else:
+            # Remove any carry-over punctuation from the prior citation.
+            left = re.sub(r"^[,;:\s]+", "", left).strip(" ,;:()[]{}")
+            # If the segment still contains an earlier year, keep only text after it.
+            earlier_years = list(YEAR_RE.finditer(left))
+            if earlier_years:
+                left = left[earlier_years[-1].end():].strip(" ,;:()[]{}")
+            author = left or last_author
+
+        if author:
+            # Convert common institutional report-title variants into usable keys.
+            if re.search(r"\bintegrated\s+business\s+establishment\s+survey\b", author, re.I):
+                author = "IBES II" if re.search(r"\bII\b", author) else "IBES"
+            out.append(norm_space(f"{author}, {year}"))
+            last_author = author
+
+        prev_end = ym.end()
+
+    return [x for x in out if x]
+
 def _normalise_extracted_author_year_citation(cite: str) -> str:
     """
     Clean display text for extracted APA/Harvard citations.
@@ -307,10 +409,19 @@ def _normalise_extracted_author_year_citation(cite: str) -> str:
     if not s:
         return ""
 
+    s = _normalise_common_citation_typos(s)
+
     # Common extraction/typing variants that should not create false misses.
     s = re.sub(r"\bet\s*\.?\s*al\s*\.?", "et al.", s, flags=re.I)
+    s = re.sub(r"\bet\s+la\b", "et al.", s, flags=re.I)
     s = re.sub(r"(?<=\S)&", " &", s)
     s = re.sub(r"&(?=\S)", "& ", s)
+    # Possessives used as theory labels: Mauss' (1925), Levi-Strauss' (1949).
+    s = re.sub(r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)'\s*,\s*((?:19|20)\d{2})", r"\1, \2", s)
+    s = re.sub(r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)'\s*\(\s*((?:19|20)\d{2})\s*\)", r"\1, \2", s)
+    # Missing comma before year, especially Hair et al.2020 / Kaspera et al. 2014.
+    s = re.sub(r"\b(et\s+al\.)\s*((?:19|20)\d{2}[a-z]?)", r"\1, \2", s, flags=re.I)
+    s = re.sub(r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s*(?:&|and)\s*[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)?)\s+((?:19|20)\d{2}[a-z]?)\b", r"\1, \2", s)
     s = re.sub(r"\s+", " ", s)
 
     s = s.strip(" ,;:()[]{}")
@@ -752,6 +863,24 @@ def _org_acronym(text: str) -> str:
 
 
 _INSTITUTIONAL_ALIAS_PHRASES = {
+    "oecd": [
+        "organisation for economic co-operation and development",
+        "organization for economic co-operation and development",
+        "organisation for economic cooperation and development",
+        "organization for economic cooperation and development",
+    ],
+    "oced": [
+        "organisation for economic co-operation and development",
+        "organization for economic co-operation and development",
+    ],
+    "ifs": [
+        "institute for fiscal studies",
+        "institute of fiscal studies",
+    ],
+    "ibes": [
+        "integrated business establishment survey",
+        "integrated business establishment survey ii",
+    ],
     "unctad": [
         "united nations conference on trade and development",
     ],
@@ -813,6 +942,33 @@ def _institution_acronym_aliases(text: str) -> List[str]:
             out.append(a)
     return out
 
+
+
+def _institution_aliases_for_citation_left(left: str) -> List[str]:
+    """Return institutional aliases only when the citation-left is institution-like.
+    Prevents person names such as "Hair et al." or "Aiko & Logan" becoming acronyms.
+    """
+    raw = norm_space(left or "")
+    if not raw:
+        return []
+    folded = strip_punct(_fold_diacritics(raw))
+    has_explicit_acronym = bool(re.search(r"\b[A-Z]{2,12}\b", raw))
+    known_phrase = False
+    for phrases in _INSTITUTIONAL_ALIAS_PHRASES.values():
+        for phrase in phrases:
+            if strip_punct(phrase) in folded:
+                known_phrase = True
+                break
+        if known_phrase:
+            break
+    org_starts = (
+        "organisation", "organization", "institute", "world bank", "ghana statistical",
+        "integrated business", "ghana revenue", "international monetary", "transparency international",
+    )
+    starts_like_org = folded.startswith(org_starts)
+    if has_explicit_acronym or known_phrase or starts_like_org:
+        return _institution_acronym_aliases(raw)
+    return []
 
 def _normalise_author_for_matching(value: str) -> str:
     value = norm_space(value or "")
@@ -2185,7 +2341,8 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
     if _is_likely_narrative_citation(left, year, s):
         return None
 
-    author_key = _first_author_or_org_key(left)
+    inst_aliases = _institution_aliases_for_citation_left(left)
+    author_key = inst_aliases[0] if inst_aliases else _first_author_or_org_key(left)
     if not author_key:
         return None
     if _is_non_author_key(author_key):
@@ -2198,6 +2355,7 @@ def extract_author_year_citations(text: str) -> List[str]:
 
     # Normalise common OCR/typing issues before citation extraction.
     # Example in UCC thesis exports: "Artüz and and Bayraktar (2021)".
+    t = _normalise_common_citation_typos(t)
     t = re.sub(r"\band\s+and\b", "and", t, flags=re.I)
     t = re.sub(r"(?<=\S)&", " &", t)
     t = re.sub(r"&(?=\S)", "& ", t)
@@ -2225,11 +2383,16 @@ def extract_author_year_citations(text: str) -> List[str]:
         if YEAR_RE.fullmatch(inside) and not re.search(r"[A-Za-z]", inside):
             continue
 
-        chunks = [c.strip() for c in inside.split(";") if c.strip()]
+        chunks = [c.strip() for c in re.split(r";", inside) if c.strip()]
         for ch in chunks:
             ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
-            if YEAR_RE.search(ch2):
-                out.append(norm_space(ch2))
+            if not YEAR_RE.search(ch2):
+                continue
+            if _citation_context_is_non_citation(t, m.start(), m.end(), ch2):
+                continue
+            for piece in _split_author_year_chunk(ch2):
+                if piece and YEAR_RE.search(piece):
+                    out.append(norm_space(piece))
 
     for m in narr_pat.finditer(t):
         author = m.group(1).strip()
@@ -2238,6 +2401,9 @@ def extract_author_year_citations(text: str) -> List[str]:
         if not years_block:
             continue
     
+        if _citation_context_is_non_citation(t, m.start(), m.end(), author):
+            continue
+
         author = re.sub(r"(’s|'s)\b", "", author).strip()
         years = re.split(r"[;,]\s*", years_block)
     
@@ -2355,6 +2521,53 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
 
     cite_counts_by_ref = Counter()
     parsed_cites: List[Tuple[str, str, str]] = []
+    ambiguous_cite_samples_by_ref: Dict[str, List[str]] = defaultdict(list)
+
+    # Same first-author/year references need special handling.
+    # Example:
+    #   Adam, D. (2020). Special report...
+    #   Adam, A. M. (2020). Sample size determination...
+    # A bare in-text citation such as Adam (2020) cannot be assigned safely
+    # from author-year alone. Instead of letting the first reference absorb the
+    # citation and listing the other as uncited, mark all same-key references
+    # as ambiguously cited. The UI can show the ambiguity for manual review.
+    refs_by_shared_author_year: Dict[str, List[str]] = defaultdict(list)
+    for rr in references:
+        try:
+            rr_auth, rr_year = rr.key.split("|", 1)
+        except Exception:
+            continue
+        keys_for_rr = {f"{rr_auth}|{rr_year}".lower()}
+        rr_base_year = _base_year(rr_year)
+        if rr_base_year and rr_base_year != rr_year:
+            keys_for_rr.add(f"{rr_auth}|{rr_base_year}".lower())
+        for kk in keys_for_rr:
+            if rr.reference_full not in refs_by_shared_author_year[kk]:
+                refs_by_shared_author_year[kk].append(rr.reference_full)
+
+    def _citation_is_bare_same_author_year(citation_text: str, parsed_author: str, parsed_year: str) -> Tuple[bool, str, List[str]]:
+        """Return True when a citation is too generic to choose among same-author/year refs."""
+        base_year = _base_year(parsed_year) if parsed_year else parsed_year
+        shared_key = f"{parsed_author}|{base_year or parsed_year}".lower()
+        group = refs_by_shared_author_year.get(shared_key, [])
+        if len(group) <= 1:
+            return False, shared_key, group
+
+        s_cite = norm_space(citation_text or "")
+        ym_cite = YEAR_RE.search(s_cite)
+        left_cite = s_cite[: ym_cite.start()].strip(" ,;()[]{}") if ym_cite else s_cite
+        left_cite = _strip_discourse_prefixes(left_cite)
+        names_cite = _surnames_from_author_blob(left_cite)
+
+        has_explicit_initials = bool(re.search(r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}", left_cite))
+        has_two_authors = len(names_cite) >= 2 or bool(re.search(r"\s+(?:&|and)\s+", left_cite, flags=re.I))
+        has_etal = bool(re.search(r"\bet\s*\.?\s*al\.?\b", s_cite, flags=re.I))
+
+        # Bare examples: "Adam, 2020" or "Adam's (2020)".
+        # Non-bare examples: "Adam, A. M., 2020", "Adam & Boateng, 2020",
+        # "Adam et al., 2020".
+        is_bare = not has_explicit_initials and not has_two_authors and not has_etal
+        return is_bare, shared_key, group
 
     for c in citations:
         parsed = _parse_author_year_from_cite(c)
@@ -2402,6 +2615,23 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         # Deduplicate candidate keys while preserving priority.
         seen_keys = set()
         cand_keys = [k for k in cand_keys if k and not (k in seen_keys or seen_keys.add(k))]
+
+        # If a bare citation maps to more than one reference with the same
+        # first-author/year, do not allow one reference to absorb the count and
+        # leave the others as false uncited references.
+        # Example: Adam (2020) with Adam, D. (2020) and Adam, A. M. (2020).
+        is_bare_ambiguous, ambiguous_key, ambiguous_refs = _citation_is_bare_same_author_year(c, auth, year)
+        if is_bare_ambiguous and ambiguous_refs:
+            for ambiguous_ref in ambiguous_refs:
+                cite_counts_by_ref[ambiguous_ref] += 1
+                if len(ambiguous_cite_samples_by_ref[ambiguous_ref]) < 6:
+                    ambiguous_cite_samples_by_ref[ambiguous_ref].append(c)
+            parsed_cites.append((
+                ambiguous_refs[0],
+                c,
+                f"ambiguous_same_author_year:{ambiguous_key};candidates={len(ambiguous_refs)}"
+            ))
+            continue
 
         matched_ref = None
         used_key = None
@@ -2487,7 +2717,11 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         r2c.append({
             "times_cited": times,
             "reference": ref_full,
-            "cited_by": cite_samples_by_ref.get(ref_full, []),
+            "cited_by": list(dict.fromkeys(
+                (cite_samples_by_ref.get(ref_full, []) or [])
+                + (ambiguous_cite_samples_by_ref.get(ref_full, []) or [])
+            ))[:6],
+            "ambiguous_same_author_year_cited": bool(ambiguous_cite_samples_by_ref.get(ref_full)),
             "cluster_id": cid,
             "canonical_reference": canonical,
             "duplicate_of_cited": bool(is_dup and canonical_times > 0),
