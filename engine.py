@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-16-false-positive-reduction"
+ENGINE_BUILD = "commercial-2026-05-16-uncited-count-fix"
 
 # Fuzzy matching (optional)
 try:
@@ -1846,20 +1846,35 @@ def recover_references_for_verification(text: str, style_hint: str = "apa") -> L
 def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
     """
     Split reference blocks where PDF/DOCX extraction merged two APA references.
-    Conservative rule: split only at an embedded author-year start.
+
+    Improvements:
+    - Handles long multi-author APA starts such as:
+      "Aryeetey, E., Baah-Nuakoh, A., Duggleby, T., ... (1994)"
+    - Handles names with diacritics such as Artüz and Brüggen.
+    - Splits only after a boundary that looks like the end of a previous entry.
     """
     out: List[str] = []
 
-    # Person-author APA start: "Smith, J. (2020)" embedded after another reference.
+    UPPER = r"A-ZÀ-ÖØ-Þ"
+    NAME_BODY = r"A-Za-zÀ-ÖØ-öø-ÿ'’\-"
+    SURNAME = rf"[{UPPER}][{NAME_BODY}]+"
+    INITIALS = r"(?:[A-Z]\.?\s*){1,5}"
+    YEAR_IN_PARENS = r"\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)"
+    PERSON = rf"{SURNAME},\s*{INITIALS}"
+
+    # Narrow start, good for simple two-author entries.
     person_start = re.compile(
-        r"(?=(?:[A-Z][A-Za-z'’\-]+,\s*(?:[A-Z]\.\s*){1,5}"
-        r"(?:,\s*(?:&|and)\s*[A-Z][A-Za-z'’\-]+,\s*(?:[A-Z]\.\s*){1,5})*"
-        r"\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)))"
+        rf"(?=(?:{PERSON}(?:(?:,\s*|,\s*&\s*|\s*&\s*|\s+and\s+){PERSON}){{0,12}}\s*{YEAR_IN_PARENS}))"
+    )
+
+    # Broad start, catches multi-author blocks when initials/spacing are imperfect.
+    person_start_broad = re.compile(
+        rf"(?=(?:{SURNAME},\s*.{{1,220}}?{YEAR_IN_PARENS}))"
     )
 
     # Institutional author APA start: "Ghana Statistical Service. (2021)"
     org_start = re.compile(
-        r"(?=(?:[A-Z][A-Za-z&/\-]+(?:\s+[A-Z][A-Za-z&/\-]+){1,10}"
+        r"(?=(?:[A-Z][A-Za-z&/\-]+(?:\s+[A-Z][A-Za-z&/\-]+){1,12}"
         r"\.\s*\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)))"
     )
 
@@ -1869,14 +1884,22 @@ def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
             continue
 
         cuts = []
-        for pat in (person_start, org_start):
+        for pat in (person_start, person_start_broad, org_start):
             for m in pat.finditer(s):
                 pos = m.start()
                 if pos <= 0:
                     continue
-                prefix = s[max(0, pos - 4):pos]
-                # Require a boundary that looks like the end of a previous reference.
-                if re.search(r"[\.\?\!]\s*$", prefix) or DOI_RE.search(s[:pos]):
+
+                # Require the embedded entry to start after a sentence/URL/DOI boundary.
+                prefix_window = s[max(0, pos - 12):pos]
+                left_part = s[:pos]
+                boundary_ok = (
+                    bool(re.search(r"[\.\?\!]\s*$", prefix_window))
+                    or bool(re.search(r"\b(?:Retrieved from|Available at)\s*$", prefix_window, re.I))
+                    or bool(DOI_RE.search(left_part))
+                    or bool(re.search(r"https?://\S+\s*$", left_part, re.I))
+                )
+                if boundary_ok:
                     cuts.append(pos)
 
         cuts = sorted(set(cuts))
@@ -1895,7 +1918,6 @@ def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
             out.append(tail)
 
     return [x for x in out if x]
-
 
 def _clean_reference_list(refs: List[str], style_hint: str = "apa") -> List[str]:
     cleaned: List[str] = []
@@ -2077,9 +2099,17 @@ def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
 def extract_author_year_citations(text: str) -> List[str]:
     t = (text or "").replace("\u2019", "'")
 
+    # Normalise common OCR/typing issues before citation extraction.
+    # Example in UCC thesis exports: "Artüz and and Bayraktar (2021)".
+    t = re.sub(r"\band\s+and\b", "and", t, flags=re.I)
+    t = re.sub(r"(?<=\S)&", " &", t)
+    t = re.sub(r"&(?=\S)", "& ", t)
+
     paren_pat = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
 
-    NAME = r"[A-Z][A-Za-z'\-]+(?:'s)?"
+    # Unicode-aware name pattern. This prevents surnames such as Artüz, Brüggen,
+    # Dženopoljac and Proença from being reduced to the last author only.
+    NAME = r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:'s)?"
     AMP = r"(?:&|and|＆)"
     AUTHOR_LIST = rf"{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?"
 
@@ -2120,21 +2150,20 @@ def extract_author_year_citations(text: str) -> List[str]:
                 out.append(norm_space(f"{author}, {y}"))
 
     cleaned = []
-    seen = set()
-    
+
     for c in out:
         c = _normalise_extracted_author_year_citation(c)
-        if not c or c in seen:
+        if not c:
             continue
 
         if _citation_has_blocked_narrative_lead(c):
             continue
-    
-        # Filter false positives early so they do not appear in Missing Citations.
+
+        # Keep repeated occurrences. Reference-to-citation counts must reflect
+        # real frequency in the text, not only unique citation strings.
         if _parse_author_year_from_cite(c):
             cleaned.append(c)
-            seen.add(c)
-    
+
     return cleaned
 
 
@@ -2350,8 +2379,8 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         })
 
     missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
-    unique_intext_count = int(len(set([c for c in citations if c])))
-    return c2r, r2c, missing_rows, uncited_refs, unique_intext_count
+    total_intext_count = int(len([c for c in citations if c]))
+    return c2r, r2c, missing_rows, uncited_refs, total_intext_count
 
 
 # ============================================================================
@@ -2762,13 +2791,10 @@ def _iter_text_chunks(text: str, chunk_size: int = 300_000, overlap: int = 2_000
 
 
 def _extract_author_year_citations_chunked(text: str) -> List[str]:
-    seen = set()
+    # Preserve repeated occurrences so times_cited and count_in_text are correct.
     total = []
     for chunk in _iter_text_chunks(text):
-        for c in extract_author_year_citations(chunk):
-            if c not in seen:
-                seen.add(c)
-                total.append(c)
+        total.extend(extract_author_year_citations(chunk))
     return total
 
 
@@ -3132,8 +3158,8 @@ def generate_suggestions(
                 "reason": suggestion.reason or "Inconsistency detected",
             
                 # WHAT TO DO
-                "fix_type": "required_fix" if suggestion.confidence >= 0.85 else "review_required",
-            
+                "fix_type": "review_required" if issue_type.startswith("possible_") or issue_type in {"author_normalization", "author_normalization_review"} else ("required_fix" if suggestion.confidence >= 0.85 else "review_required"),
+
                 # 🔥 APPLY ACTION (ONLY ONCE)
                 "apply": {
                     "type": "replace_text",
@@ -3371,12 +3397,18 @@ def _generate_citation_fixes(
         
         if best_match and best_match.lower() != auth.lower():
             alt_citation = re.sub(r'\b' + re.escape(auth) + r'\b', best_match, citation, count=1)
+
+            # Author-name fuzzy matches are helpful, but they should not be
+            # treated as automatic or high-confidence fixes. "Hook" vs "Hooks"
+            # and similar cases must stay review-only.
+            safe_confidence = min(best_score / 100, 0.74)
+
             return FixSuggestion(
                 original=citation,
                 suggested=alt_citation,
-                fix_type="author_normalization",
-                confidence=best_score / 100,
-                reason=f"Author '{auth}' normalized to '{best_match}'"
+                fix_type="author_normalization_review",
+                confidence=safe_confidence,
+                reason=f"Possible author-name variation: '{auth}' may correspond to '{best_match}'. Review manually before changing."
             )
     
     # Case 3: Missing "et al." pattern
@@ -3397,47 +3429,71 @@ def _generate_citation_fixes(
     return None
 
 
+def _normalise_doi_url_in_reference(ref_text: str) -> str:
+    """Safely normalise DOI spacing without duplicating https://doi.org."""
+    s = norm_space(ref_text or "")
+    if not s:
+        return s
+
+    # Fix broken DOI host spacing: https://doi.org /10... or https://doi. org/10...
+    s = re.sub(r"https?://(?:dx\.)?doi\.\s*org\s*/\s*", "https://doi.org/", s, flags=re.I)
+    s = re.sub(r"doi\.\s*org\s*/\s*", "doi.org/", s, flags=re.I)
+
+    # Fix DOI split after slash: 10.1016 / j... -> 10.1016/j...
+    s = re.sub(r"\b(10\.\d{4,9})\s*/\s*", r"\1/", s, flags=re.I)
+
+    # Convert bare DOI to URL only when no DOI URL is already present.
+    if "doi.org/" not in s.lower():
+        m = DOI_RE.search(s)
+        if m:
+            doi = m.group(0).rstrip(".,;)")
+            s = s[:m.start()] + "https://doi.org/" + doi + s[m.end():]
+
+    # Remove accidental doubled DOI URL forms.
+    s = re.sub(r"https://doi\.org/\s*https://doi\.org/", "https://doi.org/", s, flags=re.I)
+    s = re.sub(r"https://doi\.org/\s*doi\.org/", "https://doi.org/", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _generate_reference_fixes(ref: RefAY) -> List[FixSuggestion]:
-    """Generate fix suggestions for reference entries."""
+    """Generate conservative, review-required suggestions for reference entries."""
     suggestions = []
     ref_text = ref.reference_full
-    
-    # Fix 1: Add DOI prefix if DOI exists but missing prefix
-    if "doi:" not in ref_text.lower() and "https://doi.org" not in ref_text.lower():
-        doi_match = _DOI_RE.search(ref_text)
-        if doi_match:
-            doi = doi_match.group(0)
-            fixed = re.sub(rf"({re.escape(doi)})", r"DOI: \1", ref_text, flags=re.I)
-            if fixed != ref_text:
-                suggestions.append(FixSuggestion(
-                    original=ref_text,
-                    suggested=fixed,
-                    fix_type="add_doi_prefix",
-                    confidence=0.95,
-                    reason="Added 'DOI:' prefix"
-                ))
-    
-    # Fix 2: Add missing period at end
+
+    # DOI spacing/URL normalisation. Avoid the earlier false positive where
+    # "https://doi.org /10..." became "https://doi.org /https://doi.org/10...".
+    fixed_doi = _normalise_doi_url_in_reference(ref_text)
+    if fixed_doi and fixed_doi != ref_text:
+        suggestions.append(FixSuggestion(
+            original=ref_text,
+            suggested=fixed_doi,
+            fix_type="doi_spacing_or_url_normalisation",
+            confidence=0.88,
+            reason="The DOI URL appears to contain spacing or formatting problems. Review before applying."
+        ))
+
+    # Add missing period at end, low priority only.
     if ref_text and not ref_text.rstrip().endswith('.'):
         suggestions.append(FixSuggestion(
             original=ref_text,
             suggested=ref_text.rstrip() + '.',
             fix_type="add_period",
             confidence=0.60,
-            reason="Added trailing period"
+            reason="The reference may need a trailing period. Review before applying."
         ))
-    
-    # Fix 3: Fix common URL scheme
+
+    # Fix common URL scheme, but keep this review-required.
     if "http://" in ref_text and "https://" not in ref_text:
         fixed = ref_text.replace("http://", "https://")
         suggestions.append(FixSuggestion(
             original=ref_text,
             suggested=fixed,
             fix_type="fix_url_scheme",
-            confidence=0.90,
-            reason="Updated HTTP to HTTPS"
+            confidence=0.80,
+            reason="The reference uses HTTP. Review whether HTTPS is available and appropriate."
         ))
-    
+
     return suggestions
 
 
