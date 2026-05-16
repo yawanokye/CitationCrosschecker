@@ -694,6 +694,212 @@
             margin-right: 8px;
         }
 
+
+        .feature-suite-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+        }
+
+        .feature-suite-card {
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            background: white;
+            padding: 18px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .feature-suite-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .feature-suite-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            background: var(--soft-blue);
+            font-size: 18px;
+            flex: 0 0 auto;
+        }
+
+        .feature-suite-card:nth-child(2n) .feature-suite-icon {
+            background: var(--soft-green);
+        }
+
+        .feature-suite-card h3 {
+            font-size: 17px;
+            line-height: 1.2;
+            letter-spacing: -0.3px;
+        }
+
+        .compact-feature-list {
+            list-style: none;
+            display: grid;
+            gap: 8px;
+            color: var(--slate-dark);
+            font-size: 13px;
+        }
+
+        .compact-feature-list li {
+            display: grid;
+            grid-template-columns: 18px 1fr;
+            gap: 7px;
+            align-items: start;
+        }
+
+        .compact-feature-list li::before {
+            content: "✓";
+            color: var(--green-dark);
+            font-weight: 950;
+        }
+
+        .paid-includes-card {
+            margin: 0 auto 22px;
+            max-width: 1060px;
+            border: 1px solid rgba(25,179,107,0.24);
+            border-radius: 24px;
+            background: linear-gradient(135deg, #ecfdf5, #ffffff);
+            box-shadow: var(--shadow-soft);
+            padding: 18px 20px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            gap: 18px;
+        }
+
+        .paid-includes-card h3 {
+            font-size: 20px;
+            letter-spacing: -0.4px;
+            margin-bottom: 4px;
+        }
+
+        .paid-includes-card p {
+            color: var(--slate-dark);
+            font-size: 14px;
+        }
+
+        .paid-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: var(--green);
+            color: white;
+            font-size: 12px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+
+        .pricing-grid.compact-pricing {
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        }
+
+        .compact-pricing .price-card {
+            padding: 22px;
+            border-radius: 24px;
+        }
+
+        .compact-pricing .price-card h3 {
+            font-size: 20px;
+        }
+
+        .compact-pricing .price {
+            font-size: 34px;
+            margin-bottom: 12px;
+        }
+
+        .plan-meta {
+            display: grid;
+            gap: 7px;
+            margin: 14px 0 16px;
+            color: var(--slate-dark);
+            font-size: 13px;
+        }
+
+        .plan-meta span {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            border: 1px solid #edf2f7;
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 8px 10px;
+        }
+
+        .plan-meta strong {
+            color: var(--navy);
+        }
+
+        .plan-includes {
+            color: var(--green-dark);
+            font-size: 13px;
+            font-weight: 900;
+            margin-top: 4px;
+        }
+
+        .testimonials {
+            background: var(--soft);
+            border-top: 1px solid #edf2f7;
+            border-bottom: 1px solid #edf2f7;
+        }
+
+        .testimonial-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        .testimonial-card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 22px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .testimonial-card .quote-mark {
+            width: 36px;
+            height: 36px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            background: var(--soft-blue);
+            color: var(--blue);
+            font-size: 22px;
+            font-weight: 950;
+            margin-bottom: 12px;
+        }
+
+        .testimonial-card p {
+            color: var(--slate-dark);
+            font-size: 14px;
+            margin-bottom: 14px;
+        }
+
+        .testimonial-author {
+            color: var(--navy);
+            font-size: 13px;
+            font-weight: 900;
+        }
+
+        .testimonial-tag {
+            display: inline-flex;
+            margin-top: 8px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            background: var(--soft-green);
+            color: var(--green-dark);
+            font-size: 11px;
+            font-weight: 900;
+        }
+
+
         .workflow {
             background: var(--soft);
             border-top: 1px solid #edf2f7;
@@ -1077,10 +1283,16 @@
 
             .score-row,
             .features-grid,
+            .feature-suite-grid,
             .steps,
             .pricing-grid,
+            .testimonial-grid,
             .footer-inner {
                 grid-template-columns: 1fr 1fr;
+            }
+
+            .paid-includes-card {
+                grid-template-columns: 1fr;
             }
 
             .floating-card {
@@ -1146,10 +1358,12 @@
             .score-row,
             .mini-grid,
             .features-grid,
+            .feature-suite-grid,
             .steps,
             .proof-metrics,
             .privacy-grid,
             .pricing-grid,
+            .testimonial-grid,
             .footer-inner {
                 grid-template-columns: 1fr;
             }
@@ -1196,6 +1410,7 @@
                 <a href="#features">Features</a>
                 <a href="#workflow">How it works</a>
                 <a href="#pricing">Pricing</a>
+                <a href="#testimonials">Testimonials</a>
                 <a href="#faq">FAQ</a>
                 <a href="/contact">Contact</a>
             </nav>
@@ -1255,75 +1470,61 @@
 
         <section class="section" id="features">
             <div class="section-title">
-                <div class="small-title">Core platform</div>
-                <h2>Everything needed to check citation integrity in one professional workflow.</h2>
-                <p>Move beyond ordinary reference formatting. CiteIntegrity connects in-text citations, reference entries, source verification, claim support and reporting.</p>
+                <div class="small-title">Full Review Features</div>
+                <h2>All paid plans unlock the same complete citation integrity workflow.</h2>
+                <p>Choose a paid plan based on document size only. Every paid plan includes the full review toolkit for checking, verifying, recovering, explaining and exporting citation integrity evidence.</p>
             </div>
 
-            <div class="features-grid">
-                <article class="feature-card">
-                    <div class="icon">🔎</div>
-                    <h3>Citation to reference matching</h3>
-                    <p>Detect whether every in-text citation has a matching reference entry and whether listed references are actually cited.</p>
-                    <ul class="feature-list">
-                        <li>Missing citations</li>
-                        <li>Uncited references</li>
-                        <li>Author-year mismatch alerts</li>
+            <div class="feature-suite-grid">
+                <article class="feature-suite-card">
+                    <div class="feature-suite-head">
+                        <div class="feature-suite-icon">📊</div>
+                        <h3>Core integrity dashboard</h3>
+                    </div>
+                    <ul class="compact-feature-list">
+                        <li>Full Summary Dashboard</li>
+                        <li>ACII Score</li>
+                        <li>Missing References / Missing Citations</li>
+                        <li>Uncited References</li>
                     </ul>
                 </article>
 
-                <article class="feature-card">
-                    <div class="icon">🌐</div>
-                    <h3>Online reference verification</h3>
-                    <p>Check references against scholarly metadata sources and flag records that need manual review.</p>
-                    <ul class="feature-list">
-                        <li>Verified, likely and not found statuses</li>
-                        <li>DOI and title matching</li>
-                        <li>Metadata-based confidence scoring</li>
+                <article class="feature-suite-card">
+                    <div class="feature-suite-head">
+                        <div class="feature-suite-icon">🔗</div>
+                        <h3>Citation linkage checks</h3>
+                    </div>
+                    <ul class="compact-feature-list">
+                        <li>Citations to References</li>
+                        <li>References to Citations</li>
+                        <li>Online Verification</li>
+                        <li>Recovery Suggestions</li>
                     </ul>
                 </article>
 
-                <article class="feature-card">
-                    <div class="icon">🧭</div>
-                    <h3>Source recovery</h3>
-                    <p>When a citation is missing or a reference cannot be verified, generate review-only possible sources for the author to inspect.</p>
-                    <ul class="feature-list">
-                        <li>Context-specific source suggestions</li>
-                        <li>Possible DOI links</li>
-                        <li>Manual confirmation required</li>
+                <article class="feature-suite-card">
+                    <div class="feature-suite-head">
+                        <div class="feature-suite-icon">🧠</div>
+                        <h3>Evidence and source review</h3>
+                    </div>
+                    <ul class="compact-feature-list">
+                        <li>Claim Support</li>
+                        <li>Citation Needed Detection</li>
+                        <li>Advanced Enrichment</li>
+                        <li>Manual Verification Support</li>
                     </ul>
                 </article>
 
-                <article class="feature-card">
-                    <div class="icon">🧠</div>
-                    <h3>Claim support review</h3>
-                    <p>Extract the claim around a citation and assess whether the cited source appears to support that claim.</p>
-                    <ul class="feature-list">
-                        <li>Strong, moderate and weak support labels</li>
-                        <li>Insufficient evidence flags</li>
-                        <li>Alternative source suggestions</li>
-                    </ul>
-                </article>
-
-                <article class="feature-card">
-                    <div class="icon">📊</div>
-                    <h3>ACII score</h3>
-                    <p>Use the Academic Citation Integrity Index to summarise manuscript citation health in a clear, reportable score.</p>
-                    <ul class="feature-list">
-                        <li>Integrity score</li>
-                        <li>Component interpretation</li>
-                        <li>Priority recommendations</li>
-                    </ul>
-                </article>
-
-                <article class="feature-card">
-                    <div class="icon">📄</div>
-                    <h3>Exportable reports</h3>
-                    <p>Download structured outputs for students, supervisors, examiners, editors and quality assurance teams.</p>
-                    <ul class="feature-list">
-                        <li>CSV and Word reports</li>
-                        <li>Verified references export</li>
-                        <li>Submission-readiness evidence</li>
+                <article class="feature-suite-card">
+                    <div class="feature-suite-head">
+                        <div class="feature-suite-icon">📄</div>
+                        <h3>Commercial outputs</h3>
+                    </div>
+                    <ul class="compact-feature-list">
+                        <li>Citation Integrity Certificate</li>
+                        <li>Export Report</li>
+                        <li>Verified References Export</li>
+                        <li>Two Full Review Runs</li>
                     </ul>
                 </article>
             </div>
@@ -1428,83 +1629,119 @@
             </div>
         </section>
 
+        <section class="testimonials" id="testimonials">
+            <div class="section">
+                <div class="section-title">
+                    <div class="small-title">Anonymous user feedback</div>
+                    <h2>Researchers use CiteIntegrity to catch citation problems before submission.</h2>
+                    <p>Anonymous feedback highlights the practical value of checking references, source support and citation completeness before a thesis, dissertation or manuscript is reviewed.</p>
+                </div>
+
+                <div class="testimonial-grid">
+                    <article class="testimonial-card">
+                        <div class="quote-mark">“</div>
+                        <p>CiteIntegrity helped flag references that looked convincing but could not be verified online. It gave me a clear list of items to check before submitting my manuscript.</p>
+                        <div class="testimonial-author">Anonymous journal author</div>
+                        <span class="testimonial-tag">Fake citation detection</span>
+                    </article>
+
+                    <article class="testimonial-card">
+                        <div class="quote-mark">“</div>
+                        <p>The missing citation report showed in-text citations that were not in my reference list. It saved hours of manual checking and improved the quality of my final submission.</p>
+                        <div class="testimonial-author">Anonymous postgraduate student</div>
+                        <span class="testimonial-tag">Missing citation review</span>
+                    </article>
+
+                    <article class="testimonial-card">
+                        <div class="quote-mark">“</div>
+                        <p>The claim support and recovery sections helped me see where sources needed stronger evidence. The ACII score made the review easier to explain to my supervisor.</p>
+                        <div class="testimonial-author">Anonymous thesis candidate</div>
+                        <span class="testimonial-tag">Claim support and ACII</span>
+                    </article>
+                </div>
+            </div>
+        </section>
+
         <section class="section" id="pricing">
             <div class="section-title">
                 <div class="small-title">Pricing</div>
-                <h2>Available plans for every researcher.</h2>
-                <p>Start with a free preview, then choose the full review size that fits your document. Each paid package includes two full review runs for correction and re-checking.</p>
+                <h2>One complete Full Review. Fair pricing by document size.</h2>
+                <p>Every paid CiteIntegrity plan includes the same Full Review features. You only pay more when your document has more references and in-text citations to process.</p>
             </div>
 
-            <div class="pricing-grid">
+            <div class="paid-includes-card">
+                <div>
+                    <h3>All paid plans include the complete Full Review</h3>
+                    <p>Online verification, recovery suggestions, claim support, citation-needed detection, advanced enrichment, ACII score, manual verification support, certificate and export tools are included in every paid package.</p>
+                </div>
+                <span class="paid-badge">Full Review included</span>
+            </div>
+
+            <div class="pricing-grid compact-pricing">
                 <article class="price-card">
                     <h3>Free Preview</h3>
-                    <p class="price-desc">For testing the platform before buying a full review package.</p>
-                    <div class="price">Free <span>/ limited preview</span></div>
+                    <p class="price-desc">For testing CiteIntegrity before buying a Full Review package.</p>
+                    <div class="price">Free <span>/ preview</span></div>
                     <a class="btn btn-ghost" href="https://citeintegrity.org/new/analyse">Start free</a>
-                    <ul class="feature-list">
-                        <li>Up to 10 references</li>
-                        <li>Up to 20 in-text citations</li>
-                        <li>Limited preview results</li>
-                        <li>Basic citation-reference matching</li>
-                        <li>Upgrade for full verification and export</li>
-                    </ul>
+                    <div class="plan-meta">
+                        <span><strong>References</strong> Up to 10</span>
+                        <span><strong>Citations</strong> Up to 20</span>
+                        <span><strong>Access</strong> Limited preview</span>
+                    </div>
+                    <div class="plan-includes">Upgrade to unlock the complete Full Review.</div>
                 </article>
 
                 <article class="price-card">
                     <h3>Article Full Review</h3>
-                    <p class="price-desc">For journal articles, essays and short academic manuscripts.</p>
+                    <p class="price-desc">For articles, essays, assignments and short academic manuscripts.</p>
                     <div class="price">US$2.99 <span>/ package</span></div>
                     <a class="btn btn-ghost" href="https://citeintegrity.org/new/analyse">Buy now</a>
-                    <ul class="feature-list">
-                        <li>Up to 50 references</li>
-                        <li>Up to 120 in-text citations</li>
-                        <li>2 full review runs</li>
-                        <li>Citation-reference matching</li>
-                        <li>Verification and exportable report</li>
-                    </ul>
+                    <div class="plan-meta">
+                        <span><strong>References</strong> Up to 50</span>
+                        <span><strong>Citations</strong> Up to 120</span>
+                        <span><strong>Runs</strong> 2 full reviews</span>
+                    </div>
+                    <div class="plan-includes">Includes all paid Full Review features.</div>
                 </article>
 
                 <article class="price-card">
                     <h3>Research Paper Full Review</h3>
-                    <p class="price-desc">For extended research papers, project reports and standard manuscripts.</p>
+                    <p class="price-desc">For long papers, proposals, chapters and standard manuscripts.</p>
                     <div class="price">US$5.99 <span>/ package</span></div>
                     <a class="btn btn-primary" href="https://citeintegrity.org/new/analyse">Buy now</a>
-                    <ul class="feature-list">
-                        <li>Up to 120 references</li>
-                        <li>Up to 300 in-text citations</li>
-                        <li>2 full review runs</li>
-                        <li>Source recovery suggestions</li>
-                        <li>ACII score and downloadable report</li>
-                    </ul>
+                    <div class="plan-meta">
+                        <span><strong>References</strong> Up to 120</span>
+                        <span><strong>Citations</strong> Up to 300</span>
+                        <span><strong>Runs</strong> 2 full reviews</span>
+                    </div>
+                    <div class="plan-includes">Includes all paid Full Review features.</div>
                 </article>
 
                 <article class="price-card featured">
                     <span class="popular">Best for theses</span>
                     <h3>Thesis Full Review</h3>
-                    <p class="price-desc">For undergraduate, master’s and professional thesis submissions.</p>
+                    <p class="price-desc">For master’s theses, dissertations and professional submissions.</p>
                     <div class="price">US$12.99 <span>/ package</span></div>
                     <a class="btn btn-primary" href="https://citeintegrity.org/new/analyse">Buy now</a>
-                    <ul class="feature-list">
-                        <li>Up to 300 references</li>
-                        <li>Up to 800 in-text citations</li>
-                        <li>2 full review runs</li>
-                        <li>Claim support review</li>
-                        <li>Full citation integrity report</li>
-                    </ul>
+                    <div class="plan-meta">
+                        <span><strong>References</strong> Up to 300</span>
+                        <span><strong>Citations</strong> Up to 800</span>
+                        <span><strong>Runs</strong> 2 full reviews</span>
+                    </div>
+                    <div class="plan-includes">Includes all paid Full Review features.</div>
                 </article>
 
                 <article class="price-card">
                     <h3>PhD / Large Document Full Review</h3>
-                    <p class="price-desc">For PhD theses, large dissertations and long institutional reports.</p>
+                    <p class="price-desc">For PhD theses, books, large dissertations and long reports.</p>
                     <div class="price">US$24.99 <span>/ package</span></div>
-                    <a class="btn btn-green" href="/https://citeintegrity.org/new/analyse">Buy now</a>
-                    <ul class="feature-list">
-                        <li>Up to 700 references</li>
-                        <li>Up to 1,800 in-text citations</li>
-                        <li>2 full review runs</li>
-                        <li>Large-document verification</li>
-                        <li>Advanced citation integrity report</li>
-                    </ul>
+                    <a class="btn btn-green" href="https://citeintegrity.org/new/analyse">Buy now</a>
+                    <div class="plan-meta">
+                        <span><strong>References</strong> Up to 700</span>
+                        <span><strong>Citations</strong> Up to 1,800</span>
+                        <span><strong>Runs</strong> 2 full reviews</span>
+                    </div>
+                    <div class="plan-includes">Includes all paid Full Review features.</div>
                 </article>
             </div>
         </section>
