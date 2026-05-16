@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-16-uncited-count-fix"
+ENGINE_BUILD = "commercial-2026-05-16-uncited-ref-split-duplicate-key-fix"
 
 # Fuzzy matching (optional)
 try:
@@ -435,52 +435,68 @@ def _base_year(y: str) -> str:
 
 
 def _surnames_from_author_blob(left: str) -> List[str]:
-    s = (left or "").strip()
+    """
+    Extract surname keys from citation or reference author text.
+
+    Handles:
+    - "Adam, 2017" -> ["adam"]
+    - "Adam, Frimpong & Boadu, 2017" -> ["adam", "frimpong", "boadu"]
+    - "Adam et al., 2017" -> ["adam"]
+    - "Adam, A. M., Frimpong, S., & Boadu, M. O. (2017)" -> ["adam", "frimpong", "boadu"]
+    """
+    s = norm_space(left or "")
     if not s:
         return []
 
     s = _strip_discourse_prefixes(s)
-
     if _is_bad_author_left(s):
         return []
 
-    s = re.sub(r"(?<=\S)&", " &", s)
-    s = re.sub(r"&(?=\S)", "& ", s)
-    s = s.replace("&", " and ")
     s = re.sub(r"\bet\s*\.?\s*al\.?\b", "", s, flags=re.I)
     s = re.sub(r"(’s|'s)\b", "", s)
-    s = re.sub(r"\b(and|for|instance|see|e\.g\.|i\.e\.)\b", " ", s, flags=re.I)
-    s = re.sub(r"\b[A-Z]\.\b", " ", s)
-    s = re.sub(r"\b[A-Z]\b", " ", s)
-    parts = re.split(r"\band\b|;|/|\|", s, flags=re.I)
-    out: List[str] = []
-    for p in parts:
-        p = p.strip(" ,.;:()[]{}")
-        if not p:
-            continue
-        if "," in p:
-            cand = p.split(",", 1)[0].strip()
-        else:
-            cand = p.split()[-1].strip()
-        cand = re.sub(r"[^A-Za-z\-’' ]+", "", cand).strip()
-        cand = cand.replace("’", "'")
-        if len(cand) < 2:
-            continue
-        if cand.lower() in {"available", "ssrn", "university", "press", "journal"}:
-            continue
-        
-        if _is_non_author_key(cand):
-            continue
-        
-        out.append(cand.lower())
-    seen = set()
-    final = []
-    for x in out:
-        if x not in seen:
-            seen.add(x)
-            final.append(x)
-    return final[:4]
+    s = re.sub(r"(?<=\S)&", " &", s)
+    s = re.sub(r"&(?=\S)", "& ", s)
+    s = s.replace("＆", "&")
 
+    out: List[str] = []
+
+    # APA/reference style: Surname, Initials. Capture every surname before initials.
+    apa_names = re.findall(
+        r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s*,\s*(?:[A-Z]\.\s*){1,5}",
+        s,
+    )
+    if apa_names:
+        out.extend(apa_names)
+    else:
+        # Citation style: Adam, Frimpong & Boadu; Adam and Boadu; Adam et al.
+        tmp = s.replace("&", ",")
+        tmp = re.sub(r"\band\b", ",", tmp, flags=re.I)
+        parts = [p.strip(" ,.;:()[]{}") for p in tmp.split(",")]
+        for p in parts:
+            if not p:
+                continue
+            # Remove initials or isolated capital letters.
+            p = re.sub(r"\b[A-Z]\.\b", " ", p)
+            p = re.sub(r"\b[A-Z]\b", " ", p)
+            words = re.findall(r"[A-ZÀ-ÖØ-Þ]?[A-Za-zÀ-ÖØ-öø-ÿ'’\-]{2,}", p)
+            if not words:
+                continue
+            out.append(words[-1])
+
+    final: List[str] = []
+    seen = set()
+    for cand in out:
+        key = strip_punct(cand)
+        if not key or len(key) < 2:
+            continue
+        if key in {"available", "ssrn", "university", "press", "journal"}:
+            continue
+        if _is_non_author_key(key):
+            continue
+        if key not in seen:
+            seen.add(key)
+            final.append(key)
+    return final[:6]
 
 def _looks_like_toc_references_line(s: str, tail: str) -> bool:
     if not s:
@@ -1935,6 +1951,76 @@ def _clean_reference_list(refs: List[str], style_hint: str = "apa") -> List[str]
     return _dedupe_keep_order(cleaned)
 
 
+
+def _looks_like_author_list_continuation(cur: str, line: str) -> bool:
+    """
+    Detect PDF line wraps inside the author-list part of an APA reference.
+
+    Prevents false standalone references such as:
+    - "Chen, W., & Plank, G. (2021)" when the previous line is
+      "Afenyo-Agbe, E., Afram, A., ... Sefa-Nyarko, C.,"
+    - "Vaz, A. (2012)" when the previous line is
+      "Alkire, S., ..., Seymour, G., &"
+    - "& Acheampong, P. P. (2023)" when the previous line contains earlier co-authors.
+    """
+    cur = norm_space(cur or "")
+    line = norm_space(line or "")
+    if not cur or not line:
+        return False
+
+    if YEAR_RE.search(cur):
+        return False
+
+    if re.match(r"^(?:&|and|＆)\s+", line, flags=re.I):
+        return True
+
+    if re.search(r"(?:,|&|and|＆)\s*$", cur, flags=re.I):
+        return True
+
+    prev_author_markers = len(re.findall(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}",
+        cur,
+    ))
+    next_starts_author = bool(re.match(
+        r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}",
+        line,
+    ))
+    if prev_author_markers >= 1 and next_starts_author:
+        return True
+
+    return False
+
+
+
+def _looks_like_wrapped_apa_reference_start_without_year(line: str) -> bool:
+    """
+    Detect the first line of a new APA reference where the year appears on the
+    next wrapped line. Example:
+    "Amponsah, D., Awunyo-Vitor, D., ... Sunday, O. A.,"
+    followed by "& Acheampong, P. P. (2023). ...".
+    """
+    s = norm_space(line or "")
+    if not s or YEAR_RE.search(s):
+        return False
+    if re.match(r"^(?:&|and|＆)\s+", s, flags=re.I):
+        return False
+    markers = re.findall(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}",
+        s,
+    )
+    return bool(markers) and bool(re.search(r",\s*$", s))
+
+def _add_alias_once(alias_map: Dict[str, str], key: str, ref: str, prefer: bool = False) -> None:
+    """
+    Add alias without overwriting earlier, more specific references.
+    Use prefer=True only for highly specific aliases such as two-author keys.
+    """
+    key = (key or "").lower()
+    if not key:
+        return
+    if prefer or key not in alias_map:
+        alias_map[key] = ref
+
 def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
@@ -1947,7 +2033,18 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
         if not s:
             continue
 
-        is_new = _looks_like_new_numeric_reference_start(s) or _looks_like_new_apa_reference_start(s)
+        is_new = (
+            _looks_like_new_numeric_reference_start(s)
+            or _looks_like_new_apa_reference_start(s)
+            or (cur and YEAR_RE.search(cur) and _looks_like_wrapped_apa_reference_start_without_year(s))
+        )
+
+        # Important PDF/DOCX repair: do not split a reference in the middle of a
+        # wrapped author list. This is what caused Chen & Plank, Vaz, and
+        # & Acheampong to appear as separate "uncited references".
+        if cur and is_new and _looks_like_author_list_continuation(cur, s):
+            is_new = False
+
         if is_new:
             if cur:
                 merged.append(norm_space(cur))
@@ -2199,7 +2296,12 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
 def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
     List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
 ]:
-    ref_map: Dict[str, str] = {r.key: r.reference_full for r in references}
+    # Do not let duplicate first-author/year keys overwrite earlier entries.
+    # Example: Adam (2017) and Adam, Frimpong & Boadu (2017) share "adam|2017".
+    # The single-author reference should remain available for "Adam, 2017".
+    ref_map: Dict[str, str] = {}
+    for r in references:
+        _add_alias_once(ref_map, r.key, r.reference_full)
     alias_map: Dict[str, str] = dict(ref_map)
 
     refs_by_year: Dict[str, List[RefAY]] = defaultdict(list)
@@ -2215,7 +2317,7 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
             continue
         by = _base_year(y)
         if by and by != y:
-            alias_map[f"{auth}|{by}".lower()] = r.reference_full
+            _add_alias_once(alias_map, f"{auth}|{by}".lower(), r.reference_full)
 
         s_full = r.reference_full
         ym = YEAR_RE.search(s_full)
@@ -2228,26 +2330,28 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
 
         # Institutional acronym aliases, e.g. UNCTAD -> United Nations Conference...
         for alias in _institution_acronym_aliases(left):
-            alias_map[f"{alias}|{year_full}".lower()] = r.reference_full
+            _add_alias_once(alias_map, f"{alias}|{year_full}".lower(), r.reference_full)
             if year_base and year_base != year_full:
-                alias_map[f"{alias}|{year_base}".lower()] = r.reference_full
+                _add_alias_once(alias_map, f"{alias}|{year_base}".lower(), r.reference_full)
 
         names = _surnames_from_author_blob(left)
         if not names:
             continue
 
         for nm in names[:2]:
-            alias_map[f"{nm}|{year_full}".lower()] = r.reference_full
+            _add_alias_once(alias_map, f"{nm}|{year_full}".lower(), r.reference_full)
             if year_base and year_base != year_full:
-                alias_map[f"{nm}|{year_base}".lower()] = r.reference_full
+                _add_alias_once(alias_map, f"{nm}|{year_base}".lower(), r.reference_full)
 
         if len(names) >= 2:
             a, b = names[0], names[1]
-            alias_map[f"{a}+{b}|{year_full}".lower()] = r.reference_full
-            alias_map[f"{b}+{a}|{year_full}".lower()] = r.reference_full
+            _add_alias_once(alias_map, f"{a}+{b}|{year_full}".lower(), r.reference_full, prefer=True)
+            _add_alias_once(alias_map, f"{b}+{a}|{year_full}".lower(), r.reference_full, prefer=True)
+            _add_alias_once(alias_map, f"{a}+etal|{year_full}".lower(), r.reference_full, prefer=True)
             if year_base and year_base != year_full:
-                alias_map[f"{a}+{b}|{year_base}".lower()] = r.reference_full
-                alias_map[f"{b}+{a}|{year_base}".lower()] = r.reference_full
+                _add_alias_once(alias_map, f"{a}+{b}|{year_base}".lower(), r.reference_full, prefer=True)
+                _add_alias_once(alias_map, f"{b}+{a}|{year_base}".lower(), r.reference_full, prefer=True)
+                _add_alias_once(alias_map, f"{a}+etal|{year_base}".lower(), r.reference_full, prefer=True)
 
     cite_counts_by_ref = Counter()
     parsed_cites: List[Tuple[str, str, str]] = []
@@ -2260,33 +2364,44 @@ def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tupl
         auth, year = parsed
         year_base = _base_year(year) if len(year) == 4 else year
         
-        cand_keys = [f"{auth}|{year}".lower()]
-        
-        if re.search(r"\bet\s+al\.?", c, re.I):
-            m = re.search(r'([A-Z][A-Za-z\'\-]+)\s+et\s+al', c, re.I)
-            if m:
-                first_author = m.group(1).lower()
-                cand_keys.append(f"{first_author}|{year}".lower())
-                if year_base and year_base != year:
-                    cand_keys.append(f"{first_author}|{year_base}".lower())
-
-        if year_base and year_base != year:
-            cand_keys.append(f"{auth}|{year_base}".lower())
+        cand_keys = []
 
         ym = YEAR_RE.search(c)
+        names = []
         if ym:
             left = (c[: ym.start()] or "").strip(" ,;()")
             names = _surnames_from_author_blob(left)
-            if names:
-                cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
+
+            # For multi-author citations, try the specific two-author key before
+            # the generic first-author key. This avoids mapping
+            # "Adam, Frimpong & Boadu, 2017" to the single-author Adam (2017).
+            if len(names) >= 2:
+                cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
+                cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
                 if year_base and year_base != ym.group(1):
-                    cand_keys.append(f"{names[0]}|{year_base}".lower())
-                if len(names) >= 2:
-                    cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
-                    cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
-                    if year_base and year_base != ym.group(1):
-                        cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
-                        cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
+                    cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
+                    cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
+
+        if re.search(r"\bet\s+al\.?", c, re.I):
+            m = re.search(r"([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s+et\s+al", c, re.I)
+            if m:
+                first_author = strip_punct(m.group(1))
+                cand_keys.append(f"{first_author}+etal|{year}".lower())
+                if year_base and year_base != year:
+                    cand_keys.append(f"{first_author}+etal|{year_base}".lower())
+
+        cand_keys.append(f"{auth}|{year}".lower())
+        if year_base and year_base != year:
+            cand_keys.append(f"{auth}|{year_base}".lower())
+
+        if names:
+            cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
+            if year_base and year_base != ym.group(1):
+                cand_keys.append(f"{names[0]}|{year_base}".lower())
+
+        # Deduplicate candidate keys while preserving priority.
+        seen_keys = set()
+        cand_keys = [k for k in cand_keys if k and not (k in seen_keys or seen_keys.add(k))]
 
         matched_ref = None
         used_key = None
