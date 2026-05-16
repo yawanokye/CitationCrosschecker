@@ -1385,6 +1385,353 @@
                 flex-direction: column;
             }
         }
+    
+
+        /* ===== Commercial compact refinements ===== */
+        .section {
+            padding: 54px 22px;
+        }
+
+        .section-title {
+            margin: 0 auto 26px;
+            max-width: 760px;
+        }
+
+        .section-title .small-title {
+            margin-bottom: 7px;
+            font-size: 11px;
+            letter-spacing: 1.1px;
+        }
+
+        .section-title h2 {
+            font-size: clamp(28px, 3.5vw, 42px);
+            letter-spacing: -1.4px;
+            margin-bottom: 10px;
+        }
+
+        .section-title p {
+            font-size: 15px;
+            line-height: 1.5;
+        }
+
+        .feature-suite-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .feature-suite-card {
+            padding: 15px;
+            border-radius: 18px;
+            min-height: auto;
+        }
+
+        .feature-suite-head {
+            gap: 9px;
+            margin-bottom: 9px;
+        }
+
+        .feature-suite-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 12px;
+            font-size: 16px;
+        }
+
+        .feature-suite-card h3 {
+            font-size: 15px;
+        }
+
+        .compact-feature-list {
+            gap: 5px;
+            font-size: 12.5px;
+            line-height: 1.35;
+        }
+
+        .compact-feature-list li {
+            grid-template-columns: 15px 1fr;
+            gap: 5px;
+        }
+
+        .workflow .section {
+            padding-top: 48px;
+            padding-bottom: 48px;
+        }
+
+        .steps {
+            gap: 12px;
+        }
+
+        .step {
+            padding: 16px;
+            border-radius: 18px;
+        }
+
+        .step-number {
+            width: 29px;
+            height: 29px;
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+
+        .step h3 {
+            font-size: 16px;
+            margin-bottom: 5px;
+        }
+
+        .step p {
+            font-size: 12.8px;
+            line-height: 1.42;
+        }
+
+        .split {
+            gap: 24px;
+        }
+
+        .proof-card {
+            padding: 26px;
+            border-radius: 26px;
+        }
+
+        .proof-card h2 {
+            font-size: clamp(28px, 3.2vw, 38px);
+            margin-bottom: 10px;
+        }
+
+        .proof-card p {
+            font-size: 15px;
+            margin-bottom: 16px;
+        }
+
+        .proof-metrics {
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .proof-metric {
+            padding: 12px;
+            border-radius: 16px;
+        }
+
+        .proof-metric strong {
+            font-size: 22px;
+        }
+
+        .proof-metric span {
+            font-size: 12px;
+        }
+
+        .use-cases {
+            gap: 10px;
+        }
+
+        .use-case {
+            grid-template-columns: 40px 1fr;
+            gap: 12px;
+            padding: 13px;
+            border-radius: 18px;
+        }
+
+        .use-case .mini-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 13px;
+        }
+
+        .use-case h3 {
+            font-size: 15px;
+            margin-bottom: 2px;
+        }
+
+        .use-case p {
+            font-size: 12.5px;
+            line-height: 1.4;
+        }
+
+        .testimonials .section {
+            padding-top: 50px;
+            padding-bottom: 50px;
+        }
+
+        .testimonial-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .testimonial-card {
+            border-radius: 18px;
+            padding: 16px;
+            min-height: 220px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .testimonial-card .quote-mark {
+            width: 28px;
+            height: 28px;
+            border-radius: 10px;
+            font-size: 18px;
+            margin-bottom: 9px;
+        }
+
+        .testimonial-card p {
+            font-size: 12.8px;
+            line-height: 1.48;
+            margin-bottom: 12px;
+        }
+
+        .testimonial-author {
+            font-size: 12px;
+            margin-top: auto;
+        }
+
+        .testimonial-tag {
+            font-size: 10.5px;
+            padding: 4px 8px;
+            margin-top: 7px;
+        }
+
+        .paid-includes-card {
+            max-width: 100%;
+            padding: 14px 16px;
+            border-radius: 18px;
+            margin-bottom: 16px;
+        }
+
+        .paid-includes-card h3 {
+            font-size: 17px;
+            margin-bottom: 2px;
+        }
+
+        .paid-includes-card p {
+            font-size: 12.8px;
+            line-height: 1.45;
+        }
+
+        .paid-badge {
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+
+        .pricing-grid.compact-pricing {
+            grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+            gap: 12px;
+        }
+
+        .compact-pricing .price-card {
+            padding: 17px;
+            border-radius: 20px;
+        }
+
+        .compact-pricing .price-card h3 {
+            font-size: 17px;
+            line-height: 1.2;
+        }
+
+        .compact-pricing .price-desc {
+            min-height: 38px;
+            font-size: 12.6px;
+            margin-bottom: 10px;
+        }
+
+        .compact-pricing .price {
+            font-size: 29px;
+            margin-bottom: 10px;
+        }
+
+        .compact-pricing .price span {
+            font-size: 12px;
+        }
+
+        .compact-pricing .price-card .btn {
+            padding: 9px 14px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+
+        .plan-meta {
+            gap: 5px;
+            margin: 10px 0 10px;
+            font-size: 12px;
+        }
+
+        .plan-meta span {
+            padding: 6px 8px;
+            border-radius: 10px;
+        }
+
+        .plan-includes {
+            font-size: 11.5px;
+        }
+
+        details {
+            padding: 13px 16px;
+            border-radius: 16px;
+        }
+
+        summary {
+            font-size: 14.5px;
+        }
+
+        details p {
+            font-size: 13px;
+            margin-top: 8px;
+            line-height: 1.45;
+        }
+
+        .faq-list {
+            gap: 9px;
+        }
+
+        .final-cta {
+            padding: 34px;
+            border-radius: 28px;
+        }
+
+        .final-cta h2 {
+            font-size: clamp(28px, 3.4vw, 42px);
+            margin-bottom: 8px;
+        }
+
+        .final-cta p {
+            font-size: 15px;
+        }
+
+        .footer {
+            padding: 36px 22px 24px;
+        }
+
+        .footer-inner {
+            gap: 22px;
+        }
+
+        .footer-bottom {
+            margin-top: 24px;
+            padding-top: 16px;
+        }
+
+        @media (max-width: 1040px) {
+            .feature-suite-grid,
+            .testimonial-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 680px) {
+            .section {
+                padding: 42px 16px;
+            }
+
+            .feature-suite-grid,
+            .testimonial-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .paid-includes-card {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -1632,31 +1979,52 @@
         <section class="testimonials" id="testimonials">
             <div class="section">
                 <div class="section-title">
-                    <div class="small-title">Anonymous user feedback</div>
-                    <h2>Researchers use CiteIntegrity to catch citation problems before submission.</h2>
-                    <p>Anonymous feedback highlights the practical value of checking references, source support and citation completeness before a thesis, dissertation or manuscript is reviewed.</p>
+                    <div class="small-title">What users say</div>
+                    <h2>What do users say about CiteIntegrity?</h2>
+                    <p>Anonymous user feedback reflects common ways the platform supports citation checking, reference verification, source recovery and submission readiness.</p>
                 </div>
 
                 <div class="testimonial-grid">
                     <article class="testimonial-card">
                         <div class="quote-mark">“</div>
-                        <p>CiteIntegrity helped flag references that looked convincing but could not be verified online. It gave me a clear list of items to check before submitting my manuscript.</p>
+                        <p>CiteIntegrity found references that looked real but could not be verified. The report helped me separate genuine sources from citations that needed manual checking before I submitted my article.</p>
                         <div class="testimonial-author">Anonymous journal author</div>
                         <span class="testimonial-tag">Fake citation detection</span>
                     </article>
 
                     <article class="testimonial-card">
                         <div class="quote-mark">“</div>
-                        <p>The missing citation report showed in-text citations that were not in my reference list. It saved hours of manual checking and improved the quality of my final submission.</p>
-                        <div class="testimonial-author">Anonymous postgraduate student</div>
-                        <span class="testimonial-tag">Missing citation review</span>
+                        <p>My dissertation had many chapters and a long reference list. CiteIntegrity quickly showed citations missing from the reference list and references that were never cited in the body.</p>
+                        <div class="testimonial-author">Anonymous doctoral candidate</div>
+                        <span class="testimonial-tag">Missing and uncited items</span>
                     </article>
 
                     <article class="testimonial-card">
                         <div class="quote-mark">“</div>
-                        <p>The claim support and recovery sections helped me see where sources needed stronger evidence. The ACII score made the review easier to explain to my supervisor.</p>
-                        <div class="testimonial-author">Anonymous thesis candidate</div>
-                        <span class="testimonial-tag">Claim support and ACII</span>
+                        <p>As a supervisor, I need to know whether the citations and references keep their story straight. The dashboard gives me a fast way to see what the student must correct.</p>
+                        <div class="testimonial-author">Anonymous thesis supervisor</div>
+                        <span class="testimonial-tag">Supervisor review</span>
+                    </article>
+
+                    <article class="testimonial-card">
+                        <div class="quote-mark">“</div>
+                        <p>The claim support review was very useful. It showed areas where the cited source did not clearly support the statement, so I knew where stronger evidence was needed.</p>
+                        <div class="testimonial-author">Anonymous postgraduate researcher</div>
+                        <span class="testimonial-tag">Claim support</span>
+                    </article>
+
+                    <article class="testimonial-card">
+                        <div class="quote-mark">“</div>
+                        <p>The recovery suggestions saved time. Instead of searching blindly, I received possible source links for problem citations and could decide which ones were correct.</p>
+                        <div class="testimonial-author">Anonymous academic editor</div>
+                        <span class="testimonial-tag">Source recovery</span>
+                    </article>
+
+                    <article class="testimonial-card">
+                        <div class="quote-mark">“</div>
+                        <p>The ACII score and exportable report made the review easy to explain. I could correct the document, run it again and keep evidence of improvement for my records.</p>
+                        <div class="testimonial-author">Anonymous master’s student</div>
+                        <span class="testimonial-tag">ACII and reports</span>
                     </article>
                 </div>
             </div>
