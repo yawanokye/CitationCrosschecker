@@ -1388,6 +1388,33 @@
     
 
         /* ===== Commercial compact refinements ===== */
+
+        /* Prevent section collision under compact layout and sticky navigation */
+        #home,
+        #features,
+        #workflow,
+        #pricing,
+        #testimonials,
+        #faq {
+            scroll-margin-top: 82px;
+        }
+
+        .feature-section {
+            padding-bottom: 72px;
+            border-bottom: 1px solid #edf2f7;
+            background: #ffffff;
+        }
+
+        .feature-section + .workflow {
+            margin-top: 0;
+            clear: both;
+        }
+
+        .workflow {
+            position: relative;
+            z-index: 1;
+        }
+
         .section {
             padding: 54px 22px;
         }
@@ -1416,7 +1443,8 @@
 
         .feature-suite-grid {
             grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 12px;
+            gap: 14px;
+            margin-bottom: 8px;
         }
 
         .feature-suite-card {
@@ -1453,7 +1481,7 @@
         }
 
         .workflow .section {
-            padding-top: 48px;
+            padding-top: 60px;
             padding-bottom: 48px;
         }
 
@@ -1741,7 +1769,7 @@
 
     <header class="site-header">
         <div class="header-inner">
-            <a class="brand" href="/new" aria-label="CiteIntegrity home">
+            <a class="brand" href="/#home" aria-label="CiteIntegrity home">
                 <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                     <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
                     <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
@@ -1754,6 +1782,7 @@
             <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
 
             <nav class="nav" id="mainNav">
+                <a href="/#home">Home</a>
                 <a href="#features">Features</a>
                 <a href="#workflow">How it works</a>
                 <a href="#pricing">Pricing</a>
@@ -1765,7 +1794,7 @@
     </header>
 
     <main class="page">
-        <section class="hero-wrap">
+        <section class="hero-wrap" id="home">
             <div class="section hero">
                 <div>
                     <div class="eyebrow"><span class="dot"></span> Built for theses, dissertations, manuscripts and journal workflows</div>
@@ -1815,7 +1844,7 @@
             </div>
         </section>
 
-        <section class="section" id="features">
+        <section class="section feature-section" id="features">
             <div class="section-title">
                 <div class="small-title">Full Review Features</div>
                 <h2>All paid plans unlock the same complete citation integrity workflow.</h2>
@@ -2231,7 +2260,7 @@
     <footer class="footer">
         <div class="footer-inner">
             <div>
-                <a class="brand" href="/new" aria-label="CiteIntegrity home">
+                <a class="brand" href="/#home" aria-label="CiteIntegrity home">
                     <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                         <text x="2" y="38" font-size="44" font-weight="800" fill="#ffffff" font-family="Georgia, serif">C</text>
                         <text x="40" y="38" font-size="44" font-weight="800" fill="#ffffff" font-family="Georgia, serif">I</text>
