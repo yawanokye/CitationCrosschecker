@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.5"
+__version__ = "1.5.6"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-16-non-citation-filter-alias-fix"
+ENGINE_BUILD = "commercial-2026-05-17-safe-numeric-styles"
 
 # Fuzzy matching (optional)
 try:
@@ -178,11 +178,125 @@ _DECADE_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})s\b", re.I)
 
 
 # -----------------------------
+# Safe numeric citation profiles
+# -----------------------------
+# These profiles add numeric-style support without changing the existing
+# APA/Harvard, IEEE and Vancouver branches. Square-bracket and true
+# superscript citations are safe by default. Round-bracket numeric citations
+# are style-gated because manuscripts use round brackets heavily for statistics.
+_SUPERSCRIPT_DIGITS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_NORMAL_DIGITS = "0123456789"
+SUPERSCRIPT_TO_NORMAL = str.maketrans(_SUPERSCRIPT_DIGITS + "⁻−–—", _NORMAL_DIGITS + "----")
+NORMAL_TO_SUPERSCRIPT = str.maketrans(_NORMAL_DIGITS + "-", _SUPERSCRIPT_DIGITS + "⁻")
+
+SAFE_SQUARE_NUMERIC_STYLES = {
+    "ieee_square", "numeric_square", "vancouver_square", "nlm", "nlm_square",
+    "elsevier", "elsevier_numbered", "elsevier_square",
+    "springer", "springer_numbered", "springer_square",
+}
+
+SAFE_SUPERSCRIPT_NUMERIC_STYLES = {
+    "ama", "ama_superscript", "nature", "nature_superscript",
+    "rsc", "rsc_superscript", "acs_superscript", "numeric_superscript",
+}
+
+ROUND_NUMERIC_STYLES = {
+    "vancouver_round", "acs_round", "numeric_round",
+}
+
+UNSUPPORTED_NUMERIC_NOTE_STYLES = {
+    "chicago_notes", "chicago_note", "chicago_notes_bibliography", "notes_bibliography",
+}
+
+
+def _style_token(style: str) -> str:
+    s = (style or "").strip().lower()
+    s = s.replace("&", " and ")
+    s = re.sub(r"[\s\-/]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    aliases = {
+        "ieee_square_bracket": "ieee_square",
+        "vancouver_square_bracket": "vancouver_square",
+        "nlm_numbered": "nlm",
+        "nlm_square_bracket": "nlm_square",
+        "elsevier_numeric": "elsevier_numbered",
+        "springer_numeric": "springer_numbered",
+        "ama_numbered": "ama_superscript",
+        "nature_numbered": "nature_superscript",
+        "rsc_numbered": "rsc_superscript",
+        "acs_numbered": "acs_superscript",
+        "acs_super": "acs_superscript",
+        "ama_super": "ama_superscript",
+        "nature_super": "nature_superscript",
+        "rsc_super": "rsc_superscript",
+        "round_numeric": "numeric_round",
+        "square_numeric": "numeric_square",
+        "superscript_numeric": "numeric_superscript",
+    }
+    return aliases.get(s, s)
+
+
+def _is_supported_numeric_style(style: str) -> bool:
+    s = _style_token(style)
+    return (
+        s in SAFE_SQUARE_NUMERIC_STYLES
+        or s in SAFE_SUPERSCRIPT_NUMERIC_STYLES
+        or s in ROUND_NUMERIC_STYLES
+    )
+
+
+def _numeric_style_forms(style: str) -> set:
+    s = _style_token(style)
+    forms = set()
+    if s in SAFE_SQUARE_NUMERIC_STYLES:
+        forms.add("square")
+    if s in SAFE_SUPERSCRIPT_NUMERIC_STYLES:
+        forms.add("superscript")
+    if s in ROUND_NUMERIC_STYLES:
+        forms.add("round")
+    return forms
+
+
+def _is_round_numeric_style(style: str) -> bool:
+    return _style_token(style) in ROUND_NUMERIC_STYLES
+
+
+def _is_superscript_numeric_style(style: str) -> bool:
+    return _style_token(style) in SAFE_SUPERSCRIPT_NUMERIC_STYLES
+
+
+def _to_unicode_superscript(text: str) -> str:
+    """Preserve DOCX superscript digits as Unicode superscripts for citation detection."""
+    out = []
+    for ch in text or "":
+        if ch in _NORMAL_DIGITS or ch == "-":
+            out.append(ch.translate(NORMAL_TO_SUPERSCRIPT))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+# -----------------------------
 # Small helpers
 # -----------------------------
 def norm_space(s: str) -> str:
     s = s or ""
+
+    # Keep true superscript numeric citation markers intact. NFKC would turn
+    # ¹²³ into ordinary 123, which makes AMA/Nature/RSC citations unsafe to
+    # distinguish from baseline statistical digits.
+    protected = {}
+    for i, ch in enumerate("⁰¹²³⁴⁵⁶⁷⁸⁹⁻"):
+        token = f"@@SUP{i}@@"
+        if ch in s:
+            protected[token] = ch
+            s = s.replace(ch, token)
+
     s = unicodedata.normalize("NFKC", s)
+
+    for token, ch in protected.items():
+        s = s.replace(token, ch)
+
     s = s.replace("\u00a0", " ")
     s = re.sub(r"[ \t]+", " ", s)
     return s.strip()
@@ -1045,11 +1159,29 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
             root = ET.fromstring(xml_bytes)
         except Exception:
             return out
+        w_val = "{" + NS["w"] + "}val"
         for p in root.findall(".//w:p", NS):
             parts: List[str] = []
-            for tnode in p.findall(".//w:t", NS):
-                if tnode.text:
-                    parts.append(tnode.text)
+
+            # Run-level extraction preserves superscript citation markers.
+            # Plain paragraph text loses this formatting and turns AMA/Nature
+            # citations into ordinary digits, which is unsafe to auto-detect.
+            runs = p.findall(".//w:r", NS)
+            if runs:
+                for rnode in runs:
+                    vert = rnode.find(".//w:vertAlign", NS)
+                    is_super = bool(
+                        vert is not None
+                        and (vert.attrib.get(w_val, "") or "").lower() == "superscript"
+                    )
+                    for tnode in rnode.findall(".//w:t", NS):
+                        if tnode.text:
+                            parts.append(_to_unicode_superscript(tnode.text) if is_super else tnode.text)
+            else:
+                for tnode in p.findall(".//w:t", NS):
+                    if tnode.text:
+                        parts.append(tnode.text)
+
             s = norm_space("".join(parts))
             if s:
                 out.append(s)
@@ -1502,7 +1634,7 @@ def _split_pdf_text_main_refs(text: str, style_hint: str = "apa") -> Tuple[str, 
             ref_lines.append(tail)
         ref_lines.extend(lines[idx + 1:])
         ref_lines = _truncate_reference_block(ref_lines, style_hint=style_hint)
-        refs = _merge_reference_lines(ref_lines)
+        refs = _merge_reference_lines(ref_lines, style_hint=style_hint)
         if style_hint == "numeric":
             refs = _split_embedded_numeric_refs(refs)
         refs = _dedupe_keep_order(refs)
@@ -2177,7 +2309,7 @@ def _add_alias_once(alias_map: Dict[str, str], key: str, ref: str, prefer: bool 
     if prefer or key not in alias_map:
         alias_map[key] = ref
 
-def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
+def _merge_reference_lines(raw_lines: List[str], style_hint: str = "apa") -> List[str]:
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
         return []
@@ -2219,8 +2351,12 @@ def _merge_reference_lines(raw_lines: List[str]) -> List[str]:
         merged.append(norm_space(cur))
 
     merged = [m for m in merged if m and len(m) >= 8]
-    merged = _split_embedded_apa_refs(merged)
-    merged = _clean_reference_list(merged, style_hint="apa")
+    if style_hint == "numeric":
+        merged = _split_embedded_numeric_refs(merged)
+        merged = _clean_reference_list(merged, style_hint="numeric")
+    else:
+        merged = _split_embedded_apa_refs(merged)
+        merged = _clean_reference_list(merged, style_hint="apa")
     return merged
 
 
@@ -2893,7 +3029,250 @@ def _expand_citation_range(match) -> List[str]:
         else:
             nums.append(str(start2))
     
+
     return nums
+
+
+# ============================================================================
+# SAFE NUMERIC STYLE EXTENSIONS
+# ============================================================================
+
+def _expand_numeric_citation_payload(payload: str, max_range: int = 50) -> List[str]:
+    """Expand payloads such as '1', '1, 4', '1-3', '1, 4-6'."""
+    payload = norm_space(payload or "")
+    if not payload:
+        return []
+    payload = payload.translate(SUPERSCRIPT_TO_NORMAL)
+    payload = payload.replace("–", "-").replace("—", "-").replace("−", "-")
+    payload = re.sub(r"\s+", "", payload)
+
+    out: List[str] = []
+    for part in re.split(r"[,;]", payload):
+        if not part:
+            continue
+        if "-" in part:
+            bits = [b for b in part.split("-") if b]
+            if len(bits) == 2 and bits[0].isdigit() and bits[1].isdigit():
+                start, end = int(bits[0]), int(bits[1])
+                if 1 <= start <= end and (end - start) <= max_range:
+                    out.extend(str(i) for i in range(start, end + 1))
+                else:
+                    out.extend([bits[0], bits[1]])
+            continue
+        if part.isdigit():
+            out.append(str(int(part)))
+    return out
+
+
+def _numeric_context_is_statistical_or_label(text: str, start: int, end: int, bracket_kind: str) -> bool:
+    """
+    Reject numeric candidates that are likely statistics, model labels, tables or figures.
+    This is especially important for round-bracket numeric styles.
+    """
+    t = text or ""
+    before = t[max(0, start - 100):start]
+    after = t[end:min(len(t), end + 100)]
+    ctx = soft_lower(before + " " + after)
+    before_tail = soft_lower(before[-50:])
+
+    if re.search(r"\b(?:table|figure|fig\.?|model|equation|eq\.?|appendix|chapter|section)\s*$", before_tail, re.I):
+        return True
+
+    if bracket_kind == "round":
+        immediate_before = soft_lower(before[-35:])
+        immediate_after = soft_lower(after[:20])
+        tight = soft_lower(before[-12:] + " " + after[:12])
+
+        # Reject statistical notation where the statistic label is immediately
+        # before the bracket, e.g. p (1), df (2), Model (1), Table (2).
+        if re.search(
+            r"\b(?:p|p\s*value|t|f|z|chi|χ2|χ²|beta|β|r2|r²|adj|se|sd|mean|n|df|sig|ci|or|aor|coef|coefficient|regression|model|table|figure)\s*$",
+            immediate_before,
+            re.I,
+        ):
+            return True
+
+        # Reject coefficient/statistical reporting close to the bracket.
+        if re.search(r"[=<>≤≥%]", tight):
+            return True
+        if re.match(r"^\s*[=<>≤≥%]", immediate_after):
+            return True
+
+    return False
+
+
+def extract_square_numeric_citations(text: str) -> List[str]:
+    t = text or ""
+    out: List[str] = []
+
+    # Remove common table/figure labels before scanning.
+    t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+\[?\s*\d{1,4}\s*\]?", "", t, flags=re.I)
+    t = re.sub(r"\]\s*\n\s*\[", "][", t)
+
+    bracket_range_pat = re.compile(r"\[\s*(\d{1,4})\s*\]\s*[-–—−]\s*\[\s*(\d{1,4})\s*\]")
+    for m in bracket_range_pat.finditer(t):
+        if _numeric_context_is_statistical_or_label(t, m.start(), m.end(), "square"):
+            continue
+        out.extend(_expand_numeric_citation_payload(f"{m.group(1)}-{m.group(2)}"))
+
+    pat = re.compile(r"\[\s*(\d{1,4}(?:\s*(?:,|;|[-–—−])\s*\d{1,4})*)\s*\]")
+    for m in pat.finditer(t):
+        if _numeric_context_is_statistical_or_label(t, m.start(), m.end(), "square"):
+            continue
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def extract_round_numeric_citations(text: str) -> List[str]:
+    """Round numeric citations are only called for explicit round-bracket styles."""
+    t = text or ""
+    out: List[str] = []
+    pat = re.compile(r"\(\s*(\d{1,4}(?:\s*(?:,|;|[-–—−])\s*\d{1,4})*)\s*\)")
+    for m in pat.finditer(t):
+        if _numeric_context_is_statistical_or_label(t, m.start(), m.end(), "round"):
+            continue
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def extract_superscript_numeric_citations(text: str) -> List[str]:
+    """
+    Extract true superscript numeric citations.
+    Supported forms include ¹, ¹,², ¹–³, ^1 and ^{1,2}.
+    Ordinary baseline digits are not treated as superscript citations.
+    """
+    t = text or ""
+    out: List[str] = []
+
+    sup_chars = re.escape(_SUPERSCRIPT_DIGITS)
+    sup_pat = re.compile(
+        rf"(?<=[A-Za-z0-9\]\)\.,;:])\s*([{sup_chars}]+(?:\s*(?:,|;|⁻|[-–—−])\s*[{sup_chars}]+)*)"
+    )
+    for m in sup_pat.finditer(t):
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    caret_pat = re.compile(r"\^(?:\{\s*)?(\d{1,4}(?:\s*(?:,|;|[-–—−])\s*\d{1,4})*)(?:\s*\})?")
+    for m in caret_pat.finditer(t):
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def extract_safe_numeric_citations(text: str, style: str = "numeric_square") -> List[str]:
+    forms = _numeric_style_forms(style)
+    out: List[str] = []
+    if "square" in forms:
+        out.extend(extract_square_numeric_citations(text))
+    if "superscript" in forms:
+        out.extend(extract_superscript_numeric_citations(text))
+    if "round" in forms:
+        out.extend(extract_round_numeric_citations(text))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def parse_reference_numeric_general(ref: str, style: str = "numeric_square", fallback_num: Optional[int] = None) -> Optional[RefNum]:
+    s = norm_space(ref)
+    if not s:
+        return None
+
+    m = re.match(r"^\s*(?:\[\s*(\d{1,4})\s*\]|\(\s*(\d{1,4})\s*\)|(\d{1,4})[\.)])\s*(.+)$", s)
+    if m:
+        num = m.group(1) or m.group(2) or m.group(3)
+        body = norm_space(m.group(4))
+        if num and 1900 <= int(num) <= 2099:
+            return None
+        if len(body) >= 10 and re.search(r"[A-Za-z]", body):
+            return RefNum(reference_full=s, num=str(int(num)))
+        return None
+
+    # Controlled fallback for numeric lists that were stripped during conversion.
+    # It is not used for IEEE, where bracketed numbers are expected.
+    if fallback_num is not None and len(s) >= 20 and re.search(r"[A-Za-z]", s):
+        return RefNum(reference_full=s, num=str(fallback_num))
+
+    return None
+
+
+def parse_references_numeric_general(references_raw: List[str], style: str = "numeric_square") -> List[RefNum]:
+    refs: List[RefNum] = []
+    allow_sequential_fallback = _style_token(style) not in {"ieee", "ieee_square"}
+
+    for idx, ref in enumerate(references_raw or [], start=1):
+        parsed = parse_reference_numeric_general(
+            ref,
+            style=style,
+            fallback_num=idx if allow_sequential_fallback else None,
+        )
+        if parsed:
+            refs.append(parsed)
+
+    return refs
+
+
+def _format_numeric_intext(num: str, style: str) -> str:
+    s = _style_token(style)
+    if s in SAFE_SUPERSCRIPT_NUMERIC_STYLES:
+        return str(num).translate(NORMAL_TO_SUPERSCRIPT)
+    if s in ROUND_NUMERIC_STYLES:
+        return f"({num})"
+    return f"[{num}]"
+
+
+def reconcile_numeric_general(citations: List[str], references: List[RefNum], style: str = "numeric_square") -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    ref_by_num: Dict[str, str] = {str(r.num): r.reference_full for r in references or [] if str(r.num)}
+    cite_counts: Counter = Counter()
+
+    c2r: List[Dict[str, Any]] = []
+    missing: Counter = Counter()
+    cite_samples: Dict[str, List[str]] = defaultdict(list)
+
+    for cite in citations or []:
+        num = str(cite).strip()
+        display = _format_numeric_intext(num, style)
+        if num in ref_by_num:
+            ref_full = ref_by_num[num]
+            cite_counts[ref_full] += 1
+            if len(cite_samples[ref_full]) < 6:
+                cite_samples[ref_full].append(display)
+            c2r.append({
+                "status": "matched",
+                "in_text": display,
+                "matched_reference": ref_full,
+                "flags": _style_token(style),
+            })
+        else:
+            c2r.append({
+                "status": "not_found",
+                "in_text": display,
+                "matched_reference": "",
+                "flags": _style_token(style),
+            })
+            missing[display] += 1
+
+    r2c: List[Dict[str, Any]] = []
+    uncited: List[str] = []
+    for r in references or []:
+        times = int(cite_counts.get(r.reference_full, 0))
+        if times == 0:
+            uncited.append(r.reference_full)
+        r2c.append({
+            "times_cited": times,
+            "reference": r.reference_full,
+            "cited_by": cite_samples.get(r.reference_full, []),
+        })
+
+    missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing.items()]
+    unique_intext_count = len(set(str(c).strip() for c in (citations or []) if str(c).strip()))
+    return c2r, r2c, missing_rows, uncited, unique_intext_count
 
 
 # ============================================================================
@@ -3152,15 +3531,16 @@ def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[s
     total = []
     for chunk in _iter_text_chunks(text):
         if style == "vancouver":
-            for c in extract_vancouver_citations(chunk):
-                if c not in seen:
-                    seen.add(c)
-                    total.append(c)
+            found = extract_vancouver_citations(chunk)
+        elif _is_supported_numeric_style(style):
+            found = extract_safe_numeric_citations(chunk, style=style)
         else:
-            for c in extract_ieee_citations(chunk):
-                if c not in seen:
-                    seen.add(c)
-                    total.append(c)
+            found = extract_ieee_citations(chunk)
+
+        for c in found:
+            if c not in seen:
+                seen.add(c)
+                total.append(c)
     return total
 
 
@@ -3864,7 +4244,7 @@ def run_crosscheck(
     name = (filename or "").lower().strip()
     style_s = (style or "apa").strip().lower()
 
-    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
+    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s) or _is_supported_numeric_style(style_s)
     style_hint = "numeric" if is_numeric else "apa"
 
     pdf_quality = None
@@ -3873,7 +4253,7 @@ def run_crosscheck(
 
     if name.endswith(".docx"):
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
-        references_raw = _merge_reference_lines(ref_block_lines)
+        references_raw = _merge_reference_lines(ref_block_lines, style_hint=style_hint)
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
         
@@ -3991,6 +4371,22 @@ def run_crosscheck(
         )
         ref_count = len(refs)
 
+    elif _is_supported_numeric_style(style_s):
+        numeric_forms = sorted(_numeric_style_forms(style_s))
+        print(f"Using safe numeric style {style_s} with forms: {numeric_forms}")
+
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style=style_s)
+        else:
+            cites_nums = extract_safe_numeric_citations(main_text, style=style_s)
+
+        refs = parse_references_numeric_general(references_raw, style=style_s)
+
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric_general(
+            cites_nums, refs, style=style_s
+        )
+        ref_count = len(refs)
+
     else:
         cites_nums = []
         if too_large:
@@ -4036,6 +4432,14 @@ def run_crosscheck(
         "reconciliation_reference_to_intext": r2c,
         "references_raw": references_raw,
     }
+
+    if _is_supported_numeric_style(style_s):
+        result["numeric_citation_policy"] = {
+            "style": style_s,
+            "forms_enabled": sorted(_numeric_style_forms(style_s)),
+            "round_bracket_numeric_is_style_gated": _is_round_numeric_style(style_s),
+            "ordinary_baseline_digits_are_not_auto_detected_as_superscript": True,
+        }
 
     if pdf_quality is not None:
         result["pdf_quality"] = pdf_quality
@@ -4088,7 +4492,7 @@ def run_crosscheck_with_autofix(
 
     try:
         style_s = (style or "apa").strip().lower()
-        is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s)
+        is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s) or _is_supported_numeric_style(style_s)
 
         if is_numeric:
             result["autofix"] = {
