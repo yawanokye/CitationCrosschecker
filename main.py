@@ -1,3467 +1,4621 @@
-# main.py — Citation Crosschecker with Async Queue System
+# engine.py (COMPLETE - with non-invasive Suggestion Engine)
+__version__ = "1.5.6"
 
-import io
-import os
 import re
-import uuid
-import threading
-import time
-import json
-import secrets
-import sqlite3
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
-from collections import defaultdict
-from contextlib import asynccontextmanager
-from pathlib import Path
+import io
+import unicodedata
+from dataclasses import dataclass
+from typing import List, Tuple, Optional, Dict, Any
+from collections import defaultdict, Counter
+try:
+    from pdf_to_docx_pipeline import process_pdf
+    PDF_PIPELINE_OK = True
+except Exception:
+    process_pdf = None
+    PDF_PIPELINE_OK = False
 
-# Database libraries
-import psycopg2
-from psycopg2.extras import RealDictCursor
+ENGINE_BUILD = "commercial-2026-05-17-safe-numeric-styles"
 
-# Queue libraries
-import redis
-from rq import Queue
+# Fuzzy matching (optional)
+try:
+    from rapidfuzz import fuzz
+    FUZZ_OK = True
+except Exception:
+    fuzz = None
+    FUZZ_OK = False
 
-# FastAPI and web frameworks
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from starlette.concurrency import run_in_threadpool
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from engine import run_crosscheck, run_crosscheck_with_autofix, recover_references_for_verification
+try:
+    from docx import Document
+    DOCX_OK = True
+except Exception:
+    DOCX_OK = False
 
-# Your custom modules
-from engine import run_crosscheck, run_crosscheck_with_autofix
-from verify import (
-    submit_verification,
-    get_verification_status,
-    get_queue_status,
-    is_server_busy,
-    get_verification_results,
-    clear_verification_results
+try:
+    import pdfplumber
+    PDF_OK = True
+except Exception:
+    PDF_OK = False
+
+try:
+    import fitz  # PyMuPDF, used for commercial-grade PDF extraction
+    PYMUPDF_OK = True
+except Exception:
+    fitz = None
+    PYMUPDF_OK = False
+
+PDF_PARSE_BUILD = "commercial-pdf-parser-2026-05-15"
+
+
+# ============================================================================
+# Define dataclasses FIRST
+# ============================================================================
+
+@dataclass
+class RefAY:
+    reference_full: str
+    key: str
+
+
+@dataclass
+class RefNum:
+    reference_full: str
+    num: str
+
+
+# ============================================================================
+# Constants and patterns
+# ============================================================================
+
+YEAR = r"(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?"
+YEAR_RE = re.compile(rf"\b({YEAR})\b", re.I)
+
+DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s]+", re.I)
+DOI_ONLY_RE = re.compile(
+    r"^\s*(?:doi\s*:\s*|https?://(?:dx\.)?doi\.org/)?10\.\d{4,9}/\S+\s*$",
+    re.I,
 )
-from acii import compute_acii
-from citation_suggester import extract_context, suggest_from_context
-from claim_checker import build_claim_support_rows
-from reference_formatter import (
-    format_verified_reference_list,
-    export_references_to_docx,
-    export_references_to_html,
-    DOCX_AVAILABLE
+
+REF_HEADINGS = [
+    r"^\s*references?\s*(?:list)?\s*$",
+    r"^\s*bibliograph(?:y|ies)\s*$",
+    r"^\s*works\s+cited\s*$",
+    r"^\s*literature\s+cited\s*$",
+    r"^\s*REFERENCES\s*$",
+    r"^\s*BIBLIOGRAPHY\s*$",
+    r"^\s*REFERENCES\s*\[.*\]\s*$",
+    r"^\s*REFERENCES AND NOTES\s*$",
+]
+
+REF_HEADING_RELAXED = re.compile(
+    r"^\s*(references?|bibliography|works\s+cited|literature\s+cited|REFERENCES|BIBLIOGRAPHY)\b",
+    re.I,
 )
 
+DISCOURSE_PREFIXES = {
+    "see", "e.g", "eg", "i.e", "ie",
+    "as", "in", "for", "from", "to", "at", "on", "by", "with", "within",
+    "according", "adapted", "based", "cited", "citing", "reported",
+    "like",
 
-# ===============================
-# DATABASE SETUP - PostgreSQL (with SQLite fallback)
-# ===============================
+    # discourse / transition words
+    "however", "similarly", "regrettably", "traditionally", "notably",
+    "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
+    "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
+    "generally", "specifically", "particularly", "importantly", "indeed",
+    "likely", "likewise", "uncertainty", "meanwhile", "firstly", "lastly",
+    "finally", "also", "then", "next", "again", "still", "subsequently",
+    "previously", "earlier", "later", "recently", "currently", "today",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "last", "initially", "subsequent",
+    "comparatively", "conversely", "alternatively", "accordingly",
+    "interestingly", "relatedly", "moreso", "state",
 
-# Get database URL from environment (Render sets this)
-DATABASE_URL = os.environ.get("DATABASE_URL")
+    # phrases
+    "for instance", "instance",
+    "for example", "example",
+    "more so",
+}
 
-# Get Redis URL from environment (Render sets this)
-REDIS_URL = os.environ.get("REDIS_URL")
+REF_END_HEADINGS = [
+    r"^\s*appendix(?:es)?\b",
+    r"^\s*annex(?:es)?\b",
+    r"^\s*supplement(?:ary)?\b",
+    r"^\s*supporting\s+information\b",
+    r"^\s*supporting\s+documents?\b",
+    r"^\s*additional\s+materials?\b",
+    r"^\s*online\s+appendix\b",
+]
+REF_END_HEADING_RE = re.compile("|".join(REF_END_HEADINGS), re.I)
 
-# Initialize Redis connection and task queue
-redis_conn = None
-task_queue = None
-verification_queue = None
-if REDIS_URL:
-    try:
-        redis_conn = redis.from_url(REDIS_URL)
+NON_NAME_AUTHOR_KEYS = {
+    # data / method / document words
+    "survey", "field", "work", "fieldwork", "fieldwork", "data", "dataset",
+    "sample", "sampling", "questionnaire", "respondent", "respondents",
+    "interview", "interviews", "observation", "observations",
+    "experiment", "experiments", "variable", "variables",
 
-        task_queue = Queue("document_processing", connection=redis_conn)
-        verification_queue = Queue("verification", connection=redis_conn)
+    # research/reporting words
+    "table", "tables", "figure", "fig", "figures",
+    "chapter", "section", "appendix", "appendices", "annex",
+    "equation", "eq", "model", "models", "analysis", "analyses",
+    "results", "result", "finding", "findings",
+    "method", "methods", "methodology", "discussion",
+    "introduction", "conclusion", "study", "studies",
+    "paper", "thesis", "dissertation", "report", "policy", "policies",
+    "source", "sources", "author", "authors",
+    "construct", "constructs", "estimation", "estimated", "estimate", "estimates",
+    "trend", "trends", "state", "states", "census", "survey", "surveys",
 
-        print("✅ Redis connected and both queues initialized")
+    # discourse words
+    "however", "similarly", "regrettably", "traditionally", "notably",
+    "therefore", "thus", "hence", "consequently", "moreover", "furthermore",
+    "additionally", "meanwhile", "nonetheless", "nevertheless", "overall",
+    "generally", "specifically", "particularly", "importantly", "indeed",
+    "instance", "example", "likely", "likewise", "uncertainty",
+    "finally", "also", "then", "next", "again", "still", "subsequently",
+    "previously", "earlier", "later", "recently", "currently", "today",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "last", "initially", "subsequent",
+    "comparatively", "conversely", "alternatively", "accordingly",
+    "interestingly", "relatedly", "moreso", "more so",
+}
 
-    except Exception as e:
-        print(f"⚠️ Failed to connect to Redis: {e}")
-else:
-    print("⚠️ REDIS_URL not set - queue disabled")
+NARRATIVE_SINGLE_TOKENS = {
+    "crisis", "war", "scandal", "revolution", "katrina",
+    "pandemic", "covid", "covid19", "covid-19",
+}
+
+NARRATIVE_PHRASE_PATTERNS = [
+    r"\byear\s+on\s+year\b",
+    r"\bgrowth\s+rate\b",
+    r"\ball\s+share\s+index\b",
+    r"\bselected\s+african\s+countries\b",
+    r"\btop\s+four\s+african\s+countries\b",
+    r"\baccording\s+to\b",
+]
+
+_DECADE_YEAR_RE = re.compile(r"\b(1[6-9]\d{2}|20\d{2})s\b", re.I)
 
 
-class StatsTracker:
-    """Stats tracker that works with PostgreSQL (preferred) or SQLite (fallback)"""
-    
-    def __init__(self):
-        self.db_type = "postgresql" if DATABASE_URL else "sqlite"
-        self.db_path = '/tmp/citation_stats.db'
-        self._lock = threading.Lock()
-        
-        print(f"📁 Using {self.db_type.upper()} database")
-        
-        if self.db_type == "postgresql":
-            self._init_postgresql()
+# -----------------------------
+# Safe numeric citation profiles
+# -----------------------------
+# These profiles add numeric-style support without changing the existing
+# APA/Harvard, IEEE and Vancouver branches. Square-bracket and true
+# superscript citations are safe by default. Round-bracket numeric citations
+# are style-gated because manuscripts use round brackets heavily for statistics.
+_SUPERSCRIPT_DIGITS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_NORMAL_DIGITS = "0123456789"
+SUPERSCRIPT_TO_NORMAL = str.maketrans(_SUPERSCRIPT_DIGITS + "⁻−–—", _NORMAL_DIGITS + "----")
+NORMAL_TO_SUPERSCRIPT = str.maketrans(_NORMAL_DIGITS + "-", _SUPERSCRIPT_DIGITS + "⁻")
+
+SAFE_SQUARE_NUMERIC_STYLES = {
+    "ieee_square", "numeric_square", "vancouver_square", "nlm", "nlm_square",
+    "elsevier", "elsevier_numbered", "elsevier_square",
+    "springer", "springer_numbered", "springer_square",
+}
+
+SAFE_SUPERSCRIPT_NUMERIC_STYLES = {
+    "ama", "ama_superscript", "nature", "nature_superscript",
+    "rsc", "rsc_superscript", "acs_superscript", "numeric_superscript",
+}
+
+ROUND_NUMERIC_STYLES = {
+    "vancouver_round", "acs_round", "numeric_round",
+}
+
+UNSUPPORTED_NUMERIC_NOTE_STYLES = {
+    "chicago_notes", "chicago_note", "chicago_notes_bibliography", "notes_bibliography",
+}
+
+
+def _style_token(style: str) -> str:
+    s = (style or "").strip().lower()
+    s = s.replace("&", " and ")
+    s = re.sub(r"[\s\-/]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    aliases = {
+        "ieee_square_bracket": "ieee_square",
+        "vancouver_square_bracket": "vancouver_square",
+        "nlm_numbered": "nlm",
+        "nlm_square_bracket": "nlm_square",
+        "elsevier_numeric": "elsevier_numbered",
+        "springer_numeric": "springer_numbered",
+        "ama_numbered": "ama_superscript",
+        "nature_numbered": "nature_superscript",
+        "rsc_numbered": "rsc_superscript",
+        "acs_numbered": "acs_superscript",
+        "acs_super": "acs_superscript",
+        "ama_super": "ama_superscript",
+        "nature_super": "nature_superscript",
+        "rsc_super": "rsc_superscript",
+        "round_numeric": "numeric_round",
+        "square_numeric": "numeric_square",
+        "superscript_numeric": "numeric_superscript",
+    }
+    return aliases.get(s, s)
+
+
+def _is_supported_numeric_style(style: str) -> bool:
+    s = _style_token(style)
+    return (
+        s in SAFE_SQUARE_NUMERIC_STYLES
+        or s in SAFE_SUPERSCRIPT_NUMERIC_STYLES
+        or s in ROUND_NUMERIC_STYLES
+    )
+
+
+def _numeric_style_forms(style: str) -> set:
+    s = _style_token(style)
+    forms = set()
+    if s in SAFE_SQUARE_NUMERIC_STYLES:
+        forms.add("square")
+    if s in SAFE_SUPERSCRIPT_NUMERIC_STYLES:
+        forms.add("superscript")
+    if s in ROUND_NUMERIC_STYLES:
+        forms.add("round")
+    return forms
+
+
+def _is_round_numeric_style(style: str) -> bool:
+    return _style_token(style) in ROUND_NUMERIC_STYLES
+
+
+def _is_superscript_numeric_style(style: str) -> bool:
+    return _style_token(style) in SAFE_SUPERSCRIPT_NUMERIC_STYLES
+
+
+def _to_unicode_superscript(text: str) -> str:
+    """Preserve DOCX superscript digits as Unicode superscripts for citation detection."""
+    out = []
+    for ch in text or "":
+        if ch in _NORMAL_DIGITS or ch == "-":
+            out.append(ch.translate(NORMAL_TO_SUPERSCRIPT))
         else:
-            self._init_sqlite()
-    
-    def _get_postgres_connection(self):
-        """Get PostgreSQL connection"""
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-    
-    def _init_postgresql(self):
-        """Initialize PostgreSQL tables"""
-        try:
-            with self._get_postgres_connection() as conn:
-                with conn.cursor() as cursor:
-                    # Create stats table
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS stats (
-                            id INTEGER PRIMARY KEY DEFAULT 1,
-                            total_uploads INTEGER DEFAULT 0,
-                            total_processed INTEGER DEFAULT 0,
-                            total_failed INTEGER DEFAULT 0,
-                            total_verifications INTEGER DEFAULT 0,
-                            total_references_checked INTEGER DEFAULT 0,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
-                    
-                    # Create uploads table
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS uploads (
-                            id SERIAL PRIMARY KEY,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            filename TEXT,
-                            file_size INTEGER,
-                            references_count INTEGER,
-                            processing_time REAL,
-                            success INTEGER,
-                            ip_address TEXT,
-                            error TEXT
-                        )
-                    """)
-                    
-                    # Create daily_stats table
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS daily_stats (
-                            date DATE PRIMARY KEY,
-                            uploads INTEGER DEFAULT 0,
-                            processed INTEGER DEFAULT 0,
-                            failed INTEGER DEFAULT 0,
-                            references_count INTEGER DEFAULT 0,
-                            total_processing_time REAL DEFAULT 0,
-                            processing_count INTEGER DEFAULT 0
-                        )
-                    """)
-                    
-                    # Create jobs table for queue
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS jobs (
-                            job_id TEXT PRIMARY KEY,
-                            status TEXT,
-                            queue_position INTEGER,
-                            worker_id TEXT,
-                            file_name TEXT,
-                            file_size_mb REAL,
-                            result JSONB,
-                            error TEXT,
-                            processing_time REAL,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            started_at TIMESTAMP,
-                            completed_at TIMESTAMP
-                        )
-                    """)
-                    
-                    # Create indexes for jobs table
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
-                    
-                    # Insert initial stats if not exists
-                    cursor.execute("""
-                        INSERT INTO stats (id, total_uploads, total_processed, total_failed, total_references_checked)
-                        VALUES (1, 0, 0, 0, 0)
-                        ON CONFLICT (id) DO NOTHING
-                    """)
-                    
-                    conn.commit()
-                    print("✅ PostgreSQL database initialized")
-                    
-                    # Get existing stats
-                    cursor.execute("SELECT total_uploads FROM stats WHERE id = 1")
-                    row = cursor.fetchone()
-                    if row:
-                        print(f"📊 Existing stats: {row['total_uploads']} total uploads")
-                        
-        except Exception as e:
-            print(f"❌ Failed to initialize PostgreSQL: {e}")
-            print("⚠️ Falling back to SQLite")
-            self.db_type = "sqlite"
-            self._init_sqlite()
-    
-    def _init_sqlite(self):
-        """Initialize SQLite tables (fallback)"""
-        import sqlite3
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS stats (
-                        id INTEGER PRIMARY KEY DEFAULT 1,
-                        total_uploads INTEGER DEFAULT 0,
-                        total_processed INTEGER DEFAULT 0,
-                        total_failed INTEGER DEFAULT 0,
-                        total_verifications INTEGER DEFAULT 0,
-                        total_references_checked INTEGER DEFAULT 0,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS uploads (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        filename TEXT,
-                        file_size INTEGER,
-                        references_count INTEGER,
-                        processing_time REAL,
-                        success INTEGER,
-                        ip_address TEXT,
-                        error TEXT
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS daily_stats (
-                        date TEXT PRIMARY KEY,
-                        uploads INTEGER DEFAULT 0,
-                        processed INTEGER DEFAULT 0,
-                        failed INTEGER DEFAULT 0,
-                        references_count INTEGER DEFAULT 0,
-                        total_processing_time REAL DEFAULT 0,
-                        processing_count INTEGER DEFAULT 0
-                    )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS jobs (
-                        job_id TEXT PRIMARY KEY,
-                        status TEXT,
-                        queue_position INTEGER,
-                        worker_id TEXT,
-                        file_name TEXT,
-                        file_size_mb REAL,
-                        result TEXT,
-                        error TEXT,
-                        processing_time REAL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        started_at TIMESTAMP,
-                        completed_at TIMESTAMP
-                    )
-                """)
-                
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
-                
-                cursor.execute("""
-                    INSERT OR IGNORE INTO stats (id, total_uploads, total_processed, total_failed, total_references_checked)
-                    VALUES (1, 0, 0, 0, 0)
-                """)
-                
-                conn.commit()
-                print("✅ SQLite database initialized")
-                
-                cursor.execute("SELECT total_uploads FROM stats WHERE id = 1")
-                row = cursor.fetchone()
-                if row:
-                    print(f"📊 Existing stats: {row[0]} total uploads")
-                    
-        except Exception as e:
-            print(f"❌ Failed to initialize SQLite: {e}")
-    
-    def add_upload(self, filename: str, file_size: int, references_count: int, 
-                   processing_time: float = None, success: bool = True, 
-                   ip_address: str = None, error: str = None):
-        """Record an upload in the database"""
-        try:
-            if self.db_type == "postgresql":
-                with self._get_postgres_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            INSERT INTO uploads 
-                            (filename, file_size, references_count, processing_time, success, ip_address, error)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """, (filename, file_size, references_count, processing_time, 
-                              1 if success else 0, ip_address, error))
-                        
-                        if success:
-                            cursor.execute("""
-                                UPDATE stats 
-                                SET total_uploads = total_uploads + 1,
-                                    total_processed = total_processed + 1,
-                                    total_references_checked = total_references_checked + %s,
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = 1
-                            """, (references_count,))
-                        else:
-                            cursor.execute("""
-                                UPDATE stats 
-                                SET total_uploads = total_uploads + 1,
-                                    total_failed = total_failed + 1,
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = 1
-                            """)
-                        
-                        today = datetime.now().date()
-                        cursor.execute("""
-                            INSERT INTO daily_stats (date, uploads, processed, failed, references_count)
-                            VALUES (%s, 1, %s, %s, %s)
-                            ON CONFLICT (date) DO UPDATE SET
-                                uploads = daily_stats.uploads + 1,
-                                processed = daily_stats.processed + %s,
-                                failed = daily_stats.failed + %s,
-                                references_count = daily_stats.references_count + %s
-                        """, (today, 1 if success else 0, 0 if success else 1, 
-                              references_count if success else 0,
-                              1 if success else 0, 0 if success else 1, 
-                              references_count if success else 0))
-                        
-                        if processing_time and success:
-                            cursor.execute("""
-                                UPDATE daily_stats 
-                                SET total_processing_time = total_processing_time + %s,
-                                    processing_count = processing_count + 1
-                                WHERE date = %s
-                            """, (processing_time, today))
-                        
-                        conn.commit()
-                        
-                        cursor.execute("SELECT total_uploads FROM stats WHERE id = 1")
-                        row = cursor.fetchone()
-                        total = row['total_uploads'] if row else 0
-                        print(f"📊 Recorded: {filename} - {references_count} refs (Total: {total})")
-            else:
-                self._add_upload_sqlite(filename, file_size, references_count, 
-                                         processing_time, success, ip_address, error)
-            return True
-        except Exception as e:
-            print(f"❌ Database error in add_upload: {e}")
-            return False
-    
-    def _add_upload_sqlite(self, filename, file_size, references_count, 
-                           processing_time, success, ip_address, error):
-        """SQLite version of add_upload"""
-        import sqlite3
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO uploads 
-                (filename, file_size, references_count, processing_time, success, ip_address, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (filename, file_size, references_count, processing_time, 
-                  1 if success else 0, ip_address, error))
-            
-            if success:
-                cursor.execute("""
-                    UPDATE stats 
-                    SET total_uploads = total_uploads + 1,
-                        total_processed = total_processed + 1,
-                        total_references_checked = total_references_checked + ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """, (references_count,))
-            else:
-                cursor.execute("""
-                    UPDATE stats 
-                    SET total_uploads = total_uploads + 1,
-                        total_failed = total_failed + 1,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = 1
-                """)
-            
-            today = datetime.now().strftime("%Y-%m-%d")
-            cursor.execute("""
-                INSERT INTO daily_stats (date, uploads, processed, failed, references_count)
-                VALUES (?, 1, ?, ?, ?)
-                ON CONFLICT(date) DO UPDATE SET
-                    uploads = uploads + 1,
-                    processed = processed + ?,
-                    failed = failed + ?,
-                    references_count = references_count + ?
-            """, (today, 1 if success else 0, 0 if success else 1, references_count if success else 0,
-                  1 if success else 0, 0 if success else 1, references_count if success else 0))
-            
-            if processing_time and success:
-                cursor.execute("""
-                    UPDATE daily_stats 
-                    SET total_processing_time = total_processing_time + ?,
-                        processing_count = processing_count + 1
-                    WHERE date = ?
-                """, (processing_time, today))
-            
-            conn.commit()
-    
-    def add_verification(self, job_id: str, references_count: int, success: bool = True):
-        """Record a verification event"""
-        try:
-            if self.db_type == "postgresql":
-                with self._get_postgres_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            UPDATE stats 
-                            SET total_verifications = total_verifications + 1,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = 1
-                        """)
-                        conn.commit()
-            else:
-                import sqlite3
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        UPDATE stats 
-                        SET total_verifications = total_verifications + 1,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = 1
-                    """)
-                    conn.commit()
-            print(f"📊 Recorded verification for job {job_id}")
-            return True
-        except Exception as e:
-            print(f"❌ Database error in add_verification: {e}")
-            return False
-    
-    def get_stats(self, detailed: bool = False, days: int = 30):
-        """Get statistics from database"""
-        try:
-            if self.db_type == "postgresql":
-                with self._get_postgres_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT * FROM stats WHERE id = 1")
-                        row = cursor.fetchone()
-                        
-                        if row:
-                            total_uploads = row['total_uploads']
-                            total_processed = row['total_processed']
-                            total_failed = row['total_failed']
-                            total_verifications = row['total_verifications']
-                            total_references = row['total_references_checked']
-                            updated_at = row['updated_at']
-                        else:
-                            total_uploads = total_processed = total_failed = total_verifications = total_references = 0
-                            updated_at = datetime.now()
-                        
-                        success_rate = round((total_processed / max(total_uploads, 1)) * 100, 2)
-                        
-                        cursor.execute("""
-                            SELECT AVG(processing_time) 
-                            FROM uploads 
-                            WHERE success = 1 AND processing_time IS NOT NULL
-                        """)
-                        avg_row = cursor.fetchone()
-                        avg_processing_time = round(avg_row[0], 2) if avg_row and avg_row[0] else 0
-                        
-                        return {
-                            "total_stats": {
-                                "total_uploads": total_uploads,
-                                "total_processed": total_processed,
-                                "total_failed": total_failed,
-                                "success_rate": success_rate,
-                                "total_references_checked": total_references,
-                                "total_verifications": total_verifications,
-                                "average_processing_time": avg_processing_time,
-                                "start_date": datetime.now().isoformat(),
-                                "last_updated": str(updated_at)
-                            }
-                        }
-            else:
-                import sqlite3
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    
-                    cursor.execute("SELECT * FROM stats WHERE id = 1")
-                    row = cursor.fetchone()
-                    
-                    if row:
-                        total_uploads = row[1]
-                        total_processed = row[2]
-                        total_failed = row[3]
-                        total_verifications = row[4]
-                        total_references = row[5]
-                        updated_at = row[6]
-                    else:
-                        total_uploads = total_processed = total_failed = total_verifications = total_references = 0
-                        updated_at = datetime.now()
-                    
-                    success_rate = round((total_processed / max(total_uploads, 1)) * 100, 2)
-                    
-                    cursor.execute("""
-                        SELECT AVG(processing_time) 
-                        FROM uploads 
-                        WHERE success = 1 AND processing_time IS NOT NULL
-                    """)
-                    avg_row = cursor.fetchone()
-                    avg_processing_time = round(avg_row[0], 2) if avg_row and avg_row[0] else 0
-                    
-                    return {
-                        "total_stats": {
-                            "total_uploads": total_uploads,
-                            "total_processed": total_processed,
-                            "total_failed": total_failed,
-                            "success_rate": success_rate,
-                            "total_references_checked": total_references,
-                            "total_verifications": total_verifications,
-                            "average_processing_time": avg_processing_time,
-                            "start_date": datetime.now().isoformat(),
-                            "last_updated": str(updated_at)
-                        }
-                    }
-                    
-        except Exception as e:
-            print(f"❌ Database error in get_stats: {e}")
-            return {
-                "total_stats": {
-                    "total_uploads": 0,
-                    "total_processed": 0,
-                    "total_failed": 0,
-                    "success_rate": 0,
-                    "total_references_checked": 0,
-                    "total_verifications": 0,
-                    "average_processing_time": 0,
-                    "start_date": datetime.now().isoformat(),
-                    "last_updated": datetime.now().isoformat()
-                }
-            }
-    
-    def clear_stats(self, keep_last_days: int = 30):
-        """Clear statistics older than keep_last_days"""
-        try:
-            if self.db_type == "postgresql":
-                with self._get_postgres_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cutoff_date = datetime.now().date() - timedelta(days=keep_last_days)
-                        
-                        cursor.execute("DELETE FROM uploads WHERE date(timestamp) < %s", (cutoff_date,))
-                        cursor.execute("DELETE FROM daily_stats WHERE date < %s", (cutoff_date,))
-                        
-                        cursor.execute("""
-                            UPDATE stats 
-                            SET total_uploads = (SELECT COUNT(*) FROM uploads),
-                                total_processed = (SELECT COUNT(*) FROM uploads WHERE success = 1),
-                                total_failed = (SELECT COUNT(*) FROM uploads WHERE success = 0),
-                                total_references_checked = (SELECT COALESCE(SUM(references_count), 0) FROM uploads),
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = 1
-                        """)
-                        
-                        conn.commit()
-                        print(f"✅ Cleared stats older than {keep_last_days} days")
-            else:
-                import sqlite3
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.cursor()
-                    cutoff_date = (datetime.now() - timedelta(days=keep_last_days)).strftime("%Y-%m-%d")
-                    
-                    cursor.execute("DELETE FROM uploads WHERE date(timestamp) < ?", (cutoff_date,))
-                    cursor.execute("DELETE FROM daily_stats WHERE date < ?", (cutoff_date,))
-                    
-                    cursor.execute("""
-                        UPDATE stats 
-                        SET total_uploads = (SELECT COUNT(*) FROM uploads),
-                            total_processed = (SELECT COUNT(*) FROM uploads WHERE success = 1),
-                            total_failed = (SELECT COUNT(*) FROM uploads WHERE success = 0),
-                            total_references_checked = (SELECT COALESCE(SUM(references_count), 0) FROM uploads),
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = 1
-                    """)
-                    
-                    conn.commit()
-                    print(f"✅ Cleared stats older than {keep_last_days} days")
-        except Exception as e:
-            print(f"❌ Database error in clear_stats: {e}")
+            out.append(ch)
+    return "".join(out)
 
 
-# Create the stats tracker instance
-stats_tracker = StatsTracker()
-print(f"✅ Using {stats_tracker.db_type.upper()} database for persistent statistics")
+# -----------------------------
+# Small helpers
+# -----------------------------
+def norm_space(s: str) -> str:
+    s = s or ""
 
+    # Keep true superscript numeric citation markers intact. NFKC would turn
+    # ¹²³ into ordinary 123, which makes AMA/Nature/RSC citations unsafe to
+    # distinguish from baseline statistical digits.
+    protected = {}
+    for i, ch in enumerate("⁰¹²³⁴⁵⁶⁷⁸⁹⁻"):
+        token = f"@@SUP{i}@@"
+        if ch in s:
+            protected[token] = ch
+            s = s.replace(ch, token)
 
-# ===============================
-# COUNTER SETUP
-# ===============================
+    s = unicodedata.normalize("NFKC", s)
 
-def increment_counter():
-    try:
-        stats = stats_tracker.get_stats(detailed=False)
-        return stats['total_stats']['total_uploads']
-    except Exception as e:
-        print(f"⚠️ Error getting counter: {e}")
-        return 0
+    for token, ch in protected.items():
+        s = s.replace(token, ch)
 
-
-# ===============================
-# AUTH SETUP
-# ===============================
-
-security = HTTPBasic()
-
-USERNAME = "admin"
-PASSWORD = "Ano77kye7509#"
-
-def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
-    correct_username = secrets.compare_digest(credentials.username, USERNAME)
-    correct_password = secrets.compare_digest(credentials.password, PASSWORD)
-
-    if not (correct_username and correct_password):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": 'Basic realm="Secure Area"'},
-        )
-
-APP_TITLE = "CitationCrosschecker"
-
-
-# ===============================
-# LIFESPAN MANAGER
-# ===============================
-
-@asynccontextmanager
-async def lifespan(app_instance: FastAPI):
-    print("🚀 Starting Citation Crosschecker...")
-    stats = stats_tracker.get_stats(detailed=False)
-    print(f"📈 Stats tracker loaded: {stats['total_stats']['total_uploads']} total uploads")
-    yield
-    print("👋 Shutting down...")
-
-app = FastAPI(
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
-    lifespan=lifespan
-)
-
-
-# --- GLOBAL PROTECTION CONTROLS ---
-processing = False
-
-BLOCKED_PATHS = [
-    "/wp-admin",
-    "/wordpress",
-    "/wp-login",
-    "/xmlrpc.php",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
-    "/debug"
-]
-
-BAD_AGENTS = [
-    "bot", "crawler", "scanner", "spider",
-    "curl", "wget", "python-requests",
-    "httpclient", "scrapy", "libwww"
-]
-
-# =========================
-# SECURITY MIDDLEWARE (1st)
-# =========================
-@app.middleware("http")
-async def security_middleware(request: Request, call_next):
-    path = request.url.path.lower()
-    ua = request.headers.get("user-agent", "").lower()
-    
-    # ✅ ALLOW LIST - Critical endpoints that must work
-    ALLOWED_PATHS = [
-        "/",
-        "/verify",
-        "/result",
-        "/online/status",
-        "/verify-online",
-        "/stats",
-        "/health",
-        "/privacy",
-        "/static",
-        "/export-fixed-document",
-        "/export-references",
-        "/autofix-suggestions",
-        "/fix-log",
-        "/apply-autofix",
-        "/queue/status",
-        "/api/enrichment",
-        "/new",
-        "/analyse",
-        "/results",
-        "/features",
-        "/pricing",
-        "/contact",
-        "/private-stats"
-    ]
-    
-    # Check if path is allowed (exact match or starts with allowed path)
-    for allowed in ALLOWED_PATHS:
-        if path == allowed or path.startswith(allowed + "/"):
-            return await call_next(request)
-    
-    # 🔒 Block sensitive endpoints
-    for blocked in BLOCKED_PATHS:
-        if path.startswith(blocked):
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
-    
-    # 🤖 Block bots (commented out but keeping structure)
-    # if any(b in ua for b in BAD_AGENTS):
-    #     return JSONResponse(status_code=403, content={"detail": "Forbidden"})
-    
-    return await call_next(request)
-
-# =========================
-# REDIRECT MIDDLEWARE (2nd)
-# =========================
-@app.middleware("http")
-async def redirect_with_message(request: Request, call_next):
-    host = request.headers.get("host", "")
-    path = request.url.path
-    
-    # Skip redirect for API endpoints
-    if (
-        path.startswith("/online/")
-        or path.startswith("/verify")
-        or path.startswith("/api/")
-        or path.startswith("/private-stats")
-        or path.startswith("/result")
-    ):
-        return await call_next(request)
-    
-    if "citationcrosschecker.onrender.com" in host:
-        return HTMLResponse(f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Moved Permanently</title>
-            <meta http-equiv="refresh" content="2;url=https://citeintegrity.org{request.url.path}">
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    text-align: center;
-                    padding-top: 80px;
-                    background: #f9f9f9;
-                }}
-                .box {{
-                    background: white;
-                    padding: 30px;
-                    border-radius: 10px;
-                    display: inline-block;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                }}
-                a {{
-                    color: #6c2bd9;
-                    text-decoration: none;
-                    font-weight: bold;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="box">
-                <h2>Moved Permanently</h2>
-                <p>This service is now available at:</p>
-                <p><a href="https://citeintegrity.org">citeintegrity.org</a></p>
-                <p>You will be redirected automatically...</p>
-            </div>
-        </body>
-        </html>
-        """, status_code=301)
-    
-    return await call_next(request)
-
-from fastapi import Request
-from fastapi.responses import RedirectResponse
-
-@app.middleware("http")
-async def force_single_domain(request: Request, call_next):
-    host = request.headers.get("host", "")
-
-    if "citationcrosschecker-1.onrender.com" in host:
-        return RedirectResponse(
-            url=f"https://citationcrosschecker.onrender.com{request.url.path}",
-            status_code=301
-        )
-
-    return await call_next(request)
-# =========================
-# SECURITY HEADERS (3rd)
-# =========================
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    
-    # 🔐 HSTS (force HTTPS)
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-    
-    # 🛡️ Clickjacking protection
-    response.headers["X-Frame-Options"] = "DENY"
-    
-    # 🛡️ MIME sniffing protection
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    
-    # 🛡️ XSS protection (legacy browsers)
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    
-    # 🛡️ Referrer policy
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    
-    # 🛡️ Content Security Policy (safe default)
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "img-src 'self' data:; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "font-src 'self' data:; "
-        "connect-src 'self'; "
-        "frame-ancestors 'none';"
-    )
-    
-    # 🛡️ Permissions policy
-    response.headers["Permissions-Policy"] = (
-        "geolocation=(), microphone=(), camera=(), payment=()"
-    )
-    
-    # 🛡️ Prevent caching of sensitive responses
-    response.headers["Cache-Control"] = "no-store"
-    
-    return response
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-templates_dir = os.path.join(BASE_DIR, "templates")
-if not os.path.exists(templates_dir):
-    os.makedirs(templates_dir)
-
-templates = Jinja2Templates(directory=templates_dir)
-
-static_dir = os.path.join(BASE_DIR, "static")
-if not os.path.exists(static_dir):
-    os.makedirs(static_dir)
-
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-_store: Dict[str, Dict[str, Any]] = {}
-_lock = threading.Lock()
-
-# --------------------------------------------------
-# Utility Functions
-# --------------------------------------------------
-
-def now():
-    return datetime.utcnow().isoformat()
-
-def format_time(seconds):
-    """Format seconds into human readable time"""
-    if seconds < 60:
-        return f"{int(seconds)}s"
-    if seconds < 3600:
-        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
-    return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
-
-def _norm_text_citation(s: str) -> str:
-    if not s:
-        return ""
-    s = s.lower()
-    s = re.sub(r'[^a-z0-9]', '', s)
+    s = s.replace("\u00a0", " ")
+    s = re.sub(r"[ \t]+", " ", s)
     return s.strip()
 
-def build_reference_to_intext(result):
-    mapping = {}
-    
-    all_references = result.get("references_raw", [])
-    reconciliation_rows = result.get("reconciliation_intext_to_reference", [])
-    
-    citation_counter = defaultdict(int)
-    citation_samples = defaultdict(list)
-    seen_samples = defaultdict(set)
-    
-    for r in reconciliation_rows:
-        ref = r.get("matched_reference")
-        if not ref:
-            continue
-            
-        in_text = r.get("in_text", "")
-        in_text_norm = _norm_text_citation(in_text)
-        
-        citation_counter[ref] += 1
-        
-        if in_text_norm and in_text_norm not in seen_samples[ref]:
-            if len(citation_samples[ref]) < 6:
-                seen_samples[ref].add(in_text_norm)
-                citation_samples[ref].append(in_text)
-    
-    for ref in all_references:
-        if ref and ref.strip():
-            mapping[ref] = {
-                "reference": ref,
-                "times_cited": citation_counter.get(ref, 0),
-                "cited_by": citation_samples.get(ref, [])
-            }
-    
-    for ref in citation_counter:
-        if ref not in mapping:
-            mapping[ref] = {
-                "reference": ref,
-                "times_cited": citation_counter[ref],
-                "cited_by": citation_samples.get(ref, [])
-            }
-    
-    result_list = list(mapping.values())
-    result_list.sort(key=lambda x: (x["times_cited"] == 0, -x["times_cited"]))
-    
-    return result_list
 
-def _compute_verification_summary(rows: List[Dict[str, Any]]) -> Dict[str, int]:
-    summary = {
-        "verified": 0,
-        "likely": 0,
-        "needs_review": 0,
-        "not_found": 0,
-        "offline": 0,
-        "total": len(rows)
+def _fold_diacritics(s: str) -> str:
+    """Remove accents/diacritics for matching only, not for display."""
+    s = unicodedata.normalize("NFKD", s or "")
+    return "".join(ch for ch in s if not unicodedata.combining(ch))
+
+
+def _is_doi_only_reference(s: str) -> bool:
+    return bool(DOI_ONLY_RE.match(norm_space(s or "")))
+
+
+def _is_digitised_artifact_line(s: str) -> bool:
+    """
+    Remove repository/header/footer artefacts that come from digitised theses.
+    Kept narrow so legitimate references mentioning universities are preserved.
+    """
+    x = soft_lower(s or "")
+    if not x:
+        return False
+    if "https://ir.ucc.edu.gh/xmlui" in x:
+        return True
+    if x.startswith("digitized by sam jonah library"):
+        return True
+    if x in {"digitized by sam jonah library", "digitised by sam jonah library"}:
+        return True
+    return False
+
+
+def _clean_extracted_lines(lines: List[str]) -> List[str]:
+    out = []
+    for line in lines or []:
+        s = norm_space(line)
+        if not s:
+            continue
+        if _is_digitised_artifact_line(s):
+            continue
+        out.append(s)
+    return out
+
+
+def soft_lower(s: str) -> str:
+    return norm_space(s).lower()
+
+
+def strip_punct(s: str) -> str:
+    s = _fold_diacritics(soft_lower(s))
+    s = re.sub(r"[“”\"'’`]", "", s)
+    s = re.sub(r"[^a-z0-9\s\-&/\u2013\u2014-]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+_CLEAN_DISCOURSE_PREFIX_CACHE: Optional[List[str]] = None
+
+
+def _clean_discourse_prefixes() -> List[str]:
+    global _CLEAN_DISCOURSE_PREFIX_CACHE
+    if _CLEAN_DISCOURSE_PREFIX_CACHE is None:
+        _CLEAN_DISCOURSE_PREFIX_CACHE = sorted(
+            {_clean_discourse_token(x) for x in DISCOURSE_PREFIXES if x},
+            key=len,
+            reverse=True,
+        )
+    return _CLEAN_DISCOURSE_PREFIX_CACHE
+
+
+def _clean_discourse_token(s: str) -> str:
+    return strip_punct(s).strip(" ,.;:()[]{}")
+
+
+def _strip_discourse_prefixes(left: str) -> str:
+    """
+    Remove leading discourse words/phrases before author parsing.
+
+    This catches:
+    - "Similarly, Smith, 2020" -> "Smith"
+    - "Likely, 2020" -> ""
+    - "For example, Adam, 2021" -> "Adam"
+    """
+    left = norm_space(left)
+    if not left:
+        return ""
+
+    prefixes = _clean_discourse_prefixes()
+
+    for _ in range(5):
+        old = left
+
+        for pref in prefixes:
+            if not pref:
+                continue
+
+            pat = re.compile(
+                r"^\s*" + re.escape(pref) + r"(?:\s*,\s*|\s+|[,:;.\-]+\s*|$)",
+                re.I
+            )
+            left = pat.sub("", left, count=1).strip(" ,;:()[]{}")
+
+            if left != old:
+                break
+
+        if left == old:
+            break
+
+    return left
+
+
+
+_COMMON_CITATION_TYPO_REPLACEMENTS = [
+    # Keep these narrow. They correct common OCR/typing errors observed in thesis PDFs.
+    (re.compile(r"\bOCED\b", re.I), "OECD"),
+    (re.compile(r"\bHail\s+Jr\s+et\s+la\b", re.I), "Hair Jr et al."),
+    (re.compile(r"\bHail\s+et\s+la\b", re.I), "Hair et al."),
+    (re.compile(r"\bet\s+la\b", re.I), "et al."),
+]
+
+
+def _normalise_common_citation_typos(s: str) -> str:
+    s = norm_space(s or "")
+    for pat, repl in _COMMON_CITATION_TYPO_REPLACEMENTS:
+        s = pat.sub(repl, s)
+    s = re.sub(r"\b(Hair)\s+Jr\.?\s+et\s+al\.", r"\1 et al.", s, flags=re.I)
+    return s
+
+
+def _citation_context_is_non_citation(text: str, start: int, end: int, candidate: str = "") -> bool:
+    """
+    Suppress table notes, figure notes, field-survey notes and source labels.
+    These often look like author-year citations but are not references.
+    """
+    text = text or ""
+    candidate_key = strip_punct(candidate or "")
+    blocked_candidate_heads = {
+        "construct", "author construct", "authors construct",
+        "field survey", "survey", "field", "source", "table", "figure",
+        "estimation", "estimated", "trend", "state", "policy", "census",
     }
-    
-    for r in rows:
-        if r:
-            status = r.get("status", "offline")
-            if status in summary:
-                summary[status] += 1
-            else:
-                summary["offline"] += 1
-    
-    return summary
+    if candidate_key in blocked_candidate_heads:
+        return True
 
-def _norm_lookup_text(s: str) -> str:
-    s = (s or "").lower()
-    s = re.sub(r"[^a-z0-9]+", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
+    before = text[max(0, start - 180):start]
+    after = text[end:min(len(text), end + 80)]
+    ctx = soft_lower(before + " " + after)
+
+    context_patterns = [
+        r"source\s*:\s*$",
+        r"source\s*:\s*.{0,90}$",
+        r"author[’'`s]*\s+construct\s*$",
+        r"author[’'`s]*\s+computation\s*$",
+        r"field\s+survey\s*$",
+        r"estimated\s+from\s+field\s+data\s*$",
+        r"table\s+\d+[\w\.:-]*\s*$",
+        r"figure\s+\d+[\w\.:-]*\s*$",
+        r"valid\s+n\s*\(listwise\)\s*$",
+    ]
+    return any(re.search(p, ctx, flags=re.I | re.S) for p in context_patterns)
 
 
-def _find_citation_for_reference(original_ref: str, matched_title: str, c2r_rows: list) -> str:
+def _split_author_year_chunk(chunk: str) -> List[str]:
     """
-    Robustly recover the in-text citation linked to a reference.
-    This avoids exact-match failure between verification rows and reconciliation rows.
+    Split malformed/joined APA-Harvard chunks before matching.
+
+    Examples:
+    - "OECD, 2019, 2020" -> ["OECD, 2019", "OECD, 2020"]
+    - "Aiko & Logan 2014, Besley & Persson, 2014" -> two citations
+    - "Integrated Business Establishment Survey II, 2014: Minta, 2020" -> two citations
     """
-    ref_norm = _norm_lookup_text(original_ref)
-    title_norm = _norm_lookup_text(matched_title)
+    s = _normalise_extracted_author_year_citation(chunk)
+    if not s:
+        return []
 
-    for r in c2r_rows:
-        matched_ref = (
-            r.get("matched_reference", "")
-            or r.get("reference", "")
-            or r.get("ref", "")
-            or ""
-        )
-        in_text = (
-            r.get("in_text", "")
-            or r.get("citation", "")
-            or r.get("citation_in_text", "")
-            or ""
-        )
+    s = re.sub(r"\s*:\s*(?=[A-ZÀ-ÖØ-Þ])", "; ", s)
+    years = list(YEAR_RE.finditer(s))
+    if len(years) <= 1:
+        return [s]
 
-        if not matched_ref or not in_text:
+    out: List[str] = []
+    last_author = ""
+    prev_end = 0
+
+    for ym in years:
+        left = s[prev_end:ym.start()].strip(" ,;:()[]{}")
+        year = ym.group(1)
+
+        # If this is a second year for the same author, reuse the previous author.
+        if not left or not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", left):
+            author = last_author
+        else:
+            # Remove any carry-over punctuation from the prior citation.
+            left = re.sub(r"^[,;:\s]+", "", left).strip(" ,;:()[]{}")
+            # If the segment still contains an earlier year, keep only text after it.
+            earlier_years = list(YEAR_RE.finditer(left))
+            if earlier_years:
+                left = left[earlier_years[-1].end():].strip(" ,;:()[]{}")
+            author = left or last_author
+
+        if author:
+            # Convert common institutional report-title variants into usable keys.
+            if re.search(r"\bintegrated\s+business\s+establishment\s+survey\b", author, re.I):
+                author = "IBES II" if re.search(r"\bII\b", author) else "IBES"
+            out.append(norm_space(f"{author}, {year}"))
+            last_author = author
+
+        prev_end = ym.end()
+
+    return [x for x in out if x]
+
+def _normalise_extracted_author_year_citation(cite: str) -> str:
+    """
+    Clean display text for extracted APA/Harvard citations.
+
+    Commercial purpose:
+    - Keeps genuine author-year citations.
+    - Removes transition/narrative lead-ins that PDF extraction often attaches.
+
+    Examples:
+    - "Meanwhile, Claessens and Djankov, 1999" -> "Claessens and Djankov, 1999"
+    - "Lastly, Baiden, 2020" -> "Baiden, 2020"
+    """
+    s = norm_space(cite)
+    if not s:
+        return ""
+
+    s = _normalise_common_citation_typos(s)
+
+    # Common extraction/typing variants that should not create false misses.
+    s = re.sub(r"\bet\s*\.?\s*al\s*\.?", "et al.", s, flags=re.I)
+    s = re.sub(r"\bet\s+la\b", "et al.", s, flags=re.I)
+    s = re.sub(r"(?<=\S)&", " &", s)
+    s = re.sub(r"&(?=\S)", "& ", s)
+    # Possessives used as theory labels: Mauss' (1925), Levi-Strauss' (1949).
+    s = re.sub(r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)'\s*,\s*((?:19|20)\d{2})", r"\1, \2", s)
+    s = re.sub(r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)'\s*\(\s*((?:19|20)\d{2})\s*\)", r"\1, \2", s)
+    # Missing comma before year, especially Hair et al.2020 / Kaspera et al. 2014.
+    s = re.sub(r"\b(et\s+al\.)\s*((?:19|20)\d{2}[a-z]?)", r"\1, \2", s, flags=re.I)
+    s = re.sub(r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s*(?:&|and)\s*[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)?)\s+((?:19|20)\d{2}[a-z]?)\b", r"\1, \2", s)
+    s = re.sub(r"\s+", " ", s)
+
+    s = s.strip(" ,;:()[]{}")
+    s = re.sub(r"^(?:and|but|or)\s+", "", s, flags=re.I).strip(" ,;:")
+    s = _strip_discourse_prefixes(s).strip(" ,;:()[]{}")
+
+    # Remove one or more transition words that may remain before the real author.
+    noise_words = _clean_discourse_prefixes()
+
+    for _ in range(4):
+        old = s
+        for word in noise_words:
+            if not word:
+                continue
+            s = re.sub(
+                r"^" + re.escape(word) + r"(?:\s*,\s*|\s+|[,:;.\-]+\s*)",
+                "",
+                s,
+                count=1,
+                flags=re.I,
+            ).strip(" ,;:()[]{}")
+            if s != old:
+                break
+        if s == old:
+            break
+
+    # Correct common malformed joins introduced by PDF extraction.
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+,", ",", s)
+    s = re.sub(r",\s*,+", ",", s)
+    return s.strip(" ,;:()[]{}")
+
+
+def _citation_has_blocked_narrative_lead(cite: str) -> bool:
+    """
+    Reject extracted strings where the only author-like token is a narrative word.
+    Do not reject when a real author remains after cleaning.
+    """
+    raw = norm_space(cite)
+    cleaned = _normalise_extracted_author_year_citation(raw)
+    if not cleaned:
+        return True
+
+    ym = YEAR_RE.search(cleaned)
+    if not ym:
+        return False
+
+    left = cleaned[: ym.start()].strip(" ,;:()[]{}")
+    if not left:
+        return True
+
+    left_key = strip_punct(left)
+    return _is_non_author_key(left_key)
+
+
+_NON_AUTHOR_BLOCK_CACHE: Optional[set] = None
+
+
+def _non_author_block() -> set:
+    global _NON_AUTHOR_BLOCK_CACHE
+    if _NON_AUTHOR_BLOCK_CACHE is None:
+        _NON_AUTHOR_BLOCK_CACHE = {
+            strip_punct(x)
+            for x in (set(NON_NAME_AUTHOR_KEYS) | set(DISCOURSE_PREFIXES))
+            if x
+        }
+    return _NON_AUTHOR_BLOCK_CACHE
+
+
+def _is_non_author_key(key: str) -> bool:
+    """
+    Prevent ordinary discourse, method, and document words from becoming author keys.
+    """
+    k = strip_punct(key)
+    if not k:
+        return True
+
+    block = _non_author_block()
+
+    extra_phrases = {
+        "field survey", "survey field", "survey data", "field data",
+        "field work", "fieldwork data", "research survey",
+        "questionnaire survey", "sample survey",
+        "likely similarly", "similarly likely",
+    }
+
+    if k in block or k in extra_phrases:
+        return True
+
+    toks = [t for t in k.split() if t]
+    if toks and all(t in block for t in toks):
+        return True
+
+    if toks and toks[-1] in block and len(toks) <= 3:
+        return True
+
+    return False
+
+
+def _is_bad_author_left(left: str) -> bool:
+    """
+    Reject full author-left phrases that are clearly not author names.
+    """
+    l = strip_punct(left)
+    if not l:
+        return True
+
+    if _is_non_author_key(l):
+        return True
+
+    bad_patterns = [
+        r"^(field|survey|data|sample|questionnaire)\s+",
+        r"\s+(survey|field|data|sample|questionnaire)$",
+        r"^(likely|similarly|however|moreover|therefore|thus|hence|meanwhile|lastly|finally|also|then|next|first|second|third|last)$",
+    ]
+
+    return any(re.search(p, l, re.I) for p in bad_patterns)
+def _base_year(y: str) -> str:
+    y = (y or "").strip()
+    m = re.match(r"^((?:19|20)\d{2})", y)
+    return m.group(1) if m else y
+
+
+def _surnames_from_author_blob(left: str) -> List[str]:
+    """
+    Extract surname keys from citation or reference author text.
+
+    Handles:
+    - "Adam, 2017" -> ["adam"]
+    - "Adam, Frimpong & Boadu, 2017" -> ["adam", "frimpong", "boadu"]
+    - "Adam et al., 2017" -> ["adam"]
+    - "Adam, A. M., Frimpong, S., & Boadu, M. O. (2017)" -> ["adam", "frimpong", "boadu"]
+    """
+    s = norm_space(left or "")
+    if not s:
+        return []
+
+    s = _strip_discourse_prefixes(s)
+    if _is_bad_author_left(s):
+        return []
+
+    s = re.sub(r"\bet\s*\.?\s*al\.?\b", "", s, flags=re.I)
+    s = re.sub(r"(’s|'s)\b", "", s)
+    s = re.sub(r"(?<=\S)&", " &", s)
+    s = re.sub(r"&(?=\S)", "& ", s)
+    s = s.replace("＆", "&")
+
+    out: List[str] = []
+
+    # APA/reference style: Surname, Initials. Capture every surname before initials.
+    apa_names = re.findall(
+        r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s*,\s*(?:[A-Z]\.\s*){1,5}",
+        s,
+    )
+    if apa_names:
+        out.extend(apa_names)
+    else:
+        # Citation style: Adam, Frimpong & Boadu; Adam and Boadu; Adam et al.
+        tmp = s.replace("&", ",")
+        tmp = re.sub(r"\band\b", ",", tmp, flags=re.I)
+        parts = [p.strip(" ,.;:()[]{}") for p in tmp.split(",")]
+        for p in parts:
+            if not p:
+                continue
+            # Remove initials or isolated capital letters.
+            p = re.sub(r"\b[A-Z]\.\b", " ", p)
+            p = re.sub(r"\b[A-Z]\b", " ", p)
+            words = re.findall(r"[A-ZÀ-ÖØ-Þ]?[A-Za-zÀ-ÖØ-öø-ÿ'’\-]{2,}", p)
+            if not words:
+                continue
+            out.append(words[-1])
+
+    final: List[str] = []
+    seen = set()
+    for cand in out:
+        key = strip_punct(cand)
+        if not key or len(key) < 2:
             continue
+        if key in {"available", "ssrn", "university", "press", "journal"}:
+            continue
+        if _is_non_author_key(key):
+            continue
+        if key not in seen:
+            seen.add(key)
+            final.append(key)
+    return final[:6]
 
-        matched_norm = _norm_lookup_text(matched_ref)
+def _looks_like_toc_references_line(s: str, tail: str) -> bool:
+    if not s:
+        return False
+    tail = (tail or "").strip()
+    if tail and re.fullmatch(r"\d{1,4}", tail):
+        return True
+    if re.search(r"\.{2,}\s*\d{1,4}\s*$", s):
+        return True
+    return False
 
-        if ref_norm and (ref_norm == matched_norm or ref_norm[:120] in matched_norm or matched_norm[:120] in ref_norm):
-            return in_text
 
-        if title_norm and title_norm in matched_norm:
-            return in_text
+def _looks_like_heading_line(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+    if len(s0) > 120:
+        return False
+    if s0.endswith(".") and len(s0) > 25:
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", s0)
+    if letters and letters.isupper() and len(letters) >= 6:
+        return True
+    if re.match(r"^[A-Z][A-Za-z0-9\s\-,:]{3,}$", s0):
+        return True
+    return False
 
+
+def _is_likely_narrative_citation(left: str, year: str, full_cite: str) -> bool:
+    l = (left or "").strip()
+    if not l:
+        return True
+
+    s_full = (full_cite or "").lower()
+    for pat in NARRATIVE_PHRASE_PATTERNS:
+        if re.search(pat, s_full, flags=re.I):
+            return True
+
+    if year and isinstance(year, str) and year.lower().endswith("s"):
+        if _DECADE_YEAR_RE.search(full_cite or ""):
+            return True
+
+    l_norm = soft_lower(l)
+    if re.fullmatch(r"[a-z\-']+", l_norm) and l_norm in NARRATIVE_SINGLE_TOKENS:
+        return True
+
+    return False
+
+
+# -----------------------------
+# Reference acceptance
+# -----------------------------
+_LEAD_NUM_RE = re.compile(r"^\s*(?:\[\s*\d{1,4}\s*\]|\(?\s*\d{1,4}\s*\)?|\d{1,4})\s*[\.)\]]\s*")
+
+
+def _strip_leading_reference_number(s: str) -> str:
+    s0 = norm_space(s)
+    s0 = _LEAD_NUM_RE.sub("", s0)
+    return s0.strip()
+
+
+def _looks_like_person_author(s: str) -> bool:
+    s0 = norm_space(s)
+    if re.search(r"\b[A-Z][A-Za-z'\-]+,\s*(?:[A-Z]\.\s*){1,4}(?:[A-Z]\.\s*)?", s0):
+        return True
+    if re.search(r"\b[A-Z][A-Za-z'\-]+\s+(?:[A-Z]\.?)\s*(?:[A-Z]\.?)\b", s0):
+        return True
+    if re.search(r"\b[A-Z][A-Za-z'\-]+\s+et\s+al\.", s0):
+        return True
+    return False
+
+
+def _looks_like_org_author(s: str) -> bool:
+    s0 = norm_space(s)
+
+    if re.search(r"\(([A-Z]{2,10})\)", s0):
+        return True
+
+    head = re.sub(r"[^A-Za-z0-9\s/&\-]", " ", s0)
+    toks = [t for t in head.split() if t]
+    if toks:
+        t0 = toks[0]
+        t0_clean = re.sub(r"[^A-Za-z]", "", t0)
+        if t0_clean and t0_clean.isupper() and len(t0_clean) >= 2:
+            return True
+
+    def titleish(w: str) -> bool:
+        wc = re.sub(r"[^A-Za-z]", "", w)
+        if not wc:
+            return False
+        if wc.isupper() and 2 <= len(wc) <= 12:
+            return True
+        return bool(re.match(r"^[A-Z][a-z]{2,}$", wc))
+
+    run = 0
+    best = 0
+    for w in toks[:16]:
+        if titleish(w):
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return best >= 2
+
+
+def _looks_like_title_piece(s: str) -> bool:
+    s0 = norm_space(s)
+    if len(s0) < 6:
+        return False
+    letters = re.findall(r"[A-Za-z]", s0)
+    if len(letters) < 5:
+        return False
+    if re.fullmatch(r"(?i)(?:vol(?:ume)?|issue|no\.?|pp\.?|pages?|doi)\b.*", s0):
+        return False
+    if re.fullmatch(r"\d{1,4}(?:\s*[-–]\s*\d{1,4})?", s0):
+        return False
+
+    word_count = len([w for w in re.split(r"\s+", s0) if w])
+    if word_count >= 3:
+        return True
+    if ":" in s0 or "–" in s0 or "-" in s0:
+        return True
+    return True
+
+
+def _is_plausible_reference_entry(s: str) -> bool:
+    s0 = _strip_leading_reference_number(s)
+    if not s0 or len(s0) < 18:
+        return False
+
+    ym = YEAR_RE.search(s0)
+    if not ym:
+        return False
+
+    left = s0[: ym.start()].strip()
+    author_ok = (
+        _looks_like_person_author(left)
+        or _looks_like_org_author(left)
+        or _looks_like_person_author(s0[:120])
+        or _looks_like_org_author(s0[:120])
+    )
+    if not author_ok:
+        cue_ok = bool(re.search(r"\b(ssrn|arxiv|working\s+paper|available\s+at|retrieved\s+from|doi|report|policy\s+brief)\b", s0, re.I))
+        after = s0[ym.end():].lstrip(" ).,;:-")
+        after_title = after.split(".", 1)[0].strip()
+        if len(after_title) < 6 and "," in after:
+            after_title = after.split(",", 1)[0].strip()
+
+        before = s0[: ym.start()].strip(" .;:-")
+        before_parts = [p.strip() for p in before.split(".") if p.strip()]
+        before_title = before_parts[-1] if before_parts else ""
+
+        if cue_ok or _looks_like_title_piece(after_title) or _looks_like_title_piece(before_title):
+            return True
+        return False
+
+    after = s0[ym.end():].lstrip(" ).,;:-")
+    after_title = after.split(".", 1)[0].strip()
+    if len(after_title) < 6 and "," in after:
+        after_title = after.split(",", 1)[0].strip()
+
+    before = s0[: ym.start()].strip(" .;:-")
+    before_parts = [p.strip() for p in before.split(".") if p.strip()]
+    before_title = before_parts[-1] if before_parts else ""
+
+    return _looks_like_title_piece(after_title) or _looks_like_title_piece(before_title)
+
+
+def _first_author_or_org_key(author_left: str) -> str:
+    s = norm_space(author_left)
+
+    s = _strip_discourse_prefixes(s)
+
+    if _is_bad_author_left(s):
+        return ""
+
+    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", s)
+    if m:
+        key = strip_punct(m.group(1))
+        return "" if _is_non_author_key(key) else key
+
+    s = _strip_leading_reference_number(s)
+    s = re.sub(r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?\s*\).*", "", s).strip()
+    s = re.sub(r"(’s|'s)\b", "", s)
+
+    s = _strip_discourse_prefixes(s)
+
+    if _is_bad_author_left(s):
+        return ""
+
+    m_si = re.match(r"^\s*([A-Z][A-Za-z'\-]+)\s+[A-Z]{1,3}\b", s)
+    if m_si:
+        key = strip_punct(m_si.group(1))
+        return "" if _is_non_author_key(key) else key
+
+    s0 = re.split(r"\s+(?:&|and|＆)\s+|,", s, maxsplit=1)[0].strip()
+    s0 = re.sub(r"\bet\s+al\.?\b", "", s0, flags=re.I).strip()
+
+    if _is_bad_author_left(s0):
+        return ""
+
+    toks = [t for t in re.split(r"\s+", s0) if t and re.search(r"[A-Za-z0-9]", t)]
+    if not toks:
+        return ""
+
+    key = strip_punct(toks[-1])
+
+    if _is_non_author_key(key):
+        return ""
+
+    return key
+
+
+def _org_acronym(text: str) -> str:
+    """
+    Build an acronym from an organisation name.
+    Example: United Nations Conference on Trade and Development -> UNCTAD.
+    """
+    text = norm_space(text or "")
+    if not text:
+        return ""
+
+    # If an explicit acronym is given in brackets, prefer it.
+    m = re.search(r"\(([A-Z][A-Z0-9/&\-]{1,15})\)", text)
+    if m:
+        return strip_punct(m.group(1))
+
+    # Preserve all-uppercase author tokens such as IFC, GSS, NEIP.
+    head_tokens = re.findall(r"\b[A-Z][A-Z0-9/&\-]{1,15}\b", text)
+    if head_tokens:
+        joined = "".join(head_tokens)
+        if 2 <= len(joined) <= 15:
+            return strip_punct(joined)
+
+    words = re.findall(r"\b[A-Za-z][A-Za-z\-]*\b", text)
+    stop = {
+        "the", "of", "and", "for", "in", "on", "at", "to", "a", "an",
+        "from", "with", "by", "department", "ministry", "press", "limited",
+    }
+    letters = []
+    for w in words[:18]:
+        wl = w.lower().strip("-")
+        if wl in stop:
+            continue
+        if len(wl) <= 1:
+            continue
+        letters.append(w[0].lower())
+
+    acr = "".join(letters)
+    if 2 <= len(acr) <= 15:
+        return acr
     return ""
 
 
-def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
-    payload = {
-        "missing_recovery": [],
-        "verification_recovery": []
-    }
+_INSTITUTIONAL_ALIAS_PHRASES = {
+    "oecd": [
+        "organisation for economic co-operation and development",
+        "organization for economic co-operation and development",
+        "organisation for economic cooperation and development",
+        "organization for economic cooperation and development",
+    ],
+    "oced": [
+        "organisation for economic co-operation and development",
+        "organization for economic co-operation and development",
+    ],
+    "ifs": [
+        "institute for fiscal studies",
+        "institute of fiscal studies",
+    ],
+    "ibes": [
+        "integrated business establishment survey",
+        "integrated business establishment survey ii",
+    ],
+    "unctad": [
+        "united nations conference on trade and development",
+    ],
+    "neip": [
+        "national entrepreneurship and innovation programme",
+        "national entrepreneurship and innovation program",
+    ],
+    "gifec": [
+        "ghana investment fund for electronic communications",
+        "ghana investment funds for electronic communication",
+        "ghana investment fund for electronic communication",
+    ],
+    "ifc": [
+        "international finance corporation",
+    ],
+    "gss": [
+        "ghana statistical service",
+    ],
+    "pwc": [
+        "pricewaterhousecoopers",
+        "price waterhouse coopers",
+    ],
+    "isser": [
+        "institute of statistical social and economic research",
+        "institute of statistical, social and economic research",
+    ],
+    "worldbank": [
+        "world bank",
+    ],
+}
 
-    full_text = (
-        result.get("main_text", "")
-        or result.get("full_text", "")
-        or result.get("data", {}).get("main_text", "")
-        or ""
+
+def _institution_acronym_aliases(text: str) -> List[str]:
+    raw = norm_space(text or "")
+    folded = strip_punct(_fold_diacritics(raw))
+    aliases = []
+
+    generic = _org_acronym(raw)
+    if generic:
+        aliases.append(generic)
+
+    for acr, phrases in _INSTITUTIONAL_ALIAS_PHRASES.items():
+        for phrase in phrases:
+            if strip_punct(phrase) in folded:
+                aliases.append(acr)
+                break
+
+    # Also support "Ghana, G. S. S." style malformed institutional references.
+    compact_caps = re.sub(r"[^A-Z]", "", raw)
+    if 2 <= len(compact_caps) <= 12:
+        aliases.append(compact_caps.lower())
+
+    seen = set()
+    out = []
+    for a in aliases:
+        a = strip_punct(a)
+        if a and a not in seen and not _is_non_author_key(a):
+            seen.add(a)
+            out.append(a)
+    return out
+
+
+
+def _institution_aliases_for_citation_left(left: str) -> List[str]:
+    """Return institutional aliases only when the citation-left is institution-like.
+    Prevents person names such as "Hair et al." or "Aiko & Logan" becoming acronyms.
+    """
+    raw = norm_space(left or "")
+    if not raw:
+        return []
+    folded = strip_punct(_fold_diacritics(raw))
+    has_explicit_acronym = bool(re.search(r"\b[A-Z]{2,12}\b", raw))
+    known_phrase = False
+    for phrases in _INSTITUTIONAL_ALIAS_PHRASES.values():
+        for phrase in phrases:
+            if strip_punct(phrase) in folded:
+                known_phrase = True
+                break
+        if known_phrase:
+            break
+    org_starts = (
+        "organisation", "organization", "institute", "world bank", "ghana statistical",
+        "integrated business", "ghana revenue", "international monetary", "transparency international",
     )
+    starts_like_org = folded.startswith(org_starts)
+    if has_explicit_acronym or known_phrase or starts_like_org:
+        return _institution_acronym_aliases(raw)
+    return []
 
-    missing_items = result.get("missing_in_references", []) or []
-    missing_suggestions = result.get("missing_citation_suggestions", {}) or {}
+def _normalise_author_for_matching(value: str) -> str:
+    value = norm_space(value or "")
+    value = _fold_diacritics(value)
+    value = re.sub(r"\bet\s*\.?\s*al\s*\.?", "", value, flags=re.I)
+    value = re.sub(r"(?<=\S)&", " &", value)
+    value = re.sub(r"&(?=\S)", "& ", value)
+    value = value.replace("&", " and ")
+    value = re.sub(r"[^A-Za-z0-9\s\-]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip().lower()
+    return value
 
-    # Missing citation recovery
-    for item in missing_items:
-        if isinstance(item, dict):
-            citation_text = (
-                item.get("citation_in_text", "")
-                or item.get("citation", "")
-                or item.get("in_text", "")
-                or ""
-            )
-            count = item.get("count", 1)
-        else:
-            citation_text = str(item)
-            count = 1
 
-        if not citation_text:
+def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
+    out: List[str] = []
+    ref_like_seen = 0
+
+    def _is_ref_like(ln: str) -> bool:
+        if style_hint == "numeric":
+            return _looks_like_new_numeric_reference_start(ln)
+        return _looks_like_new_apa_reference_start(ln)
+
+    for i, ln in enumerate(lines):
+        s = (ln or "").strip()
+        if not s:
             continue
 
-        suggestions = missing_suggestions.get(citation_text, []) or []
+        if _is_ref_like(s):
+            ref_like_seen += 1
 
-        # Generate context-based suggestions if none already exist
-        if not suggestions and full_text:
-            try:
-                context = extract_context(full_text, citation_text, window=250)
-                if context:
-                    suggestions = suggest_from_context(
-                        context=context,
-                        citation=citation_text,
-                        top_k=3
-                    )
-            except Exception as e:
-                print(f"[DEBUG] Missing recovery failed for {citation_text}: {e}")
-                suggestions = []
-
-        payload["missing_recovery"].append({
-            "citation": citation_text,
-            "count": count,
-            "suggestions": suggestions,
-            "message": "" if suggestions else "No evidence found."
-        })
-
-    # Verification recovery
-    verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
-    c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
-
-    for row in verify_rows:
-        status = row.get("status", "")
-        if status not in {"needs_review", "not_found"}:
-            continue
-
-        original_ref = row.get("reference", "") or ""
-        matched_title = row.get("matched_title", "") or ""
-
-        citation_text = _find_citation_for_reference(
-            original_ref=original_ref,
-            matched_title=matched_title,
-            c2r_rows=c2r_rows
-        )
-
-        suggestions = []
-
-        if citation_text and full_text:
-            try:
-                context = extract_context(full_text, citation_text, window=250)
-                if context:
-                    suggestions = suggest_from_context(
-                        context=context,
-                        citation=citation_text,
-                        top_k=3
-                    )
-            except Exception as e:
-                print(f"[DEBUG] Verification recovery failed for {citation_text}: {e}")
-                suggestions = []
-
-        payload["verification_recovery"].append({
-            "reference": original_ref,
-            "status": status,
-            "citation": citation_text,
-            "suggestions": suggestions,
-            "message": "" if suggestions else "No evidence found."
-        })
-
-    return payload
-
-def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
-    with _lock:
-        if job_id in _store:
-            return _store[job_id]
-
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT status, result, error FROM jobs WHERE job_id = %s",
-                (job_id,)
+        if ref_like_seen >= 3 and (
+            REF_END_HEADING_RE.search(s)
+            or (
+                _looks_like_heading_line(s)
+                and re.search(r"\b(appendix|appendices|annex|supplement|supporting|additional)\b", s, re.I)
             )
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
+        ):
+            look = [x for x in lines[i : i + 25] if (x or "").strip()]
+            look_ref = sum(1 for x in look if _is_ref_like((x or "").strip()))
+            if look_ref <= 1:
+                break
 
-            if not row:
-                return None
+        out.append(ln)
 
-            result = row["result"] or {}
-            if isinstance(result, str):
-                result = json.loads(result)
+    return out
 
-            verification = result.get("verification", {}) or {}
-            online_verification = result.get("online_verification", {}) or {}
-            rows = online_verification.get("rows", []) or []
 
-            if rows and verification.get("state") != "completed":
-                verification.update({
-                    "state": "completed",
-                    "progress": len(rows),
-                    "total": len(rows),
-                    "percentage": 100,
-                    "results_count": len(rows),
-                    "summary": online_verification.get("summary", {})
-                })
+# -----------------------------
+# DOCX extraction
+# -----------------------------
+def _iter_docx_text(doc: "Document"):
+    for p in doc.paragraphs:
+        t = norm_space(p.text)
+        if t:
+            yield t
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    t = norm_space(p.text)
+                    if t:
+                        yield t
 
-            job_record = {
-                "job_id": job_id,
-                "status": row["status"],
-                "result": result,
-                "error": row["error"],
-                "verification": {
-                    "state": verification.get("state", "idle"),
-                    "progress": verification.get("progress", 0),
-                    "total": verification.get("total", 0),
-                    "percentage": verification.get("percentage", 0),
-                    "message": verification.get("message", ""),
-                    "verification_job_id": verification.get("verification_job_id"),
-                    "rq_job_id": verification.get("rq_job_id"),
-                    "rq_status": verification.get("rq_status"),
-                    "started_at": verification.get("started_at"),
-                    "completed_at": verification.get("completed_at"),
-                    "last_heartbeat": verification.get("last_heartbeat"),
-                    "error": verification.get("error"),
-                    "summary": online_verification.get("summary", {}),
-                    "results_count": len(rows)
-                }
-            }
 
-            with _lock:
-                _store[job_id] = job_record
+def _docx_xml_text(file_bytes: bytes) -> List[str]:
+    import zipfile
+    import xml.etree.ElementTree as ET
 
-            return job_record
+    NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
-        except Exception as e:
-            print(f"load_job_record DB error: {e}")
-            import traceback
-            traceback.print_exc()
-
-    return None
-def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Fresh loader for polling and enrichment endpoints.
-
-    PostgreSQL is the source of truth because the worker writes enrichment
-    updates to jobs.result first, then refreshes Redis. Redis is used only as
-    a fallback when PostgreSQL is unavailable.
-    """
-
-    result = None
-    status = None
-    error = None
-
-    # 1. Read PostgreSQL first, so advanced-enrichment polling does not
-    # accidentally use a stale Redis copy.
-    if DATABASE_URL:
+    def _extract_from_xml(xml_bytes: bytes) -> List[str]:
+        out: List[str] = []
         try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
+            root = ET.fromstring(xml_bytes)
+        except Exception:
+            return out
+        w_val = "{" + NS["w"] + "}val"
+        for p in root.findall(".//w:p", NS):
+            parts: List[str] = []
 
-            cursor.execute(
-                "SELECT status, result, error FROM jobs WHERE job_id = %s",
-                (job_id,)
-            )
+            # Run-level extraction preserves superscript citation markers.
+            # Plain paragraph text loses this formatting and turns AMA/Nature
+            # citations into ordinary digits, which is unsafe to auto-detect.
+            runs = p.findall(".//w:r", NS)
+            if runs:
+                for rnode in runs:
+                    vert = rnode.find(".//w:vertAlign", NS)
+                    is_super = bool(
+                        vert is not None
+                        and (vert.attrib.get(w_val, "") or "").lower() == "superscript"
+                    )
+                    for tnode in rnode.findall(".//w:t", NS):
+                        if tnode.text:
+                            parts.append(_to_unicode_superscript(tnode.text) if is_super else tnode.text)
+            else:
+                for tnode in p.findall(".//w:t", NS):
+                    if tnode.text:
+                        parts.append(tnode.text)
 
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
+            s = norm_space("".join(parts))
+            if s:
+                out.append(s)
+        return out
 
-            if not row:
-                return None
+    targets = ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml"]
 
-            status = row.get("status")
-            error = row.get("error")
-            result = row.get("result") or {}
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+        names = set(z.namelist())
+        for name in sorted(names):
+            if name.startswith("word/header") and name.endswith(".xml"):
+                targets.append(name)
+            if name.startswith("word/footer") and name.endswith(".xml"):
+                targets.append(name)
 
-            if isinstance(result, str):
-                result = json.loads(result)
-
-            # Refresh Redis with the source-of-truth result.
-            if redis_conn:
+        lines: List[str] = []
+        for t in targets:
+            if t in names:
                 try:
-                    redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
-                except Exception as e:
-                    print(f"[FRESH LOAD] Redis refresh failed for {job_id}: {e}")
+                    lines.extend(_extract_from_xml(z.read(t)))
+                except Exception:
+                    continue
+    return lines
 
-        except Exception as e:
-            print(f"[FRESH LOAD] PostgreSQL read failed for {job_id}: {e}")
 
-    # 2. Fallback to Redis only when PostgreSQL could not return a result.
-    if result is None and redis_conn:
-        try:
-            cached = redis_conn.get(f"result:{job_id}")
-            if cached:
-                result = json.loads(cached)
-                status = result.get("status") or "completed"
-        except Exception as e:
-            print(f"[FRESH LOAD] Redis read failed for {job_id}: {e}")
-
-    if result is None:
-        return None
-
-    verification = result.get("verification", {}) or {}
-    online_verification = result.get("online_verification", {}) or {}
-    rows = online_verification.get("rows", []) or []
-
-    if rows and verification.get("progress", 0) < len(rows):
-        verification["progress"] = len(rows)
-        verification["results_count"] = len(rows)
-
-    if rows and not verification.get("total"):
-        verification["total"] = len(rows)
-
-    if verification.get("total"):
-        verification["percentage"] = int(
-            (verification.get("progress", 0) / max(verification.get("total", 1), 1)) * 100
-        )
-
-    result["verification"] = verification
-
-    return {
-        "job_id": job_id,
-        "status": status,
-        "result": result,
-        "error": error,
-        "verification": verification
-    }
-def store_result(result):
-    job_id = uuid.uuid4().hex
-
-    with _lock:
-        _store[job_id] = {
-            "result": result,
-            "autofix_applied": False,
-            "fixed_document": None,
-            "verification": {
-                "state": "idle",
-                "progress": 0,
-                "total": 0,
-                "percentage": 0,
-                "started_at": None,
-                "completed_at": None,
-                "results": None,
-                "verification_job_id": None,
-                "summary": None,
-                "results_count": 0
-            }
-        }
-
-    return job_id
-
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    with _lock:
-        return _store.get(job_id)
-
-def update_verification_status(job_id: str, **kwargs):
-    """
-    Update verification state in memory and PostgreSQL result JSON.
-
-    The new results dashboard should be able to recover even if memory is lost,
-    so verification state must be persisted in jobs.result.verification.
-    """
-    payload = {k: v for k, v in kwargs.items() if v is not None}
-
-    with _lock:
-        if job_id in _store:
-            _store[job_id].setdefault("verification", {})
-            _store[job_id]["verification"].update(payload)
-
-            _store[job_id].setdefault("result", {})
-            _store[job_id]["result"].setdefault("verification", {})
-            _store[job_id]["result"]["verification"].update(payload)
-
-    if not DATABASE_URL:
-        return
+def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], str]:
+    if not DOCX_OK:
+        raise RuntimeError("python-docx not installed")
 
     try:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        cursor = conn.cursor()
+        lines = _docx_xml_text(file_bytes)
+    except Exception:
+        lines = []
 
-        cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
-        row = cursor.fetchone()
+    if not lines:
+        doc = Document(io.BytesIO(file_bytes))
+        lines = list(_iter_docx_text(doc))
 
-        if not row:
-            cursor.close()
-            conn.close()
-            return
+    lines = _clean_extracted_lines(lines)
 
-        result = row["result"] or {}
-        if isinstance(result, str):
-            result = json.loads(result)
+    def _ref_like(line: str) -> bool:
+        s = (line or "").strip()
+        if not s:
+            return False
+        if re.match(r"^\s*(\[\s*\d{1,4}\s*\]|\(\s*\d{1,4}\s*\)|\d{1,4}[\.)])\s+\S", s):
+            return True
+        if YEAR_RE.search(s) and re.match(r"^[A-Z][A-Za-z\-’'\.]+", s):
+            return True
+        if "doi:" in s.lower() or "https://doi.org/" in s.lower():
+            return True
+        return False
 
-        result.setdefault("verification", {})
-        result["verification"].update(payload)
+    def _lookahead_is_real_refs(idx: int) -> bool:
+        seen = 0
+        checked = 0
+        j = idx + 1
+        while j < len(lines) and checked < 20:
+            s = (lines[j] or "").strip()
+            j += 1
+            if not s:
+                continue
+            checked += 1
+            if _ref_like(s):
+                seen += 1
+        return seen >= 2
 
-        cursor.execute(
-            """
-            UPDATE jobs
-            SET result = %s::jsonb
-            WHERE job_id = %s
-            """,
-            (json.dumps(result), job_id)
+    main_lines: List[str] = []
+    ref_lines: List[str] = []
+    in_refs = False
+    heading_line = ""
+
+    i = 0
+    while i < len(lines):
+        t = lines[i]
+
+        if not in_refs:
+            hit = False
+            for pat in REF_HEADINGS:
+                if re.search(pat, t, flags=re.I):
+                    if _looks_like_toc_references_line(t, ""):
+                        break
+                    if _lookahead_is_real_refs(i):
+                        in_refs = True
+                        heading_line = t
+                        hit = True
+                    break
+            if hit:
+                i += 1
+                continue
+
+            m = REF_HEADING_RELAXED.search(t)
+            if m and m.start() <= 4 and len(t) <= 160:
+                tail = t[m.end():].strip(" :-\t")
+                if _looks_like_toc_references_line(t, tail):
+                    main_lines.append(t)
+                    i += 1
+                    continue
+                if _lookahead_is_real_refs(i):
+                    in_refs = True
+                    heading_line = t
+                    if tail:
+                        ref_lines.append(tail)
+                    i += 1
+                    continue
+
+        if in_refs:
+            ref_lines.append(t)
+        else:
+            main_lines.append(t)
+
+        i += 1
+
+    if in_refs:
+        ref_lines = _truncate_reference_block(ref_lines, style_hint="apa")
+        ref_lines = _truncate_reference_block(ref_lines, style_hint="numeric")
+
+    msg = f"Found References heading: {heading_line}" if in_refs else "No References heading found."
+    return "\n".join(main_lines).strip(), ref_lines, msg
+
+
+# -----------------------------
+# PDF extraction (fallback, but process_pdf is preferred)
+# -----------------------------
+def read_pdf_text(file_bytes: bytes) -> str:
+    if not PDF_OK:
+        raise RuntimeError("pdfplumber not installed")
+
+    out: List[str] = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            try:
+                text = page.extract_text() or ""
+                text = text.replace("\x00", " ")
+                text = re.sub(r"-\n", "", text)
+                text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+            except Exception:
+                text = ""
+            out.append(text)
+    return "\n".join(out)
+
+
+
+# -----------------------------
+# Commercial PDF parser for CiteIntegrity
+# -----------------------------
+def parse_pdf_commercial(
+    file_bytes: bytes,
+    filename: str = "document.pdf",
+    style_hint: str = "apa",
+    min_page_chars: int = 120,
+) -> Dict[str, Any]:
+    """
+    Commercial-grade PDF parsing wrapper for CiteIntegrity.
+
+    Design:
+    - Runs the existing PDF-to-DOCX pipeline when available.
+    - Runs a hybrid page-level PyMuPDF/pdfplumber extraction.
+    - Scores all candidates and chooses the strongest one.
+    - Returns PDF quality metadata and caution warnings for the UI.
+
+    Important product rule:
+    Even strong PDF parsing is not treated as equal to DOCX. The returned
+    pdf_quality field should be shown to users when the file is a PDF.
+    """
+    warnings: List[str] = []
+    candidates: List[Dict[str, Any]] = []
+
+    if not file_bytes:
+        return {
+            "ok": False,
+            "main_text": "",
+            "references": [],
+            "ref_msg": "PDF parsing failed: empty file.",
+            "pdf_quality": _pdf_quality_report(filename, 0, "none", "", [], [], ["No PDF bytes received."]),
+            "pdf_warnings": ["No PDF bytes received."],
+        }
+
+    # Candidate 1: existing conversion pipeline, if installed.
+    if PDF_PIPELINE_OK and process_pdf is not None:
+        try:
+            converted = process_pdf(file_bytes)
+            conv_main = norm_space(converted.get("main_text", ""))
+            conv_refs = converted.get("references", []) or []
+            conv_refs = [norm_space(str(r)) for r in conv_refs if norm_space(str(r))]
+            if style_hint == "numeric":
+                conv_refs = _split_embedded_numeric_refs(conv_refs)
+            if conv_main or conv_refs:
+                candidates.append(_make_pdf_candidate(
+                    source="pdf_to_docx_pipeline",
+                    main_text=conv_main,
+                    references=conv_refs,
+                    page_texts=[],
+                    style_hint=style_hint,
+                    message=f"PDF conversion pipeline extracted {len(conv_refs)} references.",
+                ))
+        except Exception as exc:
+            warnings.append(f"PDF conversion pipeline failed: {exc}")
+    else:
+        warnings.append("PDF conversion pipeline is not available. Hybrid text extraction was used.")
+
+    # Candidate 2: hybrid page-level extraction.
+    try:
+        hybrid = _extract_pdf_hybrid_text(file_bytes)
+        hybrid_text = hybrid.get("text", "")
+        page_texts = hybrid.get("page_texts", []) or []
+        page_engines = hybrid.get("page_engines", []) or []
+        if hybrid_text:
+            h_main, h_refs, h_msg = _split_pdf_text_main_refs(
+                hybrid_text,
+                style_hint=style_hint,
+            )
+            if style_hint == "numeric":
+                h_refs = _split_embedded_numeric_refs(h_refs)
+            candidates.append(_make_pdf_candidate(
+                source="hybrid_pymupdf_pdfplumber",
+                main_text=h_main,
+                references=h_refs,
+                page_texts=page_texts,
+                style_hint=style_hint,
+                message=f"{h_msg} Hybrid extraction used {len(set(page_engines))} engine(s).",
+            ))
+    except Exception as exc:
+        warnings.append(f"Hybrid PDF extraction failed: {exc}")
+
+    if not candidates:
+        warnings.append("No usable text could be extracted from the PDF. The file may be scanned or image-based.")
+        return {
+            "ok": False,
+            "main_text": "",
+            "references": [],
+            "ref_msg": "PDF parsing failed. Upload the DOCX version for reliable analysis.",
+            "pdf_quality": _pdf_quality_report(filename, 0, "none", "", [], [], warnings),
+            "pdf_warnings": warnings,
+        }
+
+    best = max(candidates, key=lambda c: c.get("score", 0.0))
+
+    # Use the strongest reference list if it is clearly better than the selected candidate.
+    best_ref_candidate = max(candidates, key=lambda c: len(c.get("references", []) or []))
+    if len(best_ref_candidate.get("references", []) or []) > len(best.get("references", []) or []) + 2:
+        best["references"] = best_ref_candidate.get("references", [])
+        best["message"] = (
+            f"{best.get('message', '')} Reference list strengthened using "
+            f"{best_ref_candidate.get('source', 'another PDF parser')} extraction."
         )
 
-        conn.commit()
-        cursor.close()
-        conn.close()
+    main_text = best.get("main_text", "") or ""
+    references = best.get("references", []) or []
+    page_texts = best.get("page_texts", []) or []
 
-    except Exception as e:
-        print(f"[VERIFY STATUS] PostgreSQL update failed for {job_id}: {e}")
+    if style_hint == "apa":
+        references = [r for r in references if _is_plausible_reference_entry(r)]
+    else:
+        references = [r for r in references if norm_space(r)]
 
-def start_progress_sync(job_id: str, verification_job_id: str):
-    def sync():
-        print(f"[DEBUG] Sync thread started for job {job_id}, verification_job_id={verification_job_id}")
-        
-        last_progress = -1
-        no_progress_count = 0
-        max_no_progress = 600  # Increased to 600 (20 minutes) for large reference sets
-        last_log_time = time.time()
-        last_heartbeat = time.time()
-        heartbeat_interval = 30  # Send heartbeat every 30 seconds
-        
-        while True:
-            try:
-                # Send heartbeat to prevent timeout and show job is alive
-                if time.time() - last_heartbeat > heartbeat_interval:
-                    print(f"[DEBUG] 💓 Heartbeat: Job {job_id} still processing (progress: {last_progress})")
-                    last_heartbeat = time.time()
-                    
-                    # Update a timestamp in store to show job is alive
-                    with _lock:
-                        if job_id in _store:
-                            _store[job_id]["verification"]["last_heartbeat"] = now()
-                            # Also update the message to show it's still working
-                            if _store[job_id]["verification"].get("total", 0) > 0:
-                                current_progress = _store[job_id]["verification"].get("progress", 0)
-                                total = _store[job_id]["verification"].get("total", 0)
-                                if current_progress < total:
-                                    _store[job_id]["verification"]["message"] = f"Still verifying: {current_progress}/{total} - This may take several minutes for large documents"
-                
-                # Get status from verify.py's job tracking
-                status = get_verification_status(verification_job_id)
-                
-                # Debug log every 30 seconds (reduced frequency)
-                if time.time() - last_log_time > 30:
-                    print(f"[DEBUG] Sync status for {verification_job_id}: {status}")
-                    last_log_time = time.time()
-                
-                if status:
-                    current_progress = status.get("progress", 0)
-                    total = status.get("total", 0)
-                    status_state = status.get("status", "processing")
-                    
-                    # Only log every 5th progress update to reduce noise
-                    if current_progress != last_progress:
-                        print(f"[DEBUG] Progress update: {current_progress}/{total} (state: {status_state})")
-                    
-                    if current_progress == last_progress:
-                        no_progress_count += 1
-                    else:
-                        no_progress_count = 0
-                        last_progress = current_progress
-                    
-                    with _lock:
-                        if job_id in _store:
-                            # Update verification state for frontend polling
-                            _store[job_id]["verification"]["progress"] = current_progress
-                            _store[job_id]["verification"]["percentage"] = status.get("percentage", 0)
-                            _store[job_id]["verification"]["state"] = status_state
-                            _store[job_id]["verification"]["total"] = total
-                            
-                            # Also update the message for frontend display with ETA for large sets
-                            if total > 0:
-                                if total > 100 and current_progress < total:
-                                    # For large reference sets, show estimated time
-                                    elapsed = time.time() - last_heartbeat + heartbeat_interval
-                                    if current_progress > 0 and elapsed > 0:
-                                        rate = current_progress / elapsed
-                                        remaining = (total - current_progress) / rate if rate > 0 else 0
-                                        _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total} (Est. remaining: {remaining/60:.1f} min)"
-                                    else:
-                                        _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total} - This may take several minutes"
-                                else:
-                                    _store[job_id]["verification"]["message"] = f"Verifying: {current_progress}/{total}"
-                            else:
-                                _store[job_id]["verification"]["message"] = "Starting verification..."
-                            
-                            print(f"[DEBUG] Updated _store for job {job_id}: progress={current_progress}, total={total}, state={status_state}")
-                    
-                    # Check for completion
-                    if status_state == "completed":
-                        print(f"[DEBUG] ✅ Verification job {verification_job_id} completed!")
-                        verification_results = None
-                        max_attempts = 30  # Increased attempts for large result sets
-                        for attempt in range(max_attempts):
-                            verification_results = get_verification_results(verification_job_id)
-                            if verification_results:
-                                print(f"[DEBUG] Retrieved {len(verification_results)} results on attempt {attempt + 1}")
-                                break
-                            print(f"[DEBUG] Waiting for results, attempt {attempt + 1}/{max_attempts}...")
-                            time.sleep(2)
-                        
-                        if verification_results:
-                            summary = _compute_verification_summary(verification_results)
-                            
-                            with _lock:
-                                if job_id in _store:
-                                    _store[job_id]["result"]["online_verification"] = {
-                                        "rows": verification_results,
-                                        "summary": summary
-                                    }
-                                    
-                                    try:
-                                        _store[job_id]["result"]["acii"] = compute_acii(
-                                            _store[job_id]["result"], 
-                                            verification_results
-                                        )
-                                    except Exception as e:
-                                        print(f"[DEBUG] ACII computation error: {e}")
-                                    
-                                    try:
-                                        _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                                    except Exception as e:
-                                        print(f"[DEBUG] Error rebuilding reference mapping: {e}")
-                                    
-                                    try:
-                                        _store[job_id]["result"]["recovery"] = build_context_specific_recovery(
-                                            _store[job_id]["result"]
-                                        )
-                                        print("[RECOVERY] Rows built")
-                                    except Exception as e:
-                                        print(f"[RECOVERY ERROR] {e}")
-                                        _store[job_id]["result"]["recovery"] = {
-                                            "missing_recovery": [],
-                                            "verification_recovery": []
-                                        }
-                                    
-                                    try:
-                                        _store[job_id]["result"]["claim_support"] = build_claim_support_rows(
-                                            _store[job_id]["result"]
-                                        )
-                                        print("[CLAIM SUPPORT] Rows:", len(_store[job_id]["result"].get("claim_support", [])))
-                                        print("[CLAIM SUPPORT] Sample:", _store[job_id]["result"].get("claim_support", [])[:1])
-                                    except Exception as e:
-                                        print(f"[CLAIM SUPPORT ERROR] {e}")
-                                        _store[job_id]["result"]["claim_support"] = []
-                                    
-                                    _store[job_id]["verification"]["results"] = verification_results
-                                    _store[job_id]["verification"]["results_count"] = len(verification_results)
-                                    _store[job_id]["verification"]["summary"] = summary
-                                    _store[job_id]["verification"]["state"] = "completed"
-                                    _store[job_id]["verification"]["completed_at"] = now()
-                            
-                            # 🔥 Store completion info in PostgreSQL
-                            if DATABASE_URL:
-                                try:
-                                    conn = psycopg2.connect(DATABASE_URL)
-                                    cursor = conn.cursor()
-                                    final_result = _store[job_id]["result"]
-                                    final_result["verification_completed_at"] = now()
-                                    
-                                    cursor.execute("""
-                                        UPDATE jobs
-                                        SET result = %s::jsonb
-                                        WHERE job_id = %s
-                                    """, (json.dumps(final_result), job_id))
-                                    conn.commit()
-                                    cursor.close()
-                                    conn.close()
-                                    print(f"[DEBUG] Stored verification completion in PostgreSQL for job {job_id}")
-                                except Exception as e:
-                                    print(f"[DEBUG] Could not persist verification completion: {e}")
-                        else:
-                            print(f"[DEBUG] ⚠️ No results retrieved after {max_attempts} attempts")
-                            with _lock:
-                                if job_id in _store:
-                                    _store[job_id]["verification"]["state"] = "error"
-                                    _store[job_id]["verification"]["message"] = "No results retrieved after completion"
-                            
-                            # 🔥 Store error state in PostgreSQL
-                            if DATABASE_URL:
-                                try:
-                                    conn = psycopg2.connect(DATABASE_URL)
-                                    cursor = conn.cursor()
-                                    cursor.execute("""
-                                        UPDATE jobs
-                                        SET result = result || jsonb_build_object(
-                                            'verification_error', %s,
-                                            'verification_completed_at', %s
-                                        )
-                                        WHERE job_id = %s
-                                    """, ("No results retrieved after completion", now(), job_id))
-                                    conn.commit()
-                                    cursor.close()
-                                    conn.close()
-                                except Exception as e:
-                                    print(f"[DEBUG] Could not persist error state: {e}")
-                        
-                        break
-                    
-                    # Check for error
-                    elif status_state == "error":
-                        error_msg = status.get("error", "Unknown error")
-                        print(f"[DEBUG] ❌ Verification job {verification_job_id} error: {error_msg}")
-                        with _lock:
-                            if job_id in _store:
-                                _store[job_id]["verification"]["state"] = "error"
-                                _store[job_id]["verification"]["message"] = error_msg
-                        
-                        # 🔥 Store error state in PostgreSQL
-                        if DATABASE_URL:
-                            try:
-                                conn = psycopg2.connect(DATABASE_URL)
-                                cursor = conn.cursor()
-                                cursor.execute("""
-                                    UPDATE jobs
-                                    SET result = result || jsonb_build_object(
-                                        'verification_error', %s,
-                                        'verification_completed_at', %s
-                                    )
-                                    WHERE job_id = %s
-                                """, (error_msg, now(), job_id))
-                                conn.commit()
-                                cursor.close()
-                                conn.close()
-                            except Exception as e:
-                                print(f"[DEBUG] Could not persist error state: {e}")
-                        break
-                    
-                    # Check for stall (no progress for too long) - increased threshold for large sets
-                    if no_progress_count > max_no_progress and current_progress < total:
-                        print(f"[DEBUG] ⚠️ No progress for {max_no_progress * 2} seconds, but job may still be working on large references")
-                        # Reset counter and continue instead of failing immediately
-                        # Only fail if progress is 0 and we've been waiting over 30 minutes
-                        if current_progress == 0 and no_progress_count > 900:  # 30 minutes
-                            print(f"[DEBUG] ❌ No progress for 30 minutes, marking as error")
-                            with _lock:
-                                if job_id in _store:
-                                    _store[job_id]["verification"]["state"] = "error"
-                                    _store[job_id]["verification"]["message"] = "Verification stalled - no progress for 30 minutes"
-                            
-                            if DATABASE_URL:
-                                try:
-                                    conn = psycopg2.connect(DATABASE_URL)
-                                    cursor = conn.cursor()
-                                    cursor.execute("""
-                                        UPDATE jobs
-                                        SET result = result || jsonb_build_object(
-                                            'verification_error', %s,
-                                            'verification_completed_at', %s
-                                        )
-                                        WHERE job_id = %s
-                                    """, ("Verification stalled - no progress for 30 minutes", now(), job_id))
-                                    conn.commit()
-                                    cursor.close()
-                                    conn.close()
-                                except Exception as e:
-                                    print(f"[DEBUG] Could not persist stall error: {e}")
-                            break
-                        else:
-                            # Reset counter and continue
-                            no_progress_count = 0
-                            print(f"[DEBUG] Resetting stall counter, still processing...")
-                        
-                else:
-                    print(f"[DEBUG] No status found for verification job {verification_job_id}, waiting...")
-                
-            except Exception as e:
-                print(f"[DEBUG] Error in sync thread: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            time.sleep(2)
-        
-        print(f"[DEBUG] Sync thread exiting for job {job_id}")
-    
-    thread = threading.Thread(target=sync, daemon=True)
-    thread.start()
-    return thread
-# ============================================================
-# DOCUMENT FIXING FUNCTIONS
-# ============================================================
+    references = _dedupe_keep_order(references)
 
-def apply_autofix_to_document(original_text: str, autofix_suggestions: Dict) -> str:
-    """Apply auto-fix suggestions to document text"""
-    if not autofix_suggestions or not autofix_suggestions.get("citations"):
-        return original_text
-    
-    fixed_text = original_text
-    
-    citations_to_fix = sorted(
-        autofix_suggestions.get("citations", []),
-        key=lambda x: len(x.get("original", "")),
-        reverse=True
+    quality = _pdf_quality_report(
+        filename=filename,
+        page_count=len(page_texts),
+        source=best.get("source", "unknown"),
+        main_text=main_text,
+        references=references,
+        page_texts=page_texts,
+        warnings=warnings,
     )
-    
-    for fix in citations_to_fix:
-        original = fix.get("original", "")
-        suggested = fix.get("suggested", "")
-        if original and suggested and original != suggested:
-            pattern = r'\b' + re.escape(original) + r'\b'
-            new_text = re.sub(pattern, suggested, fixed_text)
-            if new_text != fixed_text:
-                fixed_text = new_text
-    
-    return fixed_text
 
-def generate_fixed_document_content(job_data: Dict, autofix_suggestions: Dict) -> str:
-    """Generate the fixed document content as a string"""
-    result = job_data.get("result", {})
-    original_text = result.get("main_text", "")
-    
-    if not original_text:
-        original_text = result.get("data", {}).get("main_text", "")
-    
-    if not original_text:
-        print("[DEBUG] No main_text found in result")
-        return ""
-    
-    fixed_text = apply_autofix_to_document(original_text, autofix_suggestions)
-    
-    fix_log = []
-    for fix in autofix_suggestions.get("citations", []):
-        if fix.get("confidence", 0) >= 0.85:
-            fix_log.append(f"[AUTO-FIXED] {fix.get('original')} -> {fix.get('suggested')} ({fix.get('type')})")
-    
-    if fix_log:
-        header = "\n".join([
-            "<!--",
-            "CiteIntegrity Auto-Fix Log",
-            f"Generated: {datetime.now().isoformat()}",
-            "-" * 40,
-        ] + fix_log + ["-->", ""])
-        fixed_text = header + fixed_text
-    
-    return fixed_text
+    warnings = list(dict.fromkeys(warnings + quality.get("warnings", [])))
 
-# ============================================================
-# DEBUG ENDPOINTS
-# ============================================================
+    ref_msg = (
+        f"PDF parsed with commercial hybrid parser ({best.get('source', 'unknown')}). "
+        f"Found {len(references)} references. "
+        f"PDF quality: {quality.get('extraction_quality', 'unknown')} "
+        f"({quality.get('confidence_score', 0)}%). "
+        f"{best.get('message', '')}"
+    ).strip()
 
-@app.get("/debug/job/{job_id}")
-async def debug_job(job_id: str):
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    result = job.get("result", {})
-    
     return {
-        "job_id": job_id,
-        "autofix_applied": job.get("autofix_applied", False),
-        "has_fixed_document": job.get("fixed_document") is not None,
-        "has_main_text": "main_text" in result or ("data" in result and "main_text" in result.get("data", {})),
-        "verification": {
-            "state": verification.get("state"),
-            "progress": verification.get("progress"),
-            "total": verification.get("total"),
-            "percentage": verification.get("percentage"),
+        "ok": True,
+        "main_text": main_text,
+        "references": references,
+        "ref_msg": ref_msg,
+        "pdf_quality": quality,
+        "pdf_warnings": warnings,
+        "pdf_parser_build": PDF_PARSE_BUILD,
+    }
+
+
+def _make_pdf_candidate(
+    source: str,
+    main_text: str,
+    references: List[str],
+    page_texts: List[str],
+    style_hint: str,
+    message: str,
+) -> Dict[str, Any]:
+    main_text = _normalise_pdf_extracted_text(main_text or "")
+    references = [norm_space(str(r)) for r in (references or []) if norm_space(str(r))]
+    references = _dedupe_keep_order(references)
+
+    citation_count = len(extract_author_year_citations(main_text)) if style_hint == "apa" else len(extract_ieee_citations(main_text))
+    word_count = len(re.findall(r"\b[\w'-]+\b", main_text))
+    char_count = len(main_text)
+
+    score = 0.0
+    score += min(char_count / 5000.0, 20.0)
+    score += min(word_count / 1000.0, 20.0)
+    score += min(len(references) * 2.5, 35.0)
+    score += min(citation_count * 0.75, 20.0)
+
+    if source == "pdf_to_docx_pipeline":
+        score += 3.0
+    if page_texts:
+        weak_ratio = sum(1 for p in page_texts if len(norm_space(p)) < 120) / max(1, len(page_texts))
+        score -= min(weak_ratio * 20.0, 20.0)
+
+    return {
+        "source": source,
+        "main_text": main_text,
+        "references": references,
+        "page_texts": page_texts,
+        "score": round(max(score, 0.0), 3),
+        "message": message,
+    }
+
+
+def _extract_pdf_hybrid_text(file_bytes: bytes) -> Dict[str, Any]:
+    pymu_pages = _extract_pdf_pages_pymupdf(file_bytes) if PYMUPDF_OK else []
+    plumber_pages = _extract_pdf_pages_pdfplumber(file_bytes) if PDF_OK else []
+
+    page_count = max(len(pymu_pages), len(plumber_pages))
+    selected_pages: List[str] = []
+    page_engines: List[str] = []
+
+    for i in range(page_count):
+        choices: List[Tuple[str, str, float]] = []
+        if i < len(pymu_pages):
+            txt = pymu_pages[i]
+            choices.append(("pymupdf", txt, _score_pdf_page_text(txt)))
+        if i < len(plumber_pages):
+            txt = plumber_pages[i]
+            choices.append(("pdfplumber", txt, _score_pdf_page_text(txt)))
+
+        if not choices:
+            selected_pages.append("")
+            page_engines.append("none")
+            continue
+
+        engine, text, _score = max(choices, key=lambda item: item[2])
+        selected_pages.append(_clean_pdf_page_text(text))
+        page_engines.append(engine)
+
+    selected_pages = _remove_repeated_pdf_headers_footers(selected_pages)
+
+    full_text = "\n\n".join(
+        f"[PAGE {i + 1}]\n{txt.strip()}"
+        for i, txt in enumerate(selected_pages)
+        if txt and txt.strip()
+    )
+
+    return {
+        "text": _normalise_pdf_extracted_text(full_text),
+        "page_texts": selected_pages,
+        "page_engines": page_engines,
+    }
+
+
+def _extract_pdf_pages_pymupdf(file_bytes: bytes) -> List[str]:
+    pages: List[str] = []
+    if not PYMUPDF_OK or fitz is None:
+        return pages
+
+    doc = None
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        for page in doc:
+            block_text = ""
+            plain_text = ""
+            try:
+                blocks = page.get_text("blocks", sort=True) or []
+                block_parts: List[Tuple[float, float, str]] = []
+                for block in blocks:
+                    if len(block) < 5:
+                        continue
+                    x0, y0, _x1, _y1, txt = block[:5]
+                    block_type = block[6] if len(block) >= 7 else 0
+                    if block_type != 0:
+                        continue
+                    txt = _clean_pdf_page_text(str(txt))
+                    if txt:
+                        block_parts.append((float(y0), float(x0), txt))
+                block_parts.sort(key=lambda item: (item[0], item[1]))
+                block_text = "\n".join(part[2] for part in block_parts)
+            except Exception:
+                block_text = ""
+
+            try:
+                plain_text = page.get_text("text", sort=True) or ""
+            except Exception:
+                plain_text = ""
+
+            best = block_text if _score_pdf_page_text(block_text) >= _score_pdf_page_text(plain_text) else plain_text
+            pages.append(_clean_pdf_page_text(best))
+    finally:
+        try:
+            if doc is not None:
+                doc.close()
+        except Exception:
+            pass
+
+    return pages
+
+
+def _extract_pdf_pages_pdfplumber(file_bytes: bytes) -> List[str]:
+    pages: List[str] = []
+    if not PDF_OK:
+        return pages
+
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            text_default = ""
+            text_layout = ""
+            try:
+                text_default = page.extract_text(x_tolerance=1.5, y_tolerance=3, layout=False) or ""
+            except Exception:
+                text_default = ""
+            try:
+                text_layout = page.extract_text(x_tolerance=1.5, y_tolerance=3, layout=True) or ""
+            except Exception:
+                text_layout = ""
+
+            best = text_layout if _score_pdf_page_text(text_layout) > _score_pdf_page_text(text_default) else text_default
+            pages.append(_clean_pdf_page_text(best))
+
+    return pages
+
+
+def _split_pdf_text_main_refs(text: str, style_hint: str = "apa") -> Tuple[str, List[str], str]:
+    text = _normalise_pdf_extracted_text(text)
+    lines = [ln.strip() for ln in text.splitlines() if ln and ln.strip()]
+
+    if not lines:
+        return "", [], "No extractable PDF text was found."
+
+    idx, tail = _find_reference_heading(lines, style_hint=style_hint)
+    if idx >= 0:
+        main_lines = lines[:idx]
+        ref_lines = []
+        if tail:
+            ref_lines.append(tail)
+        ref_lines.extend(lines[idx + 1:])
+        ref_lines = _truncate_reference_block(ref_lines, style_hint=style_hint)
+        refs = _merge_reference_lines(ref_lines, style_hint=style_hint)
+        if style_hint == "numeric":
+            refs = _split_embedded_numeric_refs(refs)
+        refs = _dedupe_keep_order(refs)
+        return "\n".join(main_lines).strip(), refs, "Reference heading detected in PDF text."
+
+    recovered = recover_references_for_verification(text, style_hint=style_hint)
+    recovered = _dedupe_keep_order(recovered)
+    msg = "No reliable reference heading detected in PDF text. Used reference recovery heuristics."
+    return text, recovered, msg
+
+
+def _normalise_pdf_extracted_text(text: str) -> str:
+    text = text or ""
+    text = text.replace("\x00", " ")
+    text = text.replace("\u00a0", " ")
+    text = text.replace("ﬁ", "fi").replace("ﬂ", "fl")
+    text = text.replace("\u2019", "'")
+    text = re.sub(r"([A-Za-z])-\s*\n\s*([a-z])", r"\1\2", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _clean_pdf_page_text(text: str) -> str:
+    text = _normalise_pdf_extracted_text(text)
+    lines: List[str] = []
+    for line in text.splitlines():
+        s = norm_space(line)
+        if not s:
+            lines.append("")
+            continue
+        if re.fullmatch(r"\d{1,4}", s):
+            continue
+        if _is_digitised_artifact_line(s):
+            continue
+        s = re.sub(r"\s+", " ", s)
+        lines.append(s)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _score_pdf_page_text(text: str) -> float:
+    text = _clean_pdf_page_text(text)
+    if not text:
+        return 0.0
+
+    chars = len(text)
+    words = len(re.findall(r"\b[\w'-]+\b", text))
+    years = len(YEAR_RE.findall(text))
+    citations = len(re.findall(r"\([^)]{1,180}\b(?:19|20)\d{2}[a-z]?\b[^)]{0,180}\)", text))
+    doi_count = len(re.findall(r"\b10\.\d{4,9}/\S+", text, flags=re.I))
+    replacement = text.count(" ")
+    odd_spacing = len(re.findall(r"\b[A-Za-z]\s+[A-Za-z]\s+[A-Za-z]\b", text))
+
+    score = 0.0
+    score += min(chars / 500.0, 10.0)
+    score += min(words / 100.0, 10.0)
+    score += min(years * 0.5, 5.0)
+    score += min(citations * 1.0, 5.0)
+    score += min(doi_count * 1.5, 5.0)
+    score -= min(replacement * 0.5, 5.0)
+    score -= min(odd_spacing * 0.35, 6.0)
+    return round(max(score, 0.0), 3)
+
+
+def _remove_repeated_pdf_headers_footers(page_texts: List[str]) -> List[str]:
+    if len(page_texts) < 3:
+        return page_texts
+
+    counts: Dict[str, int] = defaultdict(int)
+    for text in page_texts:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for line in (lines[:4] + lines[-4:]):
+            key = _normalise_repeated_pdf_line(line)
+            if 4 <= len(key) <= 120:
+                counts[key] += 1
+
+    threshold = max(3, int(len(page_texts) * 0.45))
+    repeated = {k for k, v in counts.items() if v >= threshold}
+    if not repeated:
+        return page_texts
+
+    cleaned_pages: List[str] = []
+    for text in page_texts:
+        kept = []
+        for line in text.splitlines():
+            key = _normalise_repeated_pdf_line(line)
+            if key in repeated:
+                continue
+            kept.append(line)
+        cleaned_pages.append("\n".join(kept).strip())
+    return cleaned_pages
+
+
+def _normalise_repeated_pdf_line(line: str) -> str:
+    s = soft_lower(line)
+    s = re.sub(r"\bpage\s+\d+\b", "page #", s)
+    s = re.sub(r"^\d{1,4}$", "#", s)
+    s = re.sub(r"\b\d{1,4}\b", "#", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _pdf_quality_report(
+    filename: str,
+    page_count: int,
+    source: str,
+    main_text: str,
+    references: List[str],
+    page_texts: List[str],
+    warnings: List[str],
+) -> Dict[str, Any]:
+    main_text = main_text or ""
+    page_count = int(page_count or len(page_texts or []) or 0)
+    total_chars = len(main_text)
+    total_words = len(re.findall(r"\b[\w'-]+\b", main_text))
+    refs_count = len(references or [])
+    citation_count = len(extract_author_year_citations(main_text)) if main_text else 0
+
+    low_text_pages = 0
+    if page_texts:
+        low_text_pages = sum(1 for p in page_texts if len(norm_space(p)) < 120)
+    low_ratio = low_text_pages / max(1, len(page_texts)) if page_texts else (1.0 if total_chars < 500 else 0.0)
+
+    avg_chars = total_chars / max(1, page_count)
+    confidence = 100.0
+    quality_warnings = list(warnings or [])
+
+    if total_chars < 500 or avg_chars < 120:
+        confidence -= 45
+        quality_warnings.append("The PDF has very little extractable text. It may be scanned or image-based.")
+    elif avg_chars < 350:
+        confidence -= 20
+        quality_warnings.append("The PDF text extraction is weak on some pages.")
+
+    if low_ratio >= 0.60:
+        confidence -= 30
+        quality_warnings.append("Most PDF pages have low text extraction quality. DOCX is strongly recommended.")
+    elif low_ratio >= 0.30:
+        confidence -= 15
+        quality_warnings.append("Several PDF pages have low text extraction quality. Some citations may be missed.")
+
+    if refs_count == 0:
+        confidence -= 25
+        quality_warnings.append("No reference entries were confidently reconstructed from the PDF.")
+    elif refs_count < 3:
+        confidence -= 10
+        quality_warnings.append("Only a small number of reference entries were reconstructed from the PDF.")
+
+    if citation_count == 0 and total_words > 300:
+        confidence -= 15
+        quality_warnings.append("No author-year in-text citations were confidently detected in the extracted PDF text.")
+
+    confidence = round(max(0.0, min(100.0, confidence)), 2)
+
+    if confidence >= 80 and refs_count > 0:
+        extraction_quality = "good"
+        pdf_type = "text_based"
+    elif confidence >= 55:
+        extraction_quality = "moderate"
+        pdf_type = "mixed_or_layout_complex"
+    else:
+        extraction_quality = "poor"
+        pdf_type = "scanned_or_poorly_structured"
+
+    if extraction_quality != "good":
+        quality_warnings.append("PDF analysis is less reliable than DOCX. Ask the user to upload DOCX for the most accurate report.")
+
+    quality_warnings = list(dict.fromkeys([w for w in quality_warnings if w]))
+
+    return {
+        "filename": filename,
+        "parser_build": PDF_PARSE_BUILD,
+        "source": source,
+        "page_count": page_count,
+        "total_chars": total_chars,
+        "total_words": total_words,
+        "average_chars_per_page": round(avg_chars, 2),
+        "low_text_pages": low_text_pages,
+        "low_text_page_ratio": round(low_ratio, 3),
+        "reference_entries_found": refs_count,
+        "estimated_author_year_citations": citation_count,
+        "pdf_type": pdf_type,
+        "extraction_quality": extraction_quality,
+        "confidence_score": confidence,
+        "recommended_format": "DOCX",
+        "caution": "PDF output depends on extraction quality. DOCX remains the recommended format for full CiteIntegrity analysis.",
+        "warnings": quality_warnings,
+    }
+
+def _looks_like_new_numeric_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+    
+    if re.match(r"^\[\s*\d{1,4}\s*\]\s+\S", s0):
+        return True
+    if re.match(r"^\(\s*\d{1,4}\s*\)\s+\S", s0):
+        return True
+    
+    m = re.match(r"^(\d{1,4})[\.)]\s+(.+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            rest = m.group(2)
+            if YEAR_RE.search(rest) or len(rest) > 30:
+                return True
+            return False
+        return True
+    
+    m = re.match(r"^(\d{1,4})\s+([A-Z].+)$", s0)
+    if m:
+        num = m.group(1)
+        num_int = int(num)
+        if 1900 <= num_int <= 2099:
+            return False
+        return True
+    
+    return False
+
+
+def _looks_like_new_apa_reference_start(s: str) -> bool:
+    s0 = (s or "").strip()
+    if not s0:
+        return False
+
+    if re.search(r"\.\s*\(\s*" + YEAR + r"\s*\)\.", s0):
+        return True
+
+    m = re.match(r"^(.+?)\s*\(\s*" + YEAR + r"\s*\)", s0)
+    if m:
+        a = m.group(1)
+        a = re.sub(r"[^A-Za-z,\.\-\s&/\u2013\u2014-]", "", a).strip()
+        return len(a) >= 3
+    return False
+
+
+def _count_reference_like(lines: List[str], style_hint: str) -> int:
+    c = 0
+    for ln in lines:
+        s = (ln or "").strip()
+        if not s:
+            continue
+        if style_hint == "numeric":
+            if _looks_like_new_numeric_reference_start(s):
+                c += 1
+        else:
+            if _looks_like_new_apa_reference_start(s):
+                c += 1
+    return c
+
+
+def _find_reference_heading(lines: List[str], style_hint: str) -> Tuple[int, str]:
+    candidates: List[Tuple[int, str]] = []
+
+    for i, line in enumerate(lines):
+        s = (line or "").strip()
+        if not s:
+            continue
+
+        for pat in REF_HEADINGS:
+            if re.search(pat, s, flags=re.I):
+                candidates.append((i, ""))
+
+        m = REF_HEADING_RELAXED.search(s)
+        if m and m.start() <= 4 and len(s) <= 160:
+            tail = s[m.end():].strip(" :-\t")
+            if _looks_like_toc_references_line(s, tail):
+                continue
+            candidates.append((i, tail))
+
+    for i, tail in candidates:
+        lookahead = [ln for ln in lines[i + 1: i + 31] if (ln or "").strip()]
+        if _count_reference_like(lookahead, style_hint=style_hint) >= 3:
+            return i, tail
+
+    return -1, ""
+
+
+# ============================================================================
+# Reference Extraction Functions
+# ============================================================================
+
+def detect_reference_format(lines: List[str], start_idx: int) -> str:
+    sample_lines = []
+    for i in range(start_idx + 1, min(start_idx + 20, len(lines))):
+        line = lines[i].strip()
+        if line:
+            sample_lines.append(line)
+    
+    ieee_count = sum(1 for l in sample_lines if re.match(r'^\[\d+\]', l))
+    numbered_count = sum(1 for l in sample_lines if re.match(r'^\d+\.', l) and not re.match(r'^\d{4}\.', l))
+    apa_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', l))
+    harvard_count = sum(1 for l in sample_lines if re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', l))
+    
+    formats = {
+        'ieee': ieee_count,
+        'numbered': numbered_count,
+        'apa': apa_count,
+        'harvard': harvard_count
+    }
+    
+    best_format = max(formats, key=formats.get)
+    return best_format if formats[best_format] > 0 else "unknown"
+
+
+def join_reference_lines(current: str, next_line: str) -> str:
+    if current.endswith('-'):
+        return current[:-1] + next_line
+    elif re.search(r'[a-z]$', current) and re.search(r'^[a-z]', next_line):
+        return current + next_line
+    else:
+        return current + " " + next_line
+
+
+def clean_reference(ref: str) -> str:
+    ref = re.sub(r'\s+', ' ', ref).strip()
+    ref = re.sub(r'-\s+', '', ref)
+    ref = re.sub(r'\s+-\s+', '-', ref)
+    ref = ref.strip('.,;:')
+    return ref
+
+
+def extract_references_generalized(text: str) -> List[str]:
+    lines = text.splitlines()
+    
+    ref_start = -1
+    heading_patterns = [
+        r'^\s*REFERENCES\s*$',
+        r'^\s*BIBLIOGRAPHY\s*$',
+        r'^\s*WORKS\s+CITED\s*$',
+        r'^\s*LITERATURE\s+CITED\s*$',
+        r'^\s*REFERENCES\s*\[.*\]\s*$',
+        r'^\s*REFERENCES AND NOTES\s*$',
+    ]
+    
+    for i, line in enumerate(lines):
+        for pattern in heading_patterns:
+            if re.search(pattern, line, re.I):
+                if i > len(lines) * 0.6:
+                    ref_start = i
+                    break
+        if ref_start != -1:
+            break
+    
+    if ref_start == -1:
+        ref_candidates = []
+        for i, line in enumerate(lines):
+            if i > len(lines) * 0.6:
+                line = line.strip()
+                if re.match(r'^\[\d+\]\s+[A-Z]\.?\s+[A-Z][a-z]', line):
+                    ref_candidates.append((i, line))
+                elif re.match(r'^\d+\.\s+[A-Z][a-z]', line) and not re.match(r'^\d{4}\.', line):
+                    ref_candidates.append((i, line))
+                elif re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line):
+                    ref_candidates.append((i, line))
+        
+        if ref_candidates:
+            ref_start = ref_candidates[0][0] - 1
+    
+    if ref_start == -1:
+        return []
+    
+    references = []
+    current_ref = ""
+    ref_format = detect_reference_format(lines, ref_start)
+    
+    for i in range(ref_start + 1, min(ref_start + 500, len(lines))):
+        line = lines[i].strip()
+        
+        if not line and not current_ref:
+            continue
+        
+        if not line:
+            if current_ref:
+                references.append(clean_reference(current_ref))
+                current_ref = ""
+            continue
+        
+        is_new_ref = False
+        
+        if ref_format == "ieee":
+            is_new_ref = bool(re.match(r'^\[\d+\]', line))
+        elif ref_format == "numbered":
+            is_new_ref = bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)
+        elif ref_format == "apa":
+            is_new_ref = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
+        elif ref_format == "harvard":
+            is_new_ref = bool(re.search(r'[A-Z][a-z]+\s+\(\d{4}[a-z]?\)', line[:100]))
+        else:
+            is_new_ref = (
+                bool(re.match(r'^\[\d+\]', line)) or
+                (bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)) or
+                bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)', line[:100]))
+            )
+        
+        if is_new_ref:
+            if current_ref:
+                references.append(clean_reference(current_ref))
+            current_ref = line
+        elif current_ref:
+            current_ref = join_reference_lines(current_ref, line)
+    
+    if current_ref:
+        references.append(clean_reference(current_ref))
+    
+    cleaned_refs = []
+    for ref in references:
+        if len(ref) > 30 and (
+            re.search(r'\d{4}', ref) or
+            re.search(r'\[\d+\]', ref) or
+            re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', ref)
+        ):
+            cleaned_refs.append(ref)
+    
+    return cleaned_refs
+
+
+def extract_references_pattern_based(text: str) -> List[str]:
+    patterns = [
+        (r'\[\d+\]\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
+        (r'^\d+\.\s+[A-Z][A-Za-z\.\s]+,\s+[A-Z][A-Za-z\.\s]+,\s+["“].+?["”]', re.MULTILINE | re.DOTALL),
+        (r'[A-Z][a-z]+,\s+[A-Z]\.\s+\(\d{4}\)\.\s+[A-Z][a-zA-Z\s]+\.', re.MULTILINE | re.DOTALL),
+    ]
+    
+    references = []
+    for pattern, flags in patterns:
+        matches = re.findall(pattern, text, flags)
+        references.extend([clean_reference(m) for m in matches if len(m) > 30])
+    
+    return references
+
+
+def extract_references_heuristic(text: str) -> List[str]:
+    lines = text.splitlines()
+    references = []
+    current_ref = ""
+    
+    start_idx = int(len(lines) * 0.7)
+    
+    for i in range(start_idx, len(lines)):
+        line = lines[i].strip()
+        if not line:
+            if current_ref and len(current_ref) > 30:
+                references.append(clean_reference(current_ref))
+                current_ref = ""
+            continue
+        
+        has_year = bool(re.search(r'\b(19|20)\d{2}\b', line))
+        has_bracket_num = bool(re.search(r'\[\d+\]', line))
+        has_author = bool(re.search(r'[A-Z][a-z]+,\s+[A-Z]\.', line))
+        has_caps_words = len(re.findall(r'\b[A-Z][a-z]{2,}\b', line)) >= 2
+        
+        if has_year or has_bracket_num or (has_author and has_caps_words):
+            if not current_ref:
+                current_ref = line
+            else:
+                if (has_bracket_num or 
+                    (re.match(r'^\d+\.', line) and not re.match(r'^\d{4}\.', line)) or
+                    (has_author and len(current_ref) > 50)):
+                    if current_ref:
+                        references.append(clean_reference(current_ref))
+                    current_ref = line
+                else:
+                    current_ref += " " + line
+        elif current_ref:
+            current_ref += " " + line
+    
+    if current_ref and len(current_ref) > 30:
+        references.append(clean_reference(current_ref))
+    
+    return references
+
+
+def extract_references_enhanced(text: str) -> List[str]:
+    refs = extract_references_generalized(text)
+    if len(refs) < 5:
+        refs = extract_references_pattern_based(text)
+    if len(refs) < 5:
+        refs = extract_references_heuristic(text)
+    return refs
+
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in items:
+        k = norm_space(x).lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(norm_space(x))
+    return out
+
+
+def recover_references_for_verification(text: str, style_hint: str = "apa") -> List[str]:
+    if not text:
+        return []
+
+    refs = extract_references_enhanced(text)
+
+    if style_hint == "apa":
+        refs = [r for r in refs if _is_plausible_reference_entry(r)]
+    else:
+        refs = [r for r in refs if r and len(norm_space(r)) >= 10]
+
+    refs = _dedupe_keep_order(refs)
+
+    if style_hint == "numeric":
+        refs = _split_embedded_numeric_refs(refs)
+
+    return refs
+    
+def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
+    """
+    Split reference blocks where PDF/DOCX extraction merged two APA references.
+
+    Improvements:
+    - Handles long multi-author APA starts such as:
+      "Aryeetey, E., Baah-Nuakoh, A., Duggleby, T., ... (1994)"
+    - Handles names with diacritics such as Artüz and Brüggen.
+    - Splits only after a boundary that looks like the end of a previous entry.
+    """
+    out: List[str] = []
+
+    UPPER = r"A-ZÀ-ÖØ-Þ"
+    NAME_BODY = r"A-Za-zÀ-ÖØ-öø-ÿ'’\-"
+    SURNAME = rf"[{UPPER}][{NAME_BODY}]+"
+    INITIALS = r"(?:[A-Z]\.?\s*){1,5}"
+    YEAR_IN_PARENS = r"\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)"
+    PERSON = rf"{SURNAME},\s*{INITIALS}"
+
+    # Narrow start, good for simple two-author entries.
+    person_start = re.compile(
+        rf"(?=(?:{PERSON}(?:(?:,\s*|,\s*&\s*|\s*&\s*|\s+and\s+){PERSON}){{0,12}}\s*{YEAR_IN_PARENS}))"
+    )
+
+    # Broad start, catches multi-author blocks when initials/spacing are imperfect.
+    person_start_broad = re.compile(
+        rf"(?=(?:{SURNAME},\s*.{{1,220}}?{YEAR_IN_PARENS}))"
+    )
+
+    # Institutional author APA start: "Ghana Statistical Service. (2021)"
+    org_start = re.compile(
+        r"(?=(?:[A-Z][A-Za-z&/\-]+(?:\s+[A-Z][A-Za-z&/\-]+){1,12}"
+        r"\.\s*\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)))"
+    )
+
+    for ref in merged or []:
+        s = norm_space(ref)
+        if not s:
+            continue
+
+        cuts = []
+        for pat in (person_start, person_start_broad, org_start):
+            for m in pat.finditer(s):
+                pos = m.start()
+                if pos <= 0:
+                    continue
+
+                # Require the embedded entry to start after a sentence/URL/DOI boundary.
+                prefix_window = s[max(0, pos - 12):pos]
+                left_part = s[:pos]
+                boundary_ok = (
+                    bool(re.search(r"[\.\?\!]\s*$", prefix_window))
+                    or bool(re.search(r"\b(?:Retrieved from|Available at)\s*$", prefix_window, re.I))
+                    or bool(DOI_RE.search(left_part))
+                    or bool(re.search(r"https?://\S+\s*$", left_part, re.I))
+                )
+                if boundary_ok:
+                    cuts.append(pos)
+
+        cuts = sorted(set(cuts))
+        if not cuts:
+            out.append(s)
+            continue
+
+        prev = 0
+        for pos in cuts:
+            part = norm_space(s[prev:pos])
+            if part:
+                out.append(part)
+            prev = pos
+        tail = norm_space(s[prev:])
+        if tail:
+            out.append(tail)
+
+    return [x for x in out if x]
+
+def _clean_reference_list(refs: List[str], style_hint: str = "apa") -> List[str]:
+    cleaned: List[str] = []
+    for ref in refs or []:
+        s = norm_space(str(ref))
+        if not s:
+            continue
+        if _is_digitised_artifact_line(s):
+            continue
+        if _is_doi_only_reference(s):
+            continue
+        if style_hint == "apa" and not _is_plausible_reference_entry(s):
+            continue
+        cleaned.append(s)
+    return _dedupe_keep_order(cleaned)
+
+
+
+def _looks_like_author_list_continuation(cur: str, line: str) -> bool:
+    """
+    Detect PDF line wraps inside the author-list part of an APA reference.
+
+    Prevents false standalone references such as:
+    - "Chen, W., & Plank, G. (2021)" when the previous line is
+      "Afenyo-Agbe, E., Afram, A., ... Sefa-Nyarko, C.,"
+    - "Vaz, A. (2012)" when the previous line is
+      "Alkire, S., ..., Seymour, G., &"
+    - "& Acheampong, P. P. (2023)" when the previous line contains earlier co-authors.
+    """
+    cur = norm_space(cur or "")
+    line = norm_space(line or "")
+    if not cur or not line:
+        return False
+
+    if YEAR_RE.search(cur):
+        return False
+
+    if re.match(r"^(?:&|and|＆)\s+", line, flags=re.I):
+        return True
+
+    if re.search(r"(?:,|&|and|＆)\s*$", cur, flags=re.I):
+        return True
+
+    prev_author_markers = len(re.findall(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}",
+        cur,
+    ))
+    next_starts_author = bool(re.match(
+        r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}",
+        line,
+    ))
+    if prev_author_markers >= 1 and next_starts_author:
+        return True
+
+    return False
+
+
+
+def _looks_like_wrapped_apa_reference_start_without_year(line: str) -> bool:
+    """
+    Detect the first line of a new APA reference where the year appears on the
+    next wrapped line. Example:
+    "Amponsah, D., Awunyo-Vitor, D., ... Sunday, O. A.,"
+    followed by "& Acheampong, P. P. (2023). ...".
+    """
+    s = norm_space(line or "")
+    if not s or YEAR_RE.search(s):
+        return False
+    if re.match(r"^(?:&|and|＆)\s+", s, flags=re.I):
+        return False
+    markers = re.findall(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}",
+        s,
+    )
+    return bool(markers) and bool(re.search(r",\s*$", s))
+
+def _add_alias_once(alias_map: Dict[str, str], key: str, ref: str, prefer: bool = False) -> None:
+    """
+    Add alias without overwriting earlier, more specific references.
+    Use prefer=True only for highly specific aliases such as two-author keys.
+    """
+    key = (key or "").lower()
+    if not key:
+        return
+    if prefer or key not in alias_map:
+        alias_map[key] = ref
+
+def _merge_reference_lines(raw_lines: List[str], style_hint: str = "apa") -> List[str]:
+    raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
+    if not raw_lines:
+        return []
+
+    merged: List[str] = []
+    cur = ""
+    for ln in raw_lines:
+        s = ln.strip()
+        if not s:
+            continue
+
+        is_new = (
+            _looks_like_new_numeric_reference_start(s)
+            or _looks_like_new_apa_reference_start(s)
+            or (cur and YEAR_RE.search(cur) and _looks_like_wrapped_apa_reference_start_without_year(s))
+        )
+
+        # Important PDF/DOCX repair: do not split a reference in the middle of a
+        # wrapped author list. This is what caused Chen & Plank, Vaz, and
+        # & Acheampong to appear as separate "uncited references".
+        if cur and is_new and _looks_like_author_list_continuation(cur, s):
+            is_new = False
+
+        if is_new:
+            if cur:
+                merged.append(norm_space(cur))
+            cur = s
+        else:
+            if not cur:
+                cur = s
+            else:
+                joiner = " "
+                if cur.endswith("-"):
+                    cur = cur[:-1]
+                    joiner = ""
+                cur = cur + joiner + s
+
+    if cur:
+        merged.append(norm_space(cur))
+
+    merged = [m for m in merged if m and len(m) >= 8]
+    if style_hint == "numeric":
+        merged = _split_embedded_numeric_refs(merged)
+        merged = _clean_reference_list(merged, style_hint="numeric")
+    else:
+        merged = _split_embedded_apa_refs(merged)
+        merged = _clean_reference_list(merged, style_hint="apa")
+    return merged
+
+
+def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
+    out: List[str] = []
+    br_pat = re.compile(r"(?=(\[\s*\d{1,4}\s*\]\s+))")
+    dot_pat = re.compile(r"(?=(\b\d{1,4}[\.\)]\s+))")
+
+    for s in merged:
+        s = (s or "").strip()
+        if not s:
+            continue
+
+        cuts: List[int] = []
+
+        for m in br_pat.finditer(s):
+            pos = m.start(1)
+            if pos > 0:
+                cuts.append(pos)
+
+        for m in dot_pat.finditer(s):
+            pos = m.start(1)
+            if pos > 0:
+                token = m.group(1).strip()
+                num = re.match(r"^(\d{1,4})", token)
+                if num and YEAR_RE.fullmatch(num.group(1)):
+                    continue
+                cuts.append(pos)
+
+        if not cuts:
+            out.append(s)
+            continue
+
+        cuts = sorted(set(cuts))
+        prev = 0
+        for pos in cuts:
+            part = s[prev:pos].strip()
+            if part:
+                out.append(part)
+            prev = pos
+        tail = s[prev:].strip()
+        if tail:
+            out.append(tail)
+
+    out = [x for x in out if x and len(x) >= 10 and not _is_doi_only_reference(x)]
+    out = [x for x in out if not _is_digitised_artifact_line(x)]
+    return _dedupe_keep_order(out)
+
+
+# ============================================================================
+# APA/HARVARD STYLE
+# ============================================================================
+
+def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
+    """Parse author and year from APA/Harvard citation.
+    
+    Now handles malformed years (2-3 digits like '204' -> '2024')
+    """
+    s = norm_space(cite)
+    s = _normalise_extracted_author_year_citation(s)
+    if not s:
+        return None
+
+    s = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", s, flags=re.I).strip()
+    
+    # First try to match standard 4-digit years
+    ym = YEAR_RE.search(s)
+    year = None
+    year_start = None
+    
+    if ym:
+        year = ym.group(1)
+        year_start = ym.start()
+    else:
+        # Try to find malformed years (2-3 digit numbers that could be years)
+        malformed_pat = re.compile(r"[,&]\s*([A-Za-z\s]+?)?\s*(\d{2,3})\s*[\),]")
+        malformed_match = malformed_pat.search(s)
+        
+        if malformed_match:
+            year_candidate = malformed_match.group(2)
+            if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
+                year = year_candidate
+                year_start = malformed_match.start(2)
+        
+        if not year:
+            standalone_pat = re.compile(r"\b(\d{2,3})\b")
+            standalone_match = standalone_pat.search(s)
+            if standalone_match:
+                year_candidate = standalone_match.group(1)
+                if year_candidate.isdigit() and 0 <= int(year_candidate) <= 999:
+                    year = year_candidate
+                    year_start = standalone_match.start(1)
+    
+    if not year:
+        return None
+    
+    if year_start:
+        left = s[:year_start].strip(" ,;()")
+    else:
+        left = ""
+
+    if left:
+        left = _strip_discourse_prefixes(left)
+
+    for _ in range(3):
+        if "," not in left:
+            break
+        first, rest = left.split(",", 1)
+        if re.search(r"\b[A-Z][A-Za-z'\-]+\b", first):
+            break
+        left = rest.strip(" ,;()")
+
+    left = re.sub(r"(’s|'s)\b", "", left).strip()
+    left = _strip_discourse_prefixes(left)
+
+    if _is_bad_author_left(left):
+        return None
+    if _is_likely_narrative_citation(left, year, s):
+        return None
+
+    inst_aliases = _institution_aliases_for_citation_left(left)
+    author_key = inst_aliases[0] if inst_aliases else _first_author_or_org_key(left)
+    if not author_key:
+        return None
+    if _is_non_author_key(author_key):
+        return None
+    return author_key, year
+
+
+def extract_author_year_citations(text: str) -> List[str]:
+    t = (text or "").replace("\u2019", "'")
+
+    # Normalise common OCR/typing issues before citation extraction.
+    # Example in UCC thesis exports: "Artüz and and Bayraktar (2021)".
+    t = _normalise_common_citation_typos(t)
+    t = re.sub(r"\band\s+and\b", "and", t, flags=re.I)
+    t = re.sub(r"(?<=\S)&", " &", t)
+    t = re.sub(r"&(?=\S)", "& ", t)
+
+    paren_pat = re.compile(r"\(([^()]{0,260}?\b(?:19|20)\d{2}[a-z]?\b[^()]{0,260}?)\)")
+
+    # Unicode-aware name pattern. This prevents surnames such as Artüz, Brüggen,
+    # Dženopoljac and Proença from being reduced to the last author only.
+    NAME = r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:'s)?"
+    AMP = r"(?:&|and|＆)"
+    AUTHOR_LIST = rf"{NAME}(?:\s*,\s*{NAME}){{0,10}}(?:\s*,?\s*{AMP}\s*{NAME})?"
+
+    narr_pat = re.compile(
+        rf"\b("
+        rf"(?:{AUTHOR_LIST})"
+        rf"|(?:{NAME}\s+{AMP}\s+{NAME})"
+        rf"|(?:{NAME}\s+et\s+al\.)"
+        rf")\s*\(\s*((?:19|20)\d{{2}}[a-z]?)\s*\)?"
+    )
+
+    out: List[str] = []
+
+    for m in paren_pat.finditer(t):
+        inside = (m.group(1) or "").strip()
+        if YEAR_RE.fullmatch(inside) and not re.search(r"[A-Za-z]", inside):
+            continue
+
+        chunks = [c.strip() for c in re.split(r";", inside) if c.strip()]
+        for ch in chunks:
+            ch2 = re.sub(r"\b(p|pp)\.?\s*\d+(\s*[-–]\s*\d+)?\b", "", ch, flags=re.I).strip()
+            if not YEAR_RE.search(ch2):
+                continue
+            if _citation_context_is_non_citation(t, m.start(), m.end(), ch2):
+                continue
+            for piece in _split_author_year_chunk(ch2):
+                if piece and YEAR_RE.search(piece):
+                    out.append(norm_space(piece))
+
+    for m in narr_pat.finditer(t):
+        author = m.group(1).strip()
+        years_block = m.group(2).strip()
+    
+        if not years_block:
+            continue
+    
+        if _citation_context_is_non_citation(t, m.start(), m.end(), author):
+            continue
+
+        author = re.sub(r"(’s|'s)\b", "", author).strip()
+        years = re.split(r"[;,]\s*", years_block)
+    
+        for y in years:
+            y = y.strip()
+            if YEAR_RE.fullmatch(y):
+                out.append(norm_space(f"{author}, {y}"))
+
+    cleaned = []
+
+    for c in out:
+        c = _normalise_extracted_author_year_citation(c)
+        if not c:
+            continue
+
+        if _citation_has_blocked_narrative_lead(c):
+            continue
+
+        # Keep repeated occurrences. Reference-to-citation counts must reflect
+        # real frequency in the text, not only unique citation strings.
+        if _parse_author_year_from_cite(c):
+            cleaned.append(c)
+
+    return cleaned
+
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    s = norm_space(ref)
+    if not s:
+        return None
+
+    s_clean = _strip_leading_reference_number(s)
+
+    if not _is_plausible_reference_entry(s_clean):
+        return None
+
+    m = re.search(r"\(\s*(" + YEAR + r")\s*\)", s_clean)
+    if not m:
+        m2 = re.search(r"\b(" + YEAR + r")\b", s_clean)
+        if not m2:
+            return None
+        year = m2.group(1)
+        left = s_clean[: m2.start()].strip()
+    else:
+        year = m.group(1)
+        left = s_clean[: m.start()].strip()
+
+    author_key = _first_author_or_org_key(left)
+    if not author_key:
+        return None
+
+    key = f"{author_key}|{year}".lower()
+    return RefAY(reference_full=s_clean, key=key)
+
+
+def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    # Do not let duplicate first-author/year keys overwrite earlier entries.
+    # Example: Adam (2017) and Adam, Frimpong & Boadu (2017) share "adam|2017".
+    # The single-author reference should remain available for "Adam, 2017".
+    ref_map: Dict[str, str] = {}
+    for r in references:
+        _add_alias_once(ref_map, r.key, r.reference_full)
+    alias_map: Dict[str, str] = dict(ref_map)
+
+    refs_by_year: Dict[str, List[RefAY]] = defaultdict(list)
+    for r in references:
+        ym_r = YEAR_RE.search(r.reference_full)
+        if ym_r:
+            refs_by_year[_base_year(ym_r.group(1))].append(r)
+
+    for r in references:
+        try:
+            auth, y = r.key.split("|", 1)
+        except Exception:
+            continue
+        by = _base_year(y)
+        if by and by != y:
+            _add_alias_once(alias_map, f"{auth}|{by}".lower(), r.reference_full)
+
+        s_full = r.reference_full
+        ym = YEAR_RE.search(s_full)
+        if not ym:
+            continue
+        year_full = ym.group(1)
+        year_base = _base_year(year_full)
+
+        left = s_full[: ym.start()].strip(" ,;()")
+
+        # Institutional acronym aliases, e.g. UNCTAD -> United Nations Conference...
+        for alias in _institution_acronym_aliases(left):
+            _add_alias_once(alias_map, f"{alias}|{year_full}".lower(), r.reference_full)
+            if year_base and year_base != year_full:
+                _add_alias_once(alias_map, f"{alias}|{year_base}".lower(), r.reference_full)
+
+        names = _surnames_from_author_blob(left)
+        if not names:
+            continue
+
+        for nm in names[:2]:
+            _add_alias_once(alias_map, f"{nm}|{year_full}".lower(), r.reference_full)
+            if year_base and year_base != year_full:
+                _add_alias_once(alias_map, f"{nm}|{year_base}".lower(), r.reference_full)
+
+        if len(names) >= 2:
+            a, b = names[0], names[1]
+            _add_alias_once(alias_map, f"{a}+{b}|{year_full}".lower(), r.reference_full, prefer=True)
+            _add_alias_once(alias_map, f"{b}+{a}|{year_full}".lower(), r.reference_full, prefer=True)
+            _add_alias_once(alias_map, f"{a}+etal|{year_full}".lower(), r.reference_full, prefer=True)
+            if year_base and year_base != year_full:
+                _add_alias_once(alias_map, f"{a}+{b}|{year_base}".lower(), r.reference_full, prefer=True)
+                _add_alias_once(alias_map, f"{b}+{a}|{year_base}".lower(), r.reference_full, prefer=True)
+                _add_alias_once(alias_map, f"{a}+etal|{year_base}".lower(), r.reference_full, prefer=True)
+
+    cite_counts_by_ref = Counter()
+    parsed_cites: List[Tuple[str, str, str]] = []
+    ambiguous_cite_samples_by_ref: Dict[str, List[str]] = defaultdict(list)
+
+    # Same first-author/year references need special handling.
+    # Example:
+    #   Adam, D. (2020). Special report...
+    #   Adam, A. M. (2020). Sample size determination...
+    # A bare in-text citation such as Adam (2020) cannot be assigned safely
+    # from author-year alone. Instead of letting the first reference absorb the
+    # citation and listing the other as uncited, mark all same-key references
+    # as ambiguously cited. The UI can show the ambiguity for manual review.
+    refs_by_shared_author_year: Dict[str, List[str]] = defaultdict(list)
+    for rr in references:
+        try:
+            rr_auth, rr_year = rr.key.split("|", 1)
+        except Exception:
+            continue
+        keys_for_rr = {f"{rr_auth}|{rr_year}".lower()}
+        rr_base_year = _base_year(rr_year)
+        if rr_base_year and rr_base_year != rr_year:
+            keys_for_rr.add(f"{rr_auth}|{rr_base_year}".lower())
+        for kk in keys_for_rr:
+            if rr.reference_full not in refs_by_shared_author_year[kk]:
+                refs_by_shared_author_year[kk].append(rr.reference_full)
+
+    def _citation_is_bare_same_author_year(citation_text: str, parsed_author: str, parsed_year: str) -> Tuple[bool, str, List[str]]:
+        """Return True when a citation is too generic to choose among same-author/year refs."""
+        base_year = _base_year(parsed_year) if parsed_year else parsed_year
+        shared_key = f"{parsed_author}|{base_year or parsed_year}".lower()
+        group = refs_by_shared_author_year.get(shared_key, [])
+        if len(group) <= 1:
+            return False, shared_key, group
+
+        s_cite = norm_space(citation_text or "")
+        ym_cite = YEAR_RE.search(s_cite)
+        left_cite = s_cite[: ym_cite.start()].strip(" ,;()[]{}") if ym_cite else s_cite
+        left_cite = _strip_discourse_prefixes(left_cite)
+        names_cite = _surnames_from_author_blob(left_cite)
+
+        has_explicit_initials = bool(re.search(r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}", left_cite))
+        has_two_authors = len(names_cite) >= 2 or bool(re.search(r"\s+(?:&|and)\s+", left_cite, flags=re.I))
+        has_etal = bool(re.search(r"\bet\s*\.?\s*al\.?\b", s_cite, flags=re.I))
+
+        # Bare examples: "Adam, 2020" or "Adam's (2020)".
+        # Non-bare examples: "Adam, A. M., 2020", "Adam & Boateng, 2020",
+        # "Adam et al., 2020".
+        is_bare = not has_explicit_initials and not has_two_authors and not has_etal
+        return is_bare, shared_key, group
+
+    for c in citations:
+        parsed = _parse_author_year_from_cite(c)
+        if not parsed:
+            continue
+        
+        auth, year = parsed
+        year_base = _base_year(year) if len(year) == 4 else year
+        
+        cand_keys = []
+
+        ym = YEAR_RE.search(c)
+        names = []
+        if ym:
+            left = (c[: ym.start()] or "").strip(" ,;()")
+            names = _surnames_from_author_blob(left)
+
+            # For multi-author citations, try the specific two-author key before
+            # the generic first-author key. This avoids mapping
+            # "Adam, Frimpong & Boadu, 2017" to the single-author Adam (2017).
+            if len(names) >= 2:
+                cand_keys.append(f"{names[0]}+{names[1]}|{ym.group(1)}".lower())
+                cand_keys.append(f"{names[1]}+{names[0]}|{ym.group(1)}".lower())
+                if year_base and year_base != ym.group(1):
+                    cand_keys.append(f"{names[0]}+{names[1]}|{year_base}".lower())
+                    cand_keys.append(f"{names[1]}+{names[0]}|{year_base}".lower())
+
+        if re.search(r"\bet\s+al\.?", c, re.I):
+            m = re.search(r"([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s+et\s+al", c, re.I)
+            if m:
+                first_author = strip_punct(m.group(1))
+                cand_keys.append(f"{first_author}+etal|{year}".lower())
+                if year_base and year_base != year:
+                    cand_keys.append(f"{first_author}+etal|{year_base}".lower())
+
+        cand_keys.append(f"{auth}|{year}".lower())
+        if year_base and year_base != year:
+            cand_keys.append(f"{auth}|{year_base}".lower())
+
+        if names:
+            cand_keys.append(f"{names[0]}|{ym.group(1)}".lower())
+            if year_base and year_base != ym.group(1):
+                cand_keys.append(f"{names[0]}|{year_base}".lower())
+
+        # Deduplicate candidate keys while preserving priority.
+        seen_keys = set()
+        cand_keys = [k for k in cand_keys if k and not (k in seen_keys or seen_keys.add(k))]
+
+        # If a bare citation maps to more than one reference with the same
+        # first-author/year, do not allow one reference to absorb the count and
+        # leave the others as false uncited references.
+        # Example: Adam (2020) with Adam, D. (2020) and Adam, A. M. (2020).
+        is_bare_ambiguous, ambiguous_key, ambiguous_refs = _citation_is_bare_same_author_year(c, auth, year)
+        if is_bare_ambiguous and ambiguous_refs:
+            for ambiguous_ref in ambiguous_refs:
+                cite_counts_by_ref[ambiguous_ref] += 1
+                if len(ambiguous_cite_samples_by_ref[ambiguous_ref]) < 6:
+                    ambiguous_cite_samples_by_ref[ambiguous_ref].append(c)
+            parsed_cites.append((
+                ambiguous_refs[0],
+                c,
+                f"ambiguous_same_author_year:{ambiguous_key};candidates={len(ambiguous_refs)}"
+            ))
+            continue
+
+        matched_ref = None
+        used_key = None
+        for k in cand_keys:
+            if k in alias_map:
+                matched_ref = alias_map[k]
+                used_key = k
+                break
+
+        if matched_ref:
+            cite_counts_by_ref[matched_ref] += 1
+            parsed_cites.append((matched_ref, c, f"alias:{used_key}" if used_key else ""))
+        else:
+            best_ref = ""
+            best_score = 0
+            ym_c = YEAR_RE.search(c)
+            if ym_c:
+                yb = _base_year(ym_c.group(1))
+                left_c = (c[: ym_c.start()] or "").strip(" ,;()")
+                cite_names = _surnames_from_author_blob(left_c)
+
+                for rr in refs_by_year.get(yb, []):
+                    s_full = rr.reference_full
+                    ym_r = YEAR_RE.search(s_full)
+                    if not ym_r:
+                        continue
+                    left_r = s_full[: ym_r.start()].strip(" ,;()")
+                    ref_names = _surnames_from_author_blob(left_r)
+
+                    overlap = len(set(cite_names) & set(ref_names))
+                    score_overlap = int(round(100 * (overlap / max(1, len(set(cite_names))))))
+
+                    score = score_overlap
+                    if FUZZ_OK and fuzz and cite_names and ref_names:
+                        score1 = fuzz.token_set_ratio(" ".join(cite_names), " ".join(ref_names))
+                        score2 = fuzz.partial_ratio(" ".join(cite_names), " ".join(ref_names))
+                        score_fuzz = int(round(0.6 * score1 + 0.4 * score2))
+                        score = max(score, score_fuzz)
+
+                    if score > best_score:
+                        best_score = score
+                        best_ref = rr.reference_full
+
+            if best_ref and best_score >= 74:
+                cite_counts_by_ref[best_ref] += 1
+                parsed_cites.append((best_ref, c, f"fuzzy:{best_score}"))
+            else:
+                parsed_cites.append(("", c, ""))
+
+    c2r: List[Dict[str, Any]] = []
+    missing_counter = Counter()
+
+    for matched_ref, c, flags in parsed_cites:
+        if matched_ref:
+            c2r.append({"status": "matched", "in_text": c, "matched_reference": matched_ref, "flags": flags})
+        else:
+            c2r.append({"status": "not_found", "in_text": c, "matched_reference": "", "flags": ""})
+            missing_counter[c] += 1
+
+    r2c: List[Dict[str, Any]] = []
+    uncited_refs: List[str] = []
+
+    cite_samples_by_ref: Dict[str, List[str]] = defaultdict(list)
+    for matched_ref, c, _flags in parsed_cites:
+        if matched_ref and len(cite_samples_by_ref[matched_ref]) < 6:
+            cite_samples_by_ref[matched_ref].append(c)
+
+    ref_cluster_map = _cluster_references(references)
+
+    for r in references:
+        ref_full = r.reference_full
+        times = int(cite_counts_by_ref.get(ref_full, 0))
+
+        meta = ref_cluster_map.get(ref_full) or {}
+        canonical = meta.get("canonical_ref", ref_full)
+        is_dup = bool(meta.get("is_duplicate", False))
+        cid = meta.get("cluster_id", 0)
+
+        canonical_times = int(cite_counts_by_ref.get(canonical, 0))
+        if times == 0 and not (is_dup and canonical_times > 0):
+            uncited_refs.append(ref_full)
+
+        r2c.append({
+            "times_cited": times,
+            "reference": ref_full,
+            "cited_by": list(dict.fromkeys(
+                (cite_samples_by_ref.get(ref_full, []) or [])
+                + (ambiguous_cite_samples_by_ref.get(ref_full, []) or [])
+            ))[:6],
+            "ambiguous_same_author_year_cited": bool(ambiguous_cite_samples_by_ref.get(ref_full)),
+            "cluster_id": cid,
+            "canonical_reference": canonical,
+            "duplicate_of_cited": bool(is_dup and canonical_times > 0),
+        })
+
+    missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing_counter.most_common()]
+    total_intext_count = int(len([c for c in citations if c]))
+    return c2r, r2c, missing_rows, uncited_refs, total_intext_count
+
+
+# ============================================================================
+# IEEE STYLE
+# ============================================================================
+
+def extract_ieee_citations(text: str) -> List[str]:
+    t = text or ""
+    out: List[str] = []
+    
+    t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+(\d{1,4})", "", t, flags=re.I)
+    t = re.sub(r'\]\s*\n\s*\[', '][', t)
+    
+    ieee_pat = re.compile(r"\[\s*(\d{1,4})(?:\s*[-–,]\s*(\d{1,4}))?(?:\s*,\s*(\d{1,4})(?:\s*[-–]\s*(\d{1,4}))?)?\s*\]")
+    
+    for m in ieee_pat.finditer(t):
+        nums = _expand_citation_range(m)
+        out.extend(nums)
+    
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def parse_reference_numeric(ref: str, style: str = "ieee") -> Optional[RefNum]:
+    s = norm_space(ref)
+    if not s:
+        return None
+    
+    style = style.lower()
+    is_ieee = style == "ieee"
+    
+    if is_ieee:
+        m = re.match(r"^\[\s*(\d{1,4})\s*\]\s*(.+)$", s)
+        if m:
+            num = m.group(1)
+            body = norm_space(m.group(2))
+            body = _strip_leading_reference_number(body)
+            if len(body) > 20 and re.search(r'[A-Z][a-z]+', body):
+                return RefNum(reference_full=s, num=num)
+        return None
+    
+    return None
+
+
+def reconcile_numeric(citations: List[str], references: List[RefNum], style: str = "ieee") -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    style = style.lower()
+    is_ieee = style == "ieee"
+    
+    if not is_ieee:
+        return [], [], [], [], 0
+    
+    ref_map: Dict[str, str] = {}
+    ref_by_num: Dict[str, str] = {}
+    
+    for r in references:
+        ref_map[r.num] = r.reference_full
+        ref_by_num[r.num] = r.reference_full
+        ref_map[f"[{r.num}]"] = r.reference_full
+    
+    cite_counts = Counter()
+    
+    for cite in citations:
+        cite_str = str(cite).strip()
+        
+        if cite_str in ref_map:
+            cite_counts[ref_map[cite_str]] += 1
+        elif cite_str.isdigit() and cite_str in ref_by_num:
+            cite_counts[ref_by_num[cite_str]] += 1
+    
+    c2r = []
+    missing = Counter()
+    
+    for cite in citations:
+        cite_str = str(cite).strip()
+        matched = False
+        
+        if cite_str in ref_map:
+            c2r.append({
+                "status": "matched",
+                "in_text": cite_str,
+                "matched_reference": ref_map[cite_str],
+                "flags": ""
+            })
+            matched = True
+        elif cite_str.isdigit() and cite_str in ref_by_num:
+            c2r.append({
+                "status": "matched",
+                "in_text": cite_str,
+                "matched_reference": ref_by_num[cite_str],
+                "flags": "number_only"
+            })
+            matched = True
+        
+        if not matched:
+            c2r.append({
+                "status": "not_found",
+                "in_text": cite_str,
+                "matched_reference": "",
+                "flags": ""
+            })
+            missing[cite_str] += 1
+    
+    r2c = []
+    uncited = []
+    
+    cite_samples = defaultdict(list)
+    for cite in citations:
+        cite_str = str(cite).strip()
+        if cite_str in ref_map:
+            if len(cite_samples[ref_map[cite_str]]) < 6:
+                cite_samples[ref_map[cite_str]].append(cite_str)
+        elif cite_str.isdigit() and cite_str in ref_by_num:
+            if len(cite_samples[ref_by_num[cite_str]]) < 6:
+                cite_samples[ref_by_num[cite_str]].append(cite_str)
+    
+    for r in references:
+        times = cite_counts.get(r.reference_full, 0)
+        if times == 0:
+            uncited.append(r.reference_full)
+        r2c.append({
+            "times_cited": times,
+            "reference": r.reference_full,
+            "cited_by": cite_samples.get(r.reference_full, [])
+        })
+    
+    missing_rows = [{"citation_in_text": k, "count_in_text": v} for k, v in missing.items()]
+    unique_intext_count = len(set(citations))
+    
+    return c2r, r2c, missing_rows, uncited, unique_intext_count
+
+
+def _expand_citation_range(match) -> List[str]:
+    nums = []
+    groups = match.groups()
+    
+    if not groups or not groups[0]:
+        return nums
+    
+    start = int(groups[0])
+    if groups[1]:
+        end = int(groups[1])
+        if start <= end and (end - start) <= 50:
+            nums.extend([str(i) for i in range(start, end + 1)])
+        else:
+            nums.append(str(start))
+            nums.append(str(end))
+    else:
+        nums.append(str(start))
+    
+    if groups[2]:
+        start2 = int(groups[2])
+        if groups[3]:
+            end2 = int(groups[3])
+            if start2 <= end2 and (end2 - start2) <= 50:
+                nums.extend([str(i) for i in range(start2, end2 + 1)])
+            else:
+                nums.append(str(start2))
+                nums.append(str(end2))
+        else:
+            nums.append(str(start2))
+    
+
+    return nums
+
+
+# ============================================================================
+# SAFE NUMERIC STYLE EXTENSIONS
+# ============================================================================
+
+def _expand_numeric_citation_payload(payload: str, max_range: int = 50) -> List[str]:
+    """Expand payloads such as '1', '1, 4', '1-3', '1, 4-6'."""
+    payload = norm_space(payload or "")
+    if not payload:
+        return []
+    payload = payload.translate(SUPERSCRIPT_TO_NORMAL)
+    payload = payload.replace("–", "-").replace("—", "-").replace("−", "-")
+    payload = re.sub(r"\s+", "", payload)
+
+    out: List[str] = []
+    for part in re.split(r"[,;]", payload):
+        if not part:
+            continue
+        if "-" in part:
+            bits = [b for b in part.split("-") if b]
+            if len(bits) == 2 and bits[0].isdigit() and bits[1].isdigit():
+                start, end = int(bits[0]), int(bits[1])
+                if 1 <= start <= end and (end - start) <= max_range:
+                    out.extend(str(i) for i in range(start, end + 1))
+                else:
+                    out.extend([bits[0], bits[1]])
+            continue
+        if part.isdigit():
+            out.append(str(int(part)))
+    return out
+
+
+def _numeric_context_is_statistical_or_label(text: str, start: int, end: int, bracket_kind: str) -> bool:
+    """
+    Reject numeric candidates that are likely statistics, model labels, tables or figures.
+    This is especially important for round-bracket numeric styles.
+    """
+    t = text or ""
+    before = t[max(0, start - 100):start]
+    after = t[end:min(len(t), end + 100)]
+    ctx = soft_lower(before + " " + after)
+    before_tail = soft_lower(before[-50:])
+
+    if re.search(r"\b(?:table|figure|fig\.?|model|equation|eq\.?|appendix|chapter|section)\s*$", before_tail, re.I):
+        return True
+
+    if bracket_kind == "round":
+        immediate_before = soft_lower(before[-35:])
+        immediate_after = soft_lower(after[:20])
+        tight = soft_lower(before[-12:] + " " + after[:12])
+
+        # Reject statistical notation where the statistic label is immediately
+        # before the bracket, e.g. p (1), df (2), Model (1), Table (2).
+        if re.search(
+            r"\b(?:p|p\s*value|t|f|z|chi|χ2|χ²|beta|β|r2|r²|adj|se|sd|mean|n|df|sig|ci|or|aor|coef|coefficient|regression|model|table|figure)\s*$",
+            immediate_before,
+            re.I,
+        ):
+            return True
+
+        # Reject coefficient/statistical reporting close to the bracket.
+        if re.search(r"[=<>≤≥%]", tight):
+            return True
+        if re.match(r"^\s*[=<>≤≥%]", immediate_after):
+            return True
+
+    return False
+
+
+def extract_square_numeric_citations(text: str) -> List[str]:
+    t = text or ""
+    out: List[str] = []
+
+    # Remove common table/figure labels before scanning.
+    t = re.sub(r"(?:table|figure|fig\.?|eq\.?|equation)\s+\[?\s*\d{1,4}\s*\]?", "", t, flags=re.I)
+    t = re.sub(r"\]\s*\n\s*\[", "][", t)
+
+    bracket_range_pat = re.compile(r"\[\s*(\d{1,4})\s*\]\s*[-–—−]\s*\[\s*(\d{1,4})\s*\]")
+    for m in bracket_range_pat.finditer(t):
+        if _numeric_context_is_statistical_or_label(t, m.start(), m.end(), "square"):
+            continue
+        out.extend(_expand_numeric_citation_payload(f"{m.group(1)}-{m.group(2)}"))
+
+    pat = re.compile(r"\[\s*(\d{1,4}(?:\s*(?:,|;|[-–—−])\s*\d{1,4})*)\s*\]")
+    for m in pat.finditer(t):
+        if _numeric_context_is_statistical_or_label(t, m.start(), m.end(), "square"):
+            continue
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def extract_round_numeric_citations(text: str) -> List[str]:
+    """Round numeric citations are only called for explicit round-bracket styles."""
+    t = text or ""
+    out: List[str] = []
+    pat = re.compile(r"\(\s*(\d{1,4}(?:\s*(?:,|;|[-–—−])\s*\d{1,4})*)\s*\)")
+    for m in pat.finditer(t):
+        if _numeric_context_is_statistical_or_label(t, m.start(), m.end(), "round"):
+            continue
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def extract_superscript_numeric_citations(text: str) -> List[str]:
+    """
+    Extract true superscript numeric citations.
+    Supported forms include ¹, ¹,², ¹–³, ^1 and ^{1,2}.
+    Ordinary baseline digits are not treated as superscript citations.
+    """
+    t = text or ""
+    out: List[str] = []
+
+    sup_chars = re.escape(_SUPERSCRIPT_DIGITS)
+    sup_pat = re.compile(
+        rf"(?<=[A-Za-z0-9\]\)\.,;:])\s*([{sup_chars}]+(?:\s*(?:,|;|⁻|[-–—−])\s*[{sup_chars}]+)*)"
+    )
+    for m in sup_pat.finditer(t):
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    caret_pat = re.compile(r"\^(?:\{\s*)?(\d{1,4}(?:\s*(?:,|;|[-–—−])\s*\d{1,4})*)(?:\s*\})?")
+    for m in caret_pat.finditer(t):
+        out.extend(_expand_numeric_citation_payload(m.group(1)))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def extract_safe_numeric_citations(text: str, style: str = "numeric_square") -> List[str]:
+    forms = _numeric_style_forms(style)
+    out: List[str] = []
+    if "square" in forms:
+        out.extend(extract_square_numeric_citations(text))
+    if "superscript" in forms:
+        out.extend(extract_superscript_numeric_citations(text))
+    if "round" in forms:
+        out.extend(extract_round_numeric_citations(text))
+
+    seen = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def parse_reference_numeric_general(ref: str, style: str = "numeric_square", fallback_num: Optional[int] = None) -> Optional[RefNum]:
+    s = norm_space(ref)
+    if not s:
+        return None
+
+    m = re.match(r"^\s*(?:\[\s*(\d{1,4})\s*\]|\(\s*(\d{1,4})\s*\)|(\d{1,4})[\.)])\s*(.+)$", s)
+    if m:
+        num = m.group(1) or m.group(2) or m.group(3)
+        body = norm_space(m.group(4))
+        if num and 1900 <= int(num) <= 2099:
+            return None
+        if len(body) >= 10 and re.search(r"[A-Za-z]", body):
+            return RefNum(reference_full=s, num=str(int(num)))
+        return None
+
+    # Controlled fallback for numeric lists that were stripped during conversion.
+    # It is not used for IEEE, where bracketed numbers are expected.
+    if fallback_num is not None and len(s) >= 20 and re.search(r"[A-Za-z]", s):
+        return RefNum(reference_full=s, num=str(fallback_num))
+
+    return None
+
+
+def parse_references_numeric_general(references_raw: List[str], style: str = "numeric_square") -> List[RefNum]:
+    refs: List[RefNum] = []
+    allow_sequential_fallback = _style_token(style) not in {"ieee", "ieee_square"}
+
+    for idx, ref in enumerate(references_raw or [], start=1):
+        parsed = parse_reference_numeric_general(
+            ref,
+            style=style,
+            fallback_num=idx if allow_sequential_fallback else None,
+        )
+        if parsed:
+            refs.append(parsed)
+
+    return refs
+
+
+def _format_numeric_intext(num: str, style: str) -> str:
+    s = _style_token(style)
+    if s in SAFE_SUPERSCRIPT_NUMERIC_STYLES:
+        return str(num).translate(NORMAL_TO_SUPERSCRIPT)
+    if s in ROUND_NUMERIC_STYLES:
+        return f"({num})"
+    return f"[{num}]"
+
+
+def reconcile_numeric_general(citations: List[str], references: List[RefNum], style: str = "numeric_square") -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    ref_by_num: Dict[str, str] = {str(r.num): r.reference_full for r in references or [] if str(r.num)}
+    cite_counts: Counter = Counter()
+
+    c2r: List[Dict[str, Any]] = []
+    missing: Counter = Counter()
+    cite_samples: Dict[str, List[str]] = defaultdict(list)
+
+    for cite in citations or []:
+        num = str(cite).strip()
+        display = _format_numeric_intext(num, style)
+        if num in ref_by_num:
+            ref_full = ref_by_num[num]
+            cite_counts[ref_full] += 1
+            if len(cite_samples[ref_full]) < 6:
+                cite_samples[ref_full].append(display)
+            c2r.append({
+                "status": "matched",
+                "in_text": display,
+                "matched_reference": ref_full,
+                "flags": _style_token(style),
+            })
+        else:
+            c2r.append({
+                "status": "not_found",
+                "in_text": display,
+                "matched_reference": "",
+                "flags": _style_token(style),
+            })
+            missing[display] += 1
+
+    r2c: List[Dict[str, Any]] = []
+    uncited: List[str] = []
+    for r in references or []:
+        times = int(cite_counts.get(r.reference_full, 0))
+        if times == 0:
+            uncited.append(r.reference_full)
+        r2c.append({
+            "times_cited": times,
+            "reference": r.reference_full,
+            "cited_by": cite_samples.get(r.reference_full, []),
+        })
+
+    missing_rows = [{"citation_in_text": k, "count_in_text": int(v)} for k, v in missing.items()]
+    unique_intext_count = len(set(str(c).strip() for c in (citations or []) if str(c).strip()))
+    return c2r, r2c, missing_rows, uncited, unique_intext_count
+
+
+# ============================================================================
+# VANCOUVER STYLE - SIMPLE SEQUENTIAL
+# ============================================================================
+
+def extract_vancouver_citations(text: str) -> List[str]:
+    t = text or ""
+    citations = []
+    
+    single_pat = re.compile(r'\[\s*(\d+)\s*\]')
+    for m in single_pat.finditer(t):
+        citations.append(m.group(1))
+    
+    multi_pat = re.compile(r'\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]')
+    for m in multi_pat.finditer(t):
+        numbers = m.group(1).split(',')
+        for num in numbers:
+            num = num.strip()
+            if num.isdigit():
+                citations.append(num)
+    
+    range_pat = re.compile(r'\[\s*(\d+)\s*[-–]\s*(\d+)\s*\]')
+    for m in range_pat.finditer(t):
+        start, end = int(m.group(1)), int(m.group(2))
+        if start <= end and (end - start) <= 50:
+            for i in range(start, end + 1):
+                citations.append(str(i))
+    
+    try:
+        citations = sorted(set(citations), key=lambda x: int(x))
+    except:
+        citations = list(dict.fromkeys(citations))
+    
+    return citations
+
+
+def parse_vancouver_references(references_raw: List[str]) -> List[RefNum]:
+    parsed_refs = []
+    
+    for i, ref in enumerate(references_raw, start=1):
+        ref = ref.strip()
+        if not ref or len(ref) < 20:
+            continue
+            
+        num = str(i)
+        
+        m = re.match(r'^(\d+)\.?\s+', ref)
+        if m:
+            extracted_num = m.group(1)
+            if extracted_num != num:
+                print(f"Warning: Reference {i} has number {extracted_num}")
+        
+        parsed_refs.append(RefNum(
+            reference_full=ref,
+            num=num
+        ))
+    
+    return parsed_refs
+
+
+def reconcile_vancouver(citations: List[str], references: List[RefNum]) -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    ref_by_num = {r.num: r.reference_full for r in references}
+    cite_counts = Counter(citations)
+    
+    c2r = []
+    missing = Counter()
+    
+    for cite in citations:
+        if cite in ref_by_num:
+            c2r.append({
+                "status": "matched",
+                "in_text": f"[{cite}]",
+                "matched_reference": ref_by_num[cite],
+                "flags": ""
+            })
+        else:
+            c2r.append({
+                "status": "not_found",
+                "in_text": f"[{cite}]",
+                "matched_reference": "",
+                "flags": ""
+            })
+            missing[f"[{cite}]"] += 1
+    
+    r2c = []
+    uncited = []
+    
+    cite_samples = defaultdict(list)
+    for cite in citations:
+        if cite in ref_by_num and len(cite_samples[ref_by_num[cite]]) < 6:
+            cite_samples[ref_by_num[cite]].append(f"[{cite}]")
+    
+    for r in references:
+        times = cite_counts.get(r.num, 0)
+        if times == 0:
+            uncited.append(r.reference_full)
+        r2c.append({
+            "times_cited": times,
+            "reference": r.reference_full,
+            "cited_by": cite_samples.get(r.reference_full, [])
+        })
+    
+    missing_rows = [{"citation_in_text": k, "count_in_text": v} for k, v in missing.items()]
+    unique_intext_count = len(set(citations))
+    
+    return c2r, r2c, missing_rows, uncited, unique_intext_count
+
+
+# ============================================================================
+# Reference clustering (shared)
+# ============================================================================
+
+def _cluster_references(references: List[Any]) -> Dict[str, Dict[str, Any]]:
+    by_doi: Dict[str, List[str]] = defaultdict(list)
+    by_bucket: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+    sigs: Dict[str, Tuple[str, str, str, str]] = {}
+
+    for r in references:
+        rf = r.reference_full
+        y, a1, t, doi = _extract_ref_signature(rf)
+        sigs[rf] = (y, a1, t, doi)
+        if doi:
+            by_doi[doi.lower()].append(rf)
+        else:
+            by_bucket[(y, a1)].append(rf)
+
+    clusters: List[List[str]] = []
+
+    for _doi, items in by_doi.items():
+        clusters.append(items)
+
+    for (y, a1), items in by_bucket.items():
+        if len(items) <= 1:
+            clusters.append(items)
+            continue
+
+        used = set()
+        for i, rf_i in enumerate(items):
+            if rf_i in used:
+                continue
+            used.add(rf_i)
+            _, _, ti, _ = sigs[rf_i]
+            cluster = [rf_i]
+
+            for rf_j in items[i+1:]:
+                if rf_j in used:
+                    continue
+                _, _, tj, _ = sigs[rf_j]
+
+                if not ti or not tj:
+                    continue
+
+                if FUZZ_OK and fuzz:
+                    score = max(fuzz.token_set_ratio(ti, tj), fuzz.partial_ratio(ti, tj))
+                else:
+                    si = set(ti.split())
+                    sj = set(tj.split())
+                    score = int(round(100 * (len(si & sj) / max(1, len(si), len(sj)))))
+
+                if score >= 88:
+                    used.add(rf_j)
+                    cluster.append(rf_j)
+
+            clusters.append(cluster)
+
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for cid, members in enumerate(clusters, start=1):
+        canonical = max(members, key=lambda x: len(x or ""))
+        for rf in members:
+            mapping[rf] = {
+                "cluster_id": cid,
+                "canonical_ref": canonical,
+                "is_duplicate": (rf != canonical),
+            }
+    return mapping
+
+
+def _extract_ref_signature(ref_full: str) -> Tuple[str, str, str, str]:
+    s = ref_full or ""
+    doi = ""
+    mdoi = _DOI_RE.search(s)
+    if mdoi:
+        doi = mdoi.group(0).rstrip(".,;")
+
+    m = YEAR_RE.search(s)
+    if not m:
+        t = _norm_ref_text(s)[:80]
+        return ("", t[:24], t[24:60], doi)
+
+    year = _base_year(m.group(1))
+    left = (s[:m.start()] or "").strip(" ,;()")
+    right = (s[m.end():] or "").strip()
+
+    surnames = _surnames_from_author_blob(left)
+    first_author = surnames[0] if surnames else _norm_ref_text(left)[:24]
+    first_author = re.sub(r"[^a-z0-9\- ]+", "", _norm_ref_text(first_author))
+
+    right = right.lstrip(" .,:;)-–—\"'[]")
+    right2 = re.split(r"\.\s+|\.?$|\s+https?://|\s+doi:\s*", right, maxsplit=1, flags=re.I)[0]
+    tokens = [re.sub(r"[^a-z0-9\-]+", "", t) for t in _norm_ref_text(right2).split()]
+    tokens = [t for t in tokens if t and t not in _REF_STOPWORDS]
+    title_stub = " ".join(tokens[:12])
+    return (year, first_author, title_stub, doi)
+
+
+_REF_STOPWORDS = {
+    "the","a","an","and","or","of","in","on","for","to","with","from","at","by","as",
+    "ed","eds","edition","vol","volume","no","number","pp","pages","page",
+}
+
+
+def _strip_accents(s: str) -> str:
+    s = s or ""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+
+
+def _norm_ref_text(s: str) -> str:
+    s = _strip_accents(s.lower())
+    s = s.replace("&", " and ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)]+", re.I)
+
+
+# -----------------------------
+# Chunked text processing
+# -----------------------------
+def _iter_text_chunks(text: str, chunk_size: int = 300_000, overlap: int = 2_000):
+    s = text or ""
+    n = len(s)
+    if n <= chunk_size:
+        yield s
+        return
+    step = max(1, chunk_size - overlap)
+    for i in range(0, n, step):
+        yield s[i: min(n, i + chunk_size)]
+        if i + chunk_size >= n:
+            break
+
+
+def _extract_author_year_citations_chunked(text: str) -> List[str]:
+    # Preserve repeated occurrences so times_cited and count_in_text are correct.
+    total = []
+    for chunk in _iter_text_chunks(text):
+        total.extend(extract_author_year_citations(chunk))
+    return total
+
+
+def _extract_numeric_citations_chunked(text: str, style: str = "ieee") -> List[str]:
+    seen = set()
+    total = []
+    for chunk in _iter_text_chunks(text):
+        if style == "vancouver":
+            found = extract_vancouver_citations(chunk)
+        elif _is_supported_numeric_style(style):
+            found = extract_safe_numeric_citations(chunk, style=style)
+        else:
+            found = extract_ieee_citations(chunk)
+
+        for c in found:
+            if c not in seen:
+                seen.add(c)
+                total.append(c)
+    return total
+
+
+# ============================================================================
+# SUGGESTION ENGINE (NON-INVASIVE - FINAL)
+# ============================================================================
+
+@dataclass
+class FixSuggestion:
+    original: str
+    suggested: str
+    fix_type: str
+    confidence: float
+    reason: str
+
+
+# ============================================================
+# CORE CITATION SUGGESTION ENGINE
+# ============================================================
+
+def generate_citation_suggestions(
+    citations: List[str],
+    references: List[RefAY],
+    ref_map: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """
+    Generate NON-INVASIVE citation suggestions.
+    No modification of original text.
+    """
+
+    suggestions = []
+    seen = set()
+
+    for citation in citations:
+        if citation in seen:
+            continue
+        seen.add(citation)
+
+        suggestion = _generate_citation_fixes(
+            citation,
+            references,
+            ref_map
+        )
+
+        if suggestion:
+            suggestions.append({
+                "citation": suggestion.original,
+                "suggested": suggestion.suggested,
+                "type": suggestion.fix_type,
+                "confidence": suggestion.confidence,
+                "reason": suggestion.reason,
+                "action": "review_required"
+            })
+
+    return suggestions
+
+
+# ============================================================
+# REFERENCE SUGGESTION ENGINE
+# ============================================================
+
+def generate_reference_suggestions(
+    references: List[RefAY]
+) -> List[Dict[str, Any]]:
+    suggestions = []
+
+    for ref in references:
+        ref_suggestions = _generate_reference_fixes(ref)
+
+        for s in ref_suggestions:
+            suggestions.append({
+                "original": s.original,
+                "suggested": s.suggested,
+                "type": s.fix_type,
+                "confidence": s.confidence,
+                "reason": s.reason,
+                "action": "optional_fix"
+            })
+
+    return suggestions
+
+
+# ============================================================
+# MASTER SUGGESTION ENGINE
+# ============================================================
+
+def _citation_text_from_missing_item(item: Any) -> str:
+    if isinstance(item, dict):
+        return (
+            item.get("citation_in_text")
+            or item.get("citation")
+            or item.get("in_text")
+            or ""
+        )
+    return str(item or "")
+
+
+def _reference_author_year(ref: RefAY) -> Dict[str, Any]:
+    ref_text = ref.reference_full or ""
+    ym = YEAR_RE.search(ref_text)
+    if not ym:
+        return {"author": "", "year": "", "reference": ref_text, "left": "", "aliases": []}
+
+    year = _base_year(ym.group(1))
+    left = ref_text[:ym.start()].strip(" ,.;:()[]{}")
+    author = _first_author_or_org_key(left)
+
+    aliases = _institution_acronym_aliases(left)
+    if author:
+        aliases.append(author)
+
+    seen = set()
+    clean_aliases = []
+    for a in aliases:
+        a = strip_punct(a)
+        if a and a not in seen and not _is_non_author_key(a):
+            seen.add(a)
+            clean_aliases.append(a)
+
+    return {
+        "author": author or "",
+        "year": year or "",
+        "reference": ref_text,
+        "left": left,
+        "aliases": clean_aliases,
+        "acronym": clean_aliases[0] if clean_aliases else "",
+    }
+
+
+def _generate_possible_match_for_missing(
+    citation: str,
+    references: List[RefAY],
+    reference_infos: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    parsed = _parse_author_year_from_cite(citation)
+    if not parsed:
+        return None
+
+    cite_author, cite_year = parsed
+    cite_author_norm = _normalise_author_for_matching(cite_author)
+
+    ym_raw = YEAR_RE.search(citation or "")
+    raw_left = (citation[:ym_raw.start()] if ym_raw else citation).strip(" ,;:()[]{}")
+    raw_alpha = re.sub(r"[^A-Za-z]", "", raw_left)
+    is_upper_acronym_citation = bool(
+        2 <= len(raw_alpha) <= 8
+        and raw_alpha.upper() == raw_alpha
+        and raw_alpha.lower() == cite_author_norm
+    )
+
+    cite_year_base = _base_year(cite_year)
+
+    best = None
+    best_score = 0.0
+
+    if reference_infos is None:
+        reference_infos = [_reference_author_year(ref) for ref in (references or [])]
+
+    for info in reference_infos or []:
+        ref_author = info.get("author", "")
+        ref_year = info.get("year", "")
+        ref_text = info.get("reference", "")
+        ref_left = info.get("left", "")
+        ref_aliases = info.get("aliases", []) or []
+
+        if not ref_year or not ref_text:
+            continue
+
+        author_score = 0.0
+        matched_alias = ref_author or ""
+
+        for alias in ref_aliases or [ref_author]:
+            alias_norm = _normalise_author_for_matching(alias)
+            if not alias_norm:
+                continue
+
+            score = 0.0
+            if cite_author_norm == alias_norm:
+                score = 100.0
+            elif not is_upper_acronym_citation and cite_author_norm and alias_norm and (
+                len(cite_author_norm) >= 5
+                and len(alias_norm) >= 5
+                and (cite_author_norm in alias_norm or alias_norm in cite_author_norm)
+            ):
+                score = 88.0
+            elif not is_upper_acronym_citation and FUZZ_OK and fuzz and cite_author_norm and alias_norm:
+                # Avoid partial_ratio because it creates false positives:
+                # e.g., Ghannajeh -> Ghana, Amu -> a long author list.
+                score = max(
+                    fuzz.ratio(cite_author_norm, alias_norm),
+                    fuzz.token_set_ratio(cite_author_norm, alias_norm),
+                )
+
+            if score > author_score:
+                author_score = float(score)
+                matched_alias = alias
+
+        # Compare against full institutional author text only for non-acronym citations.
+        full_author_norm = _normalise_author_for_matching(ref_left)
+        if (
+            not is_upper_acronym_citation
+            and FUZZ_OK and fuzz
+            and full_author_norm and cite_author_norm
+            and len(cite_author_norm) >= 5
+        ):
+            full_score = fuzz.token_set_ratio(cite_author_norm, full_author_norm)
+            if full_score > author_score:
+                author_score = float(full_score)
+                matched_alias = ref_left
+
+        try:
+            year_gap = abs(int(cite_year_base[:4]) - int(ref_year[:4]))
+        except Exception:
+            year_gap = 999
+
+        same_year = cite_year_base == ref_year
+        close_year = year_gap <= 5
+
+        if is_upper_acronym_citation and author_score < 100:
+            continue
+
+        required_author_score = 84 if same_year else 92
+
+        if author_score >= required_author_score and (same_year or close_year):
+            score = author_score - min(year_gap * 4, 24)
+
+            if score > best_score:
+                best_score = score
+
+                display_author = matched_alias or ref_author or ref_left or cite_author
+                if len(display_author) > 80:
+                    display_author = display_author[:77] + "..."
+
+                if same_year and author_score < 100:
+                    issue_type = "possible_match_name_variation"
+                    reason = (
+                        f"Possible reference match found for '{citation}', "
+                        f"but the author name appears differently in the reference list."
+                    )
+                    suggested = citation.replace(cite_author, display_author, 1)
+
+                elif not same_year and author_score >= 90:
+                    issue_type = "possible_match_year_variation"
+                    reason = (
+                        f"Possible reference match found for '{citation}', "
+                        f"but the reference year appears as {ref_year}."
+                    )
+                    suggested = citation.replace(cite_year, ref_year, 1)
+
+                else:
+                    issue_type = "possible_match_name_year_variation"
+                    reason = (
+                        f"Possible reference match found for '{citation}', "
+                        f"but author form and year may differ in the reference list."
+                    )
+                    suggested = citation.replace(cite_author, display_author, 1).replace(cite_year, ref_year, 1)
+
+                best = {
+                    "original": citation,
+                    "suggested": suggested,
+                    "confidence": round(max(min(score / 100.0, 0.95), 0.65), 2),
+                    "issue_type": issue_type,
+                    "reason": reason,
+                    "fix_type": "review_required",
+                    "possible_reference": ref_text,
+                    "matched_author_in_reference": ref_left or ref_author,
+                    "matched_year_in_reference": ref_year,
+                    "apply": {
+                        "type": "replace_text",
+                        "target": citation,
+                        "replacement": suggested,
+                    },
+                }
+
+    return best
+
+
+def _split_missing_possible_matches(
+    missing_rows: List[Dict[str, Any]],
+    references: List[RefAY],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    remaining_missing: List[Dict[str, Any]] = []
+    possible_matches: List[Dict[str, Any]] = []
+    reference_infos = [_reference_author_year(ref) for ref in (references or [])]
+
+    for item in missing_rows or []:
+        cite = _citation_text_from_missing_item(item)
+        possible = _generate_possible_match_for_missing(cite, references, reference_infos)
+
+        if possible and float(possible.get("confidence", 0) or 0) >= 0.78:
+            row = dict(item) if isinstance(item, dict) else {"citation_in_text": cite}
+            row["status"] = "possible_match_with_year_or_name_variation"
+            row["possible_match"] = possible
+            possible_matches.append(row)
+        else:
+            remaining_missing.append(item)
+
+    return remaining_missing, possible_matches
+
+
+def generate_suggestions(
+    citations: List[str],
+    c2r: List[Dict[str, Any]],
+    missing_rows: List[Dict[str, Any]],
+    references: List[RefAY],
+    ref_map: Dict[str, str]
+) -> Dict[str, Any]:
+    """
+    Clean Suggestion Engine:
+    - No duplication with Missing/Recovery tabs
+    - Only fixable inconsistencies
+    - UI-ready + action-ready
+    """
+
+    # ============================================================
+    # 1. CITATION FIXES (MAIN)
+    # ============================================================
+
+    citation_suggestions = []
+
+    for citation in citations:
+        suggestion = _generate_citation_fixes(
+            citation,
+            references,
+            ref_map
+        )
+
+        if suggestion:
+            issue_type = suggestion.fix_type or "ambiguous_match"
+
+            # ❌ skip missing_reference & uncited_reference
+            if issue_type in {"missing_reference", "uncited_reference"}:
+                continue
+
+            citation_suggestions.append({
+                "original": suggestion.original,
+                "suggested": suggestion.suggested,
+                "confidence": suggestion.confidence,
+            
+                # WHAT IS WRONG
+                "issue_type": issue_type,
+            
+                # WHY IT IS WRONG
+                "reason": suggestion.reason or "Inconsistency detected",
+            
+                # WHAT TO DO
+                "fix_type": "review_required" if issue_type.startswith("possible_") or issue_type in {"author_normalization", "author_normalization_review"} else ("required_fix" if suggestion.confidence >= 0.85 else "review_required"),
+
+                # 🔥 APPLY ACTION (ONLY ONCE)
+                "apply": {
+                    "type": "replace_text",
+                    "target": suggestion.original,
+                    "replacement": suggestion.suggested
+                }
+            })
+    # ============================================================
+    # 1B. POSSIBLE MATCHES FROM MISSING CITATIONS
+    # ============================================================
+    possible_match_suggestions = []
+    existing_originals = {
+        s.get("original")
+        for s in citation_suggestions
+        if isinstance(s, dict)
+    }
+    reference_infos = [_reference_author_year(ref) for ref in (references or [])]
+
+    for item in missing_rows or []:
+        missing_citation = _citation_text_from_missing_item(item)
+
+        if not missing_citation or missing_citation in existing_originals:
+            continue
+
+        if isinstance(item, dict) and isinstance(item.get("possible_match"), dict):
+            possible = item.get("possible_match")
+        else:
+            possible = _generate_possible_match_for_missing(
+                missing_citation,
+                references,
+                reference_infos,
+            )
+
+        if possible:
+            citation_suggestions.append(possible)
+            possible_match_suggestions.append(possible)
+            existing_originals.add(missing_citation)
+
+    # ============================================================
+    # 2. REFERENCE FIXES (FORMATTING / STYLE)
+    # ============================================================
+
+    reference_suggestions = []
+
+    for ref in references:
+        ref_fix = _generate_reference_fix(ref)
+
+        if ref_fix:
+            reference_suggestions.append({
+                "original": ref.reference_full,
+                "suggested": ref_fix.suggested,
+                "confidence": ref_fix.confidence,
+                "issue_type": "formatting_issue",
+                "reason": ref_fix.reason or "Reference formatting inconsistency",
+                "fix_type": "optional_fix",
+
+                # 🔥 APPLY ACTION
+                "apply": {
+                    "type": "replace_text",
+                    "target": ref.reference_full,
+                    "replacement": ref_fix.suggested
+                }
+            })
+
+    # ============================================================
+    # 3. COMBINE (NO DUPLICATES FROM OTHER TABS)
+    # ============================================================
+
+    all_suggestions = citation_suggestions + reference_suggestions
+
+    # ============================================================
+    # 4. STATISTICS
+    # ============================================================
+
+    high_conf = [s for s in all_suggestions if s["confidence"] >= 0.85]
+    med_conf = [s for s in all_suggestions if 0.70 <= s["confidence"] < 0.85]
+    low_conf = [s for s in all_suggestions if s["confidence"] < 0.70]
+
+    by_type = {}
+    for s in all_suggestions:
+        by_type[s["issue_type"]] = by_type.get(s["issue_type"], 0) + 1
+
+    # ============================================================
+    # 5. FINAL OUTPUT
+    # ============================================================
+
+    return {
+        "citations": citation_suggestions,
+        "references": reference_suggestions,
+
+        # Possible matches are separate so the UI can show:
+        # "the reference may exist, but year/name/acronym varies".
+        "missing": possible_match_suggestions,
+        "possible_matches": possible_match_suggestions,
+        "unmatched": [],
+
+        "statistics": {
+            "total": len(all_suggestions),
+            "high_confidence": len(high_conf),
+            "medium_confidence": len(med_conf),
+            "low_confidence": len(low_conf),
+            "by_type": by_type
         },
-        "has_result": bool(result),
-        "has_online_verification": "online_verification" in result,
-        "references_count": len(result.get("references_raw", [])),
-        "has_autofix_suggestions": "autofix" in result
+
+        "summary": {
+            "auto_fixable": len(high_conf),
+            "needs_review": len(med_conf) + len(low_conf)
+        }
     }
 
-@app.get("/debug/autofix-data/{job_id}")
-async def debug_autofix_data(job_id: str):
-    # First check PostgreSQL
-    if DATABASE_URL:
+def _generate_reference_fix(ref):
+    """
+    Simple reference formatting fixer (extend later)
+    """
+    text = ref.reference_full
+
+    # Example fix: double spaces, punctuation, etc.
+    cleaned = " ".join(text.split())
+
+    if cleaned != text:
+        return type("RefFix", (), {
+            "suggested": cleaned,
+            "confidence": 0.75,
+            "reason": "Reference formatting cleaned"
+        })
+
+    return None
+# ============================================================
+# HELPER FUNCTIONS FOR SUGGESTIONS (PRESERVED FROM ORIGINAL)
+# ============================================================
+
+def _generate_citation_fixes(
+    citation: str, 
+    references: List[RefAY],
+    ref_map: Dict[str, str]
+) -> Optional[FixSuggestion]:
+    """Generate fix suggestions for problematic citations."""
+    
+    parsed = _parse_author_year_from_cite(citation)
+    if not parsed:
+        return None
+    
+    auth, year = parsed
+    
+    # Case 0: Fix malformed year (204 -> 2024)
+    if len(year) < 4 and year.isdigit():
+        year_int = int(year)
+        possible_years = []
+        
+        if len(year) == 3:
+            possible_years = [
+                2000 + year_int,
+                2000 + year_int + 10,
+                2000 + year_int + 20,
+                1900 + year_int,
+            ]
+        elif len(year) == 2:
+            possible_years = [2000 + year_int, 1900 + year_int]
+        elif len(year) == 1:
+            possible_years = [2000 + year_int, 2000 + year_int + 10, 2000 + year_int + 20]
+        
+        author_variations = [auth]
+        if ' & ' in auth:
+            parts = auth.split(' & ')
+            author_variations.extend(parts)
+        if ' and ' in auth:
+            parts = auth.split(' and ')
+            author_variations.extend(parts)
+        
+        for alt_year in possible_years:
+            alt_year_str = str(alt_year)
+            for test_auth in author_variations:
+                test_auth = test_auth.strip()
+                if not test_auth:
+                    continue
+                alt_key = f"{test_auth}|{alt_year_str}".lower()
+                if alt_key in ref_map:
+                    alt_citation = re.sub(r'\b' + re.escape(year) + r'\b', alt_year_str, citation)
+                    return FixSuggestion(
+                        original=citation,
+                        suggested=alt_citation,
+                        fix_type="year_malformed",
+                        confidence=0.90,
+                        reason=f"Malformed year '{year}' corrected to '{alt_year_str}' based on reference for '{test_auth}'"
+                    )
+    
+    # Case 1: Year typo (off by 1 or more) - only for 4-digit years
+    if len(year) == 4 and year.isdigit():
         try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            if row and row["result"]:
-                result = row["result"]
-                if isinstance(result, str):
-                    result = json.loads(result)
-                return {
-                    "source": "postgresql",
-                    "has_autofix": "autofix" in result,
-                    "autofix_keys": list(result.get("autofix", {}).keys()) if "autofix" in result else [],
-                    "has_main_text": "main_text" in result,
-                    "main_text_length": len(result.get("main_text", "")),
-                    "references_count": len(result.get("references_raw", []))
-                }
-        except Exception as e:
-            print(f"PostgreSQL lookup error: {e}")
+            year_int = int(year[:4])
+            for offset in [-5, -4, -3, -2, -1, 1, 2, 3, 4, 5]:
+                alt_year = str(year_int + offset)
+                if len(alt_year) != 4:
+                    continue
+                alt_key = f"{auth}|{alt_year}".lower()
+                if alt_key in ref_map:
+                    alt_citation = citation.replace(year, alt_year)
+                    confidence = 0.95 if abs(offset) <= 2 else 0.80
+                    return FixSuggestion(
+                        original=citation,
+                        suggested=alt_citation,
+                        fix_type="year_typo",
+                        confidence=confidence,
+                        reason=f"Year {year} corrected to {alt_year} (off by {abs(offset)})"
+                    )
+        except (ValueError, TypeError):
+            pass
     
-    # Fallback to in-memory
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    result = job.get("result", {})
-    return {
-        "source": "memory",
-        "has_autofix": "autofix" in result,
-        "autofix_keys": list(result.get("autofix", {}).keys()) if "autofix" in result else [],
-        "has_main_text": "main_text" in result,
-        "main_text_length": len(result.get("main_text", "")),
-        "references_count": len(result.get("references_raw", []))
-    }
+    # Case 2: Author name variation using fuzzy matching
+    if FUZZ_OK and fuzz:
+        auth_norm = strip_punct(auth.lower())
+        best_match = None
+        best_score = 0
+        
+        target_years = []
+        if len(year) == 4:
+            target_years.append(year)
+        elif year.isdigit() and len(year) < 4:
+            y_int = int(year)
+            target_years = [str(2000 + y_int), str(2000 + y_int + 10), str(2000 + y_int + 20), str(1900 + y_int)]
+        
+        for ref in references:
+            ym = YEAR_RE.search(ref.reference_full)
+            if ym:
+                ref_year = _base_year(ym.group(1))
+                for target_year in target_years:
+                    if ref_year == target_year or (len(target_year) == 4 and abs(int(ref_year) - int(target_year)) <= 2):
+                        left = ref.reference_full[:ym.start()].strip(" ,;()")
+                        ref_auth = _first_author_or_org_key(left)
+                        if ref_auth:
+                            score = fuzz.ratio(auth_norm, ref_auth.lower())
+                            if score > best_score and score >= 75:
+                                best_score = score
+                                best_match = ref_auth
+        
+        if best_match and best_match.lower() != auth.lower():
+            alt_citation = re.sub(r'\b' + re.escape(auth) + r'\b', best_match, citation, count=1)
 
-@app.get("/debug/job-progress/{job_id}")
-async def job_progress(job_id: str):
-    # First check PostgreSQL
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT status, created_at, started_at, completed_at, processing_time, error 
-                FROM jobs WHERE job_id = %s
-            """, (job_id,))
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            if row:
-                elapsed_seconds = 0
-                if row["started_at"]:
-                    elapsed_seconds = (datetime.now() - row["started_at"]).total_seconds()
-                
-                return {
-                    "job_id": job_id,
-                    "source": "postgresql",
-                    "state": row["status"],
-                    "created_at": str(row["created_at"]) if row["created_at"] else None,
-                    "started_at": str(row["started_at"]) if row["started_at"] else None,
-                    "completed_at": str(row["completed_at"]) if row["completed_at"] else None,
-                    "elapsed_seconds": round(elapsed_seconds, 1),
-                    "elapsed_formatted": format_time(elapsed_seconds),
-                    "processing_time": row["processing_time"],
-                    "error": row["error"]
-                }
-        except Exception as e:
-            print(f"PostgreSQL lookup error: {e}")
-    
-    # Fallback to in-memory
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    
-    elapsed_seconds = 0
-    if verification.get("started_at"):
-        started = datetime.fromisoformat(verification["started_at"])
-        elapsed_seconds = (datetime.utcnow() - started).total_seconds()
-    
-    progress = verification.get("progress", 0)
-    total = verification.get("total", 0)
-    estimated_remaining = 0
-    if progress > 0 and elapsed_seconds > 0:
-        rate = progress / elapsed_seconds
-        estimated_remaining = (total - progress) / rate if rate > 0 else 0
-    
-    return {
-        "job_id": job_id,
-        "source": "memory",
-        "state": verification.get("state"),
-        "progress": progress,
-        "total": total,
-        "percentage": verification.get("percentage"),
-        "started_at": verification.get("started_at"),
-        "completed_at": verification.get("completed_at"),
-        "elapsed_seconds": round(elapsed_seconds, 1),
-        "elapsed_formatted": format_time(elapsed_seconds),
-        "estimated_remaining_seconds": round(estimated_remaining, 1),
-        "estimated_remaining_formatted": format_time(estimated_remaining),
-        "has_results": verification.get("results_count", 0) > 0
-    }
+            # Author-name fuzzy matches are helpful, but they should not be
+            # treated as automatic or high-confidence fixes. "Hook" vs "Hooks"
+            # and similar cases must stay review-only.
+            safe_confidence = min(best_score / 100, 0.74)
 
-@app.get("/debug/verify-status/{verification_job_id}")
-async def debug_verify_status(verification_job_id: str):
-    from verify import get_verification_status, get_verification_results
+            return FixSuggestion(
+                original=citation,
+                suggested=alt_citation,
+                fix_type="author_normalization_review",
+                confidence=safe_confidence,
+                reason=f"Possible author-name variation: '{auth}' may correspond to '{best_match}'. Review manually before changing."
+            )
     
-    status = get_verification_status(verification_job_id)
-    results = get_verification_results(verification_job_id)
+    # Case 3: Missing "et al." pattern
+    if "et al" not in citation.lower() and len(citation.split(",")[0].split()) > 2:
+        first_author = auth.split()[0] if auth else ""
+        for ref in references:
+            if first_author and first_author.lower() in ref.reference_full.lower():
+                if "et al" in ref.reference_full.lower():
+                    alt_citation = f"{first_author} et al., {year}"
+                    return FixSuggestion(
+                        original=citation,
+                        suggested=alt_citation,
+                        fix_type="add_et_al",
+                        confidence=0.70,
+                        reason=f"Added 'et al.' for {first_author}"
+                    )
     
-    return {
-        "verification_job_id": verification_job_id,
-        "status": status,
-        "results_count": len(results) if results else 0,
-        "has_results": results is not None,
-        "sample_result": results[0] if results and len(results) > 0 else None
-    }
-@app.get("/debug/verification-details/{job_id}")
-async def debug_verification_details(job_id: str):
-    """Debug endpoint to check verification details"""
-    job = load_job_record(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    verification_job_id = verification.get("verification_job_id")
-    
+    return None
+
+
+def _normalise_doi_url_in_reference(ref_text: str) -> str:
+    """Safely normalise DOI spacing without duplicating https://doi.org."""
+    s = norm_space(ref_text or "")
+    if not s:
+        return s
+
+    # Fix broken DOI host spacing: https://doi.org /10... or https://doi. org/10...
+    s = re.sub(r"https?://(?:dx\.)?doi\.\s*org\s*/\s*", "https://doi.org/", s, flags=re.I)
+    s = re.sub(r"doi\.\s*org\s*/\s*", "doi.org/", s, flags=re.I)
+
+    # Fix DOI split after slash: 10.1016 / j... -> 10.1016/j...
+    s = re.sub(r"\b(10\.\d{4,9})\s*/\s*", r"\1/", s, flags=re.I)
+
+    # Convert bare DOI to URL only when no DOI URL is already present.
+    if "doi.org/" not in s.lower():
+        m = DOI_RE.search(s)
+        if m:
+            doi = m.group(0).rstrip(".,;)")
+            s = s[:m.start()] + "https://doi.org/" + doi + s[m.end():]
+
+    # Remove accidental doubled DOI URL forms.
+    s = re.sub(r"https://doi\.org/\s*https://doi\.org/", "https://doi.org/", s, flags=re.I)
+    s = re.sub(r"https://doi\.org/\s*doi\.org/", "https://doi.org/", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _generate_reference_fixes(ref: RefAY) -> List[FixSuggestion]:
+    """Generate conservative, review-required suggestions for reference entries."""
+    suggestions = []
+    ref_text = ref.reference_full
+
+    # DOI spacing/URL normalisation. Avoid the earlier false positive where
+    # "https://doi.org /10..." became "https://doi.org /https://doi.org/10...".
+    fixed_doi = _normalise_doi_url_in_reference(ref_text)
+    if fixed_doi and fixed_doi != ref_text:
+        suggestions.append(FixSuggestion(
+            original=ref_text,
+            suggested=fixed_doi,
+            fix_type="doi_spacing_or_url_normalisation",
+            confidence=0.88,
+            reason="The DOI URL appears to contain spacing or formatting problems. Review before applying."
+        ))
+
+    # Add missing period at end, low priority only.
+    if ref_text and not ref_text.rstrip().endswith('.'):
+        suggestions.append(FixSuggestion(
+            original=ref_text,
+            suggested=ref_text.rstrip() + '.',
+            fix_type="add_period",
+            confidence=0.60,
+            reason="The reference may need a trailing period. Review before applying."
+        ))
+
+    # Fix common URL scheme, but keep this review-required.
+    if "http://" in ref_text and "https://" not in ref_text:
+        fixed = ref_text.replace("http://", "https://")
+        suggestions.append(FixSuggestion(
+            original=ref_text,
+            suggested=fixed,
+            fix_type="fix_url_scheme",
+            confidence=0.80,
+            reason="The reference uses HTTP. Review whether HTTPS is available and appropriate."
+        ))
+
+    return suggestions
+
+
+# -----------------------------
+# Public API: run_crosscheck (UPDATED - includes main_text)
+# -----------------------------
+def run_crosscheck(
+    file_bytes: bytes,
+    filename: str,
+    style: str = "apa",
+    verify_online: bool = False,
+    verify_mode: str = "all",
+    max_verify: int = 0,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+) -> Dict[str, Any]:
+
+    name = (filename or "").lower().strip()
+    style_s = (style or "apa").strip().lower()
+
+    is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s) or _is_supported_numeric_style(style_s)
+    style_hint = "numeric" if is_numeric else "apa"
+
+    pdf_quality = None
+    pdf_warnings: List[str] = []
+    pdf_parser_build = ""
+
+    if name.endswith(".docx"):
+        main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
+        references_raw = _merge_reference_lines(ref_block_lines, style_hint=style_hint)
+        if style_hint == "numeric":
+            references_raw = _split_embedded_numeric_refs(references_raw)
+        
+        # Fallback recovery for weak or failed extraction
+        if style_hint == "apa" and len(references_raw) < 2:
+            recovered = recover_references_for_verification(main_text, style_hint="apa")
+            recovered = _clean_reference_list(_split_embedded_apa_refs(recovered), style_hint="apa")
+            if len(recovered) > len(references_raw):
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
+        elif style_hint == "numeric" and len(references_raw) == 0:
+            recovered = recover_references_for_verification(main_text, style_hint="numeric")
+            if recovered:
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
+
+    elif name.endswith(".pdf"):
+        pdf_data = parse_pdf_commercial(
+            file_bytes=file_bytes,
+            filename=filename,
+            style_hint=style_hint,
+        )
+
+        pdf_quality = pdf_data.get("pdf_quality")
+        pdf_warnings = pdf_data.get("pdf_warnings", []) or []
+        pdf_parser_build = pdf_data.get("pdf_parser_build", PDF_PARSE_BUILD)
+
+        if not pdf_data.get("ok"):
+            return {
+                "error": "PDF parsing failed",
+                "note": pdf_data.get("ref_msg") or "The PDF could not be reliably parsed.",
+                "filename": filename,
+                "pdf_quality": pdf_quality,
+                "pdf_warnings": pdf_warnings,
+                "recommendation": "Upload the DOCX version for the most reliable CiteIntegrity report.",
+            }
+
+        main_text = pdf_data.get("main_text", "")
+        references_raw = pdf_data.get("references", []) or []
+        ref_msg = pdf_data.get("ref_msg") or f"PDF parsed. Found {len(references_raw)} references."
+
+        if style_hint == "numeric":
+            references_raw = _split_embedded_numeric_refs(references_raw)
+        else:
+            references_raw = _split_embedded_apa_refs(references_raw)
+            references_raw = _clean_reference_list(references_raw, style_hint="apa")
+
+        references_raw = _dedupe_keep_order(references_raw)
+        
+        # Fallback recovery for weak or failed extraction
+        if style_hint == "apa" and len(references_raw) < 2:
+            recovered = recover_references_for_verification(main_text, style_hint="apa")
+            recovered = _clean_reference_list(_split_embedded_apa_refs(recovered), style_hint="apa")
+            if len(recovered) > len(references_raw):
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
+        elif style_hint == "numeric" and len(references_raw) == 0:
+            recovered = recover_references_for_verification(main_text, style_hint="numeric")
+            if recovered:
+                references_raw = recovered
+                ref_msg = f"{ref_msg} Fallback recovery extracted {len(references_raw)} references."
+
+    else:
+        return {"error": "Upload a DOCX or PDF"}
+
+    main_text_len = len(main_text or "")
+    too_large = main_text_len > 2_000_000
+
+    possible_match_rows: List[Dict[str, Any]] = []
+
+    if style_hint == "apa":
+        cites = _extract_author_year_citations_chunked(main_text) if too_large else extract_author_year_citations(main_text)
+        refs = [parse_reference_author_year(r) for r in references_raw]
+        refs = [r for r in refs if r is not None]
+
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_author_year(cites, refs)
+
+        # Separate likely false positives into a review-required category.
+        # They are not counted as ordinary missing citations.
+        missing_rows, possible_match_rows = _split_missing_possible_matches(missing_rows, refs)
+
+        ref_count = len(refs)
+
+    elif style_s == "ieee":
+        cites_nums = []
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
+        else:
+            cites_nums = extract_ieee_citations(main_text)
+        
+        refs = []
+        for r in references_raw:
+            parsed = parse_reference_numeric(r, style="ieee")
+            if parsed:
+                refs.append(parsed)
+        
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+            cites_nums, refs, style="ieee"
+        )
+        ref_count = len(refs)
+
+    elif style_s == "vancouver":
+        print("Using Vancouver style - sequential numbering")
+        
+        cites_nums = []
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style="vancouver")
+        else:
+            cites_nums = extract_vancouver_citations(main_text)
+        
+        refs = parse_vancouver_references(references_raw)
+        
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_vancouver(
+            cites_nums, refs
+        )
+        ref_count = len(refs)
+
+    elif _is_supported_numeric_style(style_s):
+        numeric_forms = sorted(_numeric_style_forms(style_s))
+        print(f"Using safe numeric style {style_s} with forms: {numeric_forms}")
+
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style=style_s)
+        else:
+            cites_nums = extract_safe_numeric_citations(main_text, style=style_s)
+
+        refs = parse_references_numeric_general(references_raw, style=style_s)
+
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric_general(
+            cites_nums, refs, style=style_s
+        )
+        ref_count = len(refs)
+
+    else:
+        cites_nums = []
+        if too_large:
+            cites_nums = _extract_numeric_citations_chunked(main_text, style="ieee")
+        else:
+            cites_nums = extract_ieee_citations(main_text)
+        
+        refs = []
+        for r in references_raw:
+            parsed = parse_reference_numeric(r, style="ieee")
+            if parsed:
+                refs.append(parsed)
+        
+        c2r, r2c, missing_rows, uncited_refs, intext_count = reconcile_numeric(
+            cites_nums, refs, style="ieee"
+        )
+        ref_count = len(refs)
+
+    missing_unique = int(len(missing_rows or []))
+    match_rate = 0.0
+    if intext_count > 0:
+        match_rate = 100.0 * max(0.0, float(intext_count - missing_unique)) / float(intext_count)
+
     result = {
-        "job_id": job_id,
-        "verification_job_id": verification_job_id,
-        "verification_state": verification.get("state"),
-        "verification_progress": verification.get("progress"),
-        "verification_total": verification.get("total"),
-        "verification_percentage": verification.get("percentage"),
-        "started_at": verification.get("started_at"),
-        "completed_at": verification.get("completed_at")
+        "filename": filename,
+        "style": style_s,
+        "main_text": main_text,
+        "engine_build": ENGINE_BUILD,
+        "verify_mode_used": (verify_mode or "all"),
+        "reference_detection_message": ref_msg,
+        "summary": {
+            "in_text_citations_found": int(intext_count),
+            "reference_entries_found": int(ref_count),
+            "missing_in_references": int(missing_unique),
+            "possible_match_variations": int(len(possible_match_rows or [])),
+            "uncited_references": int(len(uncited_refs)),
+            "match_rate": float(round(match_rate, 1)),
+        },
+        "missing_in_references": missing_rows,
+        "possible_match_variations": possible_match_rows,
+        "uncited_references": uncited_refs,
+        "reconciliation_intext_to_reference": c2r,
+        "reconciliation_reference_to_intext": r2c,
+        "references_raw": references_raw,
     }
-    
-    # Get the actual status from verify.py
-    if verification_job_id:
-        from verify import get_verification_status, get_verification_results
-        verify_status = get_verification_status(verification_job_id)
-        verify_results = get_verification_results(verification_job_id)
-        
-        result["actual_verify_status"] = verify_status
-        result["has_verify_results"] = verify_results is not None
-        result["verify_results_count"] = len(verify_results) if verify_results else 0
-        
-        # Also check if the verification is still in the jobs dictionary
-        from verify import _jobs
-        with verify._jobs_lock:
-            result["verify_job_exists"] = verification_job_id in verify._jobs
-            if verification_job_id in verify._jobs:
-                job_obj = verify._jobs[verification_job_id]
-                result["verify_job_details"] = {
-                    "status": job_obj.status,
-                    "progress": job_obj.progress,
-                    "total": job_obj.total
-                }
+
+    if _is_supported_numeric_style(style_s):
+        result["numeric_citation_policy"] = {
+            "style": style_s,
+            "forms_enabled": sorted(_numeric_style_forms(style_s)),
+            "round_bracket_numeric_is_style_gated": _is_round_numeric_style(style_s),
+            "ordinary_baseline_digits_are_not_auto_detected_as_superscript": True,
+        }
+
+    if pdf_quality is not None:
+        result["pdf_quality"] = pdf_quality
+        result["pdf_warnings"] = pdf_warnings
+        result["pdf_parser_build"] = pdf_parser_build
+        result["pdf_caution"] = (
+            "PDF analysis is supported for text-based PDFs, but DOCX remains the recommended "
+            "format for full citation integrity analysis."
+        )
     
     return result
 
-@app.get("/debug/all-jobs")
-async def debug_all_jobs():
-    jobs_info = {}
-    
-    # Get jobs from PostgreSQL
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT job_id, status, file_name, created_at, completed_at FROM jobs ORDER BY created_at DESC LIMIT 50"
-            )
-            rows = cursor.fetchall()
-            cursor.close()
-            conn.close()
-            
-            for row in rows:
-                jobs_info[row["job_id"]] = {
-                    "source": "postgresql",
-                    "status": row["status"],
-                    "file_name": row["file_name"],
-                    "created_at": str(row["created_at"]) if row["created_at"] else None,
-                    "completed_at": str(row["completed_at"]) if row["completed_at"] else None
-                }
-        except Exception as e:
-            print(f"PostgreSQL lookup error: {e}")
-    
-    # Also get in-memory jobs
-    with _lock:
-        for job_id, job_data in _store.items():
-            if job_id not in jobs_info:
-                jobs_info[job_id] = {
-                    "source": "memory",
-                    "verification_state": job_data.get("verification", {}).get("state"),
-                    "verification_progress": job_data.get("verification", {}).get("progress"),
-                    "has_results": bool(job_data.get("result")),
-                    "autofix_applied": job_data.get("autofix_applied", False)
-                }
-    
-    return {
-        "total_jobs": len(jobs_info),
-        "jobs": jobs_info
-    }
+# ============================================================================
+# ENHANCED API WITH AUTO-FIX (OPTIONAL - DOES NOT REPLACE ORIGINAL)
+# ============================================================================
 
-@app.get("/debug/sync-status/{job_id}")
-async def debug_sync_status(job_id: str):
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    return {
-        "job_id": job_id,
-        "verification_job_id": verification.get("verification_job_id"),
-        "state": verification.get("state"),
-        "progress": verification.get("progress"),
-        "total": verification.get("total"),
-        "percentage": verification.get("percentage"),
-        "started_at": verification.get("started_at"),
-        "completed_at": verification.get("completed_at"),
-        "sync_thread_running": verification.get("state") == "running" and verification.get("total", 0) > 0
-    }
-@app.get("/debug/check-verification/{job_id}")
-async def debug_check_verification(job_id: str):
-    """Debug endpoint to check verification data"""
-    job = load_job_record(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    result = job.get("result", {})
-    
-    # Check verification results from verify.py
-    from verify import get_verification_results
-    verification_job_id = verification.get("verification_job_id")
-    stored_results = get_verification_results(verification_job_id) if verification_job_id else None
-    
-    return {
-        "job_id": job_id,
-        "verification_job_id": verification_job_id,
-        "verification_state": verification.get("state"),
-        "verification_progress": verification.get("progress"),
-        "verification_total": verification.get("total"),
-        "verification_completed_at": verification.get("completed_at"),
-        "has_online_verification_in_result": "online_verification" in result,
-        "online_verification_rows": len(result.get("online_verification", {}).get("rows", [])),
-        "stored_results_from_verify_py": len(stored_results) if stored_results else 0,
-        "has_claim_support": "claim_support" in result,
-        "claim_support_rows": len(result.get("claim_support", [])),
-        "result_keys": list(result.keys())
-    }    
-@app.get("/debug/test-suggestions")
-async def test_suggestions():
-    """Test endpoint to see what suggestions look like"""
-    from engine import generate_suggestions, parse_reference_author_year
-    
-    # Create test data
-    test_citations = ["(Smith, 2019)", "(Wrong, 2020)"]
-    test_references_raw = [
-        "Smith, J. (2020). A test title. Journal of Testing, 10(2), 100-110.",
-        "Johnson, A. (2019). Another title. Another Journal, 5(1), 20-30."
-    ]
-    
-    test_refs = [parse_reference_author_year(r) for r in test_references_raw]
-    test_refs = [r for r in test_refs if r is not None]
-    test_ref_map = {r.key: r.reference_full for r in test_refs}
-    
-    suggestions = generate_suggestions(
-        citations=test_citations,
-        c2r=[],
-        missing_rows=[],
-        references=test_refs,
-        ref_map=test_ref_map
+def run_crosscheck_with_autofix(
+    file_bytes: bytes,
+    filename: str,
+    style: str = "apa",
+    verify_online: bool = False,
+    verify_mode: str = "all",
+    max_verify: int = 0,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    enable_autofix: bool = True,
+) -> Dict[str, Any]:
+    """
+    Clean autofix wrapper: runs crosscheck + generates suggestions
+    """
+
+    # -----------------------------
+    # 1. Run base analysis
+    # -----------------------------
+    result = run_crosscheck(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style,
+        verify_online=verify_online,
+        verify_mode=verify_mode,
+        max_verify=max_verify,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=use_openalex
     )
-    
-    return {
-        "test_suggestions": suggestions,
-        "citations_count": len(suggestions.get("citations", [])),
-        "sample": suggestions.get("citations", [])[:2]
-    }
-@app.post("/debug/retry-verification/{job_id}")
-async def debug_retry_verification(job_id: str):
-    refs = []
-    
-    # Try to get references from PostgreSQL first
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            if row and row["result"]:
-                result = row["result"]
-                if isinstance(result, str):
-                    result = json.loads(result)
-                refs = result.get("references_raw", [])
-        except Exception as e:
-            print(f"PostgreSQL lookup error: {e}")
-    
-    # Fallback to in-memory
-    if not refs:
-        job = get_job(job_id)
-        if not job:
-            return {"error": "Job not found"}
-        refs = job["result"].get("references_raw", [])
-    
-    if not refs:
-        return {"error": "No references to verify"}
-    
-    from verify import verify_references_batch, get_verification_results
-    
-    try:
-        temp_job_id = uuid.uuid4().hex
-        results = verify_references_batch(refs, style="apa", job_id=temp_job_id)
-        
-        stored_results = get_verification_results(temp_job_id)
-        final_results = stored_results if stored_results else results
-        
-        if final_results:
-            summary = _compute_verification_summary(final_results)
-            
-            # Update in-memory store
-            with _lock:
-                if job_id in _store:
-                    _store[job_id]["result"]["online_verification"] = {
-                        "rows": final_results,
-                        "summary": summary
-                    }
-                    
-                    try:
-                        _store[job_id]["result"]["acii"] = compute_acii(_store[job_id]["result"], final_results)
-                    except Exception as e:
-                        _store[job_id]["result"]["acii"] = {"error": str(e)}
-                    
-                    _store[job_id]["result"]["reconciliation_reference_to_intext"] = build_reference_to_intext(_store[job_id]["result"])
-                    
-                    _store[job_id]["verification"]["state"] = "completed"
-                    _store[job_id]["verification"]["completed_at"] = now()
-                    _store[job_id]["verification"]["results"] = final_results
-                    _store[job_id]["verification"]["progress"] = len(refs)
-                    _store[job_id]["verification"]["percentage"] = 100
-                    _store[job_id]["verification"]["results_count"] = len(final_results)
-                    _store[job_id]["verification"]["summary"] = summary
-            
-            # Also update PostgreSQL if possible
-            if DATABASE_URL:
-                try:
-                    conn = psycopg2.connect(DATABASE_URL)
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        UPDATE jobs 
-                        SET result = result || jsonb_build_object('online_verification', %s::jsonb)
-                        WHERE job_id = %s
-                    """, (json.dumps({"rows": final_results, "summary": summary}), job_id))
-                    conn.commit()
-                    cursor.close()
-                    conn.close()
-                except Exception as db_error:
-                    print(f"PostgreSQL update error: {db_error}")
-            
-            return {
-                "success": True,
-                "job_id": job_id,
-                "summary": summary,
-                "results_count": len(final_results),
-                "message": f"Verification completed for {len(final_results)} references"
-            }
-        else:
-            return {"error": "No results returned from verification"}
-        
-    except Exception as e:
-        return {"error": str(e)}
 
-@app.get("/debug/db-status")
-async def db_status():
-    """Check database connection status"""
-    status = {
-        "postgresql_configured": DATABASE_URL is not None,
-        "redis_configured": REDIS_URL is not None,
-        "tables_exist": False,
-        "stats_count": 0
-    }
-    
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            
-            # Check if stats table exists
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'stats'
+    if not enable_autofix or "error" in result:
+        return result
+
+    try:
+        style_s = (style or "apa").strip().lower()
+        is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s) or _is_supported_numeric_style(style_s)
+
+        if is_numeric:
+            result["autofix"] = {
+                "enabled": True,
+                "message": f"Auto-fix supports APA/Harvard. Current style: {style_s}",
+                "suggestions": {
+                    "citations": [],
+                    "missing": [],
+                    "unmatched": [],
+                    "references": []
+                }
+            }
+            return result
+
+        # -----------------------------
+        # 2. Extract CORRECT data
+        # -----------------------------
+        references_raw = result.get("references_raw", []) or []
+
+        c2r = (
+            result.get("reconciliation_intext_to_reference", [])
+            or result.get("c2r", [])
+            or []
+        )
+
+        missing_base = (
+            result.get("missing_in_references", [])
+            or result.get("missing", [])
+            or []
+        )
+        possible_base = result.get("possible_match_variations", []) or []
+        missing = list(missing_base) + list(possible_base)
+
+        citations = []
+
+        for row in c2r:
+            if isinstance(row, dict):
+                cite = (
+                    row.get("in_text")
+                    or row.get("citation")
+                    or row.get("citation_in_text")
+                    or ""
                 )
-            """)
-            status["stats_table_exists"] = cursor.fetchone()[0]
-            
-            # Get total uploads
-            cursor.execute("SELECT total_uploads FROM stats WHERE id = 1")
-            row = cursor.fetchone()
-            if row:
-                status["stats_count"] = row[0]
-            
-            cursor.close()
-            conn.close()
-            status["database_connected"] = True
-            
-        except Exception as e:
-            status["database_connected"] = False
-            status["error"] = str(e)
-    
-    return status
+                if cite:
+                    citations.append(cite)
+            elif row:
+                citations.append(str(row))
 
-
-@app.post("/debug/retry-stuck-verification/{job_id}")
-async def retry_stuck_verification(job_id: str):
-    """Force retry a stuck verification job"""
-    job = load_job_record(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    if verification.get("state") != "running":
-        return {"error": "Job is not running"}
-    
-    # Get the verification job ID
-    verification_job_id = verification.get("verification_job_id")
-    if not verification_job_id:
-        return {"error": "No verification job ID found"}
-    
-    from verify import get_verification_status, _jobs
-    
-    # Check if the job is actually stuck
-    status = get_verification_status(verification_job_id)
-    if status and status.get("progress", 0) > 0:
-        return {"error": "Job is making progress", "status": status}
-    
-    # Mark existing verification as failed
-    update_verification_status(job_id, state="error", message="Stuck - retrying")
-    
-    # Restart verification
-    refs = job.get("result", {}).get("references_raw", [])
-    if not refs:
-        return {"error": "No references to verify"}
-    
-    new_verification_job_id = f"verify:{job_id}:{uuid.uuid4().hex[:8]}"
-    if not verification_queue:
-        raise HTTPException(500, "Verification queue not initialized")
-    
-    update_verification_status(
-        job_id,
-        verification_job_id=new_verification_job_id,
-        rq_job_id=new_verification_job_id,
-        state="queued",
-        total=len(refs),
-        progress=0,
-        percentage=0,
-        started_at=now(),
-        message="Verification re-queued"
-    )
-    
-    verification_queue.enqueue(
-        "worker.process_verification",
-        job_id,
-        "apa",
-        False,
-        job_id=new_verification_job_id,
-        job_timeout=10800,
-        result_ttl=86400,
-        failure_ttl=86400
-    )
-    
-    return {
-        "started": True,
-        "success": True,
-        "old_verification_job_id": verification_job_id,
-        "new_verification_job_id": new_verification_job_id,
-        "verification_job_id": new_verification_job_id,
-        "job_id": job_id,
-        "total_references": len(refs),
-        "state": "queued",
-        "message": "Verification re-queued successfully"
-    }
-@app.get("/debug/verification-data/{job_id}")
-async def debug_verification_data(job_id: str):
-    """Debug endpoint to check verification data structure"""
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    result = job.get("result", {})
-    online_verification = result.get("online_verification", {})
-    rows = online_verification.get("rows", [])
-    
-    sample = []
-    for i, row in enumerate(rows[:3]):
-        sample.append({
-            "index": i,
-            "has_suggested_references": "suggested_references" in row,
-            "suggested_references_count": len(row.get("suggested_references", [])),
-            "status": row.get("status"),
-            "reference_preview": row.get("reference", "")[:100] if row.get("reference") else ""
-        })
-    
-    verification_job_id = job.get("verification", {}).get("verification_job_id")
-    raw_verification_results = None
-    if verification_job_id:
-        raw_verification_results = get_verification_results(verification_job_id)
-        if raw_verification_results and len(raw_verification_results) > 0:
-            raw_sample = []
-            for i, row in enumerate(raw_verification_results[:3]):
-                raw_sample.append({
-                    "index": i,
-                    "has_suggested_references": "suggested_references" in row,
-                    "suggested_references_count": len(row.get("suggested_references", [])),
-                })
-    
-    return {
-        "job_id": job_id,
-        "verification_job_id": verification_job_id,
-        "total_rows": len(rows),
-        "sample": sample,
-        "raw_verification_sample": raw_sample if verification_job_id else None,
-        "full_first_row": rows[0] if rows else None
-    }
-@app.get("/debug/test-verification/{job_id}")
-async def test_verification(job_id: str):
-    """Test endpoint to check verification status"""
-    job = get_job(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    result = job.get("result", {})
-    
-    # Get the verification job ID
-    verification_job_id = verification.get("verification_job_id")
-    
-    # Get status from verify.py
-    from verify import get_verification_status, get_verification_results
-    
-    verify_status = None
-    if verification_job_id:
-        verify_status = get_verification_status(verification_job_id)
-    
-    return {
-        "job_id": job_id,
-        "verification_job_id": verification_job_id,
-        "frontend_state": verification.get("state"),
-        "frontend_progress": verification.get("progress"),
-        "frontend_total": verification.get("total"),
-        "backend_verify_status": verify_status,
-        "has_verification_results": bool(get_verification_results(verification_job_id)) if verification_job_id else False,
-        "references_count": len(result.get("references_raw", []))
-    }
-@app.get("/debug/jobs")
-async def debug_jobs():
-    """List all jobs in _store"""
-    with _lock:
-        jobs_info = {}
-        for job_id, job_data in _store.items():
-            verification = job_data.get("verification", {})
-            jobs_info[job_id] = {
-                "verification_state": verification.get("state"),
-                "verification_progress": verification.get("progress"),
-                "verification_total": verification.get("total"),
-                "verification_job_id": verification.get("verification_job_id"),
-                "has_result": bool(job_data.get("result"))
-            }
-    return {
-        "total_jobs": len(jobs_info),
-        "jobs": jobs_info
-    }
-# ============================================================
-# QUEUE STATUS ENDPOINT
-# ============================================================
-
-@app.get("/queue/status")
-async def queue_status():
-    status = get_queue_status()
-    status["server_busy"] = is_server_busy()
-    status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
-    # Add queue length from Redis if available
-    if task_queue:
-        status["redis_queue_length"] = len(task_queue)
-    else:
-        status["redis_queue_length"] = 0
-    return status
-
-# ============================================================
-# INDEX
-# ============================================================
-
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-# ============================================================
-# PRIVACY POLICY
-# ============================================================
-
-@app.get("/privacy", response_class=HTMLResponse)
-def privacy(request: Request):
-    return templates.TemplateResponse("privacy.html", {"request": request})
-
-@app.get("/new", response_class=HTMLResponse)
-async def new_landing_page(request: Request):
-    stats = stats_tracker.get_stats(detailed=False)
-    total_stats = stats.get("total_stats", {})
-
-    return templates.TemplateResponse(
-        "new_index.html",
-        {
-            "request": request,
-            "total_uploads": total_stats.get("total_uploads", 0),
-            "total_references_checked": total_stats.get("total_references_checked", 0),
-            "total_verifications": total_stats.get("total_verifications", 0),
-            "success_rate": total_stats.get("success_rate", 0),
-        }
-    )
-
-@app.get("/new/analyse", response_class=HTMLResponse)
-async def new_analyse_page(request: Request):
-    return templates.TemplateResponse("new_analyse.html", {"request": request})
-
-
-@app.get("/analyse", response_class=HTMLResponse)
-async def analyse_page(request: Request):
-    return templates.TemplateResponse("new_analyse.html", {"request": request})
-
-
-@app.get("/upload", response_class=HTMLResponse)
-async def upload_page(request: Request):
-    return templates.TemplateResponse("new_analyse.html", {"request": request})
-@app.get("/results/{job_id}", response_class=HTMLResponse)
-async def results_dashboard_page(request: Request, job_id: str, verify: int = 0):
-    return templates.TemplateResponse(
-        "new_results.html",
-        {
-            "request": request,
-            "job_id": job_id,
-            "auto_verify": "true" if verify == 1 else "false"
-        }
-    )
-
-
-@app.get("/new/results/{job_id}", response_class=HTMLResponse)
-async def new_results_dashboard_page(request: Request, job_id: str, verify: int = 0):
-    return templates.TemplateResponse(
-        "new_results.html",
-        {
-            "request": request,
-            "job_id": job_id,
-            "auto_verify": "true" if verify == 1 else "false"
-        }
-    )
-# ============================================================
-# ASYNC DOCUMENT CHECK (QUEUED)
-# ============================================================
-
-@app.post("/verify")
-async def verify(
-    file: UploadFile = File(...),
-    style: str = Form("auto"),
-    enable_autofix: str = Form("false"),  # CHANGE: Use str instead of bool
-    enable_online_verification: str = Form("false"),  # CHANGE: Use str instead of bool
-    request: Request = None
-):
-    # Convert string to boolean
-    autofix_enabled = enable_autofix.lower() == "true"
-    online_verify_enabled = enable_online_verification.lower() == "true"
-    
-    print(f"📚 Received citation style: {style}")
-    print(f"📋 Received enable_autofix string: {enable_autofix}")
-    print(f"📋 Converted to bool: {autofix_enabled}")
-    print(f"📋 Received enable_online_verification: {online_verify_enabled}")
-    
-    # =========================
-    # 1. VALIDATION
-    # =========================
-    if not file.filename:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "No file provided", "message": "Please select a file to upload"}
-        )
-    
-    filename_lower = (file.filename or "").lower().strip()
-    is_docx = filename_lower.endswith(".docx")
-    is_pdf = filename_lower.endswith(".pdf")
-
-    if not (is_docx or is_pdf):
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Invalid file format",
-                "message": "Only DOCX and PDF files are accepted",
-                "instruction": (
-                    "Please upload a .docx file for best accuracy or a text-based .pdf file. "
-                    "Scanned or image-based PDFs may produce incomplete results."
+        for row in missing:
+            if isinstance(row, dict):
+                cite = (
+                    row.get("citation_in_text")
+                    or row.get("citation")
+                    or row.get("in_text")
+                    or ""
                 )
-            }
+                if cite:
+                    citations.append(cite)
+            elif row:
+                citations.append(str(row))
+
+        # Deduplicate while preserving order
+        seen_cites = set()
+        citations = [
+            c for c in citations
+            if c and not (c in seen_cites or seen_cites.add(c))
+        ]
+
+        # -----------------------------
+        # 3. Parse references
+        # -----------------------------
+        refs = [parse_reference_author_year(r) for r in references_raw]
+        refs = [r for r in refs if r is not None]
+
+        ref_map = {r.key: r.reference_full for r in refs if hasattr(r, "key")}
+
+        # -----------------------------
+        # 4. DEBUG (VERY IMPORTANT)
+        # -----------------------------
+        print("📊 DEBUG COUNTS:",
+              "citations:", len(citations),
+              "refs:", len(refs),
+              "c2r:", len(c2r),
+              "missing:", len(missing))
+
+        if not citations and not refs:
+            print("⚠️ WARNING: No citations or references extracted")
+
+        # -----------------------------
+        # 5. Generate suggestions
+        # -----------------------------
+        suggestions_data = generate_suggestions(
+            citations=citations,
+            c2r=c2r,
+            missing_rows=missing,
+            references=refs,
+            ref_map=ref_map
         )
 
-    if is_pdf:
-        print(f"[PDF UPLOAD] Accepted PDF for cautious analysis: {file.filename}")
-    
-    if is_server_busy():
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": "Server is busy",
-                "message": "Please wait a moment and try again",
-                "retry_after": 30
-            }
-        )
+        # -----------------------------
+        # 6. Production safety
+        # -----------------------------
+        if not suggestions_data.get("citations") and not suggestions_data.get("missing"):
+            print("ℹ️ No citation correction suggestions generated.")
 
-    # =========================
-    # 2. READ FILE
-    # =========================
-    data = await file.read()
-    file_size = len(data)
-    file_size_mb = round(file_size / (1024 * 1024), 2)
-
-    # =========================
-    # 3. GENERATE JOB ID
-    # =========================
-    job_id = str(uuid.uuid4())
-
-    # =========================
-    # 4. STORE FILE IN REDIS
-    # =========================
-    if not redis_conn:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Queue system unavailable", "message": "Redis not connected"}
-        )
-
-    redis_conn.setex(f"file:{job_id}", 3600, data)
-    print(f"✅ File stored in Redis for job {job_id}")
-
-    # =========================
-    # 5. STORE JOB IN DATABASE
-    # =========================
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                INSERT INTO jobs (job_id, status, file_name, file_size_mb, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-            """, (job_id, "queued", file.filename, file_size_mb))
-
-            conn.commit()
-            cursor.close()
-            conn.close()
-
-            print(f"✅ Job {job_id} stored in PostgreSQL")
-
-        except Exception as db_error:
-            print(f"⚠️ Database error: {db_error}")
-
-    # =========================
-    # 6. ENQUEUE JOB
-    # =========================
-    if not task_queue:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Queue not initialized"}
-        )
-
-    try:
-        # 🔥 FIX: Use the autofix_enabled variable instead of hardcoded True
-        task_queue.enqueue(
-            "worker.process_document",
-            job_id,
-            file.filename,
-            style,
-            autofix_enabled,  # CHANGE: Use the variable, not hardcoded True
-            job_timeout=3600
-        )
-
-        print(f"🔥 Job {job_id} queued successfully with autofix={autofix_enabled}")
-
-    except Exception as q_error:
-        print(f"❌ Queue error: {q_error}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Failed to queue job", "message": str(q_error)}
-        )
-
-    # =========================
-    # 7. RECORD STATS
-    # =========================
-    try:
-        stats_tracker.add_upload(
-            filename=file.filename,
-            file_size=file_size,
-            references_count=0,
-            processing_time=0,
-            success=True,
-            ip_address=request.client.host if request and request.client else None
-        )
-    except Exception as stats_error:
-        print(f"⚠️ Stats error: {stats_error}")
-
-    # =========================
-    # 8. RETURN RESPONSE
-    # =========================
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "message": "Document queued. Poll /job/{job_id} for status.",
-        "file_name": file.filename,
-        "file_type": "pdf" if is_pdf else "docx",
-        "file_size_mb": file_size_mb,
-        "pdf_caution": (
-            "PDF accepted for cautious analysis. Text-based PDFs work best. DOCX remains recommended for the most accurate citation analysis."
-            if is_pdf else ""
-        ),
-        "autofix_enabled": autofix_enabled  # Include for debugging
-    }
-# ============================================================
-# RESULT CHECK ENDPOINT
-# ============================================================
-
-@app.get("/result/{job_id}")
-async def get_result(job_id: str, fresh: int = 0):
-    """Get job status and result.
-
-    Use fresh=1 when the browser is polling for enrichment updates, so
-    PostgreSQL is read directly instead of returning a possibly stale Redis value.
-    """
-    
-    # Check Redis cache first unless a fresh PostgreSQL read is requested
-    if redis_conn and not fresh:
-        cached = redis_conn.get(f"result:{job_id}")
-        if cached:
-            try:
-                return {"status": "completed", "data": json.loads(cached)}
-            except:
-                pass
-    
-    # Check PostgreSQL
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT status, result, error FROM jobs WHERE job_id = %s",
-                (job_id,)
-            )
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            if not row:
-                return {"status": "not_found", "error": "Job not found"}
-            
-            if row["status"] == "completed":
-                result = row["result"]
-                if isinstance(result, str):
-                    result = json.loads(result)
-                return {"status": "completed", "data": result}
-            elif row["status"] == "processing":
-                return {"status": "processing", "message": "Processing in background"}
-            elif row["status"] == "queued":
-                return {"status": "queued", "message": "Waiting in queue"}
-            elif row["status"] == "failed":
-                return {"status": "failed", "error": row["error"]}
-            
-        except Exception as e:
-            print(f"Database error: {e}")
-            return {"status": "error", "error": str(e)}
-    
-    return {"status": "pending", "message": "Job not found"}
-
-@app.get("/job/{job_id}")
-def get_job_endpoint(job_id: str):
-    job = load_job_record_fresh(job_id)
-    if not job:
-        return {"status": "not_found"}
-
-    return {
-        "status": job.get("status", "unknown"),
-        "result": job.get("result"),
-        "verification": job.get("verification", {})
-    }
-# ============================================================
-# AUTO-FIX ENDPOINTS
-# ============================================================
-
-@app.post("/apply-autofix")
-async def apply_autofix(job_id: str = Form(...)):
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    
-    result = job.get("result", {})
-    autofix_data = result.get("autofix", {})
-    
-    if not autofix_data or not autofix_data.get("suggestions"):
-        raise HTTPException(400, "No auto-fix suggestions available for this document")
-    
-    fixed_content = generate_fixed_document_content(job, autofix_data.get("suggestions", {}))
-    
-    if not fixed_content:
-        raise HTTPException(500, "Failed to generate fixed document - no main_text found")
-    
-    with _lock:
-        if job_id in _store:
-            _store[job_id]["fixed_document"] = fixed_content
-            _store[job_id]["autofix_applied"] = True
-    
-    applied_fixes = []
-    for fix in autofix_data.get("suggestions", {}).get("citations", []):
-        if fix.get("confidence", 0) >= 0.85:
-            applied_fixes.append({
-                "original": fix.get("original"),
-                "suggested": fix.get("suggested"),
-                "type": fix.get("type")
-            })
-    
-    return {
-        "success": True,
-        "job_id": job_id,
-        "fixes_applied_count": len(applied_fixes),
-        "fixes": applied_fixes,
-        "message": f"Applied {len(applied_fixes)} auto-fixes to the document"
-    }
-
-@app.get("/autofix-suggestions/{job_id}")
-async def get_autofix_suggestions(job_id: str):
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    
-    result = job.get("result", {})
-    autofix_data = result.get("autofix", {})
-    
-    if not autofix_data:
-        return {
-            "available": False,
-            "message": "Auto-fix was not enabled for this document. Please re-upload with auto-fix enabled."
+        # -----------------------------
+        # 7. Attach to result
+        # -----------------------------
+        result["autofix"] = {
+            "enabled": True,
+            "suggestions": suggestions_data
         }
-    
-    suggestions = autofix_data.get("suggestions", {})
-    summary = autofix_data.get("summary", {})
-    
-    return {
-        "available": True,
-        "enabled": autofix_data.get("enabled", False),
-        "summary": summary,
-        "citations": suggestions.get("citations", []),
-        "references": suggestions.get("references", []),
-        "statistics": suggestions.get("statistics", {}),
-        "auto_fixable_count": suggestions.get("auto_fixable_count", 0),
-        "review_needed_count": suggestions.get("review_needed_count", 0)
-    }
-
-@app.get("/fix-log/{job_id}")
-async def get_fix_log(job_id: str):
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    
-    result = job.get("result", {})
-    autofix_data = result.get("autofix", {})
-    
-    fixes_applied = []
-    
-    for fix in autofix_data.get("suggestions", {}).get("citations", []):
-        if fix.get("confidence", 0) >= 0.85:
-            fixes_applied.append({
-                "original": fix.get("original"),
-                "suggested": fix.get("suggested"),
-                "type": fix.get("type"),
-                "confidence": fix.get("confidence"),
-                "reason": fix.get("reason")
-            })
-    
-    return {
-        "job_id": job_id,
-        "autofix_applied": job.get("autofix_applied", False),
-        "fixes": fixes_applied,
-        "total_fixes": len(fixes_applied),
-        "generated_at": datetime.now().isoformat()
-    }
-
-# ============================================================
-# ONLINE VERIFICATION
-# ============================================================
-
-# ============================================================
-# ONLINE VERIFICATION
-# ============================================================
-
-@app.post("/verify-online")
-async def verify_online(job_id: str = Form(...)):
-    job = load_job_record(job_id)
-
-    if not job:
-        raise HTTPException(404, "Job not found")
-
-    verification = job.get("verification", {}) or {}
-    result = job.get("result", {}) or {}
-
-    existing_rows = ((result.get("online_verification") or {}).get("rows") or [])
-
-    if verification.get("state") == "completed" and existing_rows:
-        return {
-            "started": False,
-            "message": "Verification already completed",
-            "job_id": job_id,
-            "completed": True,
-            "total_references": len(existing_rows)
-        }
-
-    if verification.get("state") in {"queued", "running"}:
-        return {
-            "started": True,
-            "success": True,
-            "already_running": True,
-            "message": "Verification already in progress",
-            "job_id": job_id,
-            "progress": verification.get("progress", 0),
-            "total_references": verification.get("total", 0),
-            "state": verification.get("state")
-        }
-
-    refs = result.get("references_raw", []) or []
-
-    if not refs:
-        repaired = recover_references_for_verification(
-            result.get("main_text", ""),
-            style_hint="apa"
-        )
-
-        if repaired:
-            refs = repaired
-            result["references_raw"] = repaired
-            result.setdefault("summary", {})["reference_entries_found"] = len(repaired)
-
-            with _lock:
-                if job_id in _store:
-                    _store[job_id].setdefault("result", {})
-                    _store[job_id]["result"]["references_raw"] = repaired
-                    _store[job_id]["result"].setdefault("summary", {})["reference_entries_found"] = len(repaired)
-
-            if DATABASE_URL:
-                try:
-                    conn = psycopg2.connect(DATABASE_URL)
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        """
-                        UPDATE jobs
-                        SET result = %s::jsonb
-                        WHERE job_id = %s
-                        """,
-                        (json.dumps(result), job_id)
-                    )
-                    conn.commit()
-                    cursor.close()
-                    conn.close()
-                except Exception as e:
-                    print(f"[VERIFY ONLINE] Could not persist repaired references: {e}")
-
-    if not refs:
-        update_verification_status(
-            job_id,
-            state="idle",
-            progress=0,
-            total=0,
-            percentage=0,
-            message=result.get("reference_detection_message", "No references extracted")
-        )
-
-        return {
-            "started": False,
-            "message": result.get("reference_detection_message", "No references extracted"),
-            "job_id": job_id,
-            "reason": "no_references"
-        }
-
-    if not verification_queue:
-        raise HTTPException(500, "Verification queue not initialized")
-    
-    new_verification_job_id = f"verify:{job_id}:{uuid.uuid4().hex[:8]}"
-    
-    update_verification_status(
-        job_id,
-        verification_job_id=new_verification_job_id,
-        rq_job_id=new_verification_job_id,
-        state="queued",
-        total=len(refs),
-        progress=0,
-        percentage=0,
-        started_at=now(),
-        message="Verification re-queued"
-    )
-    
-    verification_queue.enqueue(
-        "worker.process_verification",
-        job_id,
-        "apa",
-        False,
-        job_id=new_verification_job_id,
-        job_timeout=10800,
-        result_ttl=86400,
-        failure_ttl=86400
-    )
-    
-    return {
-        "started": True,
-        "success": True,
-        "message": "Verification queued successfully",
-        "job_id": job_id,
-        "verification_job_id": new_verification_job_id,
-        "total_references": len(refs),
-        "state": "queued"
-    }
-# ============================================================
-# STATUS POLLING
-# ============================================================
-
-@app.get("/online/status")
-def online_status(job_id: str):
-    try:
-        job = load_job_record_fresh(job_id)
-
-        if not job:
-            return JSONResponse(
-                status_code=404,
-                content={
-                    "error": "Job not found",
-                    "job_id": job_id,
-                    "message": f"No job found with ID {job_id}",
-                    "timestamp": now()
-                }
-            )
-
-        result = job.get("result", {}) or {}
-        verification = result.get("verification") or job.get("verification") or {}
-
-        rq_job_id = verification.get("rq_job_id") or verification.get("verification_job_id")
-
-        if rq_job_id and redis_conn and verification.get("state") in {"queued", "running", "finalising"}:
-            try:
-                from rq.job import Job
-
-                rq_job = Job.fetch(rq_job_id, connection=redis_conn)
-                rq_status = rq_job.get_status(refresh=True)
-
-                verification["rq_status"] = rq_status
-
-                if rq_status == "queued":
-                    verification["state"] = "queued"
-                    verification["message"] = "Verification job is queued and waiting for the worker"
-
-                elif rq_status in {"started", "deferred"}:
-                    verification["state"] = "running"
-                    verification["message"] = "Verification running"
-
-                elif rq_status == "finished":
-                    fresh_job = load_job_record_fresh(job_id)
-                    fresh_result = (fresh_job or {}).get("result", {}) or {}
-                    fresh_verification = fresh_result.get("verification") or verification
-
-                    final_tables_ready = (
-                        fresh_verification.get("final_tables_ready") is True
-                        or fresh_result.get("final_tables_ready") is True
-                        or bool(fresh_result.get("verification_completed_at"))
-                    )
-
-                    if final_tables_ready:
-                        result = fresh_result
-                        verification = fresh_verification
-                        verification["state"] = "completed"
-                        verification["message"] = "Verification complete"
-                    else:
-                        verification["state"] = "finalising"
-                        verification["message"] = "Verification rows are complete. Waiting for Recovery and Claim Support tables..."
-
-                elif rq_status == "failed":
-                    verification["state"] = "error"
-                    verification["message"] = "Verification worker failed"
-                    verification["error"] = str(rq_job.exc_info or "Unknown worker error")
-                    verification["completed_at"] = now()
-
-                update_verification_status(job_id, **verification)
-
-            except Exception as e:
-                verification["rq_status_error"] = str(e)
-
-        online_verification = result.get("online_verification") or {}
-        rows = online_verification.get("rows") or []
-
-        progress = verification.get("progress", 0)
-        total = verification.get("total", 0)
-
-        if rows and progress < len(rows):
-            progress = len(rows)
-
-        if rows and not total:
-            total = len(rows)
-
-        percentage = verification.get("percentage", 0)
-
-        if total:
-            percentage = int((progress / max(total, 1)) * 100)
-
-        result["verification"] = verification
-
-        state = verification.get("state", "idle")
-
-        final_tables_ready = (
-            verification.get("final_tables_ready") is True
-            or result.get("final_tables_ready") is True
-            or bool(result.get("verification_completed_at"))
-        )
-
-        response = {
-            "job_id": job_id,
-            "online": {
-                "state": state,
-                "status": state,
-                "progress": progress,
-                "total": total,
-                "percentage": percentage,
-                "message": verification.get("message", ""),
-                "verification_job_id": verification.get("verification_job_id"),
-                "rq_job_id": verification.get("rq_job_id"),
-                "rq_status": verification.get("rq_status"),
-                "rq_status_error": verification.get("rq_status_error"),
-                "error": verification.get("error"),
-                "started_at": verification.get("started_at"),
-                "completed_at": verification.get("completed_at"),
-                "last_heartbeat": verification.get("last_heartbeat"),
-                "results_count": verification.get("results_count", len(rows)),
-                "has_results": len(rows) > 0,
-                "final_tables_ready": final_tables_ready,
-                "recovery_missing": len((result.get("recovery") or {}).get("missing_recovery") or []),
-                "recovery_verify": len((result.get("recovery") or {}).get("verification_recovery") or []),
-                "claim_support_rows": len(result.get("claim_support") or []),
-                "c2r_rows": len(result.get("reconciliation_intext_to_reference") or []),
-            }
-        }
-
-        if (
-            rows
-            or state in {"completed", "finalising"}
-            or final_tables_ready
-            or result.get("recovery")
-            or result.get("claim_support")
-        ):
-            response["result"] = result
-
-        return JSONResponse(content=response)
 
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "job_id": job_id,
-                "online": {
-                    "state": "error",
-                    "status": "error",
-                    "message": "Online status endpoint failed",
-                    "error": str(e),
-                    "progress": 0,
-                    "total": 0,
-                    "percentage": 0
-                }
+        print(f"[AUTOFIX ERROR] {e}")
+        result["autofix"] = {
+            "enabled": False,
+            "suggestions": {
+                "citations": [],
+                "missing": [],
+                "unmatched": [],
+                "references": []
             }
-        )
-@app.post("/api/enrichment/start/{job_id}")
-async def start_advanced_enrichment(job_id: str, request: Request):
-    """
-    Start advanced enrichment only when the user requests it.
-    This queues deep recovery and claim-support enrichment without blocking the dashboard.
-    """
-    if not redis_conn:
-        return JSONResponse(
-            {"ok": False, "error": "Redis is not available."},
-            status_code=500
-        )
-
-    if not DATABASE_URL:
-        return JSONResponse(
-            {"ok": False, "error": "Database is not available."},
-            status_code=500
-        )
-
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    scope = payload.get("scope", "weak_only")
-
-    allowed_scopes = {
-        "weak_only",
-        "recovery_only",
-        "claim_only",
-        "citation_needed_only",
-        "all_problem_rows",
-    }
-
-    if scope not in allowed_scopes:
-        scope = "weak_only"
-
-    job = load_job_record_fresh(job_id)
-
-    if not job:
-        return JSONResponse(
-            {"ok": False, "error": "Job not found."},
-            status_code=404
-        )
-
-    result = job.get("result") or {}
-
-    enrichment = result.get("enrichment") or {}
-    current_state = str(enrichment.get("state", "")).lower()
-
-    if current_state in {"queued", "running"}:
-        return {
-            "ok": True,
-            "message": "Advanced enrichment is already running.",
-            "state": current_state,
-            "rq_job_id": enrichment.get("rq_job_id"),
-            "scope": enrichment.get("scope", scope),
         }
 
-    deep_queue = Queue("deep_enrichment", connection=redis_conn)
-
-    rq_job = deep_queue.enqueue(
-        "worker.process_deep_enrichment",
-        job_id,
-        "apa",
-        scope,
-        job_timeout=10800,
-        result_ttl=86400,
-        failure_ttl=86400,
-    )
-
-    result["enrichment"] = {
-        "state": "queued",
-        "scope": scope,
-        "rq_job_id": rq_job.id,
-        "progress": 0,
-        "total": None,
-        "message": "Advanced enrichment queued.",
-        "requested_at": datetime.utcnow().isoformat(),
-        "deep_recovery_ready": False,
-        "deep_claim_support_ready": False,
-    }
-
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute(
-            """
-            UPDATE jobs
-            SET result = %s::jsonb
-            WHERE job_id = %s
-            """,
-            (json.dumps(result), job_id)
-        )
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
-
-    try:
-        redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
-    except Exception as e:
-        print(f"[ENRICHMENT START] Could not update Redis cache: {e}")
-
-    return {
-        "ok": True,
-        "message": "Advanced enrichment queued.",
-        "rq_job_id": rq_job.id,
-        "scope": scope,
-    }
-
-@app.get("/debug/enrichment-counts/{job_id}")
-async def debug_enrichment_counts(job_id: str):
-    """Return counts that confirm whether advanced enrichment reached the UI payload."""
-    job = load_job_record_fresh(job_id)
-    if not job:
-        return {"ok": False, "error": "Job not found"}
-
-    result = job.get("result") or {}
-    recovery = result.get("recovery") or {}
-    missing_rows = recovery.get("missing_recovery") or []
-    verification_rows = recovery.get("verification_recovery") or []
-    claim_rows = result.get("claim_support") or []
-
-    return {
-        "ok": True,
-        "job_id": job_id,
-        "enrichment": result.get("enrichment") or {},
-        "missing_recovery_rows": len(missing_rows),
-        "verification_recovery_rows": len(verification_rows),
-        "claim_support_rows": len(claim_rows),
-        "missing_deep_source_count": sum(len(r.get("deep_suggestions") or r.get("suggestions") or []) for r in missing_rows),
-        "verification_deep_source_count": sum(len(r.get("deep_suggestions") or r.get("suggestions") or []) for r in verification_rows),
-        "claim_alternative_source_count": sum(len(r.get("alternative_sources") or r.get("deep_suggestions") or r.get("suggestions") or []) for r in claim_rows),
-        "sample_missing_recovery": missing_rows[:1],
-        "sample_verification_recovery": verification_rows[:1],
-        "sample_claim_support": claim_rows[:1],
-    }
-# ============================================================
-# DOCUMENT EXPORT
-# ============================================================
-
-@app.get("/export-fixed-document/{job_id}")
-async def export_fixed_document(job_id: str, format: str = "txt"):
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    
-    fixed_document = job.get("fixed_document")
-    
-    if not fixed_document:
-        result = job.get("result", {})
-        autofix_data = result.get("autofix", {})
-        
-        if autofix_data and autofix_data.get("suggestions"):
-            fixed_document = generate_fixed_document_content(job, autofix_data.get("suggestions", {}))
-            if fixed_document:
-                with _lock:
-                    if job_id in _store:
-                        _store[job_id]["fixed_document"] = fixed_document
-                        _store[job_id]["autofix_applied"] = True
-    
-    if not fixed_document:
-        raise HTTPException(400, "No fixed document available. Please apply auto-fix first.")
-    
-    original_filename = job.get("result", {}).get("filename", "document")
-    base_name = os.path.splitext(original_filename)[0]
-    
-    return Response(
-        content=fixed_document,
-        media_type="text/plain",
-        headers={"Content-Disposition": f"attachment; filename={base_name}_fixed.txt"}
-    )
-
-# ============================================================
-# STATISTICS WEB PAGE
-# ============================================================
-
-@app.get("/stats", response_class=HTMLResponse)
-def stats_page(request: Request):
-    return templates.TemplateResponse("stats.html", {"request": request})
-
-# ============================================================
-# PRIVATE STATS ENDPOINTS
-# ============================================================
-
-@app.get("/private-stats")
-def get_private_stats(
-    credentials: HTTPBasicCredentials = Depends(security),
-    detailed: bool = False,
-    days: int = 30
-):
-    authenticate(credentials)
-    
-    # Get basic stats
-    stats = stats_tracker.get_stats(detailed=detailed, days=days)
-    
-    # Get recent uploads
-    recent_uploads = []
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT timestamp, filename, references_count, processing_time, success
-                FROM uploads 
-                ORDER BY timestamp DESC 
-                LIMIT 50
-            """)
-            recent_uploads = cursor.fetchall()
-            cursor.close()
-            conn.close()
-        except Exception as e:
-            print(f"Error fetching recent uploads: {e}")
-    
-    # Get daily stats
-    daily_stats = {}
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT date, uploads, processed, failed, references_count, 
-                       total_processing_time, processing_count
-                FROM daily_stats 
-                WHERE date >= CURRENT_DATE - INTERVAL '%s days'
-                ORDER BY date DESC
-            """, (days,))
-            rows = cursor.fetchall()
-            
-            for row in rows:
-                date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
-                daily_stats[date_str] = {
-                    "uploads": row['uploads'],
-                    "processed": row['processed'],
-                    "failed": row['failed'],
-                    "references": row['references_count'],
-                    "total_processing_time": float(row['total_processing_time']) if row['total_processing_time'] else 0,
-                    "processing_count": row['processing_count'],
-                    "avg_processing_time": round(float(row['total_processing_time']) / row['processing_count'], 2) if row['processing_count'] > 0 else 0
-                }
-            
-            cursor.close()
-            conn.close()
-        except Exception as e:
-            print(f"Error fetching daily stats: {e}")
-    
-    stats["recent_uploads"] = recent_uploads
-    stats["daily_stats"] = daily_stats
-    
-    stats["system_info"] = {
-        "current_time": datetime.now().isoformat(),
-        "active_jobs": len([j for j in _store.values() if j.get("verification", {}).get("state") == "running"]),
-        "total_jobs": len(_store),
-        "queue_status": get_queue_status(),
-        "server_busy": is_server_busy()
-    }
-    
-    return stats
-@app.get("/stats", response_class=HTMLResponse)
-def stats_page(request: Request):
-    return templates.TemplateResponse("stats.html", {"request": request})
-@app.get("/private-stats/count")
-def get_simple_count(credentials: HTTPBasicCredentials = Depends(security)):
-    authenticate(credentials)
-    stats = stats_tracker.get_stats(detailed=False)
-    return {"manuscripts_checked": stats['total_stats']['total_uploads']}
-
-@app.get("/private-stats/clear")
-def clear_old_stats(
-    credentials: HTTPBasicCredentials = Depends(security),
-    keep_days: int = 30
-):
-    authenticate(credentials)
-    try:
-        stats_tracker.clear_stats(keep_last_days=keep_days)
-        return {"success": True, "message": f"Cleared stats older than {keep_days} days", "kept_days": keep_days}
-    except Exception as e:
-        raise HTTPException(500, f"Error clearing stats: {str(e)}")
-
-@app.get("/private-stats/export")
-def export_stats(
-    credentials: HTTPBasicCredentials = Depends(security),
-    format: str = "json"
-):
-    authenticate(credentials)
-    stats = stats_tracker.get_stats(detailed=True, days=365)
-    
-    if format == "csv":
-        import csv
-        output = io.StringIO()
-        
-        if stats.get("recent_uploads"):
-            writer = csv.DictWriter(output, fieldnames=stats["recent_uploads"][0].keys())
-            writer.writeheader()
-            writer.writerows(stats["recent_uploads"])
-            
-            return Response(
-                content=output.getvalue(),
-                media_type="text/csv",
-                headers={"Content-Disposition": "attachment; filename=upload_stats.csv"}
-            )
-    
-    return stats
-
-@app.get("/private-stats/performance")
-def get_performance_stats(
-    credentials: HTTPBasicCredentials = Depends(security)
-):
-    authenticate(credentials)
-    stats = stats_tracker.get_stats(detailed=False)
-    days_online = max((datetime.now() - datetime.fromisoformat(stats["total_stats"]["start_date"])).days, 1)
-    
-    performance = {
-        "average_processing_time": stats["total_stats"]["average_processing_time"],
-        "success_rate": stats["total_stats"]["success_rate"],
-        "total_references_per_upload": round(
-            stats["total_stats"]["total_references_checked"] / max(stats["total_stats"]["total_uploads"], 1), 2
-        ),
-        "uploads_per_day": round(stats["total_stats"]["total_uploads"] / days_online, 2),
-        "references_per_day": round(stats["total_stats"]["total_references_checked"] / days_online, 2)
-    }
-    return performance
-
-# ============================================================
-# EXPORT REFERENCES ENDPOINT
-# ============================================================
-
-@app.post("/export-references")
-async def export_references(
-    job_id: str = Form(...),
-    style: str = Form("apa7"),
-    format_type: str = Form("docx")
-):
-    """
-    Export verified references to DOCX or HTML.
-    """
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    
-    result = job.get("result", {})
-    online_verification = result.get("online_verification", {})
-    verification_rows = online_verification.get("rows", [])
-    
-    if not verification_rows:
-        raise HTTPException(400, "No verification results available. Run online verification first.")
-    
-    formatted_refs = format_verified_reference_list(verification_rows, style)
-    
-    if not formatted_refs:
-        raise HTTPException(400, "No verified references found to export.")
-    
-    if format_type == "docx":
-        if not DOCX_AVAILABLE:
-            raise HTTPException(500, "DOCX export not available. Please install python-docx.")
-        
-        docx_buffer = export_references_to_docx(formatted_refs, style)
-        
-        if not docx_buffer:
-            raise HTTPException(500, "Failed to generate DOCX file.")
-        
-        filename = f"citeintegrity_references_{job_id[:8]}_{style}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-        
-        return Response(
-            content=docx_buffer.getvalue(),
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
-    
-    elif format_type == "html":
-        html_content = export_references_to_html(formatted_refs, style)
-        
-        filename = f"citeintegrity_references_{job_id[:8]}_{style}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-        
-        return Response(
-            content=html_content,
-            media_type="text/html",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
-    
-    else:
-        raise HTTPException(400, "Invalid format. Use 'docx' or 'html'.")
-
-# ============================================================
-# DEBUG STATS ENDPOINT
-# ============================================================
-
-@app.get("/debug/stats-info")
-def debug_stats_info(credentials: HTTPBasicCredentials = Depends(security)):
-    authenticate(credentials)
-    stats = stats_tracker.get_stats(detailed=True)
-    return {
-        "storage": "sqlite",
-        "database_path": '/tmp/citation_stats.db',
-        "database_exists": os.path.exists('/tmp/citation_stats.db'),
-        "database_size": os.path.getsize('/tmp/citation_stats.db') if os.path.exists('/tmp/citation_stats.db') else 0,
-        "stats": stats
-    }
-@app.get("/debug/recent-jobs")
-async def debug_recent_jobs(limit: int = 10):
-    """List recent jobs from PostgreSQL for debugging"""
-    jobs_info = []
-    
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT job_id, status, file_name, created_at, completed_at 
-                FROM jobs 
-                ORDER BY created_at DESC 
-                LIMIT %s
-            """, (limit,))
-            rows = cursor.fetchall()
-            cursor.close()
-            conn.close()
-            
-            for row in rows:
-                jobs_info.append({
-                    "job_id": row["job_id"],
-                    "status": row["status"],
-                    "file_name": row["file_name"],
-                    "created_at": str(row["created_at"]) if row["created_at"] else None,
-                    "completed_at": str(row["completed_at"]) if row["completed_at"] else None
-                })
-        except Exception as e:
-            print(f"PostgreSQL lookup error: {e}")
-    
-    # Also get in-memory jobs
-    with _lock:
-        memory_jobs = list(_store.keys())
-    
-    return {
-        "recent_jobs_from_db": jobs_info,
-        "jobs_in_memory": memory_jobs,
-        "total_in_memory": len(memory_jobs),
-        "total_in_db": len(jobs_info)
-    }
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-
-@app.get("/health")
-def health():
-    queue_stats = get_queue_status()
-    return {
-        "status": "healthy" if not queue_stats.get("is_busy", False) else "degraded",
-        "timestamp": now(),
-        "queue": queue_stats,
-        "server_busy": queue_stats.get("is_busy", False),
-        "redis_connected": redis_conn is not None,
-        "postgresql_connected": DATABASE_URL is not None
-    }
-@app.get("/debug/verification-health/{job_id}")
-async def verification_health(job_id: str):
-    """Check if verification is making progress"""
-    job = load_job_record(job_id)
-    if not job:
-        return {"error": "Job not found"}
-    
-    verification = job.get("verification", {})
-    progress = verification.get("progress", 0)
-    total = verification.get("total", 0)
-    state = verification.get("state", "idle")
-    last_heartbeat = verification.get("last_heartbeat")
-    started_at = verification.get("started_at")
-    
-    # Calculate if stuck
-    is_stuck = False
-    if state == "running" and started_at:
-        elapsed = (datetime.now() - datetime.fromisoformat(started_at)).total_seconds()
-        if elapsed > 300 and progress == 0:  # 5 minutes with 0 progress
-            is_stuck = True
-    
-    return {
-        "job_id": job_id,
-        "state": state,
-        "progress": progress,
-        "total": total,
-        "percentage": (progress / total * 100) if total > 0 else 0,
-        "started_at": started_at,
-        "last_heartbeat": last_heartbeat,
-        "elapsed_seconds": (datetime.now() - datetime.fromisoformat(started_at)).total_seconds() if started_at else 0,
-        "is_stuck": is_stuck,
-        "recommendation": "Job appears stuck" if is_stuck else "Job is progressing"
-    }
-# ============================================================
-# ERROR HANDLERS
-# ============================================================
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": exc.detail, "status_code": exc.status_code, "timestamp": now()}
-    )
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "detail": str(exc) if os.getenv("DEBUG") else "An unexpected error occurred",
-            "timestamp": now()
-        }
-    )
+    return result
