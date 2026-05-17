@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.7"
+__version__ = "1.5.6"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-17-numeric-sequence-reference-repair"
+ENGINE_BUILD = "commercial-2026-05-17-safe-numeric-styles"
 
 # Fuzzy matching (optional)
 try:
@@ -197,7 +197,7 @@ SAFE_SQUARE_NUMERIC_STYLES = {
 
 SAFE_SUPERSCRIPT_NUMERIC_STYLES = {
     "ama", "ama_superscript", "nature", "nature_superscript",
-    "rsc", "rsc_superscript", "acs_superscript", "elsevier_superscript", "numeric_superscript",
+    "rsc", "rsc_superscript", "acs_superscript", "numeric_superscript",
 }
 
 ROUND_NUMERIC_STYLES = {
@@ -220,8 +220,6 @@ def _style_token(style: str) -> str:
         "nlm_numbered": "nlm",
         "nlm_square_bracket": "nlm_square",
         "elsevier_numeric": "elsevier_numbered",
-        "elsevier_super": "elsevier_superscript",
-        "elsevier_numbered_superscript": "elsevier_superscript",
         "springer_numeric": "springer_numbered",
         "ama_numbered": "ama_superscript",
         "nature_numbered": "nature_superscript",
@@ -1439,9 +1437,6 @@ def parse_pdf_commercial(
     else:
         references = [r for r in references if norm_space(r)]
 
-    if style_hint == "numeric":
-        references = _repair_numeric_reference_sequence(references)
-
     references = _dedupe_keep_order(references)
 
     quality = _pdf_quality_report(
@@ -2314,208 +2309,6 @@ def _add_alias_once(alias_map: Dict[str, str], key: str, ref: str, prefer: bool 
     if prefer or key not in alias_map:
         alias_map[key] = ref
 
-
-
-# -----------------------------
-# Numeric PDF reference repair
-# -----------------------------
-_NUM_REF_START_RE = re.compile(
-    r"^\s*(?:\[\s*(\d{1,4})\s*\]|\(\s*(\d{1,4})\s*\)|(\d{1,4})[\.)])\s*(.*)$",
-    re.S,
-)
-
-def _numeric_reference_start_number(s: str) -> Optional[int]:
-    """Return the leading numeric reference number if the line starts like a reference."""
-    m = _NUM_REF_START_RE.match(norm_space(s or ""))
-    if not m:
-        return None
-    num = m.group(1) or m.group(2) or m.group(3)
-    try:
-        n = int(num)
-    except Exception:
-        return None
-    # Do not treat years as reference numbers.
-    if 1900 <= n <= 2099:
-        return None
-    return n
-
-
-def _strip_numeric_reference_start(s: str) -> str:
-    m = _NUM_REF_START_RE.match(norm_space(s or ""))
-    if not m:
-        return norm_space(s or "")
-    return norm_space(m.group(4) or "")
-
-
-def _clean_numeric_reference_fragment(s: str) -> str:
-    """Remove PDF page-footers and journal artefacts from reference fragments."""
-    s = norm_space(s or "")
-    if not s:
-        return ""
-
-    # Remove explicit extraction page markers.
-    s = re.sub(r"\[PAGE\s+\d+\]", " ", s, flags=re.I)
-
-    # Remove PLOS One page footer artefacts frequently embedded in wrapped references.
-    s = re.sub(
-        r"PLOS\s+One\s*\|\s*https?://doi\.org/10\.1371/journal\.pone\.\d+\s+"
-        r"[A-Za-z]+\s+\d{1,2},\s+\d{4}\s+\d+\s*/\s*\d+",
-        " ",
-        s,
-        flags=re.I,
-    )
-
-    # Remove generic journal page footers when they appear inside extracted references.
-    s = re.sub(
-        r"\b(?:PLOS\s+One|Geriatric\s+Nursing)\s*\|\s*https?://doi\.org/\S+\s+"
-        r"[A-Za-z]+\s+\d{1,2},\s+\d{4}\s+\d+\s*/\s*\d+",
-        " ",
-        s,
-        flags=re.I,
-    )
-
-    s = re.sub(r"\s+", " ", s).strip(" ,;")
-    return s
-
-
-def _looks_like_continuation_fragment(s: str) -> bool:
-    """Detect fragments that are page ranges, DOI-only tails, PMIDs or availability tails."""
-    x = norm_space(s or "")
-    if not x:
-        return True
-    body = _strip_numeric_reference_start(x)
-    low = soft_lower(body)
-
-    if _is_doi_only_reference(body):
-        return True
-    if re.match(r"^(https?://|doi\b|pmid\b|available\s+from\b)", low):
-        return True
-    if re.match(r"^\d{1,4}\s*[-–]\s*\d{1,4}\b", body):
-        return True
-    if re.match(r"^\d{1,4}\.\s*(https?://|doi\b)", low):
-        return True
-    if re.match(r"^\d{1,4}\.\s*(?:https?://|doi\b|pmid\b)", low):
-        return True
-    return False
-
-
-def _repair_numeric_reference_sequence(references_raw: List[str]) -> List[str]:
-    """
-    Repair numbered reference lists extracted from PDFs.
-
-    PDF extraction often turns wrapped Vancouver/NLM/Elsevier references into
-    fake entries such as:
-      50. https://doi...
-      612. https://doi...
-      3. Amsterdam...
-    These are continuation fragments, not new references. This function keeps a
-    reference as new only when its leading number is the expected next number.
-    It also handles stranded next-reference numbers at the end of a line, e.g.
-    "... PMID: 38831271 32." followed by "Hanushek EA, ..."
-    """
-    if not references_raw:
-        return []
-
-    cleaned = [_clean_numeric_reference_fragment(str(r)) for r in references_raw]
-    cleaned = [r for r in cleaned if r and not _is_digitised_artifact_line(r)]
-    if not cleaned:
-        return []
-
-    repaired: List[str] = []
-    cur = ""
-    expected = 1
-    pending_num: Optional[int] = None
-
-    def flush_current():
-        nonlocal cur
-        cur = _clean_numeric_reference_fragment(cur)
-        if cur and len(cur) >= 10 and not _is_doi_only_reference(cur):
-            repaired.append(cur)
-        cur = ""
-
-    for raw in cleaned:
-        s = _clean_numeric_reference_fragment(raw)
-        if not s:
-            continue
-
-        if pending_num is not None:
-            s = f"{pending_num}. {s}"
-            pending_num = None
-
-        n = _numeric_reference_start_number(s)
-
-        # Start the first reference. Prefer number 1, but allow a non-1 start
-        # for partial reference blocks.
-        if not cur and n is not None:
-            cur = s
-            expected = n + 1
-            continue
-
-        # Only the expected next number starts a new reference.
-        if cur and n is not None and n == expected:
-            flush_current()
-            cur = s
-            expected = n + 1
-            continue
-
-        # If an expected reference number is stranded at the end of a DOI/page
-        # continuation line, remove it from the current fragment and use it to
-        # prefix the next author line.
-        if cur and expected is not None:
-            tail_pat = re.compile(rf"(.*?)(?:\s+|\b)({expected})[\.)]\s*$", re.S)
-            mtail = tail_pat.match(s)
-            if mtail and len(_clean_numeric_reference_fragment(mtail.group(1))) >= 8:
-                fragment = _clean_numeric_reference_fragment(mtail.group(1))
-                if fragment:
-                    joiner = "" if cur.endswith("-") else " "
-                    if cur.endswith("-"):
-                        cur = cur[:-1]
-                    cur = _clean_numeric_reference_fragment(cur + joiner + fragment)
-                pending_num = expected
-                continue
-
-        # Non-expected numeric starts and fragments are continuations.
-        if cur:
-            fragment = s
-            # If this fragment begins with a non-expected number, keep it only
-            # when it is likely part of the body, such as a page range or DOI.
-            # Otherwise remove the misleading leading number only when the rest
-            # is obviously a continuation.
-            if n is not None and n != expected and _looks_like_continuation_fragment(s):
-                fragment = _strip_numeric_reference_start(s)
-
-            if fragment:
-                joiner = "" if cur.endswith("-") else " "
-                if cur.endswith("-"):
-                    cur = cur[:-1]
-                cur = _clean_numeric_reference_fragment(cur + joiner + fragment)
-        else:
-            # Ignore orphan fragments before the first recognisable reference.
-            continue
-
-    if cur:
-        flush_current()
-
-    # Keep the longest version for each reference number.
-    by_num: Dict[int, str] = {}
-    order: List[int] = []
-    for ref in repaired:
-        n = _numeric_reference_start_number(ref)
-        if n is None:
-            continue
-        if n not in by_num:
-            by_num[n] = ref
-            order.append(n)
-        elif len(ref) > len(by_num[n]):
-            by_num[n] = ref
-
-    if by_num:
-        # Preserve numeric order; this also removes duplicate accidental entries.
-        return [by_num[n] for n in sorted(by_num)]
-
-    return _dedupe_keep_order(repaired)
-
-
 def _merge_reference_lines(raw_lines: List[str], style_hint: str = "apa") -> List[str]:
     raw_lines = [ln.strip() for ln in raw_lines if ln and ln.strip()]
     if not raw_lines:
@@ -2561,7 +2354,6 @@ def _merge_reference_lines(raw_lines: List[str], style_hint: str = "apa") -> Lis
     if style_hint == "numeric":
         merged = _split_embedded_numeric_refs(merged)
         merged = _clean_reference_list(merged, style_hint="numeric")
-        merged = _repair_numeric_reference_sequence(merged)
     else:
         merged = _split_embedded_apa_refs(merged)
         merged = _clean_reference_list(merged, style_hint="apa")
@@ -4464,7 +4256,6 @@ def run_crosscheck(
         references_raw = _merge_reference_lines(ref_block_lines, style_hint=style_hint)
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
-            references_raw = _repair_numeric_reference_sequence(references_raw)
         
         # Fallback recovery for weak or failed extraction
         if style_hint == "apa" and len(references_raw) < 2:
@@ -4506,7 +4297,6 @@ def run_crosscheck(
 
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
-            references_raw = _repair_numeric_reference_sequence(references_raw)
         else:
             references_raw = _split_embedded_apa_refs(references_raw)
             references_raw = _clean_reference_list(references_raw, style_hint="apa")
