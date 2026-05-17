@@ -825,6 +825,22 @@
             </div>
 
             <div class="options-row">
+                <label class="checkbox-label">
+                    📚 Citation style
+                    <select id="citationStyle" style="padding: 6px 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 12px; background: white;">
+                        <option value="auto" selected>Auto-detect</option>
+                        <option value="apa">APA / Harvard / Chicago Author-Date</option>
+                        <option value="ieee">IEEE Square Bracket</option>
+                        <option value="vancouver_square">Vancouver Square Bracket</option>
+                        <option value="nlm_square">NLM Square Bracket</option>
+                        <option value="elsevier_numbered">Elsevier Numbered</option>
+                        <option value="springer_numbered">Springer Numbered</option>
+                        <option value="ama_superscript">AMA Superscript</option>
+                        <option value="nature_superscript">Nature Superscript</option>
+                        <option value="rsc_superscript">RSC Superscript</option>
+                        <option value="acs_superscript">ACS Superscript</option>
+                    </select>
+                </label>
                 <label class="checkbox-label"><input type="checkbox" id="autofix" checked> 💡 Enable Suggestions</label>
                 <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-start Online Verification</label>
             </div>
@@ -2279,7 +2295,10 @@ async function runInitialCheck() {
 
     const fd = new FormData();
     fd.append("file", file);
-    fd.append("style", "apa");
+
+    const styleSelect = document.getElementById("citationStyle");
+    const selectedStyle = styleSelect?.value || "auto";
+    fd.append("style", selectedStyle);
 
     const autofixCheck = document.getElementById("autofix");
     const onlineVerifyCheck = document.getElementById("onlineVerify");
@@ -2290,6 +2309,7 @@ async function runInitialCheck() {
     fd.append("enable_online_verification", onlineVerifyCheck?.checked ? "true" : "false");
     
     // Debug - verify values are being set correctly
+    console.log("🔍 Sending citation style:", selectedStyle);
     console.log("🔍 Sending enable_autofix:", autofixCheck?.checked ? "true" : "false");
     console.log("🔍 Sending enable_online_verification:", onlineVerifyCheck?.checked ? "true" : "false");
 
