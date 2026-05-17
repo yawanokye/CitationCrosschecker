@@ -2345,7 +2345,7 @@ async def new_results_dashboard_page(request: Request, job_id: str, verify: int 
 @app.post("/verify")
 async def verify(
     file: UploadFile = File(...),
-    style: str = Form("apa"),
+    style: str = Form("auto"),
     enable_autofix: str = Form("false"),  # CHANGE: Use str instead of bool
     enable_online_verification: str = Form("false"),  # CHANGE: Use str instead of bool
     request: Request = None
@@ -2354,6 +2354,7 @@ async def verify(
     autofix_enabled = enable_autofix.lower() == "true"
     online_verify_enabled = enable_online_verification.lower() == "true"
     
+    print(f"📚 Received citation style: {style}")
     print(f"📋 Received enable_autofix string: {enable_autofix}")
     print(f"📋 Converted to bool: {autofix_enabled}")
     print(f"📋 Received enable_online_verification: {online_verify_enabled}")
