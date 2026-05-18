@@ -206,62 +206,6 @@
             color: #1e293b;
         }
 
-        .citation-style-label {
-            align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .citation-style-select {
-            padding: 7px 10px;
-            border-radius: 9px;
-            border: 1px solid #cbd5e1;
-            font-size: 12px;
-            background: white;
-            min-width: 285px;
-            color: #1e293b;
-        }
-
-        .citation-help-icon {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 18px;
-            height: 18px;
-            border-radius: 999px;
-            background: #e8f0fe;
-            color: #1a73e8;
-            font-size: 11px;
-            font-weight: 800;
-            cursor: help;
-        }
-
-        .citation-style-hint {
-            flex-basis: 100%;
-            margin-top: -4px;
-            margin-left: 24px;
-            padding: 9px 12px;
-            border-left: 3px solid #19b36b;
-            background: #f8fafc;
-            border-radius: 10px;
-            color: #475569;
-            font-size: 12px;
-            line-height: 1.45;
-        }
-
-        .result-style-pill {
-            display: inline-flex;
-            align-items: center;
-            margin-left: 8px;
-            padding: 5px 10px;
-            border-radius: 999px;
-            background: #e8f0fe;
-            color: #1a73e8;
-            font-size: 12px;
-            font-weight: 700;
-            vertical-align: middle;
-        }
-
         .button-group {
             display: flex;
             gap: 12px;
@@ -881,42 +825,20 @@
             </div>
 
             <div class="options-row">
-                <label class="checkbox-label citation-style-label">
-                    📚 Citation style
-                    <span class="citation-help-icon" title="Choose the citation pattern used in the manuscript. The default is APA / Harvard / Chicago Author-Date because auto-detect can misread some PDFs.">?</span>
-                    <select id="citationStyle" class="citation-style-select" aria-describedby="citationStyleHint">
-                        <optgroup label="Author-year styles" title="Examples: (Adam, 2020), (Adam 2020), Adam (2020)">
-                            <option value="apa" selected title="Examples: (Adam, 2020), (Adam 2020), Adam (2020). Use this for APA, Harvard and Chicago Author-Date manuscripts.">APA / Harvard / Chicago Author-Date</option>
-                            <option value="author_year" title="Examples: (Adam, 2020), (Adam 2020), Adam (2020). Use this for other author-year manuscripts.">Other Author-Year</option>
-                        </optgroup>
-                        <optgroup label="Numeric square-bracket styles" title="Examples: [1], [1,2], [3–5]. Best for IEEE, Vancouver square, NLM, Elsevier numbered and Springer numbered styles.">
-                            <option value="ieee_square" title="Example: Digital procurement improves transparency [1].">IEEE Square Bracket [1]</option>
-                            <option value="vancouver_square" title="Example: Digital procurement improves transparency [1]. Multiple sources may appear as [1,2] or [3–5].">Vancouver Square Bracket [1]</option>
-                            <option value="nlm_square" title="Example: Health studies commonly cite sources as [1] or [1,2].">NLM Square Bracket [1]</option>
-                            <option value="elsevier_square" title="Example: Elsevier numbered manuscripts may cite sources as [1] or [3–5].">Elsevier Numbered Square Bracket [1]</option>
-                            <option value="springer_square" title="Example: Springer numbered manuscripts may cite sources as [1] or [3–5].">Springer Numbered Square Bracket [1]</option>
-                            <option value="numeric_square" title="Example: Use this when the manuscript uses [1] but the exact journal style is unknown.">Other Numeric Square-Bracket [1]</option>
-                        </optgroup>
-                        <optgroup label="Numeric superscript styles" title="Examples: text¹, text¹,², text¹–³. Best for AMA, Nature, RSC and ACS superscript styles.">
-                            <option value="ama_superscript" title="Example: Digital procurement improves transparency.¹">AMA Superscript ¹</option>
-                            <option value="nature_superscript" title="Example: Digital procurement improves transparency.¹">Nature Superscript ¹</option>
-                            <option value="rsc_superscript" title="Example: Digital procurement improves transparency.¹">RSC Superscript ¹</option>
-                            <option value="acs_superscript" title="Example: Digital procurement improves transparency.¹">ACS Superscript ¹</option>
-                            <option value="elsevier_superscript" title="Example: Some Elsevier proofs show citations as superscript numbers after punctuation.¹">Elsevier Superscript ¹</option>
-                            <option value="numeric_superscript" title="Example: Use this when the manuscript uses superscript numeric citations but the exact journal style is unknown.¹">Other Numeric Superscript ¹</option>
-                        </optgroup>
-                        <optgroup label="Advanced numeric styles" title="Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round-bracket numeric citations.">
-                            <option value="vancouver_round" title="Example: Digital procurement improves transparency (1). Use only when the manuscript uses round-bracket numeric citations.">Vancouver Round Bracket (1)</option>
-                            <option value="acs_round" title="Example: Digital procurement improves transparency (1). Use only when the manuscript uses round-bracket numeric citations.">ACS Round Bracket (1)</option>
-                            <option value="numeric_round" title="Example: Use this only when the manuscript clearly uses (1), (1,2), or (3–5) as citations.">Other Numeric Round Bracket (1)</option>
-                        </optgroup>
-                        <optgroup label="Experimental">
-                            <option value="auto" title="Auto-detect is experimental and may misread some PDFs. Use a specific style when possible.">Auto-detect, experimental</option>
-                        </optgroup>
-                    </select>
-                    <div id="citationStyleHint" class="citation-style-hint">
-                        Default: APA / Harvard / Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).
-                    </div>
+                <label class="checkbox-label" style="align-items:flex-start; gap:10px;">
+                    <span style="padding-top:7px; white-space:nowrap;">📚 Citation style</span>
+                    <span style="display:flex; flex-direction:column; gap:5px; min-width:320px; max-width:460px;">
+                        <select id="citationStyle" aria-describedby="citationStyleHint" title="Select the citation family used in the manuscript" style="padding: 7px 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 12px; background: white; width:100%;">
+
+                            <option value="apa" selected title="Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).">Author-year, APA / Harvard / Chicago</option>
+                            <option value="numeric_square" title="Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5].">Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer</option>
+                            <option value="numeric_superscript" title="Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³.">Numeric superscript, AMA / Nature / RSC / ACS / Elsevier</option>
+                            <option value="numeric_round" title="Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations.">Numeric round bracket, Vancouver / ACS</option>
+                            <option value="auto" title="Experimental. Auto-detect can misread some PDFs, so a selected family is safer.">Auto-detect, experimental</option>
+                        
+                        </select>
+                        <span id="citationStyleHint" style="font-size:11px; color:#64748b; line-height:1.35;">Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).</span>
+                    </span>
                 </label>
                 <label class="checkbox-label"><input type="checkbox" id="autofix" checked> 💡 Enable Suggestions</label>
                 <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-start Online Verification</label>
@@ -989,7 +911,7 @@
     <!-- Results Section -->
     <section id="resultsCard" class="card" style="display:none;">
         <div class="results-header">
-            <h3 id="analysisResultsTitle">📊 Analysis Results <span id="analysisResultsStyle" class="result-style-pill">APA / Harvard / Chicago Author-Date</span></h3>
+            <h3 id="analysisResultsTitle">📊 Analysis Results <span id="analysisResultsStyle" title="Selected citation family" style="display:inline-block; margin-left:8px; padding:4px 10px; border-radius:999px; background:#ecfdf5; color:#13855a; font-size:12px; font-weight:700; vertical-align:middle;">Author-year, APA / Harvard / Chicago</span></h3>
             <div class="kpi-dashboard" id="dash"></div>
         </div>
 
@@ -1212,147 +1134,86 @@ let POLL_ATTEMPT_COUNT = 0;
 let LAST_PROGRESS = 0;
 let LAST_PROGRESS_TIME = null;
 window.latestResults = null;
+let LAST_SELECTED_CITATION_STYLE = "apa";
 
 const CITATION_STYLE_INFO = {
     apa: {
-        label: "APA / Harvard / Chicago Author-Date",
-        family: "Author-year",
-        sample: "Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
-    },
-    author_year: {
-        label: "Other Author-Year",
-        family: "Author-year",
-        sample: "Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
-    },
-    chicago_author_date: {
-        label: "Chicago Author-Date",
-        family: "Author-year",
-        sample: "Examples: (Adam 2020), Adam (2020)."
-    },
-    ieee: {
-        label: "IEEE Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1], [2], [1]–[3]."
-    },
-    ieee_square: {
-        label: "IEEE Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1], [2], [1]–[3]."
-    },
-    vancouver_square: {
-        label: "Vancouver Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1,2], [3–5]."
-    },
-    nlm_square: {
-        label: "NLM Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1,2], [3–5]."
-    },
-    elsevier_numbered: {
-        label: "Elsevier Numbered Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1,2], [3–5]."
-    },
-    elsevier_square: {
-        label: "Elsevier Numbered Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1,2], [3–5]."
-    },
-    springer_numbered: {
-        label: "Springer Numbered Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1,2], [3–5]."
-    },
-    springer_square: {
-        label: "Springer Numbered Square Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1,2], [3–5]."
+        label: "Author-year, APA / Harvard / Chicago",
+        family: "author_year",
+        sample: "Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
     },
     numeric_square: {
-        label: "Other Numeric Square-Bracket [1]",
-        family: "Numeric square-bracket",
-        sample: "Examples: [1], [1,2], [3–5]."
-    },
-    ama_superscript: {
-        label: "AMA Superscript ¹",
-        family: "Numeric superscript",
-        sample: "Examples: text¹, text¹,², text¹–³."
-    },
-    nature_superscript: {
-        label: "Nature Superscript ¹",
-        family: "Numeric superscript",
-        sample: "Examples: text¹, text¹,², text¹–³."
-    },
-    rsc_superscript: {
-        label: "RSC Superscript ¹",
-        family: "Numeric superscript",
-        sample: "Examples: text¹, text¹,², text¹–³."
-    },
-    acs_superscript: {
-        label: "ACS Superscript ¹",
-        family: "Numeric superscript",
-        sample: "Examples: text¹, text¹,², text¹–³."
-    },
-    elsevier_superscript: {
-        label: "Elsevier Superscript ¹",
-        family: "Numeric superscript",
-        sample: "Examples: text¹, text¹,², text¹–³."
+        label: "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+        family: "numeric_square",
+        sample: "Numeric-square matching: IEEE, Vancouver, NLM, Elsevier and Springer. Examples: [1], [1,2], [3–5]."
     },
     numeric_superscript: {
-        label: "Other Numeric Superscript ¹",
-        family: "Numeric superscript",
-        sample: "Examples: text¹, text¹,², text¹–³."
-    },
-    vancouver_round: {
-        label: "Vancouver Round Bracket (1)",
-        family: "Advanced numeric round-bracket",
-        sample: "Examples: (1), (1,2), (3–5). Use only when this is the manuscript style."
-    },
-    acs_round: {
-        label: "ACS Round Bracket (1)",
-        family: "Advanced numeric round-bracket",
-        sample: "Examples: (1), (1,2), (3–5). Use only when this is the manuscript style."
+        label: "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+        family: "numeric_superscript",
+        sample: "Numeric-superscript matching: AMA, Nature, RSC, ACS and Elsevier. Examples: text¹, text¹,², text¹–³."
     },
     numeric_round: {
-        label: "Other Numeric Round Bracket (1)",
-        family: "Advanced numeric round-bracket",
-        sample: "Examples: (1), (1,2), (3–5). Use only when this is the manuscript style."
+        label: "Numeric round bracket, Vancouver / ACS",
+        family: "numeric_round",
+        sample: "Numeric-round matching: Vancouver and ACS. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."
     },
     auto: {
         label: "Auto-detect, experimental",
-        family: "Experimental",
-        sample: "Auto-detect may misread some PDFs. Select a specific style when possible."
+        family: "auto",
+        sample: "Experimental auto-detect. It can misread some PDFs, so selecting the citation family is safer."
     }
 };
-
-let LAST_SELECTED_CITATION_STYLE = "apa";
 
 function getCitationStyleInfo(style) {
     return CITATION_STYLE_INFO[String(style || "apa").toLowerCase()] || CITATION_STYLE_INFO.apa;
 }
 
-function getCitationStyleLabel(style) {
-    return getCitationStyleInfo(style).label;
+
+function forceCondensedCitationStyleMenu() {
+    const select = document.getElementById("citationStyle");
+    if (!select) return;
+
+    const allowed = new Set(["apa", "numeric_square", "numeric_superscript", "numeric_round", "auto"]);
+    const previous = allowed.has(select.value) ? select.value : "apa";
+
+    const items = [
+        ["apa", "Author-year, APA / Harvard / Chicago", "Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."],
+        ["numeric_square", "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer", "Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer numbered square-bracket styles. Examples: [1], [1,2], [3–5]."],
+        ["numeric_superscript", "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier", "Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³."],
+        ["numeric_round", "Numeric round bracket, Vancouver / ACS", "Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."],
+        ["auto", "Auto-detect, experimental", "Experimental. Auto-detect can misread some PDFs, so selecting the citation family is safer."]
+    ];
+
+    select.innerHTML = "";
+    for (const [value, label, title] of items) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.title = title;
+        select.appendChild(option);
+    }
+    select.value = previous;
+    select.dataset.menuBuild = "condensed-2026-05-18";
 }
 
 function updateCitationStyleHint() {
     const select = $("citationStyle");
     const hint = $("citationStyleHint");
-    if (!select || !hint) return;
-    const info = getCitationStyleInfo(select.value || "apa");
-    hint.innerHTML = `<strong>${esc(info.family)}:</strong> ${esc(info.sample)}`;
-    select.title = `${info.family}. ${info.sample}`;
+    if (!select) return;
     LAST_SELECTED_CITATION_STYLE = select.value || "apa";
+    const info = getCitationStyleInfo(LAST_SELECTED_CITATION_STYLE);
+    select.title = info.sample;
+    if (hint) hint.textContent = info.sample;
 }
 
-function updateResultsStyleLabel(data) {
+function updateAnalysisResultsStyle(data) {
     const pill = $("analysisResultsStyle");
     if (!pill) return;
-    const styleValue = data?.style || data?.selected_style || data?.citation_style || LAST_SELECTED_CITATION_STYLE || "apa";
-    const label = data?.style_label || data?.citation_style_label || getCitationStyleLabel(styleValue);
+    const styleValue = data?.selected_style || data?.style || data?.citation_style || LAST_SELECTED_CITATION_STYLE || "apa";
+    const info = getCitationStyleInfo(styleValue);
+    const label = data?.style_label || info.label;
     pill.textContent = label;
-    pill.title = getCitationStyleInfo(styleValue).sample || "";
+    pill.title = info.sample;
 }
 
 function esc(str) {
@@ -1888,10 +1749,11 @@ function normalizeData(payload) {
 // Render Functions
 function renderSummaryTable(data) {
     const s = data?.summary || {};
+    updateAnalysisResultsStyle(data);
+    const styleValue = data?.selected_style || data?.style || LAST_SELECTED_CITATION_STYLE || "apa";
+    const styleLabel = data?.style_label || getCitationStyleInfo(styleValue).label;
     const summaryTable = $("summaryTable");
     if (summaryTable) {
-        const styleValue = data?.style || data?.selected_style || data?.citation_style || LAST_SELECTED_CITATION_STYLE || "apa";
-        const styleLabel = data?.style_label || data?.citation_style_label || getCitationStyleLabel(styleValue);
         summaryTable.innerHTML = `
             <tr><td style="width:220px;">Citation style selected</div><td><strong>${esc(styleLabel)}</strong></div></tr>
             <tr><td style="width:220px;">In-text citations (occurrences)</div><td><strong style="font-size:18px;">${esc(s.in_text_citations_found)}</strong></div></tr>
@@ -2238,7 +2100,6 @@ function renderAll(data) {
     
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
-    updateResultsStyleLabel(normalized);
     
     renderSummaryTable(normalized);
     renderACII(normalized);
@@ -2407,7 +2268,109 @@ function exportWordFile() {
         <p>${aciiRating.description}</p>
         <h2>Missing Citations</h2><ul>${missing.map(m => `<li>${esc(m.citation_in_text || m)}</li>`).join('')}</ul>
         <h2>Uncited References</h2><ul>${uncited.map(u => `<li>${esc(u.reference || u)}</li>`).join('')}</ul>
-        </body></html>`;
+        
+<script>
+(function enforceCitationStyleCategoryMenu() {
+    "use strict";
+
+    const CATEGORY_OPTIONS = [
+        {
+            value: "apa",
+            label: "Author-year, APA / Harvard / Chicago",
+            title: "Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
+        },
+        {
+            value: "numeric_square",
+            label: "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+            title: "Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5]."
+        },
+        {
+            value: "numeric_superscript",
+            label: "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+            title: "Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³."
+        },
+        {
+            value: "numeric_round",
+            label: "Numeric round bracket, Vancouver / ACS",
+            title: "Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."
+        },
+        {
+            value: "auto",
+            label: "Auto-detect, experimental",
+            title: "Experimental. Auto-detect can misread some PDFs, so selecting the citation family is safer."
+        }
+    ];
+
+    const NOTES = {
+        apa: "Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).",
+        numeric_square: "Numeric-square matching: IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5].",
+        numeric_superscript: "Numeric-superscript matching: AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³.",
+        numeric_round: "Numeric-round matching: Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Use only when the manuscript clearly uses round numeric citations.",
+        auto: "Auto-detect is experimental. For better accuracy, select the citation family used in the manuscript."
+    };
+
+    function currentFamily(value) {
+        const v = String(value || "").toLowerCase();
+        if (["apa", "harvard", "chicago_author_date", "author_year"].includes(v)) return "apa";
+        if (["ieee", "ieee_square", "vancouver_square", "nlm", "nlm_square", "elsevier", "elsevier_numbered", "elsevier_square", "springer", "springer_numbered", "springer_square", "numeric_square"].includes(v)) return "numeric_square";
+        if (["ama", "ama_superscript", "nature", "nature_superscript", "rsc", "rsc_superscript", "acs_superscript", "elsevier_superscript", "numeric_superscript"].includes(v)) return "numeric_superscript";
+        if (["vancouver_round", "acs_round", "numeric_round"].includes(v)) return "numeric_round";
+        if (v === "auto") return "auto";
+        return "apa";
+    }
+
+    function rebuild(select) {
+        if (!select) return;
+        const selected = currentFamily(select.value);
+        const needsRebuild = select.querySelector("optgroup") || select.options.length !== CATEGORY_OPTIONS.length || Array.from(select.options).some((opt, i) => opt.value !== CATEGORY_OPTIONS[i].value);
+        if (!needsRebuild && select.dataset.menuBuild === "category-only-2026-05-18") return;
+
+        select.innerHTML = "";
+        CATEGORY_OPTIONS.forEach(item => {
+            const opt = document.createElement("option");
+            opt.value = item.value;
+            opt.textContent = item.label;
+            opt.title = item.title;
+            select.appendChild(opt);
+        });
+        select.value = selected;
+        select.dataset.menuBuild = "category-only-2026-05-18";
+        select.title = "Select one citation family, not an individual publisher style.";
+        updateNote(select);
+    }
+
+    function updateNote(select) {
+        const note = document.getElementById("citationStyleHint") || document.getElementById("citationStyleNote");
+        if (note) note.textContent = NOTES[currentFamily(select && select.value)] || NOTES.apa;
+    }
+
+    function apply() {
+        const selects = Array.from(document.querySelectorAll("select#citationStyle, select[name='citationStyle']"));
+        selects.forEach(select => {
+            rebuild(select);
+            if (!select.dataset.categoryListenerAttached) {
+                select.addEventListener("change", () => updateNote(select));
+                select.addEventListener("focus", () => rebuild(select));
+                select.addEventListener("mousedown", () => rebuild(select));
+                select.dataset.categoryListenerAttached = "1";
+            }
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", apply);
+    } else {
+        apply();
+    }
+    window.addEventListener("pageshow", apply);
+    setTimeout(apply, 200);
+    setTimeout(apply, 1000);
+    setTimeout(apply, 3000);
+    window.CITEINTEGRITY_CITATION_MENU_BUILD = "category-only-2026-05-18";
+})();
+</script>
+
+</body></html>`;
     const blob = new Blob([html], { type: "application/msword" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -2521,7 +2484,6 @@ async function runInitialCheck() {
 
     const styleSelect = document.getElementById("citationStyle");
     const selectedStyle = styleSelect?.value || "apa";
-    LAST_SELECTED_CITATION_STYLE = selectedStyle;
     fd.append("style", selectedStyle);
 
     const autofixCheck = document.getElementById("autofix");
@@ -2966,6 +2928,10 @@ function applySingleFix(index) {
 // BUTTON EVENT LISTENERS (AT THE BOTTOM - CRITICAL!)
 // ============================================
 setupFileArea();
+forceCondensedCitationStyleMenu();
+updateCitationStyleHint();
+const citationStyleSelect = document.getElementById("citationStyle");
+if (citationStyleSelect) citationStyleSelect.addEventListener("change", updateCitationStyleHint);
 
 const btnCheck = document.getElementById("btnCheck");
 if (btnCheck) btnCheck.addEventListener("click", runInitialCheck);
@@ -2993,6 +2959,108 @@ updateQueueStatus();
 console.log("[CiteIntegrity] App initialized - Ready for use");
 
 });
+</script>
+
+
+<script>
+(function enforceCitationStyleCategoryMenu() {
+    "use strict";
+
+    const CATEGORY_OPTIONS = [
+        {
+            value: "apa",
+            label: "Author-year, APA / Harvard / Chicago",
+            title: "Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
+        },
+        {
+            value: "numeric_square",
+            label: "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+            title: "Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5]."
+        },
+        {
+            value: "numeric_superscript",
+            label: "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+            title: "Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³."
+        },
+        {
+            value: "numeric_round",
+            label: "Numeric round bracket, Vancouver / ACS",
+            title: "Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."
+        },
+        {
+            value: "auto",
+            label: "Auto-detect, experimental",
+            title: "Experimental. Auto-detect can misread some PDFs, so selecting the citation family is safer."
+        }
+    ];
+
+    const NOTES = {
+        apa: "Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).",
+        numeric_square: "Numeric-square matching: IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5].",
+        numeric_superscript: "Numeric-superscript matching: AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³.",
+        numeric_round: "Numeric-round matching: Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Use only when the manuscript clearly uses round numeric citations.",
+        auto: "Auto-detect is experimental. For better accuracy, select the citation family used in the manuscript."
+    };
+
+    function currentFamily(value) {
+        const v = String(value || "").toLowerCase();
+        if (["apa", "harvard", "chicago_author_date", "author_year"].includes(v)) return "apa";
+        if (["ieee", "ieee_square", "vancouver_square", "nlm", "nlm_square", "elsevier", "elsevier_numbered", "elsevier_square", "springer", "springer_numbered", "springer_square", "numeric_square"].includes(v)) return "numeric_square";
+        if (["ama", "ama_superscript", "nature", "nature_superscript", "rsc", "rsc_superscript", "acs_superscript", "elsevier_superscript", "numeric_superscript"].includes(v)) return "numeric_superscript";
+        if (["vancouver_round", "acs_round", "numeric_round"].includes(v)) return "numeric_round";
+        if (v === "auto") return "auto";
+        return "apa";
+    }
+
+    function rebuild(select) {
+        if (!select) return;
+        const selected = currentFamily(select.value);
+        const needsRebuild = select.querySelector("optgroup") || select.options.length !== CATEGORY_OPTIONS.length || Array.from(select.options).some((opt, i) => opt.value !== CATEGORY_OPTIONS[i].value);
+        if (!needsRebuild && select.dataset.menuBuild === "category-only-2026-05-18") return;
+
+        select.innerHTML = "";
+        CATEGORY_OPTIONS.forEach(item => {
+            const opt = document.createElement("option");
+            opt.value = item.value;
+            opt.textContent = item.label;
+            opt.title = item.title;
+            select.appendChild(opt);
+        });
+        select.value = selected;
+        select.dataset.menuBuild = "category-only-2026-05-18";
+        select.title = "Select one citation family, not an individual publisher style.";
+        updateNote(select);
+    }
+
+    function updateNote(select) {
+        const note = document.getElementById("citationStyleHint") || document.getElementById("citationStyleNote");
+        if (note) note.textContent = NOTES[currentFamily(select && select.value)] || NOTES.apa;
+    }
+
+    function apply() {
+        const selects = Array.from(document.querySelectorAll("select#citationStyle, select[name='citationStyle']"));
+        selects.forEach(select => {
+            rebuild(select);
+            if (!select.dataset.categoryListenerAttached) {
+                select.addEventListener("change", () => updateNote(select));
+                select.addEventListener("focus", () => rebuild(select));
+                select.addEventListener("mousedown", () => rebuild(select));
+                select.dataset.categoryListenerAttached = "1";
+            }
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", apply);
+    } else {
+        apply();
+    }
+    window.addEventListener("pageshow", apply);
+    setTimeout(apply, 200);
+    setTimeout(apply, 1000);
+    setTimeout(apply, 3000);
+    window.CITEINTEGRITY_CITATION_MENU_BUILD = "category-only-2026-05-18";
+})();
 </script>
 
 </body>
