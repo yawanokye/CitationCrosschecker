@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.10"
+__version__ = "1.5.11"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-18-direct-pymupdf-numeric-reference-parser-FINAL-rename-this-file"
+ENGINE_BUILD = "commercial-2026-05-18-direct-pdf-numeric-square-and-superscript-parser-FINAL"
 
 # Fuzzy matching (optional)
 try:
@@ -4233,17 +4233,67 @@ def _generate_reference_fixes(ref: RefAY) -> List[FixSuggestion]:
 # ---------------------------------------------------------------------------
 # Direct numeric PDF reference reconstruction
 # ---------------------------------------------------------------------------
+
+def _pdf_text_blocks_in_column_order(file_bytes: bytes) -> List[Dict[str, Any]]:
+    """Return PDF text blocks in a stable column-aware reading order."""
+    if not file_bytes or not PYMUPDF_OK or fitz is None:
+        return []
+    blocks_out: List[Dict[str, Any]] = []
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return []
+    try:
+        for page_no, page in enumerate(doc, start=1):
+            width = float(page.rect.width or 0)
+            mid = width / 2.0 if width else 300.0
+            try:
+                blocks = page.get_text("blocks", sort=False) or []
+            except Exception:
+                blocks = []
+            for b in blocks:
+                if len(b) < 5:
+                    continue
+                x0, y0, x1, y1, txt = b[:5]
+                block_type = b[6] if len(b) >= 7 else 0
+                if block_type != 0:
+                    continue
+                txt = str(txt or "").strip()
+                if not txt:
+                    continue
+                # Most journal PDFs here are either one-column or two-column. For two-column
+                # reference lists, page.get_text("text") interleaves the columns. Sorting by
+                # column first preserves the reference sequence: left column, then right column.
+                col = 0 if float(x0) < mid else 1
+                blocks_out.append({
+                    "page": page_no,
+                    "col": col,
+                    "x0": float(x0),
+                    "y0": float(y0),
+                    "x1": float(x1),
+                    "y1": float(y1),
+                    "text": txt,
+                })
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+    blocks_out.sort(key=lambda r: (r["page"], r["col"], r["y0"], r["x0"]))
+    return blocks_out
+
+
 def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
     """
-    Reconstruct numbered reference lists directly from PDF page text.
+    Reconstruct numbered PDF reference lists directly from column-aware PDF blocks.
 
-    This is used for PLOS/Vancouver/NLM/IEEE-style PDFs where the normal
+    This is used for PLOS/Vancouver/NLM/IEEE/Elsevier-style PDFs where the normal
     line-merging parser can mistake wrapped page ranges and DOI tails, such as
     "50. https://doi..." or "612. https://doi...", for new references.
 
-    The parser starts at the References heading and only accepts the next
-    expected reference number as a new entry. All other numbered fragments are
-    treated as continuation text.
+    The parser starts at the References heading and only accepts the next expected
+    reference number as a new entry. All other numbered fragments are treated as
+    continuation text.
     """
     if not file_bytes or not PYMUPDF_OK or fitz is None:
         return []
@@ -4262,57 +4312,66 @@ def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
             return True
         if re.match(r"^PLOS\s+One\s*\|", s, re.I):
             return True
+        if re.match(r"^R\.M\.\s*Gyasi\s+et\s+al\.", s, re.I):
+            return True
+        if re.search(r"Geriatric\s+Nursing\s+xxx", s, re.I) and len(s) < 120:
+            return True
         if re.match(r"^https?://doi\.org/10\.1371/", s, re.I):
             return True
         if re.match(r"^\[?PAGE\s+\d+\]?", s, re.I):
             return True
         if re.fullmatch(r"\d{1,3}\s*/\s*\d{1,3}", s):
             return True
-        if re.fullmatch(r"(?:OPEN ACCESS|RESEARCH ARTICLE|References)", s, re.I):
+        if re.fullmatch(r"(?:OPEN ACCESS|RESEARCH ARTICLE|UNCORRECTED PROOF|References)", s, re.I):
+            return True
+        if re.fullmatch(r"[OFPRO ]{1,12}", s):
             return True
         return False
 
-    try:
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-    except Exception:
+    blocks = _pdf_text_blocks_in_column_order(file_bytes)
+    if not blocks:
         return []
 
-    try:
-        lines: List[str] = []
-        in_refs = False
-        stop_all = False
-        for page in doc:
-            if stop_all:
-                break
-            try:
-                page_text = page.get_text("text", sort=True) or ""
-            except Exception:
-                page_text = ""
-            for raw in page_text.splitlines():
-                s = _clean_ref_pdf_line(raw)
-                if not s:
+    lines: List[str] = []
+    in_refs = False
+
+    for block in blocks:
+        txt = block.get("text", "") or ""
+        raw_lines = [_clean_ref_pdf_line(x) for x in txt.splitlines()]
+        raw_lines = [x for x in raw_lines if x]
+        if not raw_lines:
+            continue
+
+        if not in_refs:
+            new_lines: List[str] = []
+            found = False
+            for ln in raw_lines:
+                # Handles a standalone heading and a heading embedded in the same block.
+                m = re.search(r"\bReferences\b", ln, re.I)
+                if not m:
                     continue
-                if re.fullmatch(r"references", s, re.I):
-                    in_refs = True
-                    continue
-                if not in_refs:
-                    continue
-                if _is_noise_line(s):
-                    continue
-                if re.match(r"^(Supporting information|Acknowledg(e)?ments|Author contributions)\b", s, re.I):
-                    stop_all = True
-                    break
-                lines.append(s)
-    finally:
-        try:
-            doc.close()
-        except Exception:
-            pass
+                found = True
+                tail = ln[m.end():].strip(" :.-")
+                if tail:
+                    new_lines.append(tail)
+            if not found:
+                continue
+            in_refs = True
+            raw_lines = new_lines
+
+        for s in raw_lines:
+            if _is_noise_line(s):
+                continue
+            if re.match(r"^(Supporting information|Acknowledg(e)?ments|Author contributions|CRediT authorship contribution|Declaration of competing interest|Supplementary materials)\b", s, re.I):
+                # These headings can appear before References in column one on the same page,
+                # but once References has started they should not be treated as reference text.
+                continue
+            lines.append(s)
 
     if not lines:
         return []
 
-    start_re = re.compile(r"^\s*(?:\[\s*)?(\d{1,4})(?:\s*\]|[\.)])\s+(.+)$")
+    start_re = re.compile(r"^\s*(?:\[\s*)?(\d{1,4})(?:\s*\]|[\.)])\s*(.*)$")
     refs: List[str] = []
     cur = ""
     expected = 1
@@ -4324,13 +4383,15 @@ def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
                 num = int(m.group(1))
             except Exception:
                 num = -1
-
+            body = norm_space(m.group(2) or "")
             if num == expected:
                 if cur:
                     refs.append(norm_space(cur))
-                cur = s
+                cur = norm_space(f"{num}. {body}" if body else f"{num}.")
                 expected += 1
             else:
+                # Page ranges, volumes, issue numbers, and DOI tails often begin with a number.
+                # Unless it is the next expected reference number, keep it as continuation text.
                 if cur:
                     cur = norm_space(cur + " " + s)
                 else:
@@ -4354,11 +4415,118 @@ def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
             continue
         if num != expected:
             break
+        # Avoid adding obviously empty or malformed entries.
+        body = _strip_leading_reference_number(ref)
+        if len(body) < 8 or not re.search(r"[A-Za-z]", body):
+            break
         cleaned.append(ref)
         expected += 1
 
     return _dedupe_keep_order(cleaned)
 
+
+def _direct_pdf_superscript_citations_from_bytes(file_bytes: bytes) -> List[str]:
+    """
+    Extract true superscript numeric citations from PDF glyph metadata.
+
+    Elsevier/Nature/AMA PDFs often flatten superscripts to baseline digits in plain
+    extracted text, which makes text-only detection return zero. PyMuPDF preserves
+    the smaller superscript spans, so this parser reads those spans directly.
+    It starts at the Introduction and stops at the References heading to avoid
+    author-affiliation markers and reference-list numbers.
+    """
+    if not file_bytes or not PYMUPDF_OK or fitz is None:
+        return []
+
+    def _expand_payload_local(payload: str) -> List[str]:
+        return _expand_numeric_citation_payload(payload or "")
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return []
+
+    out: List[str] = []
+    started = False
+    stopped = False
+
+    try:
+        for page in doc:
+            if stopped:
+                break
+            try:
+                page_dict = page.get_text("dict") or {}
+            except Exception:
+                page_dict = {}
+            blocks = []
+            width = float(page.rect.width or 0)
+            mid = width / 2.0 if width else 300.0
+            for b in page_dict.get("blocks", []) or []:
+                if b.get("type") != 0:
+                    continue
+                bbox = b.get("bbox", [0, 0, 0, 0])
+                x0 = float(bbox[0]) if len(bbox) >= 1 else 0.0
+                y0 = float(bbox[1]) if len(bbox) >= 2 else 0.0
+                col = 0 if x0 < mid else 1
+                blocks.append((col, y0, x0, b))
+            blocks.sort(key=lambda item: (item[0], item[1], item[2]))
+
+            for _col, _y0, _x0, b in blocks:
+                if stopped:
+                    break
+                for line in b.get("lines", []) or []:
+                    spans = line.get("spans", []) or []
+                    line_text = "".join(str(sp.get("text", "")) for sp in spans)
+                    clean_line = norm_space(line_text)
+                    if re.fullmatch(r"References", clean_line, re.I) or re.match(r"^References\b", clean_line, re.I):
+                        stopped = True
+                        break
+                    if not started:
+                        if re.search(r"\bIntroduction\b", clean_line, re.I):
+                            started = True
+                        else:
+                            continue
+
+                    alpha_sizes = [float(sp.get("size", 0)) for sp in spans if re.search(r"[A-Za-z]", str(sp.get("text", "")))]
+                    all_sizes = [float(sp.get("size", 0)) for sp in spans]
+                    body_size = max(alpha_sizes) if alpha_sizes else (max(all_sizes) if all_sizes else 0.0)
+                    if not body_size:
+                        continue
+
+                    cur = ""
+                    for sp in spans:
+                        txt = str(sp.get("text", ""))
+                        size = float(sp.get("size", 0))
+                        is_small = size <= body_size * 0.84
+                        is_payload = bool(re.fullmatch(r"[\d,;\-–—−\s]+", txt)) and is_small
+                        if is_payload:
+                            cur += txt
+                        else:
+                            if cur.strip():
+                                out.extend(_expand_payload_local(cur))
+                            cur = ""
+                    if cur.strip():
+                        out.extend(_expand_payload_local(cur))
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+    seen = set()
+    cleaned: List[str] = []
+    for n in out:
+        try:
+            ni = int(n)
+        except Exception:
+            continue
+        if not (1 <= ni <= 500):
+            continue
+        ns = str(ni)
+        if ns not in seen:
+            seen.add(ns)
+            cleaned.append(ns)
+    return cleaned
 
 def _highest_numeric_citation_number(cites: List[str]) -> int:
     nums: List[int] = []
@@ -4391,6 +4559,7 @@ def run_crosscheck(
     pdf_quality = None
     pdf_warnings: List[str] = []
     pdf_parser_build = ""
+    direct_pdf_superscript_cites: List[str] = []
 
     if name.endswith(".docx"):
         main_text, ref_block_lines, ref_msg = read_docx_split_main_and_refs(file_bytes)
@@ -4436,6 +4605,12 @@ def run_crosscheck(
         references_raw = pdf_data.get("references", []) or []
         ref_msg = pdf_data.get("ref_msg") or f"PDF parsed. Found {len(references_raw)} references."
 
+        if _style_token(style_s) in SAFE_SUPERSCRIPT_NUMERIC_STYLES:
+            try:
+                direct_pdf_superscript_cites = _direct_pdf_superscript_citations_from_bytes(file_bytes)
+            except Exception:
+                direct_pdf_superscript_cites = []
+
         if style_hint == "numeric":
             references_raw = _split_embedded_numeric_refs(references_raw)
         else:
@@ -4454,7 +4629,7 @@ def run_crosscheck(
                 direct_refs = []
             if direct_refs:
                 try:
-                    tmp_cites = extract_safe_numeric_citations(main_text, style=style_s) if _is_supported_numeric_style(style_s) else extract_ieee_citations(main_text)
+                    tmp_cites = direct_pdf_superscript_cites if direct_pdf_superscript_cites else (extract_safe_numeric_citations(main_text, style=style_s) if _is_supported_numeric_style(style_s) else extract_ieee_citations(main_text))
                     highest_cited = _highest_numeric_citation_number(tmp_cites)
                 except Exception:
                     highest_cited = 0
@@ -4540,7 +4715,9 @@ def run_crosscheck(
         numeric_forms = sorted(_numeric_style_forms(style_s))
         print(f"Using safe numeric style {style_s} with forms: {numeric_forms}")
 
-        if too_large:
+        if direct_pdf_superscript_cites and _style_token(style_s) in SAFE_SUPERSCRIPT_NUMERIC_STYLES:
+            cites_nums = direct_pdf_superscript_cites
+        elif too_large:
             cites_nums = _extract_numeric_citations_chunked(main_text, style=style_s)
         else:
             cites_nums = extract_safe_numeric_citations(main_text, style=style_s)
