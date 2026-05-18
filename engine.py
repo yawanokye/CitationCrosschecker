@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.9"
+__version__ = "1.5.6"
 
 import re
 import io
