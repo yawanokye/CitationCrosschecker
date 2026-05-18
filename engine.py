@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.12"
+__version__ = "1.5.16"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-18-jama-superscript-and-multicolumn-reference-parser-FINAL"
+ENGINE_BUILD = "commercial-2026-05-18-rsc-jama-plos-numeric-parser-FINAL"
 
 # Fuzzy matching (optional)
 try:
@@ -4335,6 +4335,16 @@ def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
             return True
         if re.match(r"^Downloaded\s+from\s+jamanetwork\.com", s, re.I):
             return True
+        if re.search(r"This\s+journal\s+is\s+©\s+The\s+Royal\s+Society\s+of\s+Chemistry", s, re.I):
+            return True
+        if re.match(r"^(ChemComm\s+Feature\s+Article|Feature\s+Article\s+ChemComm)$", s, re.I):
+            return True
+        if re.match(r"^Open\s+Access\s+Article\.", s, re.I):
+            return True
+        if re.match(r"^View\s+Article\s+Online", s, re.I):
+            return True
+        if re.match(r"^rsc\.li/", s, re.I):
+            return True
         if re.match(r"^\[?PAGE\s+\d+\]?", s, re.I):
             return True
         if re.fullmatch(r"\d{1,3}\s*/\s*\d{1,3}", s):
@@ -4470,7 +4480,26 @@ def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
     if not selected_lines:
         return []
 
-    start_re = re.compile(r"^\s*(?:\[\s*)?(\d{1,4})(?:\s*\]|[\.)])\s*(.*)$")
+    # Numeric reference starts vary by publisher. PLOS/JAMA usually use "1."
+    # or a stranded "1." followed by the reference body on the next line, while
+    # RSC/ChemComm commonly uses bare numeric starts such as "1 J. Monod".
+    # The parser remains safe because it only accepts the next expected number
+    # as a new reference. Numeric fragments such as page ranges or volumes are
+    # therefore treated as continuation text.
+    start_re = re.compile(
+        r"^\s*(?:\[\s*)?(\d{1,4})(?:\s*\]|[\.)])\s*(.*)$"
+        r"|^\s*(\d{1,4})\s+([A-Z].*)$"
+    )
+
+    def _start_match_parts(m):
+        if not m:
+            return -1, ""
+        num_s = m.group(1) or m.group(3)
+        body_s = m.group(2) if m.group(1) else m.group(4)
+        try:
+            return int(num_s), norm_space(body_s or "")
+        except Exception:
+            return -1, norm_space(body_s or "")
     refs: List[str] = []
     cur = ""
     expected = 1
@@ -4483,11 +4512,7 @@ def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
 
         m = start_re.match(s)
         if m:
-            try:
-                num = int(m.group(1))
-            except Exception:
-                num = -1
-            body = norm_space(m.group(2) or "")
+            num, body = _start_match_parts(m)
             if num == expected:
                 if cur:
                     refs.append(norm_space(cur))
@@ -4515,10 +4540,140 @@ def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
         m = start_re.match(ref)
         if not m:
             continue
+        num, _body = _start_match_parts(m)
+        if num != expected:
+            break
+        body = _strip_leading_reference_number(ref)
+        if len(body) < 8 or not re.search(r"[A-Za-z]", body):
+            break
+        cleaned.append(ref)
+        expected += 1
+
+    # If block-level reconstruction fails, use plain text order. This is
+    # important for RSC/ChemComm PDFs where the reference list is a compact
+    # two-column text stream and references start as bare numbers: "1 J. Monod".
+    if len(cleaned) < 3:
+        text_refs = _direct_pdf_numeric_references_from_plain_text_order(file_bytes)
+        if text_refs:
+            return text_refs
+
+    return _dedupe_keep_order(cleaned)
+
+
+def _direct_pdf_numeric_references_from_plain_text_order(file_bytes: bytes) -> List[str]:
+    """
+    Fallback numeric reference parser using PyMuPDF plain text order.
+
+    This handles RSC/ChemComm reference lists such as:
+    1 J. Monod, ...
+    2 T. Tanaka, ...
+
+    It is sequence-based, so only the next expected number starts a new
+    reference. Page ranges, volumes, years and DOI fragments are appended
+    to the current reference instead of becoming fake references.
+    """
+    if not file_bytes or not PYMUPDF_OK or fitz is None:
+        return []
+
+    def _clean_line(line: str) -> str:
+        s = norm_space(line or "")
+        s = s.replace("ﬁ", "fi").replace("ﬂ", "fl").replace("’", "'")
+        return re.sub(r"\s+", " ", s).strip()
+
+    def _is_noise(s: str) -> bool:
+        if not s:
+            return True
+        if re.search(r"This\s+journal\s+is\s+©\s+The\s+Royal\s+Society\s+of\s+Chemistry", s, re.I):
+            return True
+        if re.match(r"^(ChemComm\s+Feature\s+Article|Feature\s+Article\s+ChemComm)$", s, re.I):
+            return True
+        if re.match(r"^Open\s+Access\s+Article\.", s, re.I):
+            return True
+        if re.match(r"^View\s+Article\s+Online", s, re.I):
+            return True
+        if re.match(r"^rsc\.li/", s, re.I):
+            return True
+        if re.match(r"^Downloaded\s+from\s+jamanetwork\.com", s, re.I):
+            return True
+        if re.match(r"^©\s*\d{4}\s+American\s+Medical\s+Association", s, re.I):
+            return True
+        if re.match(r"^jama\.com\b", s, re.I):
+            return True
+        if re.match(r"^PLOS\s+One\s*\|", s, re.I):
+            return True
+        if re.fullmatch(r"(?:References|UNCORRECTED PROOF|Data availability|Acknowledgements|Conflicts of interest)", s, re.I):
+            return True
+        return False
+
+    dotted_re = re.compile(r"^\s*(?:\[\s*)?(\d{1,4})(?:\s*\]|[\.)])\s*(.*)$")
+    bare_re = re.compile(r"^\s*(\d{1,4})\s+([A-Z].*)$")
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return []
+
+    all_lines: List[str] = []
+    try:
+        for page in doc:
+            try:
+                txt = page.get_text("text") or ""
+            except Exception:
+                txt = ""
+            all_lines.extend(txt.splitlines())
+    finally:
         try:
-            num = int(m.group(1))
+            doc.close()
         except Exception:
+            pass
+
+    start_idx = -1
+    for i, raw in enumerate(all_lines):
+        if re.fullmatch(r"\s*References\s*", raw or "", re.I):
+            start_idx = i + 1
+            break
+    if start_idx < 0:
+        return []
+
+    refs: List[str] = []
+    cur = ""
+    expected = 1
+
+    def _match_start(s: str):
+        m = dotted_re.match(s)
+        if m:
+            return int(m.group(1)), norm_space(m.group(2) or "")
+        m = bare_re.match(s)
+        if m:
+            return int(m.group(1)), norm_space(m.group(2) or "")
+        return -1, ""
+
+    for raw in all_lines[start_idx:]:
+        s = _clean_line(raw)
+        if _is_noise(s):
             continue
+
+        num, body = _match_start(s)
+        if num == expected:
+            if cur:
+                refs.append(norm_space(cur))
+            cur = norm_space(f"{num}. {body}" if body else f"{num}.")
+            expected += 1
+            continue
+
+        # If a later reference number appears, do not skip forward. Treat it as
+        # continuation unless it is the expected next number. This prevents page
+        # ranges and volumes from becoming references.
+        if cur:
+            cur = norm_space(cur + " " + s)
+
+    if cur:
+        refs.append(norm_space(cur))
+
+    cleaned: List[str] = []
+    expected = 1
+    for ref in refs:
+        num, _body = _match_start(ref)
         if num != expected:
             break
         body = _strip_leading_reference_number(ref)
