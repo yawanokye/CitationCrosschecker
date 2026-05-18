@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.6"
+__version__ = "1.5.10"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-17-safe-numeric-styles"
+ENGINE_BUILD = "commercial-2026-05-18-direct-pymupdf-numeric-reference-parser-FINAL-rename-this-file"
 
 # Fuzzy matching (optional)
 try:
@@ -4229,6 +4229,147 @@ def _generate_reference_fixes(ref: RefAY) -> List[FixSuggestion]:
 # -----------------------------
 # Public API: run_crosscheck (UPDATED - includes main_text)
 # -----------------------------
+
+# ---------------------------------------------------------------------------
+# Direct numeric PDF reference reconstruction
+# ---------------------------------------------------------------------------
+def _direct_pdf_numeric_references_from_bytes(file_bytes: bytes) -> List[str]:
+    """
+    Reconstruct numbered reference lists directly from PDF page text.
+
+    This is used for PLOS/Vancouver/NLM/IEEE-style PDFs where the normal
+    line-merging parser can mistake wrapped page ranges and DOI tails, such as
+    "50. https://doi..." or "612. https://doi...", for new references.
+
+    The parser starts at the References heading and only accepts the next
+    expected reference number as a new entry. All other numbered fragments are
+    treated as continuation text.
+    """
+    if not file_bytes or not PYMUPDF_OK or fitz is None:
+        return []
+
+    def _clean_ref_pdf_line(line: str) -> str:
+        s = norm_space(line or "")
+        if not s:
+            return ""
+        s = s.replace("ﬁ", "fi").replace("ﬂ", "fl")
+        s = s.replace("’", "'")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _is_noise_line(s: str) -> bool:
+        if not s:
+            return True
+        if re.match(r"^PLOS\s+One\s*\|", s, re.I):
+            return True
+        if re.match(r"^https?://doi\.org/10\.1371/", s, re.I):
+            return True
+        if re.match(r"^\[?PAGE\s+\d+\]?", s, re.I):
+            return True
+        if re.fullmatch(r"\d{1,3}\s*/\s*\d{1,3}", s):
+            return True
+        if re.fullmatch(r"(?:OPEN ACCESS|RESEARCH ARTICLE|References)", s, re.I):
+            return True
+        return False
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return []
+
+    try:
+        lines: List[str] = []
+        in_refs = False
+        stop_all = False
+        for page in doc:
+            if stop_all:
+                break
+            try:
+                page_text = page.get_text("text", sort=True) or ""
+            except Exception:
+                page_text = ""
+            for raw in page_text.splitlines():
+                s = _clean_ref_pdf_line(raw)
+                if not s:
+                    continue
+                if re.fullmatch(r"references", s, re.I):
+                    in_refs = True
+                    continue
+                if not in_refs:
+                    continue
+                if _is_noise_line(s):
+                    continue
+                if re.match(r"^(Supporting information|Acknowledg(e)?ments|Author contributions)\b", s, re.I):
+                    stop_all = True
+                    break
+                lines.append(s)
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+    if not lines:
+        return []
+
+    start_re = re.compile(r"^\s*(?:\[\s*)?(\d{1,4})(?:\s*\]|[\.)])\s+(.+)$")
+    refs: List[str] = []
+    cur = ""
+    expected = 1
+
+    for s in lines:
+        m = start_re.match(s)
+        if m:
+            try:
+                num = int(m.group(1))
+            except Exception:
+                num = -1
+
+            if num == expected:
+                if cur:
+                    refs.append(norm_space(cur))
+                cur = s
+                expected += 1
+            else:
+                if cur:
+                    cur = norm_space(cur + " " + s)
+                else:
+                    cur = s
+        else:
+            if cur:
+                cur = norm_space(cur + " " + s)
+
+    if cur:
+        refs.append(norm_space(cur))
+
+    cleaned: List[str] = []
+    expected = 1
+    for ref in refs:
+        m = start_re.match(ref)
+        if not m:
+            continue
+        try:
+            num = int(m.group(1))
+        except Exception:
+            continue
+        if num != expected:
+            break
+        cleaned.append(ref)
+        expected += 1
+
+    return _dedupe_keep_order(cleaned)
+
+
+def _highest_numeric_citation_number(cites: List[str]) -> int:
+    nums: List[int] = []
+    for c in cites or []:
+        for n in re.findall(r"\d{1,4}", str(c)):
+            try:
+                nums.append(int(n))
+            except Exception:
+                pass
+    return max(nums) if nums else 0
+
 def run_crosscheck(
     file_bytes: bytes,
     filename: str,
@@ -4302,6 +4443,30 @@ def run_crosscheck(
             references_raw = _clean_reference_list(references_raw, style_hint="apa")
 
         references_raw = _dedupe_keep_order(references_raw)
+
+        # Direct sequential numeric PDF reference repair. This is deliberately
+        # applied after the commercial parser because PLOS/Vancouver PDFs often
+        # split page ranges and DOI tails into fake numbered references.
+        if style_hint == "numeric":
+            try:
+                direct_refs = _direct_pdf_numeric_references_from_bytes(file_bytes)
+            except Exception:
+                direct_refs = []
+            if direct_refs:
+                try:
+                    tmp_cites = extract_safe_numeric_citations(main_text, style=style_s) if _is_supported_numeric_style(style_s) else extract_ieee_citations(main_text)
+                    highest_cited = _highest_numeric_citation_number(tmp_cites)
+                except Exception:
+                    highest_cited = 0
+                if (
+                    len(direct_refs) >= 3
+                    and (
+                        len(references_raw) > len(direct_refs) + 2
+                        or (highest_cited and len(direct_refs) >= highest_cited)
+                    )
+                ):
+                    references_raw = direct_refs
+                    ref_msg = f"{ref_msg} Direct sequential numeric PDF parser reconstructed {len(references_raw)} references."
         
         # Fallback recovery for weak or failed extraction
         if style_hint == "apa" and len(references_raw) < 2:
