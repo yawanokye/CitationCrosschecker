@@ -206,6 +206,62 @@
             color: #1e293b;
         }
 
+        .citation-style-label {
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .citation-style-select {
+            padding: 7px 10px;
+            border-radius: 9px;
+            border: 1px solid #cbd5e1;
+            font-size: 12px;
+            background: white;
+            min-width: 285px;
+            color: #1e293b;
+        }
+
+        .citation-help-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            background: #e8f0fe;
+            color: #1a73e8;
+            font-size: 11px;
+            font-weight: 800;
+            cursor: help;
+        }
+
+        .citation-style-hint {
+            flex-basis: 100%;
+            margin-top: -4px;
+            margin-left: 24px;
+            padding: 9px 12px;
+            border-left: 3px solid #19b36b;
+            background: #f8fafc;
+            border-radius: 10px;
+            color: #475569;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .result-style-pill {
+            display: inline-flex;
+            align-items: center;
+            margin-left: 8px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: #e8f0fe;
+            color: #1a73e8;
+            font-size: 12px;
+            font-weight: 700;
+            vertical-align: middle;
+        }
+
         .button-group {
             display: flex;
             gap: 12px;
@@ -825,21 +881,42 @@
             </div>
 
             <div class="options-row">
-                <label class="checkbox-label">
+                <label class="checkbox-label citation-style-label">
                     📚 Citation style
-                    <select id="citationStyle" style="padding: 6px 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 12px; background: white;">
-                        <option value="auto" selected>Auto-detect</option>
-                        <option value="apa">APA / Harvard / Chicago Author-Date</option>
-                        <option value="ieee">IEEE Square Bracket</option>
-                        <option value="vancouver_square">Vancouver Square Bracket</option>
-                        <option value="nlm_square">NLM Square Bracket</option>
-                        <option value="elsevier_numbered">Elsevier Numbered</option>
-                        <option value="springer_numbered">Springer Numbered</option>
-                        <option value="ama_superscript">AMA Superscript</option>
-                        <option value="nature_superscript">Nature Superscript</option>
-                        <option value="rsc_superscript">RSC Superscript</option>
-                        <option value="acs_superscript">ACS Superscript</option>
+                    <span class="citation-help-icon" title="Choose the citation pattern used in the manuscript. The default is APA / Harvard / Chicago Author-Date because auto-detect can misread some PDFs.">?</span>
+                    <select id="citationStyle" class="citation-style-select" aria-describedby="citationStyleHint">
+                        <optgroup label="Author-year styles" title="Examples: (Adam, 2020), (Adam 2020), Adam (2020)">
+                            <option value="apa" selected title="Examples: (Adam, 2020), (Adam 2020), Adam (2020). Use this for APA, Harvard and Chicago Author-Date manuscripts.">APA / Harvard / Chicago Author-Date</option>
+                            <option value="author_year" title="Examples: (Adam, 2020), (Adam 2020), Adam (2020). Use this for other author-year manuscripts.">Other Author-Year</option>
+                        </optgroup>
+                        <optgroup label="Numeric square-bracket styles" title="Examples: [1], [1,2], [3–5]. Best for IEEE, Vancouver square, NLM, Elsevier numbered and Springer numbered styles.">
+                            <option value="ieee_square" title="Example: Digital procurement improves transparency [1].">IEEE Square Bracket [1]</option>
+                            <option value="vancouver_square" title="Example: Digital procurement improves transparency [1]. Multiple sources may appear as [1,2] or [3–5].">Vancouver Square Bracket [1]</option>
+                            <option value="nlm_square" title="Example: Health studies commonly cite sources as [1] or [1,2].">NLM Square Bracket [1]</option>
+                            <option value="elsevier_square" title="Example: Elsevier numbered manuscripts may cite sources as [1] or [3–5].">Elsevier Numbered Square Bracket [1]</option>
+                            <option value="springer_square" title="Example: Springer numbered manuscripts may cite sources as [1] or [3–5].">Springer Numbered Square Bracket [1]</option>
+                            <option value="numeric_square" title="Example: Use this when the manuscript uses [1] but the exact journal style is unknown.">Other Numeric Square-Bracket [1]</option>
+                        </optgroup>
+                        <optgroup label="Numeric superscript styles" title="Examples: text¹, text¹,², text¹–³. Best for AMA, Nature, RSC and ACS superscript styles.">
+                            <option value="ama_superscript" title="Example: Digital procurement improves transparency.¹">AMA Superscript ¹</option>
+                            <option value="nature_superscript" title="Example: Digital procurement improves transparency.¹">Nature Superscript ¹</option>
+                            <option value="rsc_superscript" title="Example: Digital procurement improves transparency.¹">RSC Superscript ¹</option>
+                            <option value="acs_superscript" title="Example: Digital procurement improves transparency.¹">ACS Superscript ¹</option>
+                            <option value="elsevier_superscript" title="Example: Some Elsevier proofs show citations as superscript numbers after punctuation.¹">Elsevier Superscript ¹</option>
+                            <option value="numeric_superscript" title="Example: Use this when the manuscript uses superscript numeric citations but the exact journal style is unknown.¹">Other Numeric Superscript ¹</option>
+                        </optgroup>
+                        <optgroup label="Advanced numeric styles" title="Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round-bracket numeric citations.">
+                            <option value="vancouver_round" title="Example: Digital procurement improves transparency (1). Use only when the manuscript uses round-bracket numeric citations.">Vancouver Round Bracket (1)</option>
+                            <option value="acs_round" title="Example: Digital procurement improves transparency (1). Use only when the manuscript uses round-bracket numeric citations.">ACS Round Bracket (1)</option>
+                            <option value="numeric_round" title="Example: Use this only when the manuscript clearly uses (1), (1,2), or (3–5) as citations.">Other Numeric Round Bracket (1)</option>
+                        </optgroup>
+                        <optgroup label="Experimental">
+                            <option value="auto" title="Auto-detect is experimental and may misread some PDFs. Use a specific style when possible.">Auto-detect, experimental</option>
+                        </optgroup>
                     </select>
+                    <div id="citationStyleHint" class="citation-style-hint">
+                        Default: APA / Harvard / Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).
+                    </div>
                 </label>
                 <label class="checkbox-label"><input type="checkbox" id="autofix" checked> 💡 Enable Suggestions</label>
                 <label class="checkbox-label"><input type="checkbox" id="onlineVerify"> 🌐 Auto-start Online Verification</label>
@@ -912,7 +989,7 @@
     <!-- Results Section -->
     <section id="resultsCard" class="card" style="display:none;">
         <div class="results-header">
-            <h3>📊 Analysis Results</h3>
+            <h3 id="analysisResultsTitle">📊 Analysis Results <span id="analysisResultsStyle" class="result-style-pill">APA / Harvard / Chicago Author-Date</span></h3>
             <div class="kpi-dashboard" id="dash"></div>
         </div>
 
@@ -1135,6 +1212,148 @@ let POLL_ATTEMPT_COUNT = 0;
 let LAST_PROGRESS = 0;
 let LAST_PROGRESS_TIME = null;
 window.latestResults = null;
+
+const CITATION_STYLE_INFO = {
+    apa: {
+        label: "APA / Harvard / Chicago Author-Date",
+        family: "Author-year",
+        sample: "Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
+    },
+    author_year: {
+        label: "Other Author-Year",
+        family: "Author-year",
+        sample: "Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
+    },
+    chicago_author_date: {
+        label: "Chicago Author-Date",
+        family: "Author-year",
+        sample: "Examples: (Adam 2020), Adam (2020)."
+    },
+    ieee: {
+        label: "IEEE Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1], [2], [1]–[3]."
+    },
+    ieee_square: {
+        label: "IEEE Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1], [2], [1]–[3]."
+    },
+    vancouver_square: {
+        label: "Vancouver Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1,2], [3–5]."
+    },
+    nlm_square: {
+        label: "NLM Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1,2], [3–5]."
+    },
+    elsevier_numbered: {
+        label: "Elsevier Numbered Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1,2], [3–5]."
+    },
+    elsevier_square: {
+        label: "Elsevier Numbered Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1,2], [3–5]."
+    },
+    springer_numbered: {
+        label: "Springer Numbered Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1,2], [3–5]."
+    },
+    springer_square: {
+        label: "Springer Numbered Square Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1,2], [3–5]."
+    },
+    numeric_square: {
+        label: "Other Numeric Square-Bracket [1]",
+        family: "Numeric square-bracket",
+        sample: "Examples: [1], [1,2], [3–5]."
+    },
+    ama_superscript: {
+        label: "AMA Superscript ¹",
+        family: "Numeric superscript",
+        sample: "Examples: text¹, text¹,², text¹–³."
+    },
+    nature_superscript: {
+        label: "Nature Superscript ¹",
+        family: "Numeric superscript",
+        sample: "Examples: text¹, text¹,², text¹–³."
+    },
+    rsc_superscript: {
+        label: "RSC Superscript ¹",
+        family: "Numeric superscript",
+        sample: "Examples: text¹, text¹,², text¹–³."
+    },
+    acs_superscript: {
+        label: "ACS Superscript ¹",
+        family: "Numeric superscript",
+        sample: "Examples: text¹, text¹,², text¹–³."
+    },
+    elsevier_superscript: {
+        label: "Elsevier Superscript ¹",
+        family: "Numeric superscript",
+        sample: "Examples: text¹, text¹,², text¹–³."
+    },
+    numeric_superscript: {
+        label: "Other Numeric Superscript ¹",
+        family: "Numeric superscript",
+        sample: "Examples: text¹, text¹,², text¹–³."
+    },
+    vancouver_round: {
+        label: "Vancouver Round Bracket (1)",
+        family: "Advanced numeric round-bracket",
+        sample: "Examples: (1), (1,2), (3–5). Use only when this is the manuscript style."
+    },
+    acs_round: {
+        label: "ACS Round Bracket (1)",
+        family: "Advanced numeric round-bracket",
+        sample: "Examples: (1), (1,2), (3–5). Use only when this is the manuscript style."
+    },
+    numeric_round: {
+        label: "Other Numeric Round Bracket (1)",
+        family: "Advanced numeric round-bracket",
+        sample: "Examples: (1), (1,2), (3–5). Use only when this is the manuscript style."
+    },
+    auto: {
+        label: "Auto-detect, experimental",
+        family: "Experimental",
+        sample: "Auto-detect may misread some PDFs. Select a specific style when possible."
+    }
+};
+
+let LAST_SELECTED_CITATION_STYLE = "apa";
+
+function getCitationStyleInfo(style) {
+    return CITATION_STYLE_INFO[String(style || "apa").toLowerCase()] || CITATION_STYLE_INFO.apa;
+}
+
+function getCitationStyleLabel(style) {
+    return getCitationStyleInfo(style).label;
+}
+
+function updateCitationStyleHint() {
+    const select = $("citationStyle");
+    const hint = $("citationStyleHint");
+    if (!select || !hint) return;
+    const info = getCitationStyleInfo(select.value || "apa");
+    hint.innerHTML = `<strong>${esc(info.family)}:</strong> ${esc(info.sample)}`;
+    select.title = `${info.family}. ${info.sample}`;
+    LAST_SELECTED_CITATION_STYLE = select.value || "apa";
+}
+
+function updateResultsStyleLabel(data) {
+    const pill = $("analysisResultsStyle");
+    if (!pill) return;
+    const styleValue = data?.style || data?.selected_style || data?.citation_style || LAST_SELECTED_CITATION_STYLE || "apa";
+    const label = data?.style_label || data?.citation_style_label || getCitationStyleLabel(styleValue);
+    pill.textContent = label;
+    pill.title = getCitationStyleInfo(styleValue).sample || "";
+}
 
 function esc(str) {
     if (!str) return "";
@@ -1671,7 +1890,10 @@ function renderSummaryTable(data) {
     const s = data?.summary || {};
     const summaryTable = $("summaryTable");
     if (summaryTable) {
+        const styleValue = data?.style || data?.selected_style || data?.citation_style || LAST_SELECTED_CITATION_STYLE || "apa";
+        const styleLabel = data?.style_label || data?.citation_style_label || getCitationStyleLabel(styleValue);
         summaryTable.innerHTML = `
+            <tr><td style="width:220px;">Citation style selected</div><td><strong>${esc(styleLabel)}</strong></div></tr>
             <tr><td style="width:220px;">In-text citations (occurrences)</div><td><strong style="font-size:18px;">${esc(s.in_text_citations_found)}</strong></div></tr>
             <tr><td style="width:220px;">References</div><td>${esc(s.reference_entries_found)}</div></tr>
             <tr><td style="width:220px;">Missing (unique)</div><td><strong style="font-size:18px; color:#e74c3c;">${esc(s.missing_in_references)}</strong></div></tr>
@@ -2016,6 +2238,7 @@ function renderAll(data) {
     
     const resultsCard = $("resultsCard");
     if (resultsCard) resultsCard.style.display = "block";
+    updateResultsStyleLabel(normalized);
     
     renderSummaryTable(normalized);
     renderACII(normalized);
@@ -2297,7 +2520,8 @@ async function runInitialCheck() {
     fd.append("file", file);
 
     const styleSelect = document.getElementById("citationStyle");
-    const selectedStyle = styleSelect?.value || "auto";
+    const selectedStyle = styleSelect?.value || "apa";
+    LAST_SELECTED_CITATION_STYLE = selectedStyle;
     fd.append("style", selectedStyle);
 
     const autofixCheck = document.getElementById("autofix");
