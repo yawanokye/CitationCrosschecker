@@ -131,12 +131,12 @@
         }
 
         .page-hero {
-            padding: 28px 0 12px;
+            padding: 18px 0 8px;
             text-align: center;
         }
 
         .page-hero h1 {
-            font-size: clamp(30px, 4.4vw, 48px);
+            font-size: clamp(28px, 3.8vw, 42px);
             line-height: 1.05;
             font-weight: 950;
             letter-spacing: -1.7px;
@@ -175,7 +175,7 @@
 
         .layout {
             display: grid;
-            grid-template-columns: minmax(0, 1.28fr) 360px;
+            grid-template-columns: minmax(0, 1.35fr) 380px;
             gap: 18px;
             align-items: start;
             padding: 18px 0 42px;
@@ -215,8 +215,8 @@
 
         .file-area {
             border: 2px dashed #cbd5e1;
-            border-radius: 22px;
-            padding: 30px 20px;
+            border-radius: 20px;
+            padding: 18px 18px;
             text-align: center;
             background: #fbfdff;
             cursor: pointer;
@@ -236,19 +236,19 @@
         }
 
         .file-icon {
-            font-size: 40px;
-            margin-bottom: 8px;
+            font-size: 30px;
+            margin-bottom: 6px;
         }
 
         .file-main {
-            font-size: 17px;
+            font-size: 16px;
             font-weight: 900;
-            margin-bottom: 5px;
+            margin-bottom: 4px;
         }
 
         .file-sub {
             color: var(--slate);
-            font-size: 13px;
+            font-size: 12.5px;
             max-width: 620px;
             margin: 0 auto;
         }
@@ -266,20 +266,82 @@
         }
 
         .helper-box {
-            margin-top: 12px;
+            margin-top: 10px;
             background: #f8fafc;
             border: 1px solid #eef2f6;
-            border-radius: 16px;
-            padding: 11px 14px;
+            border-radius: 14px;
+            padding: 9px 12px;
             color: var(--slate);
-            font-size: 12.5px;
+            font-size: 12px;
+        }
+
+        .style-panel {
+            margin-top: 0;
+            margin-bottom: 14px;
+            background: #fbfdff;
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 13px 14px;
+        }
+
+        .style-label-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .style-label-row label {
+            font-size: 13px;
+            font-weight: 900;
+            color: var(--navy);
+        }
+
+        .style-chip {
+            background: var(--blue-soft);
+            color: var(--blue);
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 11px;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+
+        .style-select {
+            width: 100%;
+            border: 1px solid #cbd5e1;
+            border-radius: 14px;
+            padding: 11px 12px;
+            background: white;
+            color: var(--navy);
+            font-size: 13px;
+            font-weight: 800;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .style-select:focus {
+            border-color: var(--green);
+            box-shadow: 0 0 0 3px rgba(25, 179, 107, 0.14);
+        }
+
+        .style-note {
+            margin-top: 8px;
+            color: var(--slate);
+            font-size: 11.8px;
+            line-height: 1.38;
+        }
+
+        .style-note.warn {
+            color: #c2410c;
         }
 
         .options-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             gap: 10px;
-            margin-top: 12px;
+            margin-top: 10px;
         }
 
         .option-card {
@@ -315,7 +377,7 @@
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 8px;
-            margin-top: 12px;
+            margin-top: 10px;
         }
 
         .step {
@@ -668,16 +730,16 @@
 
                 <div class="file-area" id="fileArea">
                     <div class="file-icon">📑</div>
-                    <div class="file-main">Drag and drop your manuscript here</div>
+                    <div class="file-main">Upload your manuscript</div>
                     <div class="file-sub">
-                        Upload a thesis, dissertation, project report, article, or journal manuscript in DOCX or text-based PDF format.
+                        Drag and drop or click to select a DOCX or text-based PDF.
                     </div>
                     <div class="file-name" id="fileName"></div>
                     <input type="file" id="file" accept=".docx,.pdf">
                 </div>
 
                 <div class="helper-box">
-                    <strong>PDF support:</strong> Text-based PDFs are accepted for cautious analysis. DOCX remains recommended for the most accurate citation and reference extraction. Scanned or image-based PDFs may produce incomplete results. If PDF results are weak, open the PDF in Microsoft Word and save it as DOCX before uploading again.
+                    <strong>PDF support:</strong> Text-based PDFs are accepted, but DOCX remains best for accurate citation and reference extraction. Scanned PDFs may produce incomplete results.
                 </div>
 
                 <div class="options-grid">
@@ -712,12 +774,32 @@
                         <h2>Run analysis</h2>
                     </div>
 
+                    <div class="style-panel">
+                        <div class="style-label-row">
+                            <label for="citationStyle">Citation style</label>
+                            <span class="style-chip">Author-year default</span>
+                        </div>
+                        <select class="style-select" id="citationStyle" aria-label="Select citation style family" title="Select the citation family used in the manuscript">
+
+                                <option value="apa" selected title="Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).">Author-year, APA / Harvard / Chicago</option>
+                                <option value="numeric_square" title="Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5].">Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer</option>
+                                <option value="numeric_superscript" title="Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³.">Numeric superscript, AMA / Nature / RSC / ACS / Elsevier</option>
+                                <option value="numeric_round" title="Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations.">Numeric round bracket, Vancouver / ACS</option>
+                                <option value="auto" title="Experimental. Auto-detect can misread some PDFs, so a selected family is safer.">Auto-detect, experimental</option>
+                            
+                            </select>
+                        <div class="style-note" id="citationStyleNote">
+                            Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).
+                        </div>
+                    </div>
+
+
                     <div class="button-row">
                         <button class="btn btn-primary" id="btnCheck" disabled>📊 Analyse Document</button>
                     </div>
 
                     <div class="status-box">
-                        <div class="status" id="status">System ready. Select a DOCX or text-based PDF file to begin.</div>
+                        <div class="status" id="status">System ready. Select citation style, then upload a DOCX or text-based PDF file.</div>
 
                         <div class="progress-wrap" id="progressWrap">
                             <div class="progress-track">
@@ -811,6 +893,8 @@ document.addEventListener("DOMContentLoaded", function () {
     const progressWrap = $("progressWrap");
     const progressBar = $("progressBar");
     const progressText = $("progressText");
+    const citationStyle = $("citationStyle");
+    const citationStyleNote = $("citationStyleNote");
 
     let pollAttempts = 0;
     let currentJobId = null;
@@ -846,6 +930,58 @@ document.addEventListener("DOMContentLoaded", function () {
         if (progressWrap) progressWrap.style.display = "block";
         if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
         if (progressText) progressText.textContent = message || "";
+    }
+
+
+    function forceCondensedCitationStyleMenu() {
+        if (!citationStyle) return;
+
+        const allowed = new Set(["apa", "numeric_square", "numeric_superscript", "numeric_round", "auto"]);
+        const previous = allowed.has(citationStyle.value) ? citationStyle.value : "apa";
+
+        const items = [
+            ["apa", "Author-year, APA / Harvard / Chicago", "Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."],
+            ["numeric_square", "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer", "Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer numbered square-bracket styles. Examples: [1], [1,2], [3–5]."],
+            ["numeric_superscript", "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier", "Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³."],
+            ["numeric_round", "Numeric round bracket, Vancouver / ACS", "Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."],
+            ["auto", "Auto-detect, experimental", "Experimental. Auto-detect can misread some PDFs, so selecting the citation family is safer."]
+        ];
+
+        citationStyle.innerHTML = "";
+        for (const [value, label, title] of items) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.title = title;
+            citationStyle.appendChild(option);
+        }
+        citationStyle.value = previous;
+        citationStyle.dataset.menuBuild = "condensed-2026-05-18";
+    }
+
+    function getSelectedCitationStyle() {
+        return citationStyle?.value || "apa";
+    }
+
+    function updateCitationStyleNote() {
+        if (!citationStyle || !citationStyleNote) return;
+
+        const selected = getSelectedCitationStyle();
+        citationStyleNote.classList.remove("warn");
+
+        const notes = {
+            apa: "Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).",
+            numeric_square: "Numeric-square matching: IEEE, Vancouver, NLM, Elsevier and Springer. Examples: [1], [1,2], [3–5].",
+            numeric_superscript: "Numeric-superscript matching: AMA, Nature, RSC, ACS and Elsevier. Examples: text¹, text¹,², text¹–³.",
+            numeric_round: "Numeric-round matching: Vancouver and ACS. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations.",
+            auto: "Experimental auto-detect. It can misread some PDFs, so selecting the citation family is safer."
+        };
+
+        citationStyleNote.textContent = notes[selected] || notes.apa;
+
+        if (selected === "numeric_round" || selected === "auto") {
+            citationStyleNote.classList.add("warn");
+        }
     }
 
     function validateFile(file) {
@@ -928,6 +1064,12 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     }
 
+    if (citationStyle) {
+        citationStyle.addEventListener("change", updateCitationStyleNote);
+        forceCondensedCitationStyleMenu();
+    updateCitationStyleNote();
+    }
+
     async function updateQueueStatus() {
         try {
             const response = await fetch("/queue/status");
@@ -965,14 +1107,17 @@ document.addEventListener("DOMContentLoaded", function () {
         setStep("stepUpload", "done");
         setStep("stepQueue", "active");
 
-        updateProgress(8, "Uploading document...");
-        setStatus("Uploading document...", "info");
+        updateProgress(8, `Uploading document using ${getSelectedCitationStyle()} style...`);
+        setStatus(`Uploading document for ${getSelectedCitationStyle()} citation analysis...`, "info");
 
         const formData = new FormData();
+        const selectedStyle = getSelectedCitationStyle();
+
         formData.append("file", file);
-        formData.append("style", "apa");
+        formData.append("style", selectedStyle);
         formData.append("enable_autofix", $("autofix")?.checked ? "true" : "false");
         formData.append("enable_online_verification", $("onlineVerify")?.checked ? "true" : "false");
+        console.log("[CiteIntegrity] Selected citation style:", selectedStyle);
 
         try {
             const response = await fetch("/verify", {
@@ -1095,6 +1240,108 @@ document.addEventListener("DOMContentLoaded", function () {
 
     console.log("[CiteIntegrity] Commercial analyse page ready");
 });
+</script>
+
+
+<script>
+(function enforceCitationStyleCategoryMenu() {
+    "use strict";
+
+    const CATEGORY_OPTIONS = [
+        {
+            value: "apa",
+            label: "Author-year, APA / Harvard / Chicago",
+            title: "Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
+        },
+        {
+            value: "numeric_square",
+            label: "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+            title: "Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5]."
+        },
+        {
+            value: "numeric_superscript",
+            label: "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+            title: "Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³."
+        },
+        {
+            value: "numeric_round",
+            label: "Numeric round bracket, Vancouver / ACS",
+            title: "Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."
+        },
+        {
+            value: "auto",
+            label: "Auto-detect, experimental",
+            title: "Experimental. Auto-detect can misread some PDFs, so selecting the citation family is safer."
+        }
+    ];
+
+    const NOTES = {
+        apa: "Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).",
+        numeric_square: "Numeric-square matching: IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5].",
+        numeric_superscript: "Numeric-superscript matching: AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³.",
+        numeric_round: "Numeric-round matching: Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Use only when the manuscript clearly uses round numeric citations.",
+        auto: "Auto-detect is experimental. For better accuracy, select the citation family used in the manuscript."
+    };
+
+    function currentFamily(value) {
+        const v = String(value || "").toLowerCase();
+        if (["apa", "harvard", "chicago_author_date", "author_year"].includes(v)) return "apa";
+        if (["ieee", "ieee_square", "vancouver_square", "nlm", "nlm_square", "elsevier", "elsevier_numbered", "elsevier_square", "springer", "springer_numbered", "springer_square", "numeric_square"].includes(v)) return "numeric_square";
+        if (["ama", "ama_superscript", "nature", "nature_superscript", "rsc", "rsc_superscript", "acs_superscript", "elsevier_superscript", "numeric_superscript"].includes(v)) return "numeric_superscript";
+        if (["vancouver_round", "acs_round", "numeric_round"].includes(v)) return "numeric_round";
+        if (v === "auto") return "auto";
+        return "apa";
+    }
+
+    function rebuild(select) {
+        if (!select) return;
+        const selected = currentFamily(select.value);
+        const needsRebuild = select.querySelector("optgroup") || select.options.length !== CATEGORY_OPTIONS.length || Array.from(select.options).some((opt, i) => opt.value !== CATEGORY_OPTIONS[i].value);
+        if (!needsRebuild && select.dataset.menuBuild === "category-only-2026-05-18") return;
+
+        select.innerHTML = "";
+        CATEGORY_OPTIONS.forEach(item => {
+            const opt = document.createElement("option");
+            opt.value = item.value;
+            opt.textContent = item.label;
+            opt.title = item.title;
+            select.appendChild(opt);
+        });
+        select.value = selected;
+        select.dataset.menuBuild = "category-only-2026-05-18";
+        select.title = "Select one citation family, not an individual publisher style.";
+        updateNote(select);
+    }
+
+    function updateNote(select) {
+        const note = document.getElementById("citationStyleHint") || document.getElementById("citationStyleNote");
+        if (note) note.textContent = NOTES[currentFamily(select && select.value)] || NOTES.apa;
+    }
+
+    function apply() {
+        const selects = Array.from(document.querySelectorAll("select#citationStyle, select[name='citationStyle']"));
+        selects.forEach(select => {
+            rebuild(select);
+            if (!select.dataset.categoryListenerAttached) {
+                select.addEventListener("change", () => updateNote(select));
+                select.addEventListener("focus", () => rebuild(select));
+                select.addEventListener("mousedown", () => rebuild(select));
+                select.dataset.categoryListenerAttached = "1";
+            }
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", apply);
+    } else {
+        apply();
+    }
+    window.addEventListener("pageshow", apply);
+    setTimeout(apply, 200);
+    setTimeout(apply, 1000);
+    setTimeout(apply, 3000);
+    window.CITEINTEGRITY_CITATION_MENU_BUILD = "category-only-2026-05-18";
+})();
 </script>
 
 </body>
