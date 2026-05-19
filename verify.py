@@ -6762,3 +6762,37 @@ try:
 except Exception:
     pass
 
+
+
+# ============================================================
+# DOCX IEEE NUMERIC NORMALISATION OVERRIDES
+# Added after no-cache overrides so these definitions are the active ones.
+# ============================================================
+__version__ = "1.5.28"
+VERIFY_BUILD = "commercial-2026-05-19-docx-ieee-numbering-style-pass-fix-FINAL"
+
+
+def _strip_leading_numbering(text: str) -> str:
+    """Remove reference numbering for APA, IEEE, Vancouver, NLM, RSC and DOCX-exported numeric styles."""
+    t = _safe_strip(text)
+    t = t.replace("\xa0", " ").replace("\t", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # Handles [1], [1]., [1), (1), (1)., 1., and 1)
+    t = re.sub(
+        r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\[\s*\d{1,4}\s*\)\s*|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}\s*[\.)])\s*",
+        "",
+        t,
+    )
+    return t.strip()
+
+
+def _v1526_ref_looks_numbered(ref: str) -> bool:
+    """Detect numeric reference-list entries, including DOCX IEEE [1]. Author format."""
+    s = _safe_strip(ref or "")
+    s = s.replace("\xa0", " ").replace("\t", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return bool(re.match(
+        r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\[\s*\d{1,4}\s*\)\s*|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}[\.)]?)\s+[A-Z0-9]",
+        s,
+    ))
