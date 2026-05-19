@@ -26,8 +26,8 @@ from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
-__version__ = "1.5.21"
-WORKER_BUILD = "commercial-2026-05-19-style-aware-worker-queues-final"
+__version__ = "1.5.22"
+WORKER_BUILD = "commercial-2026-05-19-no-cache-privacy-worker-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -201,9 +201,15 @@ CITATION_NEEDED_MIN_CONFIDENCE = float(os.environ.get("CITATION_NEEDED_MIN_CONFI
 # This is the main speed lever for reducing 10-reference jobs from about a minute
 # to a few seconds, subject to Crossref/OpenAlex latency and rate limits.
 VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
-VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_CACHE_TTL", "604800"))  # 7 days
-VERIFY_USE_CACHE = _env_flag("VERIFY_USE_CACHE", "1")
+VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_CACHE_TTL", "0"))  # no Redis reference cache by default
+VERIFY_USE_CACHE = _env_flag("VERIFY_USE_CACHE", "0")
 VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
+
+# Privacy-first cache controls. Defaults are OFF.
+CACHE_RESULTS_IN_REDIS = _env_flag("CACHE_RESULTS_IN_REDIS", "0")
+DELETE_FILE_AFTER_PROCESSING = _env_flag("DELETE_FILE_AFTER_PROCESSING", "1")
+FILE_CACHE_TTL = int(os.environ.get("FILE_CACHE_TTL", "900"))
+RESULT_CACHE_TTL = int(os.environ.get("RESULT_CACHE_TTL", "0"))
 
 
 def now_iso():
@@ -270,10 +276,12 @@ def _save_job_result(job_id, result, status=None):
         cursor.close()
         conn.close()
 
-    try:
-        redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
-    except Exception as e:
-        print(f"[VERIFY WORKER] Could not refresh Redis result cache: {e}")
+    if CACHE_RESULTS_IN_REDIS:
+        try:
+            ttl = max(1, int(RESULT_CACHE_TTL or 900))
+            redis_conn.setex(f"result:{job_id}", ttl, json.dumps(result))
+        except Exception as e:
+            print(f"[VERIFY WORKER] Could not refresh Redis result cache: {e}")
 
 def _set_verification_meta(result, **kwargs):
     """
@@ -3522,9 +3530,13 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         cursor.close()
         conn.close()
         
-        # Cache result
-        redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
-        redis_conn.delete(f"file:{job_id}")
+        # Privacy-first: do not cache full results in Redis unless explicitly enabled.
+        if CACHE_RESULTS_IN_REDIS:
+            ttl = max(1, int(RESULT_CACHE_TTL or 900))
+            redis_conn.setex(f"result:{job_id}", ttl, json.dumps(result))
+
+        if DELETE_FILE_AFTER_PROCESSING:
+            redis_conn.delete(f"file:{job_id}")
         
         print(f"✅ Completed job {job_id}")
         return result
@@ -3546,7 +3558,12 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
             conn.close()
         except:
             pass
-        
+        if DELETE_FILE_AFTER_PROCESSING:
+            try:
+                redis_conn.delete(f"file:{job_id}")
+            except Exception:
+                pass
+
         raise e
 
 
