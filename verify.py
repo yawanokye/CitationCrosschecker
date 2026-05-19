@@ -6225,3 +6225,383 @@ def _v1523_title_query(title: str) -> str:
     title = re.sub(r"\s+", " ", title).strip()
     return title[:240]
 
+
+
+# ============================================================
+# NUMERIC QUERY BUILDER RECOVERY v1.5.26
+# Fixes after live test: v1.5.25 became too strict and used Crossref
+# query.title too narrowly for biomedical numeric references. This patch
+# switches numeric references to title-as-bibliographic search, adds
+# title-key and unfiltered OpenAlex fallbacks, relaxes style-specific numeric
+# classification for high title/year evidence, and auto-routes numbered
+# reference lists to numeric verification if the UI accidentally sends APA.
+# ============================================================
+
+__version__ = "1.5.26"
+VERIFY_BUILD = "commercial-2026-05-19-numeric-query-builder-recovery-FINAL"
+
+_V1526_NUMERIC_CACHE_PREFIX = "numeric_query_v1526"
+
+
+def _v1526_is_numeric_family(style: str) -> bool:
+    try:
+        return _canonical_verify_style(style) in {"numeric_square", "numeric_superscript", "numeric_round"}
+    except Exception:
+        return False
+
+
+def _v1526_ref_looks_numbered(ref: str) -> bool:
+    s = _safe_strip(ref or "")
+    return bool(re.match(r"^\s*(?:\[\s*\d{1,4}\s*\]|\(?\s*\d{1,4}\s*\)?[\.)]?|\d{1,4}[\.)]?)\s+[A-Z0-9]", s))
+
+
+def _v1526_batch_looks_numeric(refs: List[str]) -> bool:
+    refs = [r for r in (refs or []) if _safe_strip(r)]
+    if not refs:
+        return False
+    sample = refs[: min(20, len(refs))]
+    numbered = sum(1 for r in sample if _v1526_ref_looks_numbered(r))
+    return numbered >= max(3, int(len(sample) * 0.60))
+
+
+def _v1526_canonical_for_batch(style: str, refs: List[str]) -> str:
+    canonical = _canonical_verify_style(style)
+    if canonical not in {"numeric_square", "numeric_superscript", "numeric_round"} and _v1526_batch_looks_numeric(refs):
+        # Verification is reference-list based, so square/superscript/round behave the same online.
+        # Use numeric_superscript as the safest generic biomedical numeric profile when the UI sends APA.
+        return "numeric_superscript"
+    return canonical
+
+
+def _v1526_short_title_key(title: str, limit: int = 9) -> str:
+    words = _significant_title_words(title or "", limit=limit + 4)
+    return " ".join(words[:limit]).strip()
+
+
+def _v1523_query_crossref_title(title: str, rows: int = 10, query_name: str = "crossref_title_as_bibliographic_v1526") -> List[Dict[str, Any]]:
+    """
+    Crossref query.title is often too brittle for extracted PDF references.
+    For numeric styles, use query.bibliographic with title text instead.
+    """
+    title = _v1523_title_query(title)
+    if not title:
+        return []
+    return _query_crossref_bibliographic(title, rows=rows or max(10, VERIFY_TITLE_ROWS), query_name=query_name)
+
+
+def _v1526_dedupe_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    try:
+        return _dedupe_candidates(candidates)
+    except Exception:
+        seen = set()
+        out = []
+        for cand in candidates or []:
+            try:
+                doi, title, year, authors = _candidate_fields(cand)
+                key = (str(doi).lower(), str(title).lower(), str(year))
+            except Exception:
+                key = json.dumps(cand, sort_keys=True, default=str)[:300]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cand)
+        return out
+
+
+def _v1523_run_numeric_queries(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """
+    Recovery query plan for numeric styles.
+
+    Order:
+    1. DOI exact.
+    2. Crossref bibliographic title, rich title, and short title-key.
+    3. OpenAlex title/rich title with and without year filter.
+    4. Journal-year-volume-page tuple.
+    """
+    candidates: List[Dict[str, Any]] = []
+    query_used: List[str] = []
+    strategy: List[str] = []
+    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+
+    doi = _safe_strip(plan.get("doi", ""))
+    title = _v1523_title_query(plan.get("title", ""))
+    rich_title = _clean_query_text(plan.get("rich_title", ""))
+    title_key = _v1526_short_title_key(title) or _clean_query_text(plan.get("title_key", ""))
+    journal_tuple = _clean_query_text(plan.get("journal_tuple", ""))
+    year = _safe_strip(plan.get("year", ""))
+
+    # DOI exact must dominate.
+    if doi and use_crossref:
+        query_used.append(doi); strategy.append("numeric_crossref_doi_exact")
+        res = _query_crossref_by_doi(doi) or []
+        if res:
+            return _v1526_dedupe_candidates(res), query_used, strategy
+    if doi and openalex_allowed:
+        query_used.append(doi); strategy.append("numeric_openalex_doi_exact")
+        res = _query_openalex_by_doi(doi) or []
+        if res:
+            return _v1526_dedupe_candidates(res), query_used, strategy
+
+    # Title-centred searches. Use several bounded forms, not the raw full reference.
+    if title and _v1523_count_words(title) >= 3:
+        if use_crossref:
+            for q, name, rows in [
+                (title, "numeric_crossref_title_bibliographic", max(12, VERIFY_TITLE_ROWS)),
+                (rich_title, "numeric_crossref_rich_bibliographic", max(8, VERIFY_CROSSREF_ROWS)),
+                (title_key, "numeric_crossref_title_key", max(8, VERIFY_CROSSREF_ROWS)),
+            ]:
+                q = _clean_query_text(q)
+                if not q:
+                    continue
+                res = _query_crossref_bibliographic(q, query_author="", rows=rows, query_name=name) or []
+                candidates.extend(res)
+                query_used.append(q); strategy.append(name)
+
+        if openalex_allowed:
+            # Search exact-ish title without year first, because online-first metadata can differ by year.
+            for q, y, name, rows in [
+                (title, "", "numeric_openalex_title_unfiltered", max(10, VERIFY_OPENALEX_ROWS)),
+                (rich_title or title, year, "numeric_openalex_rich_year", max(8, VERIFY_OPENALEX_ROWS)),
+                (title_key or title, "", "numeric_openalex_title_key", max(8, VERIFY_OPENALEX_ROWS)),
+            ]:
+                q = _clean_query_text(q)
+                if not q:
+                    continue
+                res = _query_openalex_search(q, rows=rows, publication_year=y, query_name=name) or []
+                candidates.extend(res)
+                query_used.append(q); strategy.append(name)
+
+    # Journal tuple for RSC/ACS/no-title or when title search yields nothing credible.
+    if journal_tuple:
+        if use_crossref:
+            res = _query_crossref_bibliographic(journal_tuple, query_author="", rows=max(8, VERIFY_CROSSREF_ROWS), query_name="numeric_crossref_journal_tuple") or []
+            candidates.extend(res); query_used.append(journal_tuple); strategy.append("numeric_crossref_journal_tuple")
+        if openalex_allowed:
+            res = _query_openalex_search(journal_tuple, rows=max(8, VERIFY_OPENALEX_ROWS), publication_year=year, query_name="numeric_openalex_journal_tuple") or []
+            candidates.extend(res); query_used.append(journal_tuple); strategy.append("numeric_openalex_journal_tuple")
+
+    return _v1526_dedupe_candidates(candidates), _dedupe_preserve(query_used), _dedupe_preserve(strategy)
+
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Less brittle numeric classifier.
+
+    Numeric references from PDFs often have incomplete author or journal metadata,
+    but a strong title match plus publication-year support is enough for likely,
+    and sometimes verified. DOI exact remains the strongest signal.
+    """
+    family = ref_fields.get("style_family") or _v1522_style_family(ref_fields.get("style", "apa"))
+    if family not in {"numeric_square", "numeric_superscript", "numeric_round"}:
+        if _V1522_PREVIOUS_CLASSIFY_FROM_META:
+            return _V1522_PREVIOUS_CLASSIFY_FROM_META(ref_fields, meta)
+        return "not_found", "No classifier available."
+
+    title_score = int(meta.get("title_score", 0) or 0)
+    score = int(meta.get("score", 0) or 0)
+    year_delta = int(meta.get("year_delta", 999) or 999)
+    author_overlap = int(meta.get("author_overlap", 0) or 0)
+    author_similarity = int(meta.get("author_similarity", 0) or 0)
+    journal_score = int(meta.get("journal_score", 0) or 0)
+    doi_match = bool(meta.get("doi_match"))
+    volume_match = int(meta.get("volume_match", 0) or 0)
+    page_match = int(meta.get("page_match", 0) or 0)
+    has_clear_title = bool(meta.get("numeric_has_clear_title")) or _v1522_has_clear_title(ref_fields)
+    ref_has_doi = bool(ref_fields.get("doi"))
+    doi_conflict = bool(meta.get("doi_conflict"))
+
+    author_ok = author_overlap >= 1 or author_similarity >= 70 or not ref_fields.get("authors") or not meta.get("authors")
+    year_ok = year_delta <= 1
+    year_close = year_delta <= 2
+    journal_ok = journal_score >= 58
+
+    if doi_match:
+        return "verified", "Exact DOI match. Numeric-style reference verified using DOI-first matching."
+
+    if ref_has_doi and doi_conflict:
+        return "not_found", "A candidate was found, but it has a different DOI from the original reference."
+
+    if has_clear_title:
+        # Strong title evidence. Use year as the main support for numeric styles.
+        if title_score >= 94 and (year_ok or author_ok or journal_ok):
+            return "verified", "Very strong title match with supporting numeric-style metadata."
+        if title_score >= 90 and year_ok and (author_ok or journal_score >= 45):
+            return "verified", "Strong title and publication-year match."
+        if title_score >= 86 and (year_close or author_ok or journal_ok):
+            return "likely", "Likely numeric-style match based on title plus year, author, or journal evidence."
+        if title_score >= 78 and year_close:
+            return "likely", "Likely numeric-style match based on title and publication year."
+        if title_score >= 72 and (year_close or author_ok or journal_score >= 50):
+            return "needs_review", "Possible numeric-style match. Review title, year, and journal before accepting."
+        if title_score >= 65 and score >= 50:
+            return "needs_review", "Weak but plausible numeric-style title match. Manual review is required."
+        return "not_found", "No reliable numeric-style title match found. Weak database candidates were rejected."
+
+    # No-title RSC/ACS style references.
+    if journal_score >= 84 and year_ok and volume_match and page_match:
+        return "verified", "Numeric no-title reference verified by journal, year, volume, and page tuple."
+    if journal_score >= 74 and year_close and (volume_match or page_match):
+        return "likely", "Likely numeric no-title match using journal-year-volume/page evidence."
+    if journal_score >= 62 and year_close and (volume_match or page_match):
+        return "needs_review", "Possible numeric no-title match. Check journal, volume, page and author manually."
+
+    return "not_found", "No reliable numeric-style bibliographic match found."
+
+
+def _v1523_numeric_verify_single(ref: str, style: str, use_crossref: bool, use_openalex: bool, enrich_metadata: bool = False) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    fields = _extract_fields_by_style(ref, canonical)
+    plan = _v1523_build_numeric_query_plan(ref, canonical)
+    row = _base_commercial_row(ref, canonical, fields, "", "numeric_query_builder_v1526")
+    row["verification_profile"] = "numeric_query_builder_v1526"
+    row["query_plan"] = {
+        "doi": bool(plan.get("doi")),
+        "title": plan.get("title", ""),
+        "title_key": plan.get("title_key", ""),
+        "rich_title": plan.get("rich_title", ""),
+        "journal_tuple": plan.get("journal_tuple", ""),
+        "year": plan.get("year", ""),
+    }
+
+    if not plan.get("doi") and not plan.get("title") and not plan.get("journal_tuple"):
+        row.update({
+            "status": "needs_review",
+            "confidence_reason": "The numeric reference lacks DOI, article title and journal tuple. Manual verification is required.",
+            "query_strategy": "numeric_no_queryable_metadata_v1526",
+        })
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+        return row
+
+    candidates, query_used, strategy = _v1523_run_numeric_queries(plan, use_crossref, use_openalex)
+    row["query_used"] = " | ".join(query_used)
+    row["query_strategy"] = " | ".join(strategy)
+    row["candidate_count"] = len(candidates or [])
+
+    if not candidates:
+        row.update({
+            "status": "not_found",
+            "confidence_reason": "No Crossref/OpenAlex candidate was returned from DOI, title, title-key, or journal-tuple numeric queries.",
+        })
+        row = _v1523_blank_not_found(row)
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+        return row
+
+    _best, meta, alternatives = _v1523_best_candidate(fields, candidates)
+    if not meta:
+        row.update({"status": "not_found", "confidence_reason": "Candidates were returned, but none had usable metadata."})
+        row = _v1523_blank_not_found(row)
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+        return row
+
+    status, reason = _classify_from_meta(fields, meta)
+    row.update({
+        "status": _normalize_verify_status(status),
+        "source": "+".join(meta.get("sources") or [meta.get("source", "")]),
+        "score": int(meta.get("score", 0)),
+        "doi": _v1523_normalise_numeric_doi(meta.get("doi", "")),
+        "matched_title": _safe_strip(meta.get("title", "")),
+        "matched_year": _safe_strip(meta.get("year", "")),
+        "matched_authors": ", ".join(meta.get("authors", []) or []),
+        "matched_journal": _safe_strip(meta.get("journal", "")),
+        "matched_container_title": _safe_strip(meta.get("journal", "")),
+        "matched_volume": _safe_strip(meta.get("volume", "")),
+        "matched_issue": _safe_strip(meta.get("issue", "")),
+        "matched_pages": _safe_strip(meta.get("pages", "")),
+        "matched_publisher": _safe_strip(meta.get("publisher", "")),
+        "matched_type": _safe_strip(meta.get("type", "")),
+        "matched_url": _safe_strip(meta.get("url", "")),
+        "title_score": int(meta.get("title_score", 0)),
+        "journal_score": int(meta.get("journal_score", 0)),
+        "author_overlap": int(meta.get("author_overlap", 0)),
+        "author_similarity": int(meta.get("author_similarity", 0)),
+        "year_match": int(meta.get("year_match", 0)),
+        "year_delta": int(meta.get("year_delta", 999)),
+        "doi_match": 1 if meta.get("doi_match") else 0,
+        "volume_match": int(meta.get("volume_match", 0)),
+        "issue_match": int(meta.get("issue_match", 0)),
+        "page_match": int(meta.get("page_match", 0)),
+        "confidence_reason": reason,
+        "alternative_matches": alternatives,
+    })
+
+    # Only blank truly unreliable not_found matches. Keep needs_review visible.
+    if row["status"] == "not_found":
+        row = _v1523_blank_not_found(row)
+
+    if enrich_metadata and row.get("doi"):
+        try:
+            row = enrich_with_full_metadata(row)
+        except Exception:
+            pass
+
+    row["correction_suggestions"] = row.get("correction_suggestions") or _verification_style_suggestion(row)
+    return row
+
+
+def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool, enrich_metadata: bool = False) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    if _v1526_is_numeric_family(canonical) or _v1526_ref_looks_numbered(ref):
+        if not _v1526_is_numeric_family(canonical):
+            canonical = "numeric_superscript"
+        cache_key = f"{_V1526_NUMERIC_CACHE_PREFIX}::{canonical}::{use_crossref}:{use_openalex}:{enrich_metadata}::{ref}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return cached
+        row = _v1523_numeric_verify_single(ref, canonical, use_crossref, use_openalex, enrich_metadata)
+        row["status"] = _normalize_verify_status(row.get("status"))
+        _cache_set(cache_key, row)
+        return row
+    if _V1523_AUTHOR_YEAR_VERIFY_SINGLE:
+        return _V1523_AUTHOR_YEAR_VERIFY_SINGLE(ref, canonical, use_crossref, use_openalex, enrich_metadata)
+    return {"reference": ref, "style": canonical, "status": "not_found"}
+
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    canonical = _v1526_canonical_for_batch(style, refs)
+    rows: List[Dict[str, Any]] = []
+    total = len(refs)
+
+    for i, ref in enumerate(refs, start=1):
+        try:
+            rows.append(_verify_single_reference(ref, canonical, use_crossref, use_openalex, enrich_metadata))
+        except Exception as exc:
+            rows.append({
+                "reference": ref,
+                "style": canonical,
+                "status": "offline",
+                "error": str(exc),
+                "confidence_reason": "Style-specific verification failed for this row.",
+            })
+        if job_id:
+            try:
+                update_job_progress(job_id, i)
+                if i == total:
+                    store_verification_results(job_id, rows)
+            except Exception:
+                pass
+        if throttle_s:
+            time.sleep(throttle_s)
+    return rows
+
+try:
+    if "__all__" in globals():
+        for name in [
+            "VERIFY_BUILD",
+            "verify_references_batch",
+            "_verify_single_reference",
+            "_v1523_run_numeric_queries",
+            "_v1526_canonical_for_batch",
+        ]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
