@@ -6796,3 +6796,308 @@ def _v1526_ref_looks_numbered(ref: str) -> bool:
         r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\[\s*\d{1,4}\s*\)\s*|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}[\.)]?)\s+[A-Z0-9]",
         s,
     ))
+
+
+# ============================================================
+# AUTHOR-YEAR QUERY PLAN RECOVERY + FINAL STYLE-PRESERVING PATCH
+# Build: 2026-05-19-author-year-query-plan-recovery
+# Purpose:
+# - Restore author-year Crossref/OpenAlex query plans after numeric overrides.
+# - Keep numeric square/superscript/round query builders intact.
+# - Preserve no-cache privacy defaults.
+# - Normalise DOCX IEEE reference starts such as [1]. Author...
+# ============================================================
+__version__ = "1.5.29"
+VERIFY_BUILD = "commercial-2026-05-19-author-year-query-plan-recovery-no-cache-FINAL"
+
+
+def _v1529_normalise_reference_for_verification(ref: str) -> str:
+    """Light normalisation before verification, especially DOCX IEEE [1]. entries."""
+    s = _safe_str(ref)
+    s = s.replace("\xa0", " ").replace("\t", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    # Standardise [1]. Author... to [1] Author... without changing displayed text downstream.
+    s = re.sub(r"^\s*\[(\d{1,4})\]\s*\.\s*", r"[\1] ", s)
+    return s
+
+
+def _v1529_author_year_query_plan(ref: str, canonical: str) -> Dict[str, Any]:
+    """Return the preserved commercial author-year query plan, never the broken empty fallback."""
+    previous_builder = (
+        globals().get("_V1523_PREVIOUS_BUILD_QUERY_PLAN")
+        or globals().get("_V1522_PREVIOUS_BUILD_QUERY_PLAN")
+    )
+
+    if previous_builder:
+        try:
+            plan = previous_builder(ref, canonical)
+            if isinstance(plan, dict):
+                # A valid author-year plan should include at least DOI, bibliographic, title, or OpenAlex query.
+                has_queries = bool(plan.get("crossref_queries") or plan.get("openalex_queries") or plan.get("fallback_queries"))
+                if has_queries:
+                    return plan
+        except Exception:
+            pass
+
+    # Emergency fallback, used only if preserved builders are unavailable.
+    fields = _extract_fields_by_style(ref, canonical)
+    title = _safe_strip(fields.get("title") or fields.get("article_title") or "")
+    year = _safe_strip(fields.get("year") or "")
+    doi = _safe_strip(fields.get("doi") or "")
+    authors = fields.get("authors") or []
+    first_author = _safe_strip(authors[0] if authors else "")
+    title_words = _significant_title_words(title, limit=10)
+    title_key = " ".join(title_words[:8]).strip()
+
+    crossref_queries = []
+    openalex_queries = []
+
+    if doi:
+        crossref_queries.append({"name": "crossref_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+        openalex_queries.append({"name": "openalex_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+
+    if title:
+        bibliographic = " ".join([p for p in [first_author, title, year] if p]).strip()
+        crossref_queries.append({
+            "name": "crossref_author_year_bibliographic",
+            "mode": "bibliographic",
+            "query_bibliographic": bibliographic or title,
+            "query_author": first_author,
+            "rows": max(5, VERIFY_CROSSREF_ROWS),
+            "priority": 2,
+        })
+        crossref_queries.append({
+            "name": "crossref_author_year_title",
+            "mode": "title",
+            "query_title": title,
+            "rows": max(5, VERIFY_TITLE_ROWS),
+            "priority": 3,
+        })
+        openalex_queries.append({
+            "name": "openalex_author_year_title",
+            "mode": "search",
+            "search": title_key or title,
+            "publication_year": year,
+            "rows": max(5, VERIFY_OPENALEX_ROWS),
+            "priority": 4,
+        })
+
+    return {
+        "reference": ref,
+        "style": canonical,
+        "fields": fields,
+        "crossref_queries": crossref_queries,
+        "openalex_queries": openalex_queries,
+        "fallback_queries": [title_key] if title_key else [],
+    }
+
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    """Final query planner: numeric styles use numeric logic, author-year uses restored author-year logic."""
+    canonical = _canonical_verify_style(style)
+
+    if _v1523_is_numeric(canonical):
+        plan = _v1523_build_numeric_query_plan(ref, canonical)
+        plan["crossref_queries"] = []
+        plan["openalex_queries"] = []
+        if plan.get("doi"):
+            plan["crossref_queries"].append({"name": "numeric_doi_exact", "mode": "doi_exact", "doi": plan["doi"], "priority": 1})
+            plan["openalex_queries"].append({"name": "numeric_openalex_doi_exact", "mode": "doi_exact", "doi": plan["doi"], "priority": 1})
+        if plan.get("title") and _v1523_count_words(plan["title"]) >= 3:
+            plan["crossref_queries"].append({"name": "numeric_crossref_title_exact", "mode": "title", "query_title": plan["title"], "priority": 2})
+            plan["crossref_queries"].append({"name": "numeric_crossref_rich_title", "mode": "bibliographic", "query_bibliographic": plan.get("rich_title", ""), "query_author": "", "priority": 3})
+            plan["openalex_queries"].append({"name": "numeric_openalex_rich_title", "mode": "search", "search": plan.get("rich_title") or plan.get("title"), "publication_year": plan.get("year", ""), "priority": 4})
+        if plan.get("journal_tuple") and (not plan.get("title") or _v1523_count_words(plan.get("title")) < 3):
+            plan["crossref_queries"].append({"name": "numeric_crossref_journal_tuple", "mode": "bibliographic", "query_bibliographic": plan["journal_tuple"], "query_author": "", "priority": 5})
+            plan["openalex_queries"].append({"name": "numeric_openalex_journal_tuple", "mode": "search", "search": plan["journal_tuple"], "publication_year": plan.get("year", ""), "priority": 6})
+        return plan
+
+    return _v1529_author_year_query_plan(ref, canonical)
+
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    """Final batch verifier with no-cache defaults and normalised DOCX numeric starts."""
+    refs = [
+        _v1529_normalise_reference_for_verification(r)
+        for r in (references or [])
+        if _safe_strip(r)
+    ]
+    canonical = _v1526_canonical_for_batch(style, refs)
+    rows: List[Dict[str, Any]] = []
+    total = len(refs)
+
+    for i, ref in enumerate(refs, start=1):
+        try:
+            row = _verify_single_reference(ref, canonical, use_crossref, use_openalex, enrich_metadata)
+            if isinstance(row, dict):
+                row.setdefault("selected_style", canonical)
+                row.setdefault("style", canonical)
+                try:
+                    row.setdefault("style_family", _style_metadata(canonical).get("family", canonical))
+                    row.setdefault("style_label", _style_metadata(canonical).get("label", canonical))
+                    row.setdefault("style_sample", _style_metadata(canonical).get("sample", ""))
+                except Exception:
+                    pass
+            rows.append(row)
+        except Exception as exc:
+            rows.append({
+                "reference": ref,
+                "style": canonical,
+                "selected_style": canonical,
+                "status": "offline",
+                "error": str(exc),
+                "confidence_reason": "Verification failed for this row.",
+            })
+        if job_id:
+            try:
+                update_job_progress(job_id, i)
+                if i == total:
+                    store_verification_results(job_id, rows)
+            except Exception:
+                pass
+        if throttle_s:
+            time.sleep(throttle_s)
+    return rows
+
+try:
+    if "__all__" in globals():
+        for name in [
+            "VERIFY_BUILD",
+            "VERIFY_USE_CACHE",
+            "VERIFY_STORE_RESULTS_IN_MEMORY",
+            "_build_verification_query_plan",
+            "verify_references_batch",
+        ]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
+
+
+# ============================================================
+# AUTHOR-YEAR TITLE CLEANUP FOR QUERY PRECISION
+# Build: 2026-05-19-author-year-title-query-cleanup
+# Purpose: when older extractors merge title + journal + volume/pages,
+# add cleaner author-year title queries without disturbing numeric logic.
+# ============================================================
+__version__ = "1.5.30"
+VERIFY_BUILD = "commercial-2026-05-19-author-year-query-recovery-title-cleanup-FINAL"
+
+
+def _v1530_clean_author_year_title_from_ref(ref: str, fields: Dict[str, Any]) -> str:
+    """Extract the article/book title more cleanly for author-year references."""
+    raw_title = _safe_strip(fields.get("title") or fields.get("article_title") or "")
+    journal = _safe_strip(fields.get("journal") or fields.get("container_title") or fields.get("source") or "")
+
+    title = raw_title
+    if journal and journal.lower() in title.lower():
+        # Cut before the journal name if the earlier extractor merged both.
+        m = re.search(re.escape(journal), title, flags=re.I)
+        if m and m.start() > 8:
+            title = title[:m.start()].strip(" .,:;")
+
+    if not title or len(title) < 8:
+        s = _strip_leading_numbering(_safe_str(ref))
+        year = _safe_strip(fields.get("year") or _extract_year(s) or "")
+        if year:
+            # APA/Harvard: Author. (Year). Title. Journal...
+            parts = re.split(r"[\(\[]?\s*" + re.escape(year) + r"\s*[\)\]]?\s*[\.\:]?\s*", s, maxsplit=1)
+            if len(parts) > 1:
+                right = parts[1].strip()
+                # Take first sentence as a high-precision title guess.
+                m = re.match(r"(.{8,220}?)(?:\.\s+[A-Z][A-Za-z\s&:,]*[,\.]|\.\s+(?:https?://|doi\b)|$)", right)
+                if m:
+                    title = m.group(1).strip(" .,:;")
+
+    title = re.sub(r"\bhttps?://\S+", "", title, flags=re.I)
+    title = re.sub(r"\bdoi\s*:?\s*\S+", "", title, flags=re.I)
+    title = re.sub(r"\b\d+\s*\([^)]*\)\s*,\s*\d+\s*[\-–]\s*\d+\b", "", title)
+    title = re.sub(r"\s+", " ", title).strip(" .,:;")
+    return title
+
+
+# Keep a reference to the working v1.5.29 planner.
+_V1530_PREVIOUS_QUERY_PLAN = _build_verification_query_plan
+
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    plan = _V1530_PREVIOUS_QUERY_PLAN(ref, canonical)
+
+    if _v1523_is_numeric(canonical):
+        return plan
+
+    fields = plan.get("fields") or {}
+    if not isinstance(fields, dict):
+        return plan
+
+    clean_title = _v1530_clean_author_year_title_from_ref(ref, fields)
+    if clean_title and clean_title != fields.get("title"):
+        fields["title_clean"] = clean_title
+        # Use clean title for search keys without destroying original diagnostics.
+        clean_words = _significant_title_words(clean_title, limit=10)
+        clean_key = " ".join(clean_words[:8]).strip()
+        first_author = _safe_strip((fields.get("authors") or [fields.get("first_author", "")])[0])
+        year = _safe_strip(fields.get("year") or "")
+        journal = _safe_strip(fields.get("journal") or fields.get("container_title") or "")
+
+        extra_crossref = []
+        if clean_title:
+            extra_crossref.append({
+                "name": "crossref_clean_title_author_year",
+                "mode": "bibliographic",
+                "query_bibliographic": " ".join([p for p in [clean_title, journal, year] if p]).strip(),
+                "query_author": first_author,
+                "rows": max(5, VERIFY_CROSSREF_ROWS),
+                "priority": 2.5,
+            })
+            extra_crossref.append({
+                "name": "crossref_clean_title_exact",
+                "mode": "title",
+                "query_title": clean_title,
+                "rows": max(5, VERIFY_TITLE_ROWS),
+                "priority": 2.6,
+            })
+        extra_openalex = []
+        if clean_key:
+            extra_openalex.append({
+                "name": "openalex_clean_title_year",
+                "mode": "search",
+                "search": clean_key,
+                "publication_year": year,
+                "rows": max(5, VERIFY_OPENALEX_ROWS),
+                "priority": 3.5,
+            })
+
+        # Insert after DOI exact if present, otherwise at the front.
+        cross = list(plan.get("crossref_queries") or [])
+        if cross and cross[0].get("mode") == "doi_exact":
+            cross = cross[:1] + extra_crossref + cross[1:]
+        else:
+            cross = extra_crossref + cross
+        opena = list(plan.get("openalex_queries") or [])
+        if opena and opena[0].get("mode") == "doi_exact":
+            opena = opena[:1] + extra_openalex + opena[1:]
+        else:
+            opena = extra_openalex + opena
+        plan["crossref_queries"] = cross
+        plan["openalex_queries"] = opena
+        plan["fields"] = fields
+
+    return plan
+
+try:
+    if "__all__" in globals():
+        for name in ["VERIFY_BUILD", "_build_verification_query_plan"]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
