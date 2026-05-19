@@ -2126,6 +2126,9 @@ async def retry_stuck_verification(job_id: str):
     refs = job.get("result", {}).get("references_raw", [])
     if not refs:
         return {"error": "No references to verify"}
+
+    selected_style = _style_for_job_result(job.get("result", {}) or {})
+    print(f"[VERIFY RETRY] Re-queueing job {job_id} with style={selected_style}")
     
     new_verification_job_id = f"verify:{job_id}:{uuid.uuid4().hex[:8]}"
     if not verification_queue:
@@ -2146,7 +2149,7 @@ async def retry_stuck_verification(job_id: str):
     verification_queue.enqueue(
         "worker.process_verification",
         job_id,
-        "apa",
+        selected_style,
         False,
         job_id=new_verification_job_id,
         job_timeout=10800,
@@ -2338,6 +2341,107 @@ async def new_results_dashboard_page(request: Request, job_id: str, verify: int 
             "auto_verify": "true" if verify == 1 else "false"
         }
     )
+
+# ============================================================
+# STYLE PASSING HELPERS FOR ONLINE VERIFICATION
+# ============================================================
+def _main_style_token(style_value):
+    """Return the canonical style family that should be sent to worker.process_verification."""
+    s = str(style_value or "").strip().lower()
+    s = s.replace("&", " and ")
+    s = re.sub(r"[\s\-/]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+
+    aliases = {
+        "": "apa",
+        "auto": "apa",
+        "author_year": "author_year",
+        "author_year_apa_harvard_chicago": "author_year",
+        "apa": "apa",
+        "apa7": "apa",
+        "apa_7": "apa",
+        "harvard": "harvard",
+        "chicago": "chicago_author_date",
+        "chicago_author_date": "chicago_author_date",
+        "apa_harvard_chicago": "author_year",
+        "apa_harvard_chicago_author_date": "author_year",
+        "ieee": "numeric_square",
+        "ieee_square": "numeric_square",
+        "ieee_square_bracket": "numeric_square",
+        "numeric_square": "numeric_square",
+        "numeric_square_bracket": "numeric_square",
+        "numeric_square_bracket_ieee_vancouver_nlm_elsevier_springer": "numeric_square",
+        "vancouver": "numeric_square",
+        "vancouver_square": "numeric_square",
+        "vancouver_square_bracket": "numeric_square",
+        "nlm": "numeric_square",
+        "nlm_square": "numeric_square",
+        "elsevier_square": "numeric_square",
+        "elsevier_numbered_square_bracket": "numeric_square",
+        "springer_square": "numeric_square",
+        "springer_numbered_square_bracket": "numeric_square",
+        "ama": "numeric_superscript",
+        "ama_superscript": "numeric_superscript",
+        "nature": "numeric_superscript",
+        "nature_superscript": "numeric_superscript",
+        "rsc": "numeric_superscript",
+        "rsc_superscript": "numeric_superscript",
+        "acs": "numeric_superscript",
+        "acs_superscript": "numeric_superscript",
+        "elsevier_superscript": "numeric_superscript",
+        "numeric_superscript": "numeric_superscript",
+        "numeric_superscript_ama_nature_rsc_acs_elsevier": "numeric_superscript",
+        "vancouver_round": "numeric_round",
+        "acs_round": "numeric_round",
+        "numeric_round": "numeric_round",
+        "numeric_round_bracket": "numeric_round",
+        "numeric_round_bracket_vancouver_acs": "numeric_round",
+    }
+
+    if s in aliases:
+        return aliases[s]
+
+    # Also handle full human labels passed from the browser.
+    if "numeric" in s and "square" in s:
+        return "numeric_square"
+    if "ieee" in s or "vancouver" in s or "nlm" in s or "springer" in s:
+        if "round" in s:
+            return "numeric_round"
+        return "numeric_square"
+    if "superscript" in s or "ama" in s or "nature" in s or "rsc" in s or "acs" in s:
+        return "numeric_superscript"
+    if "round" in s:
+        return "numeric_round"
+    if "author" in s or "apa" in s or "harvard" in s or "chicago" in s:
+        return "author_year"
+
+    return s or "apa"
+
+
+def _style_for_job_result(result):
+    """Recover the selected analysis style from the saved result object."""
+    result = result or {}
+    summary = result.get("summary") or {}
+    candidates = [
+        result.get("selected_style"),
+        result.get("style"),
+        result.get("style_family"),
+        result.get("citation_style"),
+        summary.get("selected_style"),
+        summary.get("style"),
+        summary.get("style_family"),
+        summary.get("citation_style"),
+    ]
+    for value in candidates:
+        if str(value or "").strip():
+            return _main_style_token(value)
+    return "apa"
+
+
+def _recovery_style_hint(selected_style):
+    selected_style = _main_style_token(selected_style)
+    return "numeric" if selected_style.startswith("numeric_") else "apa"
+
 # ============================================================
 # ASYNC DOCUMENT CHECK (QUEUED)
 # ============================================================
@@ -2502,7 +2606,8 @@ async def verify(
             "PDF accepted for cautious analysis. Text-based PDFs work best. DOCX remains recommended for the most accurate citation analysis."
             if is_pdf else ""
         ),
-        "autofix_enabled": autofix_enabled  # Include for debugging
+        "autofix_enabled": autofix_enabled,  # Include for debugging
+        "selected_style": _main_style_token(style)
     }
 # ============================================================
 # RESULT CHECK ENDPOINT
@@ -2688,6 +2793,8 @@ async def verify_online(job_id: str = Form(...)):
 
     verification = job.get("verification", {}) or {}
     result = job.get("result", {}) or {}
+    selected_style = _style_for_job_result(result)
+    print(f"[VERIFY ONLINE] Queuing verification for job {job_id} with selected_style={selected_style}")
 
     existing_rows = ((result.get("online_verification") or {}).get("rows") or [])
 
@@ -2717,7 +2824,7 @@ async def verify_online(job_id: str = Form(...)):
     if not refs:
         repaired = recover_references_for_verification(
             result.get("main_text", ""),
-            style_hint="apa"
+            style_hint=_recovery_style_hint(selected_style)
         )
 
         if repaired:
@@ -2786,7 +2893,7 @@ async def verify_online(job_id: str = Form(...)):
     verification_queue.enqueue(
         "worker.process_verification",
         job_id,
-        "apa",
+        selected_style,
         False,
         job_id=new_verification_job_id,
         job_timeout=10800,
