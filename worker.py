@@ -26,6 +26,9 @@ from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
+__version__ = "1.5.21"
+WORKER_BUILD = "commercial-2026-05-19-style-aware-worker-queues-final"
+
 try:
     from claim_support_scorer import score_claim_support
 except Exception:
@@ -68,6 +71,126 @@ ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY = _env_flag("ENQUEUE_DEEP_ENRICHMENT_AFTER_
 DEEP_ENRICHMENT_LIMIT = int(os.environ.get("DEEP_ENRICHMENT_LIMIT", "80"))
 DEEP_LOOKUP_TOP_K = int(os.environ.get("DEEP_LOOKUP_TOP_K", "3"))
 DEEP_ENRICHMENT_BATCH_SAVE = int(os.environ.get("DEEP_ENRICHMENT_BATCH_SAVE", "10"))
+
+
+# ============================================================
+# STYLE-AWARE WORKER HELPERS
+# ============================================================
+# The engine and verify.py now support condensed style families. The worker
+# must preserve the selected family so Recovery, Claim Support, verification
+# caching, and suggestions do not fall back to APA/Harvard assumptions.
+
+_SUP_DIGITS_WORKER = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_SUP_TO_NORMAL_WORKER = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻−–—", "0123456789----")
+_NORMAL_TO_SUP_WORKER = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+
+
+def _worker_style_token(style):
+    s = str(style or "apa").strip().lower()
+    s = s.replace("&", " and ")
+    s = re.sub(r"[\s\-/]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    aliases = {
+        "author_year": "author_year",
+        "apa": "apa",
+        "harvard": "harvard",
+        "chicago": "chicago_author_date",
+        "chicago_author_date": "chicago_author_date",
+        "apa_harvard_chicago": "author_year",
+        "ieee": "numeric_square",
+        "ieee_square": "numeric_square",
+        "ieee_square_bracket": "numeric_square",
+        "vancouver": "numeric_square",
+        "vancouver_square": "numeric_square",
+        "vancouver_square_bracket": "numeric_square",
+        "nlm": "numeric_square",
+        "nlm_square": "numeric_square",
+        "elsevier": "numeric_square",
+        "elsevier_square": "numeric_square",
+        "elsevier_numbered": "numeric_square",
+        "springer": "numeric_square",
+        "springer_square": "numeric_square",
+        "springer_numbered": "numeric_square",
+        "square_numeric": "numeric_square",
+        "numeric_square": "numeric_square",
+        "ama": "numeric_superscript",
+        "ama_superscript": "numeric_superscript",
+        "nature": "numeric_superscript",
+        "nature_superscript": "numeric_superscript",
+        "rsc": "numeric_superscript",
+        "rsc_superscript": "numeric_superscript",
+        "acs": "numeric_superscript",
+        "acs_superscript": "numeric_superscript",
+        "elsevier_superscript": "numeric_superscript",
+        "superscript_numeric": "numeric_superscript",
+        "numeric_superscript": "numeric_superscript",
+        "vancouver_round": "numeric_round",
+        "acs_round": "numeric_round",
+        "round_numeric": "numeric_round",
+        "numeric_round": "numeric_round",
+    }
+    return aliases.get(s, s)
+
+
+def _worker_style_family(style):
+    token = _worker_style_token(style)
+    if token in {"numeric_square", "numeric_superscript", "numeric_round"}:
+        return token
+    if token == "auto":
+        return "auto"
+    return "author_year"
+
+
+def _worker_is_author_year(style):
+    return _worker_style_family(style) in {"author_year", "auto"}
+
+
+def _worker_style_label(style):
+    family = _worker_style_family(style)
+    return {
+        "author_year": "Author-year, APA / Harvard / Chicago",
+        "numeric_square": "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+        "numeric_superscript": "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+        "numeric_round": "Numeric round bracket, Vancouver / ACS",
+        "auto": "Auto-detect, experimental",
+    }.get(family, "Author-year, APA / Harvard / Chicago")
+
+
+def _worker_style_sample(style):
+    family = _worker_style_family(style)
+    return {
+        "author_year": "(Adam, 2020), Adam (2020)",
+        "numeric_square": "[1], [1,2], [3–5]",
+        "numeric_superscript": "text¹, text¹,², text¹–³",
+        "numeric_round": "(1), (1,2), (3–5)",
+        "auto": "Experimental auto-detection",
+    }.get(family, "(Adam, 2020), Adam (2020)")
+
+
+def _add_worker_style_metadata(row, style):
+    if not isinstance(row, dict):
+        return row
+    family = _worker_style_family(style)
+    row.setdefault("selected_style", style)
+    row.setdefault("style_family", family)
+    row.setdefault("style_label", _worker_style_label(style))
+    row.setdefault("style_sample", _worker_style_sample(style))
+    return row
+
+
+def _add_worker_style_metadata_to_rows(rows, style):
+    return [_add_worker_style_metadata(r, style) for r in (rows or [])]
+
+
+def _to_worker_superscript(num_text):
+    return str(num_text or "").translate(_NORMAL_TO_SUP_WORKER)
+
+
+def _normalise_numeric_citation_number(value):
+    raw = str(value or "")
+    raw = raw.translate(_SUP_TO_NORMAL_WORKER)
+    nums = re.findall(r"\d{1,4}", raw)
+    return nums[0] if nums else ""
 
 # Citation-needed claims tab controls
 CITATION_NEEDED_MAX_ROWS = int(os.environ.get("CITATION_NEEDED_MAX_ROWS", "250"))
@@ -187,16 +310,17 @@ def _reference_cache_key(ref, style="apa", enrich_metadata=False):
     """Stable Redis cache key for a reference verification result."""
     raw = json.dumps({
         "reference": str(ref or "").strip(),
-        "style": style,
+        "style": _worker_style_family(style),
+        "selected_style": str(style or "").strip(),
         "enrich_metadata": bool(enrich_metadata),
     }, sort_keys=True)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return f"verify:v2:{digest}"
 
 
-def _make_offline_verification_row(ref, error="Verification failed or timed out"):
+def _make_offline_verification_row(ref, error="Verification failed or timed out", style="apa"):
     """Create a safe row if a single-reference verification fails."""
-    return {
+    return _add_worker_style_metadata({
         "status": "offline",
         "reference": ref,
         "original_reference": ref,
@@ -209,7 +333,7 @@ def _make_offline_verification_row(ref, error="Verification failed or timed out"
         "matched_title": "",
         "message": error,
         "error": error,
-    }
+    }, style)
 
 
 def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
@@ -229,7 +353,7 @@ def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
                 row = json.loads(cached)
                 if isinstance(row, dict):
                     row.setdefault("cache_hit", True)
-                    return row
+                    return _add_worker_style_metadata(row, style)
         except Exception as e:
             print(f"[VERIFY CACHE] Cache read failed: {e}")
 
@@ -243,11 +367,12 @@ def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
             enrich_metadata=enrich_metadata
         ) or []
 
-        row = rows[0] if rows else _make_offline_verification_row(ref, "No verification row returned")
+        row = rows[0] if rows else _make_offline_verification_row(ref, "No verification row returned", style)
         if isinstance(row, dict):
             row.setdefault("reference", ref)
             row.setdefault("original_reference", ref)
             row.setdefault("cache_hit", False)
+            row = _add_worker_style_metadata(row, style)
 
         if VERIFY_USE_CACHE and isinstance(row, dict):
             try:
@@ -258,7 +383,7 @@ def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
         return row
 
     except Exception as e:
-        return _make_offline_verification_row(ref, str(e))
+        return _make_offline_verification_row(ref, str(e), style)
 
 
 def _verify_chunk_parallel(chunk, style="apa", enrich_metadata=False):
@@ -299,7 +424,7 @@ def _verify_chunk_parallel(chunk, style="apa", enrich_metadata=False):
             try:
                 ordered_rows[i] = future.result()
             except Exception as e:
-                ordered_rows[i] = _make_offline_verification_row(ref, str(e))
+                ordered_rows[i] = _make_offline_verification_row(ref, str(e), style)
 
     return [r for r in ordered_rows if r is not None]
 
@@ -980,6 +1105,67 @@ def _context_suggestions_for_missing_citation(citation, result, count=1, target=
     """
     citation = str(citation or "").strip()
     main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+    style_hint = result.get("selected_style") or result.get("style") or result.get("style_family") or "apa"
+    style_family = _worker_style_family(style_hint)
+
+    if style_family.startswith("numeric_"):
+        num = _normalise_numeric_citation_number(citation)
+        display = citation or (num if num else "the cited number")
+        style_label = _worker_style_label(style_hint)
+        sample = _worker_style_sample(style_hint)
+        return [
+            {
+                "title": "Add the missing numbered reference entry",
+                "authors": "",
+                "year": "",
+                "doi": "",
+                "reason": f"The {style_label} in-text citation '{display}' appears in the manuscript, but the matching numbered reference was not found.",
+                "suggested": f"Add the full reference-list entry for citation number {num or display}, or change the in-text citation to the correct existing reference number.",
+                "confidence": 0.72,
+                "source": f"{style_family}_missing_reference_recovery_lite",
+                "citation": citation,
+                "citation_number": num,
+                "style_family": style_family,
+                "style_label": style_label,
+                "style_sample": sample,
+                "count": count,
+                "fix_type": "review_required",
+            },
+            {
+                "title": "Check numeric sequence and renumbering",
+                "authors": "",
+                "year": "",
+                "doi": "",
+                "reason": "Numeric citation systems depend on a consistent sequence between in-text numbers and reference-list numbers.",
+                "suggested": "Check whether an earlier reference was deleted, inserted, or split, then renumber in-text citations and reference-list entries consistently.",
+                "confidence": 0.62,
+                "source": f"{style_family}_sequence_check_recovery_lite",
+                "citation": citation,
+                "citation_number": num,
+                "style_family": style_family,
+                "style_label": style_label,
+                "style_sample": sample,
+                "count": count,
+                "fix_type": "review_required",
+            },
+            {
+                "title": "Confirm the cited claim before fixing the number",
+                "authors": "",
+                "year": "",
+                "doi": "",
+                "reason": "Do not add or renumber a numeric citation mechanically. Confirm that the numbered source supports the sentence.",
+                "suggested": f"Review the sentence containing '{display}' and confirm which source should support it.",
+                "confidence": 0.55,
+                "source": f"{style_family}_claim_context_recovery_lite",
+                "citation": citation,
+                "citation_number": num,
+                "style_family": style_family,
+                "style_label": style_label,
+                "style_sample": sample,
+                "count": count,
+                "fix_type": "review_required",
+            },
+        ][:target]
 
     context = ""
     claim = ""
@@ -1140,6 +1326,27 @@ def _citation_variants(citation):
     if not citation:
         return []
 
+    # Numeric styles, including square bracket, round bracket, Unicode superscript,
+    # and flattened PDF digits. This lets Claim Support locate sentences in
+    # IEEE/Vancouver/NLM and AMA/Nature/RSC/ACS manuscripts.
+    numeric_candidate = citation.translate(_SUP_TO_NORMAL_WORKER)
+    nums = re.findall(r"\d{1,4}", numeric_candidate)
+    if nums and re.fullmatch(r"[\s\[\](),.;:\-–—⁰¹²³⁴⁵⁶⁷⁸⁹0-9]+", citation):
+        first = nums[0]
+        cluster_comma = ",".join(nums)
+        cluster_dash = f"{nums[0]}–{nums[-1]}" if len(nums) > 1 else first
+        for n in {first, cluster_comma, cluster_dash}:
+            if not n:
+                continue
+            variants.add(n)
+            variants.add(f"[{n}]")
+            variants.add(f"({n})")
+            variants.add(_to_worker_superscript(n))
+            variants.add(f" {_to_worker_superscript(n)}")
+            variants.add(f",{_to_worker_superscript(n)}")
+            variants.add(f".{_to_worker_superscript(n)}")
+        return sorted(variants, key=len, reverse=True)
+
     variants.add(citation)
     variants.add(f"({citation})")
 
@@ -1282,8 +1489,10 @@ def _has_existing_citation_marker(sentence):
         # Loose author-year: Adam et al., 2021 or Adam and Mensah, 2021
         r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s+(?:and|&)\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,\s*(?:19|20)\d{2}[a-z]?\b",
         # Numeric citation styles: [1], [1, 2], [1-3], (1), (1,2)
-        r"\[(?:\s*\d{1,3}\s*(?:[-,;]\s*\d{1,3}\s*)*)\]",
-        r"\(\s*\d{1,3}\s*(?:[-,;]\s*\d{1,3}\s*)*\)",
+        r"\[(?:\s*\d{1,3}\s*(?:[-,;–—]\s*\d{1,3}\s*)*)\]",
+        r"\(\s*\d{1,3}\s*(?:[-,;–—]\s*\d{1,3}\s*)*\)",
+        # True Unicode superscript citations: text¹, text¹,², text¹–³
+        r"(?<=[A-Za-z\)\]])\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+(?:\s*[,;\-–—]\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+)*",
     ]
 
     return any(re.search(pattern, text) for pattern in patterns)
@@ -2005,7 +2214,7 @@ def _fallback_claim_support_rows(result, verification_rows):
 
     return rows
 
-def _normalise_references_for_verification(result):
+def _normalise_references_for_verification(result, style="apa"):
     refs = result.get("references_raw", []) or []
 
     if refs:
@@ -2015,7 +2224,7 @@ def _normalise_references_for_verification(result):
         try:
             recovered = recover_references_for_verification(
                 result.get("main_text", ""),
-                style_hint="apa"
+                style_hint="numeric" if _worker_style_family(style).startswith("numeric_") else "apa"
             )
             if recovered:
                 result["references_raw"] = recovered
@@ -3140,6 +3349,11 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
             enable_autofix=enable_autofix
         )
 
+        result.setdefault("selected_style", style)
+        result.setdefault("style_family", _worker_style_family(style))
+        result.setdefault("style_label", _worker_style_label(style))
+        result.setdefault("style_sample", _worker_style_sample(style))
+
         print("🔍 === RESULT DEBUG ===")
         print("🔍 'autofix' in result:", "autofix" in result)
         
@@ -3163,43 +3377,49 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         # COLLECT ALL SUGGESTIONS BY SCENARIO
         all_suggestions = []
         
-        # Scenario 4 first: Combined author + year mismatch
-        combined_suggestions = scenario_4_combined_mismatch(c2r_rows, style)
-        all_suggestions.extend(combined_suggestions)
-        print(f"🔀 Scenario 4 - Combined mismatches: {len(combined_suggestions)}")
+
+        style_family = _worker_style_family(style)
+        if style_family == "author_year":
+                # Scenario 4 first: Combined author + year mismatch
+                combined_suggestions = scenario_4_combined_mismatch(c2r_rows, style)
+                all_suggestions.extend(combined_suggestions)
+                print(f"🔀 Scenario 4 - Combined mismatches: {len(combined_suggestions)}")
         
-        # Scenario 6: Potential wrong reference
-        wrong_ref_suggestions = scenario_6_potential_wrong_reference(c2r_rows)
-        all_suggestions.extend(wrong_ref_suggestions)
-        print(f"⚠️ Scenario 6 - Potential wrong references: {len(wrong_ref_suggestions)}")
+                # Scenario 6: Potential wrong reference
+                wrong_ref_suggestions = scenario_6_potential_wrong_reference(c2r_rows)
+                all_suggestions.extend(wrong_ref_suggestions)
+                print(f"⚠️ Scenario 6 - Potential wrong references: {len(wrong_ref_suggestions)}")
         
-        # Scenario 2: Author name mismatch (spelling, missing parts)
-        author_suggestions = scenario_2_author_name_mismatch(c2r_rows, style)
-        all_suggestions.extend(author_suggestions)
-        print(f"👤 Scenario 2 - Author name mismatches: {len(author_suggestions)}")
+                # Scenario 2: Author name mismatch (spelling, missing parts)
+                author_suggestions = scenario_2_author_name_mismatch(c2r_rows, style)
+                all_suggestions.extend(author_suggestions)
+                print(f"👤 Scenario 2 - Author name mismatches: {len(author_suggestions)}")
         
-        # Scenario 1: Year mismatch
-        year_suggestions = scenario_1_year_mismatch(c2r_rows)
-        all_suggestions.extend(year_suggestions)
-        print(f"📅 Scenario 1 - Year mismatches: {len(year_suggestions)}")
-        # Scenario 1b: Year mismatch among unmatched citations
-        unmatched_year_suggestions = scenario_1b_unmatched_year_mismatch(
-            c2r_rows,
-            references_raw
-        )
-        all_suggestions.extend(unmatched_year_suggestions)
-        print(f"📅 Scenario 1b - Unmatched year mismatches: {len(unmatched_year_suggestions)}")
+                # Scenario 1: Year mismatch
+                year_suggestions = scenario_1_year_mismatch(c2r_rows)
+                all_suggestions.extend(year_suggestions)
+                print(f"📅 Scenario 1 - Year mismatches: {len(year_suggestions)}")
+                # Scenario 1b: Year mismatch among unmatched citations
+                unmatched_year_suggestions = scenario_1b_unmatched_year_mismatch(
+                    c2r_rows,
+                    references_raw
+                )
+                all_suggestions.extend(unmatched_year_suggestions)
+                print(f"📅 Scenario 1b - Unmatched year mismatches: {len(unmatched_year_suggestions)}")
         
-        # Scenario 3: Author order mismatch
-        order_suggestions = scenario_3_author_order_mismatch(c2r_rows, style)
-        all_suggestions.extend(order_suggestions)
-        print(f"🔄 Scenario 3 - Author order mismatches: {len(order_suggestions)}")
+                # Scenario 3: Author order mismatch
+                order_suggestions = scenario_3_author_order_mismatch(c2r_rows, style)
+                all_suggestions.extend(order_suggestions)
+                print(f"🔄 Scenario 3 - Author order mismatches: {len(order_suggestions)}")
         
-        # Scenario 5: Et al. misuse
-        # Scenario 5: Et al. misuse
-        # Disabled for now because et al. suggestions require highly reliable author extraction.
-        et_al_suggestions = []
-        print("📝 Scenario 5 - Et al. misuse: disabled")
+                # Scenario 5: Et al. misuse
+                # Scenario 5: Et al. misuse
+                # Disabled for now because et al. suggestions require highly reliable author extraction.
+                et_al_suggestions = []
+                print("📝 Scenario 5 - Et al. misuse: disabled")
+
+        else:
+            print(f"🔢 Numeric style selected ({style_family}). Skipping author-year mismatch scenarios; using engine/verification style-specific suggestions instead.")
 
         # Reference quality issues
         ref_suggestions = detect_reference_quality_issues(
@@ -3225,38 +3445,72 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         for i, s in enumerate(unique_suggestions):
             print(f"  Suggestion {i+1}: [{s.get('issue_type')}] {s.get('original')} -> {s.get('suggested')}")
         
-        # Add suggestions to result
-        if unique_suggestions:
-            citation_suggestions = [
-                s for s in unique_suggestions
-                if s.get("category") not in {"reference", "reference_quality"}
-            ]
-        
-            reference_suggestions = [
-                s for s in unique_suggestions
-                if s.get("category") in {"reference", "reference_quality"}
-            ]
-        
-            result["autofix"]["suggestions"]["citations"] = citation_suggestions
-            result["autofix"]["suggestions"]["references"] = reference_suggestions
-        
-            result["suggestions"] = result["autofix"]["suggestions"]
-            
-            # Add statistics
-            result["autofix"]["statistics"] = {
-                "total": len(unique_suggestions),
-                "citation_accuracy_total": len(citation_suggestions),
-                "reference_quality_total": len(reference_suggestions),
-                "review_high_confidence": len([s for s in unique_suggestions if s.get("confidence", 0) >= 0.85]),
-                "review_medium_confidence": len([s for s in unique_suggestions if 0.70 <= s.get("confidence", 0) < 0.85]),
-                "review_low_confidence": len([s for s in unique_suggestions if s.get("confidence", 0) < 0.70]),
-                "by_category": dict(categories),
-                "by_issue_type": dict(Counter(s.get("issue_type", "other") for s in unique_suggestions))
-            }
-            
-            print(f"✅ Added {len(unique_suggestions)} suggestions to result")
-        else:
-            print("⚠️ No suggestions generated")
+        # Merge worker suggestions with the engine's existing style-specific suggestions.
+        # This prevents numeric-square / numeric-superscript suggestions generated by
+        # engine.py from being overwritten by older author-year worker checks.
+        existing_suggestions = result.get("autofix", {}).get("suggestions", {}) or {}
+        existing_citation_suggestions = list(existing_suggestions.get("citations", []) or [])
+        existing_reference_suggestions = list(existing_suggestions.get("references", []) or [])
+
+        worker_citation_suggestions = [
+            _add_worker_style_metadata(dict(s), style)
+            for s in unique_suggestions
+            if s.get("category") not in {"reference", "reference_quality"}
+        ]
+
+        worker_reference_suggestions = [
+            _add_worker_style_metadata(dict(s), style)
+            for s in unique_suggestions
+            if s.get("category") in {"reference", "reference_quality"}
+        ]
+
+        def _merge_suggestion_lists(*groups):
+            merged = []
+            seen = set()
+            for group in groups:
+                for item in group or []:
+                    if not isinstance(item, dict):
+                        continue
+                    item = _add_worker_style_metadata(dict(item), style)
+                    key = (
+                        str(item.get("issue_type") or item.get("type") or "").lower(),
+                        str(item.get("citation_number") or item.get("citation") or item.get("original") or item.get("reference") or "").lower(),
+                        str(item.get("suggested") or item.get("suggested_action") or "").lower(),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(item)
+            return merged
+
+        citation_suggestions = _merge_suggestion_lists(
+            existing_citation_suggestions,
+            worker_citation_suggestions,
+        )
+        reference_suggestions = _merge_suggestion_lists(
+            existing_reference_suggestions,
+            worker_reference_suggestions,
+        )
+
+        result["autofix"]["suggestions"]["citations"] = citation_suggestions
+        result["autofix"]["suggestions"]["references"] = reference_suggestions
+        result["suggestions"] = result["autofix"]["suggestions"]
+
+        all_final_suggestions = citation_suggestions + reference_suggestions
+        result["autofix"]["statistics"] = {
+            "total": len(all_final_suggestions),
+            "citation_accuracy_total": len(citation_suggestions),
+            "reference_quality_total": len(reference_suggestions),
+            "review_high_confidence": len([s for s in all_final_suggestions if s.get("confidence", 0) >= 0.85]),
+            "review_medium_confidence": len([s for s in all_final_suggestions if 0.70 <= s.get("confidence", 0) < 0.85]),
+            "review_low_confidence": len([s for s in all_final_suggestions if s.get("confidence", 0) < 0.70]),
+            "by_category": dict(Counter(s.get("category", "other") for s in all_final_suggestions)),
+            "by_issue_type": dict(Counter(s.get("issue_type", "other") for s in all_final_suggestions)),
+            "style_family": _worker_style_family(style),
+            "style_label": _worker_style_label(style),
+        }
+
+        print(f"✅ Suggestions preserved/merged: {len(citation_suggestions)} citation + {len(reference_suggestions)} reference suggestions")
         
         # Save result
         cursor.execute(
@@ -3834,7 +4088,7 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
     try:
         result = _load_job_result(job_id)
-        refs = _normalise_references_for_verification(result)
+        refs = _normalise_references_for_verification(result, style=style)
         total = len(refs)
 
         if not total:
@@ -3913,6 +4167,7 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
                 style=style,
                 enrich_metadata=enrich_metadata
             )
+            chunk_rows = _add_worker_style_metadata_to_rows(chunk_rows, style)
 
             all_rows.extend(chunk_rows or [])
 
@@ -4062,7 +4317,7 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             "completed_at": now_iso()
         }
 
-        deep_job_id = None
+        deep_job_id = _enqueue_deep_enrichment(job_id, style=style, scope="weak_only")
         result = _set_enrichment_meta(
             result,
             state="queued" if deep_job_id else "not_queued",
