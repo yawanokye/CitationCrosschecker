@@ -4161,3 +4161,682 @@ try:
                 __all__.append(name)
 except Exception:
     pass
+
+
+# ============================================================
+# STYLE-AWARE VERIFICATION PATCH FOR CITEINTEGRITY
+# Build: 2026-05-19-style-aware-all-citation-families
+# Purpose:
+# - Preserve selected citation family in verification rows.
+# - Support condensed UI styles: author-year, numeric-square,
+#   numeric-superscript, numeric-round, auto.
+# - Improve reference-field extraction for numeric/Vancouver/NLM/JAMA/RSC/ACS
+#   references before Crossref/OpenAlex lookup.
+# ============================================================
+
+__version__ = "1.5.18"
+VERIFY_BUILD = "commercial-2026-05-19-style-aware-verify-for-author-year-and-numeric-FINAL"
+
+# Keep a handle to the commercial row builder already defined above.
+try:
+    _STYLE_AWARE_ORIGINAL_BASE_COMMERCIAL_ROW = _base_commercial_row
+except Exception:
+    _STYLE_AWARE_ORIGINAL_BASE_COMMERCIAL_ROW = None
+
+try:
+    _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS = _extract_common_fields
+except Exception:
+    _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS = None
+
+# Full style mapping aligned with the condensed frontend and the engine.
+_STYLE_ALIASES.update({
+    "": "apa",
+    "auto": "apa",
+    "author_year": "apa",
+    "author-year": "apa",
+    "apa_harvard_chicago": "apa",
+    "apa_harvard_chicago_author_date": "apa",
+    "chicago": "apa",
+    "chicago_author_date": "apa",
+    "harvard_author_date": "apa",
+
+    "ieee": "numeric_square",
+    "ieee_square": "numeric_square",
+    "ieee_square_bracket": "numeric_square",
+    "vancouver": "numeric_square",
+    "vancouver_square": "numeric_square",
+    "vancouver_square_bracket": "numeric_square",
+    "nlm": "numeric_square",
+    "nlm_square": "numeric_square",
+    "nlm_square_bracket": "numeric_square",
+    "elsevier": "numeric_square",
+    "elsevier_numbered": "numeric_square",
+    "elsevier_square": "numeric_square",
+    "springer": "numeric_square",
+    "springer_numbered": "numeric_square",
+    "springer_square": "numeric_square",
+    "square_numeric": "numeric_square",
+    "numeric_square": "numeric_square",
+
+    "ama": "numeric_superscript",
+    "ama_superscript": "numeric_superscript",
+    "nature": "numeric_superscript",
+    "nature_superscript": "numeric_superscript",
+    "rsc": "numeric_superscript",
+    "rsc_superscript": "numeric_superscript",
+    "acs": "numeric_superscript",
+    "acs_superscript": "numeric_superscript",
+    "elsevier_superscript": "numeric_superscript",
+    "superscript_numeric": "numeric_superscript",
+    "numeric_superscript": "numeric_superscript",
+
+    "vancouver_round": "numeric_round",
+    "acs_round": "numeric_round",
+    "round_numeric": "numeric_round",
+    "numeric_round": "numeric_round",
+})
+
+_STYLE_INFO = {
+    "apa": {
+        "family": "author_year",
+        "label": "Author-year, APA / Harvard / Chicago",
+        "sample": "(Adam, 2020), (Adam 2020), Adam (2020)",
+    },
+    "numeric_square": {
+        "family": "numeric_square",
+        "label": "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+        "sample": "[1], [1,2], [3-5]",
+    },
+    "numeric_superscript": {
+        "family": "numeric_superscript",
+        "label": "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+        "sample": "text¹, text¹,², text¹-³",
+    },
+    "numeric_round": {
+        "family": "numeric_round",
+        "label": "Numeric round bracket, Vancouver / ACS",
+        "sample": "(1), (1,2), (3-5)",
+    },
+}
+
+_NUMERIC_VERIFY_STYLES = {"numeric_square", "numeric_superscript", "numeric_round"}
+
+
+def _canonical_verify_style(style: str) -> str:
+    s = _safe_strip(style).lower()
+    s = s.replace("&", " and ")
+    s = re.sub(r"[\s\-/]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return _STYLE_ALIASES.get(s, s if s in _STYLE_INFO else "apa")
+
+
+def _style_metadata(style: str) -> Dict[str, str]:
+    canonical = _canonical_verify_style(style)
+    info = dict(_STYLE_INFO.get(canonical, _STYLE_INFO["apa"]))
+    info["style"] = canonical
+    return info
+
+
+def _strip_leading_numbering(text: str) -> str:
+    """Strip reference-list numbering, including RSC bare numbers like '1 J. Monod'."""
+    t = _safe_strip(text)
+    if not t:
+        return ""
+    t = re.sub(r"^\s*\[\s*\d{1,4}\s*\]\s*", "", t)
+    t = re.sub(r"^\s*\(\s*\d{1,4}\s*\)\s*", "", t)
+    t = re.sub(r"^\s*\d{1,4}[\.)]\s*", "", t)
+    # Bare numeric styles, especially RSC/ChemComm: '1 J. Monod, ...'
+    t = re.sub(r"^\s*\d{1,4}\s+(?=(?:[A-Z][\w'’\-]+|[A-Z]\.|[A-Z]{2,}\b))", "", t)
+    return t.strip()
+
+
+def _normalise_reference_for_verify(ref: str) -> str:
+    s = _safe_strip(ref)
+    s = s.replace("\u00a0", " ")
+    s = s.replace("–", "-").replace("—", "-")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _looks_like_rsc_author_segment(seg: str) -> bool:
+    seg = _safe_strip(seg)
+    return bool(re.search(r"\b[A-Z]\.?\s*[A-Z][A-Za-z'’\-]+\b", seg))
+
+
+def _looks_like_vancouver_author_segment(seg: str) -> bool:
+    seg = _safe_strip(seg)
+    if not seg:
+        return False
+    if len(seg) > 240:
+        return False
+    if re.search(r"\bet\s+al\b", seg, re.I):
+        return True
+    # Surname Initials, Surname Initials
+    return len(re.findall(r"\b[A-Z][A-Za-z'’\-]{1,}\s+[A-Z]{1,4}\b", seg)) >= 1
+
+
+def _surname_from_numeric_author_piece(piece: str) -> str:
+    p = _safe_strip(piece)
+    p = re.sub(r"\bet\s+al\.?", "", p, flags=re.I).strip(" ,.;")
+    if not p:
+        return ""
+    # RSC/ACS: J. Monod, R. Yoshida, K. Okeyoshi
+    m = re.search(r"(?:\b[A-Z]\.\s*)+([A-Z][A-Za-z'’\-]+)\b", p)
+    if m:
+        return re.sub(r"[^A-Za-z'\-]", "", m.group(1)).lower()
+    # Vancouver/NLM/JAMA: Pronovost P, Needham D
+    toks = [x for x in re.split(r"\s+", p) if x]
+    if toks:
+        cand = toks[0]
+        cand = re.sub(r"[^A-Za-z'\-]", "", cand).lower()
+        if len(cand) >= 2:
+            return cand
+    return ""
+
+
+def _extract_numeric_authors(author_part: str) -> List[str]:
+    author_part = _safe_strip(author_part)
+    if not author_part:
+        return []
+    author_part = re.sub(r"\bet\s+al\.?", "", author_part, flags=re.I)
+    parts = []
+    for chunk in re.split(r",|\band\b|&", author_part, flags=re.I):
+        chunk = chunk.strip(" ,.;")
+        if chunk:
+            parts.append(chunk)
+    out = []
+    for part in parts:
+        key = _surname_from_numeric_author_piece(part)
+        if key and len(key) >= 2 and key not in {"and", "the", "department", "university"}:
+            out.append(key)
+    return _dedupe_preserve(out)[:6]
+
+
+def _extract_numeric_volume_issue_pages(ref: str) -> Dict[str, str]:
+    out = {"volume": "", "issue": "", "pages": ""}
+    r = _normalise_reference_for_verify(ref)
+
+    # Vancouver/JAMA/NLM: 2006;355(26):2725-2732 or 2024;79(11):gbae153
+    m = re.search(r"\b(?:19|20)\d{2}[a-z]?\s*;\s*([A-Za-z]?\d+[A-Za-z]?)\s*(?:\(([^)]+)\))?\s*:\s*([A-Za-z]?\d+[A-Za-z]?\s*-\s*[A-Za-z]?\d+[A-Za-z]?|[A-Za-z]?\d+[A-Za-z]?|[A-Za-z]?\d+[A-Za-z]?\.?[A-Za-z]*\d*)", r, flags=re.I)
+    if m:
+        out["volume"] = m.group(1) or ""
+        out["issue"] = m.group(2) or ""
+        out["pages"] = re.sub(r"\s+", "", m.group(3) or "").strip(".")
+        return out
+
+    # RSC/ACS: Journal, 1978, 40, 820-823.
+    m = re.search(r"\b(?:19|20)\d{2}[a-z]?\s*,\s*([A-Za-z]?\d+[A-Za-z]?)\s*,\s*([A-Za-z]?\d+[A-Za-z]?\s*-\s*[A-Za-z]?\d+[A-Za-z]?|[A-Za-z]?\d+[A-Za-z]?)", r, flags=re.I)
+    if m:
+        out["volume"] = m.group(1) or ""
+        out["pages"] = re.sub(r"\s+", "", m.group(2) or "").strip(".")
+        return out
+
+    # Existing generic extraction fallback.
+    try:
+        base = _extract_volume_issue_pages(r)
+        out.update({k: base.get(k, "") for k in out})
+    except Exception:
+        pass
+    return out
+
+
+def _extract_numeric_reference_fields(ref: str, style: str = "numeric_square") -> Dict[str, Any]:
+    raw = _normalise_reference_for_verify(ref)
+    clean = _strip_leading_numbering(raw)
+    doi = _normalise_doi(_extract_doi(clean))
+    year = _extract_year(clean)
+    vip = _extract_numeric_volume_issue_pages(clean)
+
+    author_part = ""
+    title = ""
+    journal = ""
+
+    # Vancouver/NLM/JAMA: Authors. Title. Journal. Year;volume(issue):pages.
+    dot_parts = [p.strip() for p in re.split(r"\.\s+", clean) if p.strip()]
+    if len(dot_parts) >= 2 and _looks_like_vancouver_author_segment(dot_parts[0]):
+        author_part = dot_parts[0]
+        title = dot_parts[1]
+        if len(dot_parts) >= 3:
+            journal = dot_parts[2]
+            journal = re.split(r"\b(?:19|20)\d{2}\b", journal, maxsplit=1)[0].strip(" ,.;") or journal.strip(" ,.;")
+    else:
+        # RSC/ACS: J. Monod, Title or Journal, Year, volume, pages.
+        comma_parts = [p.strip() for p in clean.split(",") if p.strip()]
+        if len(comma_parts) >= 2 and _looks_like_rsc_author_segment(comma_parts[0]):
+            author_part = comma_parts[0]
+            first_after_author = comma_parts[1].strip()
+            # If the first post-author segment looks like a journal abbreviation and is followed by a year,
+            # then there is no article title in the reference.
+            if re.search(r"\b(?:19|20)\d{2}\b", clean) and re.search(r"\b(?:J|Chem|Phys|Rev|Lett|Mater|Commun|Nature|Science|Langmuir|Macromolecules|Angew|Adv|Soft|Soc|Chemistry|Biol|Med)\b", first_after_author):
+                journal = first_after_author
+                title = ""
+            else:
+                title = first_after_author
+                if len(comma_parts) >= 3 and not re.search(r"\b(?:19|20)\d{2}\b", comma_parts[2]):
+                    journal = comma_parts[2].strip(" ,.;")
+        else:
+            # Last fallback: use the original common parser but with improved number stripping.
+            fields = _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS(clean) if _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS else {}
+            fields = dict(fields or {})
+            fields.setdefault("authors", [])
+            fields.setdefault("year", year)
+            fields.setdefault("doi", doi)
+            fields.setdefault("title", "")
+            fields.setdefault("journal", fields.get("container_title", ""))
+            fields.update({k: fields.get(k) or v for k, v in vip.items()})
+            fields["style_family"] = _style_metadata(style)["family"]
+            fields["style_label"] = _style_metadata(style)["label"]
+            return fields
+
+    authors = _extract_numeric_authors(author_part)
+
+    # Remove common non-title tail noise.
+    title = _clean_query_text(title)
+    journal = _clean_query_text(journal)
+    if title and _YEAR_RE.search(title):
+        title = re.split(r"\b(?:19|20)\d{2}\b", title, maxsplit=1)[0].strip(" ,.;")
+    if journal and _YEAR_RE.search(journal):
+        journal = re.split(r"\b(?:19|20)\d{2}\b", journal, maxsplit=1)[0].strip(" ,.;")
+
+    # If title is missing in compact chemistry references, build verification from author+journal+year+volume+pages.
+    title_key_source = title or " ".join([journal, vip.get("volume", ""), vip.get("pages", "")]).strip()
+
+    info = _style_metadata(style)
+    return {
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "title": title_key_source,
+        "journal": journal,
+        "container_title": journal,
+        "source": journal,
+        "volume": vip.get("volume", ""),
+        "issue": vip.get("issue", ""),
+        "pages": vip.get("pages", ""),
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+        "reference_numbered": True,
+    }
+
+
+def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    if canonical in _NUMERIC_VERIFY_STYLES:
+        return _extract_numeric_reference_fields(ref, canonical)
+    fields = _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS(ref) if _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS else {}
+    fields = dict(fields or {})
+    info = _style_metadata(canonical)
+    fields.update({
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+    })
+    return fields
+
+
+def _build_numeric_reference_from_metadata(metadata: Dict[str, Any], number: str = "") -> str:
+    if not metadata:
+        return ""
+    authors_meta = metadata.get("authors", []) or []
+    author_bits = []
+    for a in authors_meta[:6]:
+        fam = _safe_strip(a.get("family", ""))
+        given = _safe_strip(a.get("given", ""))
+        initials = "".join([x[0].upper() for x in re.findall(r"[A-Za-z]+", given)])
+        if fam:
+            author_bits.append(f"{fam} {initials}".strip())
+    if len(authors_meta) > 6:
+        author_bits.append("et al")
+    authors = ", ".join(author_bits)
+    title = _safe_strip(metadata.get("title", ""))
+    journal = _safe_strip(metadata.get("container_title", ""))
+    year = _safe_strip(metadata.get("year", ""))
+    volume = _safe_strip(metadata.get("volume", ""))
+    issue = _safe_strip(metadata.get("issue", ""))
+    page = _safe_strip(metadata.get("page", "")) or _safe_strip(metadata.get("article_number", ""))
+    doi = _normalise_doi(metadata.get("doi", ""))
+    lead = f"{number}. " if number else ""
+    parts = [lead + authors if authors else lead.strip(), title, journal]
+    tail = ""
+    if year:
+        tail += year
+    if volume:
+        tail += f";{volume}"
+        if issue:
+            tail += f"({issue})"
+    if page:
+        tail += f":{page}"
+    if tail:
+        parts.append(tail)
+    if doi:
+        parts.append(f"doi:{doi}")
+    return ". ".join([p.strip(" .") for p in parts if p and p.strip(" .")]) + "."
+
+
+try:
+    _STYLE_AWARE_ORIGINAL_ENRICH = enrich_with_full_metadata
+except Exception:
+    _STYLE_AWARE_ORIGINAL_ENRICH = None
+
+
+def enrich_with_full_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Add style-aware formatted reference suggestions after Crossref enrichment."""
+    if _STYLE_AWARE_ORIGINAL_ENRICH:
+        result = _STYLE_AWARE_ORIGINAL_ENRICH(result)
+    if not result:
+        return result
+    canonical = _canonical_verify_style(result.get("style", "apa"))
+    info = _style_metadata(canonical)
+    result["style"] = canonical
+    result["style_family"] = info["family"]
+    result["style_label"] = info["label"]
+    result["style_sample"] = info["sample"]
+    meta = result.get("full_metadata") or {}
+    if meta:
+        numeric_ref = _build_numeric_reference_from_metadata(meta)
+        if numeric_ref:
+            result["numeric_reference"] = numeric_ref
+        if canonical in _NUMERIC_VERIFY_STYLES:
+            result["style_formatted_reference"] = numeric_ref
+        elif canonical == "apa":
+            result["style_formatted_reference"] = result.get("apa7_reference") or result.get("harvard_reference") or numeric_ref
+    return result
+
+
+def _verification_style_suggestion(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    status = _normalize_verify_status(row.get("status", ""))
+    canonical = _canonical_verify_style(row.get("style", "apa"))
+    info = _style_metadata(canonical)
+    if status == "verified":
+        return []
+    issue = "reference_needs_review" if status in {"likely", "needs_review"} else "reference_not_found_online"
+    reason = row.get("confidence_reason") or row.get("match_note") or row.get("error") or "Online metadata evidence is incomplete."
+    action = "Review the reference against the matched metadata before accepting it."
+    if status == "not_found":
+        action = "Check DOI, title, journal, year, volume and pages. If the work is valid but not indexed, mark it as manually verified."
+    if canonical in _NUMERIC_VERIFY_STYLES:
+        action += " Keep the reference number unchanged unless you are correcting the full citation sequence."
+    return [{
+        "issue_type": issue,
+        "style": canonical,
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+        "reference": row.get("reference", ""),
+        "status": status,
+        "reason": reason,
+        "suggested_action": action,
+        "fix_type": "review_required",
+        "source": "online_verification",
+    }]
+
+
+def _base_commercial_row(ref: str, style: str, fields: Dict[str, Any], query_used: str = "", query_strategy: str = "") -> Dict[str, Any]:
+    if _STYLE_AWARE_ORIGINAL_BASE_COMMERCIAL_ROW:
+        row = _STYLE_AWARE_ORIGINAL_BASE_COMMERCIAL_ROW(ref, style, fields, query_used, query_strategy)
+    else:
+        row = {"reference": ref, "style": style, "status": "offline", "query_used": query_used, "query_strategy": query_strategy}
+    canonical = _canonical_verify_style(style)
+    info = _style_metadata(canonical)
+    row.update({
+        "style": canonical,
+        "selected_style": canonical,
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+        "reference_title": fields.get("title", row.get("reference_title", "")),
+        "reference_year": fields.get("year", row.get("reference_year", "")),
+        "reference_doi": fields.get("doi", row.get("reference_doi", "")),
+        "reference_journal": fields.get("journal", row.get("reference_journal", "")),
+        "reference_volume": fields.get("volume", row.get("reference_volume", "")),
+        "reference_issue": fields.get("issue", row.get("reference_issue", "")),
+        "reference_pages": fields.get("pages", row.get("reference_pages", "")),
+    })
+    return row
+
+
+try:
+    _STYLE_AWARE_ORIGINAL_VERIFY_SINGLE_REFERENCE = _verify_single_reference
+except Exception:
+    _STYLE_AWARE_ORIGINAL_VERIFY_SINGLE_REFERENCE = None
+
+
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    if _STYLE_AWARE_ORIGINAL_VERIFY_SINGLE_REFERENCE:
+        row = _STYLE_AWARE_ORIGINAL_VERIFY_SINGLE_REFERENCE(ref, canonical, use_crossref, use_openalex, enrich_metadata)
+    else:
+        row = {"reference": ref, "style": canonical, "status": "not_found"}
+    info = _style_metadata(canonical)
+    row.update({
+        "style": canonical,
+        "selected_style": canonical,
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+    })
+    if not row.get("correction_suggestions"):
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+    return row
+
+
+try:
+    _STYLE_AWARE_ORIGINAL_VERIFY_BATCH = verify_references_batch
+except Exception:
+    _STYLE_AWARE_ORIGINAL_VERIFY_BATCH = None
+
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    canonical = _canonical_verify_style(style)
+    rows = _STYLE_AWARE_ORIGINAL_VERIFY_BATCH(
+        references,
+        canonical,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=use_openalex,
+        job_id=job_id,
+        enrich_metadata=enrich_metadata,
+    ) if _STYLE_AWARE_ORIGINAL_VERIFY_BATCH else []
+    info = _style_metadata(canonical)
+    for row in rows or []:
+        row.update({
+            "style": canonical,
+            "selected_style": canonical,
+            "style_family": info["family"],
+            "style_label": info["label"],
+            "style_sample": info["sample"],
+        })
+        if not row.get("correction_suggestions"):
+            row["correction_suggestions"] = _verification_style_suggestion(row)
+    return rows
+
+
+# Keep public exports aligned after the overrides.
+try:
+    if "__all__" in globals():
+        for name in [
+            "VERIFY_BUILD",
+            "_canonical_verify_style",
+            "_style_metadata",
+            "_extract_numeric_reference_fields",
+            "_build_numeric_reference_from_metadata",
+        ]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
+
+
+# ============================================================
+# RSC/ACS COMPACT NUMERIC REFERENCE EXTRACTION PATCH
+# Build: 2026-05-19-rsc-acs-author-list-reference-extraction
+# Handles references such as:
+# 24 H. Yu, M. Eres, ... A. Alexander-Katz and T. Xu, Nature, 2026, 649, 83-90.
+# ============================================================
+
+__version__ = "1.5.19"
+VERIFY_BUILD = "commercial-2026-05-19-style-aware-verify-rsc-acs-author-list-FINAL"
+
+
+def _looks_like_rsc_author_piece(piece: str) -> bool:
+    p = _safe_strip(piece)
+    if not p:
+        return False
+    p = re.sub(r"\bet\s+al\.?", "", p, flags=re.I).strip(" ,.;")
+    # Handles 'H. Yu', 'S. L. Hilburg', and 'A. Alexander-Katz and T. Xu'.
+    patterns = re.findall(r"(?:\b[A-Z]\.\s*){1,4}[A-Z][A-Za-z'’\-]+", p)
+    if " and " in p.lower():
+        return len(patterns) >= 1
+    return bool(patterns) and len(p) <= 120
+
+
+def _looks_like_numeric_journal_segment(seg: str) -> bool:
+    s = _safe_strip(seg)
+    if not s:
+        return False
+    compact = re.sub(r"[^A-Za-z]", "", s)
+    if compact in {"Nature", "Science", "Cell", "JAMA", "Lancet"}:
+        return True
+    journal_words = {
+        "j", "journal", "chem", "chemical", "commun", "communication", "communications",
+        "phys", "physical", "rev", "lett", "letters", "mater", "materials", "adv", "advanced",
+        "angew", "macromolecules", "langmuir", "soft", "matter", "soc", "society", "biol",
+        "biological", "med", "medical", "medicine", "proc", "proceedings", "natl", "acad",
+        "sci", "science", "usa", "int", "ed", "polym", "polymer", "nanoscale",
+    }
+    toks = [t.lower().strip(".") for t in re.findall(r"[A-Za-z]+\.??", s)]
+    if not toks:
+        return False
+    hit = sum(1 for t in toks if t in journal_words)
+    return hit >= 1 and len(s) <= 80
+
+
+def _split_rsc_numeric_reference(clean: str) -> Tuple[str, str, str]:
+    """Return author_part, title, journal for compact RSC/ACS references."""
+    comma_parts = [p.strip() for p in clean.split(",") if p.strip()]
+    if len(comma_parts) < 2 or not _looks_like_rsc_author_piece(comma_parts[0]):
+        return "", "", ""
+
+    author_parts = []
+    idx = 0
+    while idx < len(comma_parts) and _looks_like_rsc_author_piece(comma_parts[idx]):
+        author_parts.append(comma_parts[idx])
+        idx += 1
+
+    author_part = ", ".join(author_parts)
+    if idx >= len(comma_parts):
+        return author_part, "", ""
+
+    first_non_author = comma_parts[idx].strip()
+    next_part = comma_parts[idx + 1].strip() if idx + 1 < len(comma_parts) else ""
+
+    # No-title chemistry format: Authors, Journal, Year, Volume, Pages.
+    if _looks_like_numeric_journal_segment(first_non_author) and (re.search(r"\b(?:19|20)\d{2}\b", next_part) or re.search(r"\b(?:19|20)\d{2}\b", clean)):
+        return author_part, "", first_non_author
+
+    # Book/report format or title-bearing format: Authors, Title, Publisher/Journal, Year.
+    title = first_non_author
+    journal = ""
+    if idx + 1 < len(comma_parts) and not re.search(r"\b(?:19|20)\d{2}\b", comma_parts[idx + 1]):
+        journal = comma_parts[idx + 1].strip()
+    return author_part, title, journal
+
+
+def _extract_numeric_reference_fields(ref: str, style: str = "numeric_square") -> Dict[str, Any]:
+    raw = _normalise_reference_for_verify(ref)
+    clean = _strip_leading_numbering(raw)
+    doi = _normalise_doi(_extract_doi(clean))
+    year = _extract_year(clean)
+    vip = _extract_numeric_volume_issue_pages(clean)
+
+    author_part = ""
+    title = ""
+    journal = ""
+
+    # Vancouver/NLM/JAMA: Authors. Title. Journal. Year;volume(issue):pages.
+    dot_parts = [p.strip() for p in re.split(r"\.\s+", clean) if p.strip()]
+    if len(dot_parts) >= 2 and _looks_like_vancouver_author_segment(dot_parts[0]):
+        author_part = dot_parts[0]
+        title = dot_parts[1]
+        if len(dot_parts) >= 3:
+            journal = dot_parts[2]
+            journal = re.split(r"\b(?:19|20)\d{2}\b", journal, maxsplit=1)[0].strip(" ,.;") or journal.strip(" ,.;")
+    else:
+        author_part, title, journal = _split_rsc_numeric_reference(clean)
+        if not author_part:
+            fields = _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS(clean) if _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS else {}
+            fields = dict(fields or {})
+            fields.setdefault("authors", [])
+            fields.setdefault("year", year)
+            fields.setdefault("doi", doi)
+            fields.setdefault("title", "")
+            fields.setdefault("journal", fields.get("container_title", ""))
+            fields.update({k: fields.get(k) or v for k, v in vip.items()})
+            fields["style_family"] = _style_metadata(style)["family"]
+            fields["style_label"] = _style_metadata(style)["label"]
+            return fields
+
+    authors = _extract_numeric_authors(author_part)
+    title = _clean_query_text(title)
+    journal = _clean_query_text(journal)
+    if title and _YEAR_RE.search(title):
+        title = re.split(r"\b(?:19|20)\d{2}\b", title, maxsplit=1)[0].strip(" ,.;")
+    if journal and _YEAR_RE.search(journal):
+        journal = re.split(r"\b(?:19|20)\d{2}\b", journal, maxsplit=1)[0].strip(" ,.;")
+
+    title_key_source = title or " ".join([journal, vip.get("volume", ""), vip.get("pages", "")]).strip()
+    info = _style_metadata(style)
+    return {
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "title": title_key_source,
+        "journal": journal,
+        "container_title": journal,
+        "source": journal,
+        "volume": vip.get("volume", ""),
+        "issue": vip.get("issue", ""),
+        "pages": vip.get("pages", ""),
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+        "reference_numbered": True,
+    }
+
+
+# ============================================================
+# RSC SINGLE-LETTER AUTHOR TOKEN TOLERANCE PATCH
+# Build: 2026-05-19-rsc-single-letter-token-tolerance
+# Some PDF-extracted chemistry references contain shortened author tokens
+# such as 'Y. Z,'. Treat these as part of the author list so the next real
+# journal segment, e.g. Nature, is not misread as the title.
+# ============================================================
+
+__version__ = "1.5.20"
+VERIFY_BUILD = "commercial-2026-05-19-style-aware-verify-rsc-acs-single-letter-author-token-FINAL"
+
+
+def _looks_like_rsc_author_piece(piece: str) -> bool:
+    p = _safe_strip(piece)
+    if not p:
+        return False
+    p = re.sub(r"\bet\s+al\.?", "", p, flags=re.I).strip(" ,.;")
+    patterns = re.findall(r"(?:\b[A-Z]\.\s*){1,4}[A-Z][A-Za-z'’\-]*", p)
+    if " and " in p.lower():
+        return len(patterns) >= 1
+    return bool(patterns) and len(p) <= 120
