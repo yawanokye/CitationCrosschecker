@@ -6605,3 +6605,160 @@ try:
                 __all__.append(name)
 except Exception:
     pass
+
+# ============================================================
+# PRIVACY / NO-CACHE OVERRIDES
+# Added for CiteIntegrity privacy policy: do not cache verification data.
+# These definitions intentionally appear at the end of the module so they
+# override earlier cache functions while preserving the public API.
+# ============================================================
+
+__version__ = "1.5.27"
+VERIFY_BUILD = "commercial-2026-05-19-no-cache-privacy-verification-FINAL"
+
+# Default OFF. Set VERIFY_USE_CACHE=1 only if you later decide to re-enable
+# reference-level verification caching.
+VERIFY_USE_CACHE = _env_flag("VERIFY_USE_CACHE", "0")
+
+# Default OFF. The worker/DB flow should carry results. Keeping online
+# verification results in this module's process memory is disabled by default.
+VERIFY_STORE_RESULTS_IN_MEMORY = _env_flag("VERIFY_STORE_RESULTS_IN_MEMORY", "0")
+
+# Optional short TTL for installations that deliberately enable temporary
+# in-memory result handoff. It is not used while VERIFY_STORE_RESULTS_IN_MEMORY=0.
+VERIFY_MEMORY_RESULT_TTL_SECONDS = int(os.getenv("VERIFY_MEMORY_RESULT_TTL_SECONDS", "900"))
+
+# Remove any rows that may have been cached by earlier code during the process lifetime.
+try:
+    _CACHE.clear()
+except Exception:
+    pass
+
+try:
+    _verification_results.clear()
+except Exception:
+    pass
+
+_verification_results_created_at: Dict[str, float] = {}
+
+
+def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+    """No-op reference cache getter unless VERIFY_USE_CACHE=1."""
+    if not VERIFY_USE_CACHE:
+        return None
+    try:
+        with _CACHE_LOCK:
+            v = _CACHE.get(key)
+            return dict(v) if v else None
+    except Exception:
+        return None
+
+
+def _cache_set(key: str, value: Dict[str, Any]) -> None:
+    """No-op reference cache setter unless VERIFY_USE_CACHE=1."""
+    if not VERIFY_USE_CACHE:
+        return
+    try:
+        with _CACHE_LOCK:
+            _CACHE[key] = dict(value)
+    except Exception:
+        return
+
+
+def _purge_expired_verification_results() -> None:
+    """Purge temporary in-memory verification result handoff rows."""
+    if not VERIFY_STORE_RESULTS_IN_MEMORY:
+        try:
+            _verification_results.clear()
+            _verification_results_created_at.clear()
+        except Exception:
+            pass
+        return
+
+    now = time.time()
+    ttl = max(1, int(VERIFY_MEMORY_RESULT_TTL_SECONDS or 900))
+    try:
+        expired = [
+            jid for jid, created in list(_verification_results_created_at.items())
+            if now - float(created or 0) > ttl
+        ]
+        for jid in expired:
+            _verification_results.pop(jid, None)
+            _verification_results_created_at.pop(jid, None)
+    except Exception:
+        pass
+
+
+def store_verification_results(job_id: str, results: List[Dict[str, Any]]):
+    """
+    Store completed verification results only when explicitly enabled.
+
+    Default behaviour is privacy-first: no in-memory result cache is retained
+    in verify.py. The RQ worker/database flow should deliver final results.
+    """
+    if not VERIFY_STORE_RESULTS_IN_MEMORY:
+        return
+
+    _purge_expired_verification_results()
+    try:
+        with _verification_results_lock:
+            _verification_results[job_id] = list(results or [])
+            _verification_results_created_at[job_id] = time.time()
+            print(f"[DEBUG] Temporarily stored {len(results or [])} verification rows for job {job_id}")
+    except Exception:
+        pass
+
+
+def get_verification_results(job_id: str) -> Optional[List[Dict[str, Any]]]:
+    """Return temporary in-memory results only when explicitly enabled."""
+    if not VERIFY_STORE_RESULTS_IN_MEMORY:
+        return None
+
+    _purge_expired_verification_results()
+    try:
+        with _verification_results_lock:
+            rows = _verification_results.get(job_id)
+            return list(rows) if rows is not None else None
+    except Exception:
+        return None
+
+
+def clear_verification_results(job_id: str):
+    """Delete temporary in-memory results for one job."""
+    try:
+        with _verification_results_lock:
+            _verification_results.pop(job_id, None)
+            _verification_results_created_at.pop(job_id, None)
+    except Exception:
+        pass
+
+
+def clear_all_verification_memory():
+    """Admin helper: remove all in-process verification rows and reference cache."""
+    try:
+        with _CACHE_LOCK:
+            _CACHE.clear()
+    except Exception:
+        pass
+    try:
+        with _verification_results_lock:
+            _verification_results.clear()
+            _verification_results_created_at.clear()
+    except Exception:
+        pass
+    return {"cleared": True, "verify_use_cache": bool(VERIFY_USE_CACHE), "store_results_in_memory": bool(VERIFY_STORE_RESULTS_IN_MEMORY)}
+
+
+try:
+    if "__all__" in globals():
+        for name in [
+            "VERIFY_USE_CACHE",
+            "VERIFY_STORE_RESULTS_IN_MEMORY",
+            "VERIFY_MEMORY_RESULT_TTL_SECONDS",
+            "clear_all_verification_memory",
+        ]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
+
