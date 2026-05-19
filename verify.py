@@ -5496,3 +5496,732 @@ try:
                 __all__.append(name)
 except Exception:
     pass
+
+
+# ============================================================
+# QUERY-FIRST NUMERIC VERIFICATION PATCH FOR CITEINTEGRITY
+# Build: 2026-05-19-numeric-query-builder-rewrite
+# Purpose:
+# - Replace broad APA-style query behaviour for numeric references.
+# - Build numeric queries from DOI, full article title, journal, year,
+#   volume and page instead of weak generic word bags.
+# - Avoid displaying unrelated Crossref/OpenAlex candidates for not_found rows.
+# ============================================================
+
+__version__ = "1.5.23"
+VERIFY_BUILD = "commercial-2026-05-19-numeric-query-builder-rewrite-FINAL"
+
+_V1523_NUMERIC_STYLES = {"numeric_square", "numeric_superscript", "numeric_round"}
+
+try:
+    _V1523_AUTHOR_YEAR_VERIFY_SINGLE = _verify_single_reference
+except Exception:
+    _V1523_AUTHOR_YEAR_VERIFY_SINGLE = None
+
+_COMMON_DOI_TRAILING_PATHS = (
+    "/full", "/fulltext", "/full-text", "/abstract", "/pdf", "/epdf",
+    "/article", "/full.pdf", "/pdfdownload", "/download", "/supplementary",
+)
+
+
+def _v1523_style_family(style: str) -> str:
+    try:
+        return _style_metadata(_canonical_verify_style(style)).get("family", "author_year")
+    except Exception:
+        return "author_year"
+
+
+def _v1523_is_numeric(style: str) -> bool:
+    return _v1523_style_family(style) in _V1523_NUMERIC_STYLES
+
+
+def _v1523_normalise_numeric_doi(value: str) -> str:
+    """Normalise DOI and remove PDF/article landing-page suffixes such as /full."""
+    doi = _safe_strip(value or "")
+    if not doi:
+        return ""
+    doi = doi.replace("%2F", "/")
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi, flags=re.I)
+    doi = re.sub(r"^doi\s*:\s*", "", doi, flags=re.I)
+    doi = doi.strip().strip(".,;:)]}>").lower()
+    doi = re.split(r"[?#]", doi, maxsplit=1)[0]
+    # Remove obvious landing-page suffixes introduced by PDF extraction.
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _COMMON_DOI_TRAILING_PATHS:
+            if doi.endswith(suffix):
+                doi = doi[: -len(suffix)]
+                changed = True
+                break
+    return doi.strip().strip(".,;:)]}")
+
+
+def _v1523_extract_doi(ref: str) -> str:
+    text = _safe_strip(ref or "")
+    if not text:
+        return ""
+    # Prefer DOI URLs and doi: labels.
+    patterns = [
+        r"https?://(?:dx\.)?doi\.org/(10\.\d{4,9}/[^\s\]\),;]+)",
+        r"\bdoi\s*:?\s*(10\.\d{4,9}/[^\s\]\),;]+)",
+        r"\b(10\.\d{4,9}/[^\s\]\),;]+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I)
+        if m:
+            return _v1523_normalise_numeric_doi(m.group(1))
+    return ""
+
+
+def _v1523_strip_reference_noise(ref: str) -> str:
+    s = _safe_strip(ref or "")
+    s = re.sub(r"\[\s*cited\s+[^\]]+\]", " ", s, flags=re.I)
+    s = re.sub(r"\bAvailable\s+from\s*:\s*https?://\S+", " ", s, flags=re.I)
+    s = re.sub(r"\bRetrieved\s+from\s+https?://\S+", " ", s, flags=re.I)
+    s = re.sub(r"https?://\S+", " ", s, flags=re.I)
+    s = re.sub(r"\bdoi\s*:?\s*10\.\S+", " ", s, flags=re.I)
+    s = re.sub(r"\b10\.\d{4,9}/\S+", " ", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _v1523_publication_year(ref: str) -> str:
+    """Prefer publication year, not title years, access dates, or page range years."""
+    s = _strip_leading_numbering(_v1523_strip_reference_noise(ref))
+
+    # Journal. 2024 Sep 1;75 or Journal. 2022;9(2):137-150
+    matches = list(re.finditer(r"\.\s*((?:19|20)\d{2})(?:\s+[A-Za-z]{3,9}\s+\d{1,2})?\s*;", s))
+    if matches:
+        return matches[-1].group(1)
+
+    # Publisher; 2021. or FAO; 2021.
+    matches = list(re.finditer(r";\s*((?:19|20)\d{2})\s*(?:\.|$)", s))
+    if matches:
+        return matches[-1].group(1)
+
+    # RSC/ACS: Journal, 2026, 649, 83-90.
+    matches = list(re.finditer(r",\s*((?:19|20)\d{2})\s*,\s*[A-Za-z]?\d+", s))
+    if matches:
+        return matches[-1].group(1)
+
+    # Date before semicolon: 2024 Nov 1;79(11)
+    matches = list(re.finditer(r"\b((?:19|20)\d{2})\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\s*;", s, flags=re.I))
+    if matches:
+        return matches[-1].group(1)
+
+    # Last fallback, but avoid isolated page-range end years by rejecting 2031+ unless no other year.
+    years = re.findall(r"\b((?:19|20)\d{2})[a-z]?\b", s)
+    if not years:
+        return ""
+    plausible = [y for y in years if int(y) <= 2030]
+    return (plausible[-1] if plausible else years[-1])
+
+
+def _v1523_protect_abbreviations(text: str) -> str:
+    repl = {
+        "U.S.": "US", "U.K.": "UK", "U.N.": "UN", "D.C.": "DC",
+        "U.S.A.": "USA", "vs.": "vs", "e.g.": "eg", "i.e.": "ie",
+    }
+    for a, b in repl.items():
+        text = text.replace(a, b)
+    return text
+
+
+def _v1523_split_sentences_like_reference(clean: str) -> List[str]:
+    clean = _v1523_protect_abbreviations(clean)
+    # Do not split after initials followed by comma. Split after full stops before a new title/journal segment.
+    parts = re.split(r"\.\s+(?=[A-Z0-9])", clean)
+    return [p.strip(" .") for p in parts if p and p.strip(" .")]
+
+
+def _v1523_clean_title(title: str) -> str:
+    t = _clean_query_text(title or "")
+    t = re.sub(r"\b\[?Internet\]?\b", " ", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" .,:;")
+    # Remove trailing journal-year fragments accidentally attached to the title.
+    t = re.split(r"\s+\.\s+(?=[A-Z][A-Za-z .&]+\s+(?:19|20)\d{2})", t, maxsplit=1)[0]
+    return t.strip(" .,:;")
+
+
+def _v1523_clean_journal(journal: str) -> str:
+    j = _clean_query_text(journal or "")
+    j = re.sub(r"\b\[?Internet\]?\b", " ", j, flags=re.I)
+    j = re.split(r"\b(?:19|20)\d{2}\b", j, maxsplit=1)[0]
+    j = re.sub(r"\s+", " ", j).strip(" .,:;")
+    return j
+
+
+def _v1523_volume_issue_pages(ref: str) -> Dict[str, str]:
+    s = _v1523_strip_reference_noise(ref).replace("–", "-").replace("—", "-")
+    out = {"volume": "", "issue": "", "pages": ""}
+    # 2022;9(2):137-150 ; 2024 Nov 1;79(11):gbae153 ; 2015;34(11):1830-1839
+    m = re.search(r"(?:19|20)\d{2}(?:\s+[A-Za-z]{3,9}\s+\d{1,2})?\s*;\s*([A-Za-z]?\d+[A-Za-z]?)\s*(?:\(([^)]+)\))?\s*:\s*([A-Za-z]?\d+[A-Za-z]?\s*(?:-\s*[A-Za-z]?\d+[A-Za-z]?)?)", s, flags=re.I)
+    if m:
+        out["volume"] = _safe_strip(m.group(1))
+        out["issue"] = _safe_strip(m.group(2))
+        out["pages"] = re.sub(r"\s+", "", _safe_strip(m.group(3)))
+        return out
+    # RSC/ACS: Journal, 2026, 649, 83-90
+    m = re.search(r",\s*(?:19|20)\d{2}\s*,\s*([A-Za-z]?\d+[A-Za-z]?)\s*,\s*([A-Za-z]?\d+[A-Za-z]?\s*(?:-\s*[A-Za-z]?\d+[A-Za-z]?)?)", s)
+    if m:
+        out["volume"] = _safe_strip(m.group(1))
+        out["pages"] = re.sub(r"\s+", "", _safe_strip(m.group(2)))
+        return out
+    return out
+
+
+def _v1523_extract_numeric_fields(ref: str, style: str = "numeric_superscript") -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    info = _style_metadata(canonical)
+    raw = _safe_strip(ref or "")
+    clean = _strip_leading_numbering(_v1523_strip_reference_noise(raw))
+    doi = _v1523_extract_doi(raw)
+    year = _v1523_publication_year(raw)
+    vip = _v1523_volume_issue_pages(raw)
+
+    author_part = ""
+    title = ""
+    journal = ""
+    title_source_type = "article_title"
+
+    parts = _v1523_split_sentences_like_reference(clean)
+    if parts and _looks_like_vancouver_author_segment(parts[0]):
+        author_parts = [parts[0]]
+        idx = 1
+        # Allow group-author tail fragments such as '2019 MD'.
+        while idx < len(parts) - 1:
+            p = parts[idx].strip()
+            if re.fullmatch(r"(?:19|20)\d{2}\s*[A-Z]{1,8}", p) or re.fullmatch(r"[A-Z]{1,8}", p):
+                author_parts.append(p)
+                idx += 1
+                continue
+            break
+        author_part = " ".join(author_parts)
+        if idx < len(parts):
+            title = parts[idx]
+        if idx + 1 < len(parts):
+            journal = parts[idx + 1]
+    else:
+        # RSC/ACS compact references have no article title in the reference style.
+        try:
+            author_part, title, journal = _split_rsc_numeric_reference(clean)
+        except Exception:
+            author_part, title, journal = "", "", ""
+        if author_part and not title:
+            title_source_type = "journal_tuple"
+
+    authors = _extract_numeric_authors(author_part)
+    title = _v1523_clean_title(title)
+    journal = _v1523_clean_journal(journal)
+
+    # If the title was split too early because of abbreviations, repair obvious fragments.
+    if journal and re.match(r"^(older adults|evidence from|longitudinal evidence|the role of)\b", journal, flags=re.I):
+        title = _v1523_clean_title((title + " " + journal).strip())
+        journal = ""
+
+    # If journal is empty, try to locate a journal segment before the year.
+    if not journal and year:
+        m = re.search(r"\.\s*([^.;]{3,80})\.\s*" + re.escape(year) + r"\b", _v1523_protect_abbreviations(clean))
+        if m:
+            journal = _v1523_clean_journal(m.group(1))
+
+    if _v1523_count_words(title) < 3:
+        article_title = ""
+        title_source_type = "journal_tuple"
+    else:
+        article_title = title
+
+    structured_key = " ".join([p for p in [journal, year, vip.get("volume", ""), vip.get("pages", "")] if p]).strip()
+
+    return {
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "title": article_title,
+        "article_title": article_title,
+        "title_source_type": title_source_type,
+        "journal": journal,
+        "container_title": journal,
+        "source": journal,
+        "volume": vip.get("volume", ""),
+        "issue": vip.get("issue", ""),
+        "pages": vip.get("pages", ""),
+        "structured_key": structured_key,
+        "style_family": info.get("family", canonical),
+        "style_label": info.get("label", canonical),
+        "style_sample": info.get("sample", ""),
+        "reference_numbered": True,
+        "verification_profile": "numeric_query_builder_v1523",
+    }
+
+
+def _v1523_count_words(text: str) -> int:
+    return len([w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", str(text or "")) if w.lower() not in _QUERY_STOP_WORDS])
+
+
+def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    if _v1523_is_numeric(canonical):
+        return _v1523_extract_numeric_fields(ref, canonical)
+    fields = _extract_apa_fields(ref)
+    info = _style_metadata(canonical)
+    fields.update({
+        "style_family": info.get("family", "author_year"),
+        "style_label": info.get("label", "Author-year"),
+        "style_sample": info.get("sample", ""),
+        "verification_profile": "author_year",
+    })
+    return fields
+
+
+def _v1523_title_query(title: str) -> str:
+    title = _clean_query_text(title or "")
+    title = re.sub(r"\b(Internet|Available|cited|from)\b", " ", title, flags=re.I)
+    title = re.sub(r"\s+", " ", title).strip()
+    return title[:240]
+
+
+def _v1523_query_crossref_title(title: str, rows: int = 8, query_name: str = "crossref_query_title") -> List[Dict[str, Any]]:
+    title = _v1523_title_query(title)
+    if not title:
+        return []
+    url = "https://api.crossref.org/works"
+    params = {
+        "query.title": title,
+        "rows": int(rows),
+        "sort": "score",
+        "order": "desc",
+    }
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("message", {}).get("items", [])
+    return [{"source": "crossref", "query_name": query_name, "item": it} for it in items]
+
+
+def _v1523_build_numeric_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    fields = _extract_fields_by_style(ref, canonical)
+    fields["reference"] = ref
+    title = _v1523_title_query(fields.get("article_title") or fields.get("title") or "")
+    journal = _clean_query_text(fields.get("journal") or "")
+    year = _safe_strip(fields.get("year", ""))
+    doi = _safe_strip(fields.get("doi", ""))
+    volume = _safe_strip(fields.get("volume", ""))
+    pages = _safe_strip(fields.get("pages", ""))
+    first_author = (fields.get("authors") or [""])[0]
+
+    title_words = _significant_title_words(title, limit=12)
+    title_key = " ".join(title_words[:10])
+    rich_title = " ".join([p for p in [first_author, title, journal, year] if p]).strip()
+    journal_tuple = " ".join([p for p in [journal, year, volume, pages] if p]).strip()
+
+    return {
+        "fields": fields,
+        "doi": doi,
+        "title": title,
+        "title_key": title_key,
+        "rich_title": _clean_query_text(rich_title),
+        "journal_tuple": _clean_query_text(journal_tuple),
+        "year": year,
+        "journal": journal,
+        "volume": volume,
+        "pages": pages,
+        "style": canonical,
+    }
+
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    if _v1523_is_numeric(canonical):
+        plan = _v1523_build_numeric_query_plan(ref, canonical)
+        # Keep these keys for worker/debug compatibility.
+        plan["crossref_queries"] = []
+        plan["openalex_queries"] = []
+        if plan.get("doi"):
+            plan["crossref_queries"].append({"name": "numeric_doi_exact", "mode": "doi_exact", "doi": plan["doi"], "priority": 1})
+            plan["openalex_queries"].append({"name": "numeric_openalex_doi_exact", "mode": "doi_exact", "doi": plan["doi"], "priority": 1})
+        if plan.get("title") and _v1523_count_words(plan["title"]) >= 3:
+            plan["crossref_queries"].append({"name": "numeric_crossref_title_exact", "mode": "title", "query_title": plan["title"], "priority": 2})
+            plan["crossref_queries"].append({"name": "numeric_crossref_rich_title", "mode": "bibliographic", "query_bibliographic": plan["rich_title"], "query_author": "", "priority": 3})
+            plan["openalex_queries"].append({"name": "numeric_openalex_rich_title", "mode": "search", "search": plan["rich_title"] or plan["title"], "publication_year": plan.get("year", ""), "priority": 4})
+        if plan.get("journal_tuple") and (not plan.get("title") or _v1523_count_words(plan.get("title")) < 3):
+            plan["crossref_queries"].append({"name": "numeric_crossref_journal_tuple", "mode": "bibliographic", "query_bibliographic": plan["journal_tuple"], "query_author": "", "priority": 5})
+            plan["openalex_queries"].append({"name": "numeric_openalex_journal_tuple", "mode": "search", "search": plan["journal_tuple"], "publication_year": plan.get("year", ""), "priority": 6})
+        return plan
+    try:
+        return _V1523_PREVIOUS_BUILD_QUERY_PLAN(ref, canonical)  # type: ignore[name-defined]
+    except Exception:
+        return {"fields": _extract_fields_by_style(ref, canonical), "crossref_queries": [], "openalex_queries": [], "fallback_queries": []}
+
+
+def _v1523_run_numeric_queries(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
+    candidates: List[Dict[str, Any]] = []
+    query_used: List[str] = []
+    strategy: List[str] = []
+    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
+
+    doi = plan.get("doi", "")
+    title = plan.get("title", "")
+    rich_title = plan.get("rich_title", "")
+    title_key = plan.get("title_key", "")
+    journal_tuple = plan.get("journal_tuple", "")
+    year = plan.get("year", "")
+
+    # 1. Exact DOI. Stop immediately if it returns a record.
+    if doi and use_crossref:
+        res = _query_crossref_by_doi(doi) or []
+        query_used.append(doi); strategy.append("numeric_crossref_doi_exact")
+        if res:
+            return _dedupe_candidates(res), query_used, strategy
+    if doi and openalex_allowed:
+        res = _query_openalex_by_doi(doi) or []
+        query_used.append(doi); strategy.append("numeric_openalex_doi_exact")
+        if res:
+            return _dedupe_candidates(res), query_used, strategy
+
+    # 2. Title-centred queries. This is the important change.
+    if title and _v1523_count_words(title) >= 3:
+        if use_crossref:
+            res = _v1523_query_crossref_title(title, rows=max(8, VERIFY_TITLE_ROWS), query_name="numeric_crossref_query_title")
+            candidates.extend(res); query_used.append(title); strategy.append("numeric_crossref_query_title")
+            # Add a rich bibliographic query only after title query.
+            if rich_title:
+                res = _query_crossref_bibliographic(rich_title, query_author="", rows=max(6, VERIFY_CROSSREF_ROWS), query_name="numeric_crossref_rich_title")
+                candidates.extend(res); query_used.append(rich_title); strategy.append("numeric_crossref_rich_title")
+        if openalex_allowed:
+            search = rich_title or title_key or title
+            res = _query_openalex_search(search, rows=max(8, VERIFY_OPENALEX_ROWS), publication_year=year, query_name="numeric_openalex_rich_title")
+            candidates.extend(res); query_used.append(search); strategy.append("numeric_openalex_rich_title")
+
+    # 3. Journal tuple for no-title RSC/ACS and weak-title references.
+    if journal_tuple and (not candidates or not title or _v1523_count_words(title) < 3):
+        if use_crossref:
+            res = _query_crossref_bibliographic(journal_tuple, query_author="", rows=max(6, VERIFY_CROSSREF_ROWS), query_name="numeric_crossref_journal_tuple")
+            candidates.extend(res); query_used.append(journal_tuple); strategy.append("numeric_crossref_journal_tuple")
+        if openalex_allowed:
+            res = _query_openalex_search(journal_tuple, rows=max(6, VERIFY_OPENALEX_ROWS), publication_year=year, query_name="numeric_openalex_journal_tuple")
+            candidates.extend(res); query_used.append(journal_tuple); strategy.append("numeric_openalex_journal_tuple")
+
+    return _dedupe_candidates(candidates), query_used, strategy
+
+
+def _v1523_best_candidate(fields: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+    scored: List[Dict[str, Any]] = []
+    for cand in candidates or []:
+        try:
+            meta = _score_candidate(fields, cand)
+            # Strong DOI exact match should dominate any title parsing weakness.
+            if fields.get("doi") and meta.get("doi") and _v1523_normalise_numeric_doi(fields.get("doi")) == _v1523_normalise_numeric_doi(meta.get("doi")):
+                meta["doi_match"] = True
+                meta["score"] = 100
+            scored.append(meta)
+        except Exception:
+            continue
+    if not scored:
+        return None, {}, []
+    scored.sort(key=lambda x: int(x.get("score", 0)), reverse=True)
+    best_meta = scored[0]
+    # Alternatives shown only when they are credible enough to review.
+    alternatives = []
+    for m in scored[1:4]:
+        if int(m.get("score", 0)) < 55:
+            continue
+        alternatives.append({
+            "title": m.get("title", ""),
+            "year": m.get("year", ""),
+            "doi": m.get("doi", ""),
+            "score": m.get("score", 0),
+            "source": m.get("source", ""),
+        })
+    return {"source": best_meta.get("source", "")}, best_meta, alternatives
+
+
+def _v1523_blank_not_found(row: Dict[str, Any]) -> Dict[str, Any]:
+    if _normalize_verify_status(row.get("status")) != "not_found":
+        return row
+    for key in [
+        "source", "doi", "matched_title", "matched_year", "matched_authors", "matched_journal",
+        "matched_container_title", "matched_volume", "matched_issue", "matched_pages",
+        "matched_publisher", "matched_type", "matched_url",
+    ]:
+        if row.get(key):
+            row[f"rejected_{key}"] = row.get(key)
+        row[key] = ""
+    for key in ["score", "title_score", "journal_score", "author_overlap", "author_similarity", "year_match", "volume_match", "issue_match", "page_match"]:
+        row[key] = 0
+    return row
+
+
+def _v1523_numeric_verify_single(ref: str, style: str, use_crossref: bool, use_openalex: bool, enrich_metadata: bool = False) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    fields = _extract_fields_by_style(ref, canonical)
+    plan = _v1523_build_numeric_query_plan(ref, canonical)
+    row = _base_commercial_row(ref, canonical, fields, "", "numeric_query_builder_v1523")
+    row["verification_profile"] = "numeric_query_builder_v1523"
+    row["query_plan"] = {
+        "doi": bool(plan.get("doi")),
+        "title": plan.get("title", ""),
+        "rich_title": plan.get("rich_title", ""),
+        "journal_tuple": plan.get("journal_tuple", ""),
+        "year": plan.get("year", ""),
+    }
+
+    if not plan.get("doi") and not plan.get("title") and not plan.get("journal_tuple"):
+        row.update({
+            "status": "needs_review",
+            "confidence_reason": "The numeric reference lacks DOI, article title and journal tuple. Manual verification is required.",
+            "query_strategy": "numeric_no_queryable_metadata",
+        })
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+        return row
+
+    candidates, query_used, strategy = _v1523_run_numeric_queries(plan, use_crossref, use_openalex)
+    row["query_used"] = " | ".join(_dedupe_preserve(query_used))
+    row["query_strategy"] = " | ".join(_dedupe_preserve(strategy))
+
+    if not candidates:
+        row.update({
+            "status": "not_found",
+            "confidence_reason": "No Crossref/OpenAlex candidate was returned from DOI, title, or journal-tuple numeric queries.",
+        })
+        row = _v1523_blank_not_found(row)
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+        return row
+
+    _best, meta, alternatives = _v1523_best_candidate(fields, candidates)
+    if not meta:
+        row.update({"status": "not_found", "confidence_reason": "Candidates were returned, but none had usable metadata."})
+        row = _v1523_blank_not_found(row)
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+        return row
+
+    status, reason = _classify_from_meta(fields, meta)
+    row.update({
+        "status": _normalize_verify_status(status),
+        "source": "+".join(meta.get("sources") or [meta.get("source", "")]),
+        "score": int(meta.get("score", 0)),
+        "doi": _v1523_normalise_numeric_doi(meta.get("doi", "")),
+        "matched_title": _safe_strip(meta.get("title", "")),
+        "matched_year": _safe_strip(meta.get("year", "")),
+        "matched_authors": ", ".join(meta.get("authors", []) or []),
+        "matched_journal": _safe_strip(meta.get("journal", "")),
+        "matched_container_title": _safe_strip(meta.get("journal", "")),
+        "matched_volume": _safe_strip(meta.get("volume", "")),
+        "matched_issue": _safe_strip(meta.get("issue", "")),
+        "matched_pages": _safe_strip(meta.get("pages", "")),
+        "matched_publisher": _safe_strip(meta.get("publisher", "")),
+        "matched_type": _safe_strip(meta.get("type", "")),
+        "matched_url": _safe_strip(meta.get("url", "")),
+        "title_score": int(meta.get("title_score", 0)),
+        "journal_score": int(meta.get("journal_score", 0)),
+        "author_overlap": int(meta.get("author_overlap", 0)),
+        "author_similarity": int(meta.get("author_similarity", 0)),
+        "year_match": int(meta.get("year_match", 0)),
+        "year_delta": int(meta.get("year_delta", 999)),
+        "doi_match": 1 if meta.get("doi_match") else 0,
+        "volume_match": int(meta.get("volume_match", 0)),
+        "issue_match": int(meta.get("issue_match", 0)),
+        "page_match": int(meta.get("page_match", 0)),
+        "confidence_reason": reason,
+        "alternative_matches": alternatives,
+    })
+
+    # Do not display unrelated weak candidates as matched sources.
+    if row["status"] == "not_found":
+        row = _v1523_blank_not_found(row)
+
+    if enrich_metadata and row.get("doi"):
+        try:
+            row = enrich_with_full_metadata(row)
+        except Exception:
+            pass
+
+    row["correction_suggestions"] = row.get("correction_suggestions") or _verification_style_suggestion(row)
+    return row
+
+
+def _verify_single_reference(ref: str, style: str, use_crossref: bool, use_openalex: bool, enrich_metadata: bool = False) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    if _v1523_is_numeric(canonical):
+        # New cache namespace prevents old broad-query results from being reused.
+        cache_key = f"numeric_query_v1523::{canonical}::{use_crossref}:{use_openalex}:{enrich_metadata}::{ref}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return cached
+        row = _v1523_numeric_verify_single(ref, canonical, use_crossref, use_openalex, enrich_metadata)
+        row["status"] = _normalize_verify_status(row.get("status"))
+        _cache_set(cache_key, row)
+        return row
+    if _V1523_AUTHOR_YEAR_VERIFY_SINGLE:
+        return _V1523_AUTHOR_YEAR_VERIFY_SINGLE(ref, canonical, use_crossref, use_openalex, enrich_metadata)
+    return {"reference": ref, "style": canonical, "status": "not_found"}
+
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    canonical = _canonical_verify_style(style)
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    rows: List[Dict[str, Any]] = []
+    total = len(refs)
+    for i, ref in enumerate(refs, start=1):
+        try:
+            rows.append(_verify_single_reference(ref, canonical, use_crossref, use_openalex, enrich_metadata))
+        except Exception as exc:
+            rows.append({
+                "reference": ref,
+                "style": canonical,
+                "status": "offline",
+                "error": str(exc),
+                "confidence_reason": "Numeric style-specific verification failed for this row.",
+            })
+        if job_id:
+            try:
+                update_job_progress(job_id, i)
+                if i == total:
+                    store_verification_results(job_id, rows)
+            except Exception:
+                pass
+        if throttle_s:
+            time.sleep(throttle_s)
+    return rows
+
+try:
+    if "__all__" in globals():
+        for name in [
+            "VERIFY_BUILD",
+            "_extract_fields_by_style",
+            "_build_verification_query_plan",
+            "verify_references_batch",
+            "_verify_single_reference",
+        ]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
+
+
+# ============================================================
+# NUMERIC QUERY BUILDER HOTFIX v1.5.24
+# Fixes: [Internet] handling, eClinicalMed lower-case journal split,
+# month-only dates (2019 Sep;), and broken Available-from URLs.
+# ============================================================
+
+__version__ = "1.5.24"
+VERIFY_BUILD = "commercial-2026-05-19-numeric-query-builder-hotfix-FINAL"
+
+
+def _v1523_strip_reference_noise(ref: str) -> str:
+    s = _safe_strip(ref or "")
+    s = re.sub(r"\[\s*cited\s+[^\]]+\]", " ", s, flags=re.I)
+    # For query building, anything after Available from/Retrieved from is URL noise.
+    s = re.sub(r"\bAvailable\s+from\s*:\s*.*$", " ", s, flags=re.I)
+    s = re.sub(r"\bRetrieved\s+from\s+.*$", " ", s, flags=re.I)
+    s = re.sub(r"https?://\S+", " ", s, flags=re.I)
+    s = re.sub(r"\bdoi\s*:?\s*10\.\S+", " ", s, flags=re.I)
+    s = re.sub(r"\b10\.\d{4,9}/\S+", " ", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _v1523_publication_year(ref: str) -> str:
+    s = _strip_leading_numbering(_v1523_strip_reference_noise(ref))
+    # Journal. 2024 Sep 1;75 OR Journal. 2019 Sep;39(9)
+    matches = list(re.finditer(r"\.\s*((?:19|20)\d{2})(?:\s+[A-Za-z]{3,9}(?:\s+\d{1,2})?)?\s*;", s, flags=re.I))
+    if matches:
+        return matches[-1].group(1)
+    matches = list(re.finditer(r";\s*((?:19|20)\d{2})\s*(?:\.|$)", s))
+    if matches:
+        return matches[-1].group(1)
+    matches = list(re.finditer(r",\s*((?:19|20)\d{2})\s*,\s*[A-Za-z]?\d+", s))
+    if matches:
+        return matches[-1].group(1)
+    years = re.findall(r"\b((?:19|20)\d{2})[a-z]?\b", s)
+    plausible = [y for y in years if int(y) <= 2030]
+    return (plausible[-1] if plausible else (years[-1] if years else ""))
+
+
+def _v1523_split_sentences_like_reference(clean: str) -> List[str]:
+    clean = _v1523_protect_abbreviations(clean)
+    # Split after a full stop when a new segment begins, including lower-case journal names such as eClinicalMed.
+    parts = re.split(r"\.\s+(?=[A-Za-z0-9])", clean)
+    return [p.strip(" .") for p in parts if p and p.strip(" .")]
+
+
+def _v1523_clean_title(title: str) -> str:
+    t = _clean_query_text(title or "")
+    # Remove only citation-format markers, not the word 'internet' inside a real article title.
+    t = re.sub(r"\[\s*Internet\s*\]", " ", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" .,:;")
+    return t
+
+
+def _v1523_clean_journal(journal: str) -> str:
+    j = _clean_query_text(journal or "")
+    j = re.sub(r"\[\s*Internet\s*\]", " ", j, flags=re.I)
+    j = re.split(r"\b(?:19|20)\d{2}\b", j, maxsplit=1)[0]
+    j = re.sub(r"\s+", " ", j).strip(" .,:;")
+    return j
+
+
+def _v1523_volume_issue_pages(ref: str) -> Dict[str, str]:
+    s = _v1523_strip_reference_noise(ref).replace("–", "-").replace("—", "-")
+    out = {"volume": "", "issue": "", "pages": ""}
+    m = re.search(r"(?:19|20)\d{2}(?:\s+[A-Za-z]{3,9}(?:\s+\d{1,2})?)?\s*;\s*([A-Za-z]?\d+[A-Za-z]?)\s*(?:\(([^)]+)\))?\s*:\s*([A-Za-z]?\d+[A-Za-z]?\s*(?:-\s*[A-Za-z]?\d+[A-Za-z]?)?)", s, flags=re.I)
+    if m:
+        out["volume"] = _safe_strip(m.group(1))
+        out["issue"] = _safe_strip(m.group(2))
+        out["pages"] = re.sub(r"\s+", "", _safe_strip(m.group(3)))
+        return out
+    m = re.search(r",\s*(?:19|20)\d{2}\s*,\s*([A-Za-z]?\d+[A-Za-z]?)\s*,\s*([A-Za-z]?\d+[A-Za-z]?\s*(?:-\s*[A-Za-z]?\d+[A-Za-z]?)?)", s)
+    if m:
+        out["volume"] = _safe_strip(m.group(1))
+        out["pages"] = re.sub(r"\s+", "", _safe_strip(m.group(2)))
+    return out
+
+
+
+# ============================================================
+# NUMERIC QUERY BUILDER HOTFIX v1.5.25
+# Fixes: keep real word 'internet' in article titles, remove only trailing
+# format-marker Internet from journal/title fields after bracket cleanup.
+# ============================================================
+
+__version__ = "1.5.25"
+VERIFY_BUILD = "commercial-2026-05-19-numeric-query-builder-internet-title-fix-FINAL"
+
+
+def _v1523_clean_title(title: str) -> str:
+    t = _clean_query_text(title or "")
+    t = re.sub(r"\[\s*Internet\s*\]", " ", t, flags=re.I)
+    # If [Internet] became plain Internet during PDF/Unicode cleaning, remove it only as a trailing format marker.
+    t = re.sub(r"\bInternet\b\s*$", " ", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip(" .,:;")
+    return t
+
+
+def _v1523_clean_journal(journal: str) -> str:
+    j = _clean_query_text(journal or "")
+    j = re.sub(r"\[\s*Internet\s*\]", " ", j, flags=re.I)
+    j = re.sub(r"\bInternet\b\s*$", " ", j, flags=re.I)
+    j = re.split(r"\b(?:19|20)\d{2}\b", j, maxsplit=1)[0]
+    j = re.sub(r"\s+", " ", j).strip(" .,:;")
+    return j
+
+
+def _v1523_title_query(title: str) -> str:
+    title = _clean_query_text(title or "")
+    title = re.sub(r"\[\s*Internet\s*\]", " ", title, flags=re.I)
+    title = re.sub(r"\bInternet\b\s*$", " ", title, flags=re.I)
+    title = re.sub(r"\b(Available|cited|from)\b", " ", title, flags=re.I)
+    title = re.sub(r"\s+", " ", title).strip()
+    return title[:240]
+
