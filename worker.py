@@ -26,8 +26,8 @@ from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
-__version__ = "1.5.22"
-WORKER_BUILD = "commercial-2026-05-19-no-cache-privacy-worker-FINAL"
+__version__ = "1.5.23"
+WORKER_BUILD = "commercial-2026-05-19-docx-ieee-style-normalise-worker-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -2222,11 +2222,43 @@ def _fallback_claim_support_rows(result, verification_rows):
 
     return rows
 
+
+
+def _normalise_reference_for_verification(ref):
+    """Clean Word/DOCX numeric reference markers before online verification."""
+    ref = str(ref or "")
+    ref = ref.replace("\xa0", " ").replace("\t", " ")
+    ref = re.sub(r"\s+", " ", ref).strip()
+
+    # DOCX IEEE commonly appears as [1]. P. Author...; make it [1] P. Author...
+    ref = re.sub(r"^\s*\[(\d{1,4})\]\s*[\.)]\s*", r"[\1] ", ref)
+
+    # Numeric round sometimes appears as (1). Author...
+    ref = re.sub(r"^\s*\((\d{1,4})\)\s*\.\s*", r"(\1) ", ref)
+
+    # Plain numbered references sometimes appear as 1). Author...
+    ref = re.sub(r"^\s*(\d{1,4})\)\s*", r"\1. ", ref)
+
+    return ref.strip()
+
+
+def _normalise_reference_list_for_verification(refs):
+    return [
+        _normalise_reference_for_verification(r)
+        for r in (refs or [])
+        if str(r or "").strip()
+    ]
+
 def _normalise_references_for_verification(result, style="apa"):
+    # Prefer the style stored by process_document if process_verification is called with a fallback style.
+    stored_style = result.get("selected_style") or result.get("style_family") or result.get("style") or style
+    if _worker_style_family(style) == "author_year" and _worker_style_family(stored_style).startswith("numeric_"):
+        style = stored_style
+
     refs = result.get("references_raw", []) or []
 
     if refs:
-        return refs
+        return _normalise_reference_list_for_verification(refs)
 
     if recover_references_for_verification:
         try:
@@ -2235,6 +2267,7 @@ def _normalise_references_for_verification(result, style="apa"):
                 style_hint="numeric" if _worker_style_family(style).startswith("numeric_") else "apa"
             )
             if recovered:
+                recovered = _normalise_reference_list_for_verification(recovered)
                 result["references_raw"] = recovered
                 result.setdefault("summary", {})["reference_entries_found"] = len(recovered)
                 return recovered
@@ -4105,6 +4138,13 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
     try:
         result = _load_job_result(job_id)
+        stored_style = result.get("selected_style") or result.get("style_family") or result.get("style") or style
+        if _worker_style_family(style) == "author_year" and _worker_style_family(stored_style).startswith("numeric_"):
+            print(f"[VERIFY WORKER] Incoming style={style} overridden by stored style={stored_style}")
+            style = stored_style
+        else:
+            print(f"[VERIFY WORKER] Using verification style={style}")
+
         refs = _normalise_references_for_verification(result, style=style)
         total = len(refs)
 
