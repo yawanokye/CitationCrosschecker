@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.16"
+__version__ = "1.5.17"
 
 import re
 import io
@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-18-rsc-jama-plos-numeric-parser-FINAL"
+ENGINE_BUILD = "commercial-2026-05-18-style-specific-suggestions-for-author-year-and-numeric-FINAL"
 
 # Fuzzy matching (optional)
 try:
@@ -5056,6 +5056,387 @@ def run_crosscheck(
     
     return result
 
+
+# ============================================================================
+# STYLE-SPECIFIC SUGGESTION HELPERS
+# ============================================================================
+
+def _citation_style_profile(style: str) -> Dict[str, str]:
+    """Return UI-facing profile for style-specific suggestions."""
+    s = _style_token(style)
+    if s in SAFE_SQUARE_NUMERIC_STYLES:
+        return {
+            "family": "numeric_square",
+            "label": "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+            "sample": "[1]",
+            "range_sample": "[3–5]",
+            "reference_note": "numbered reference list; the journal may use [1], 1., or bare 1 depending on house style",
+        }
+    if s in SAFE_SUPERSCRIPT_NUMERIC_STYLES:
+        return {
+            "family": "numeric_superscript",
+            "label": "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+            "sample": "¹",
+            "range_sample": "¹–³",
+            "reference_note": "numbered reference list; in-text numbers should be superscript in the source manuscript",
+        }
+    if s in ROUND_NUMERIC_STYLES:
+        return {
+            "family": "numeric_round",
+            "label": "Numeric round bracket, Vancouver / ACS",
+            "sample": "(1)",
+            "range_sample": "(3–5)",
+            "reference_note": "numbered reference list; round numeric citations are style-gated because round brackets are also used in statistics",
+        }
+    return {
+        "family": "author_year",
+        "label": "Author-year, APA / Harvard / Chicago",
+        "sample": "(Adam, 2020)",
+        "range_sample": "(Adam, 2020; Boateng, 2021)",
+        "reference_note": "author-year reference list matched by author and year",
+    }
+
+
+def _extract_numeric_from_display(value: Any) -> str:
+    """Extract the first numeric citation number from [12], (12), ¹², or plain 12."""
+    s = norm_space(str(value or ""))
+    if not s:
+        return ""
+    s = s.translate(SUPERSCRIPT_TO_NORMAL)
+    s = s.replace("–", "-").replace("—", "-").replace("−", "-")
+    m = re.search(r"\d{1,4}", s)
+    if not m:
+        return ""
+    try:
+        return str(int(m.group(0)))
+    except Exception:
+        return m.group(0)
+
+
+def _leading_numeric_reference_marker_style(ref_text: str) -> str:
+    """Classify the leading marker of a numeric reference entry."""
+    s = norm_space(ref_text or "")
+    if not s:
+        return "unknown"
+    if re.match(r"^\[\s*\d{1,4}\s*\]", s):
+        return "square"
+    if re.match(r"^\(\s*\d{1,4}\s*\)", s):
+        return "round"
+    if re.match(r"^\d{1,4}\.\s+", s):
+        return "dot"
+    if re.match(r"^\d{1,4}\)\s+", s):
+        return "paren"
+    if re.match(r"^\d{1,4}\s+[A-Z]", s):
+        return "bare"
+    return "unknown"
+
+
+def _dominant_reference_marker_style(references_raw: List[str]) -> str:
+    styles = [_leading_numeric_reference_marker_style(r) for r in references_raw or []]
+    styles = [s for s in styles if s != "unknown"]
+    if not styles:
+        return "unknown"
+    try:
+        return Counter(styles).most_common(1)[0][0]
+    except Exception:
+        return styles[0]
+
+
+def _numeric_reference_number_from_text(ref_text: str) -> str:
+    s = norm_space(ref_text or "")
+    m = re.match(r"^\s*(?:\[\s*(\d{1,4})\s*\]|\(\s*(\d{1,4})\s*\)|(\d{1,4})\s*[\.)]?\s+)", s)
+    if not m:
+        return ""
+    num = next((g for g in m.groups() if g), "")
+    try:
+        return str(int(num))
+    except Exception:
+        return num
+
+
+def _format_reference_marker(num: str, marker_style: str) -> str:
+    num = str(num or "").strip()
+    if marker_style == "square":
+        return f"[{num}]"
+    if marker_style == "round":
+        return f"({num})"
+    if marker_style == "paren":
+        return f"{num})"
+    if marker_style == "bare":
+        return f"{num}"
+    return f"{num}."
+
+
+def _replace_leading_reference_marker(ref_text: str, marker_style: str) -> str:
+    num = _numeric_reference_number_from_text(ref_text)
+    if not num:
+        return norm_space(ref_text or "")
+    body = _strip_leading_reference_number(ref_text)
+    return norm_space(f"{_format_reference_marker(num, marker_style)} {body}")
+
+
+def _empty_suggestions_payload(style: str) -> Dict[str, Any]:
+    profile = _citation_style_profile(style)
+    return {
+        "citations": [],
+        "references": [],
+        "missing": [],
+        "possible_matches": [],
+        "unmatched": [],
+        "statistics": {
+            "total": 0,
+            "high_confidence": 0,
+            "medium_confidence": 0,
+            "low_confidence": 0,
+            "by_type": {},
+        },
+        "summary": {
+            "auto_fixable": 0,
+            "needs_review": 0,
+        },
+        "style_profile": profile,
+        "style_family": profile.get("family"),
+        "style_label": profile.get("label"),
+    }
+
+
+def _finalise_style_specific_suggestions(payload: Dict[str, Any], style: str) -> Dict[str, Any]:
+    profile = _citation_style_profile(style)
+    payload.setdefault("citations", [])
+    payload.setdefault("references", [])
+    payload.setdefault("missing", [])
+    payload.setdefault("possible_matches", payload.get("missing", []))
+    payload.setdefault("unmatched", [])
+
+    all_suggestions = list(payload.get("citations", []) or []) + list(payload.get("references", []) or [])
+    by_type: Dict[str, int] = {}
+    for s in all_suggestions:
+        issue = str(s.get("issue_type") or s.get("type") or "unknown")
+        by_type[issue] = by_type.get(issue, 0) + 1
+
+    high = [s for s in all_suggestions if float(s.get("confidence", 0) or 0) >= 0.85]
+    med = [s for s in all_suggestions if 0.70 <= float(s.get("confidence", 0) or 0) < 0.85]
+    low = [s for s in all_suggestions if float(s.get("confidence", 0) or 0) < 0.70]
+
+    payload["statistics"] = {
+        "total": len(all_suggestions),
+        "high_confidence": len(high),
+        "medium_confidence": len(med),
+        "low_confidence": len(low),
+        "by_type": by_type,
+    }
+    payload["summary"] = {
+        "auto_fixable": len([s for s in high if s.get("fix_type") == "optional_fix"]),
+        "needs_review": len([s for s in all_suggestions if s.get("fix_type") != "optional_fix"]),
+    }
+    payload["style_profile"] = profile
+    payload["style_family"] = profile.get("family")
+    payload["style_label"] = profile.get("label")
+    return payload
+
+
+def generate_numeric_style_suggestions(result: Dict[str, Any], style: str) -> Dict[str, Any]:
+    """
+    Generate non-invasive suggestions for numeric citation families.
+
+    This replaces the old behaviour where numeric styles returned an empty
+    APA/Harvard-only autofix message. It is intentionally review-first:
+    missing citations and uncited references should be checked by the user,
+    not blindly rewritten.
+    """
+    profile = _citation_style_profile(style)
+    family = profile.get("family", "numeric")
+    label = profile.get("label", "Numeric style")
+    sample = profile.get("sample", "[1]")
+
+    citations_suggestions: List[Dict[str, Any]] = []
+    reference_suggestions: List[Dict[str, Any]] = []
+    possible_match_suggestions: List[Dict[str, Any]] = []
+
+    references_raw = result.get("references_raw", []) or []
+    missing_rows = result.get("missing_in_references", []) or []
+    uncited_refs = result.get("uncited_references", []) or []
+    r2c = result.get("reconciliation_reference_to_intext", []) or []
+    c2r = result.get("reconciliation_intext_to_reference", []) or []
+    ref_count = int((result.get("summary") or {}).get("reference_entries_found") or len(references_raw) or 0)
+
+    # Existing reference numbers and citation numbers, used for targeted advice.
+    existing_ref_nums = set()
+    for r in references_raw:
+        n = _numeric_reference_number_from_text(r)
+        if n:
+            existing_ref_nums.add(n)
+
+    cited_nums = set()
+    for row in c2r or []:
+        if isinstance(row, dict):
+            n = _extract_numeric_from_display(row.get("in_text"))
+            if n:
+                cited_nums.add(n)
+
+    # 1. Missing numeric citations: citation number exists in text but no numbered reference exists.
+    for item in missing_rows:
+        if isinstance(item, dict):
+            display = item.get("citation_in_text") or item.get("citation") or item.get("in_text") or ""
+            count = int(item.get("count_in_text") or item.get("count") or 1)
+        else:
+            display = str(item or "")
+            count = 1
+        num = _extract_numeric_from_display(display)
+        if not num:
+            continue
+
+        expected = _format_numeric_intext(num, style)
+        if num in existing_ref_nums:
+            guidance = (
+                f"Review citation {expected}. The number appears to exist in the reference list, "
+                f"but the extracted citation did not reconcile under {label}. Check PDF extraction, range expansion, or duplicate numbering."
+            )
+            confidence = 0.70
+            issue_type = f"{family}_citation_reconciliation_review"
+        else:
+            guidance = (
+                f"Add reference number {num} to the reference list, or change the in-text citation {expected} "
+                f"to the correct existing reference number. Expected in-text form for this selected style: {sample}."
+            )
+            confidence = 0.92 if ref_count and int(num) > ref_count else 0.84
+            issue_type = f"{family}_missing_numbered_reference"
+
+        citations_suggestions.append({
+            "original": display or expected,
+            "suggested": guidance,
+            "confidence": confidence,
+            "issue_type": issue_type,
+            "reason": f"{label}: in-text citation number {num} was not matched to a reference entry. It appeared {count} time(s).",
+            "fix_type": "review_required",
+            "style_family": family,
+            "style_label": label,
+            "style_sample": sample,
+            "citation_number": num,
+            "action": "review_required",
+            "apply": {
+                "type": "review_only",
+                "target": display or expected,
+                "replacement": guidance,
+            },
+        })
+        possible_match_suggestions.append(citations_suggestions[-1])
+
+    # 2. Uncited numeric references: reference number exists but was not found in text.
+    for ref in uncited_refs:
+        ref_text = norm_space(str(ref or ""))
+        if not ref_text:
+            continue
+        num = _numeric_reference_number_from_text(ref_text)
+        expected = _format_numeric_intext(num, style) if num else sample
+        guidance = (
+            f"Either cite this reference in the manuscript using {expected}, or remove it if it is not used. "
+            f"This suggestion follows the selected style family: {label}."
+        )
+        reference_suggestions.append({
+            "original": ref_text,
+            "suggested": guidance,
+            "confidence": 0.88 if num else 0.72,
+            "issue_type": f"{family}_uncited_numbered_reference",
+            "reason": f"{label}: reference {num or '(number unknown)'} is listed but no matching in-text citation was detected.",
+            "fix_type": "review_required",
+            "style_family": family,
+            "style_label": label,
+            "style_sample": sample,
+            "citation_number": num,
+            "action": "review_required",
+            "apply": {
+                "type": "review_only",
+                "target": ref_text,
+                "replacement": guidance,
+            },
+        })
+
+    # 3. Numbering sequence checks, useful when the parser finds gaps or duplicates.
+    nums = []
+    for r in references_raw:
+        n = _numeric_reference_number_from_text(r)
+        if n and n.isdigit():
+            nums.append(int(n))
+    if nums:
+        counts = Counter(nums)
+        duplicates = sorted([n for n, c in counts.items() if c > 1])
+        max_num = max(nums)
+        gaps = [n for n in range(1, max_num + 1) if n not in counts]
+
+        if duplicates:
+            shown = ", ".join(str(n) for n in duplicates[:12])
+            reference_suggestions.append({
+                "original": f"Duplicate numeric reference numbers: {shown}",
+                "suggested": f"Review and renumber duplicate reference number(s) {shown}; then update in-text citations in {label} form.",
+                "confidence": 0.90,
+                "issue_type": f"{family}_duplicate_reference_numbers",
+                "reason": f"{label}: numeric reference lists should not reuse the same reference number for different entries.",
+                "fix_type": "review_required",
+                "style_family": family,
+                "style_label": label,
+                "style_sample": sample,
+                "action": "review_required",
+                "apply": {"type": "review_only", "target": shown, "replacement": "Review duplicate numbering"},
+            })
+
+        if gaps and len(gaps) <= 20:
+            shown = ", ".join(str(n) for n in gaps[:20])
+            reference_suggestions.append({
+                "original": f"Numbering gap(s): {shown}",
+                "suggested": f"Check whether reference number(s) {shown} were omitted or whether the reference list was split incorrectly. Keep numbering sequential for {label}.",
+                "confidence": 0.78,
+                "issue_type": f"{family}_reference_numbering_gap",
+                "reason": f"{label}: the extracted reference list has missing number(s) between 1 and {max_num}.",
+                "fix_type": "review_required",
+                "style_family": family,
+                "style_label": label,
+                "style_sample": sample,
+                "action": "review_required",
+                "apply": {"type": "review_only", "target": shown, "replacement": "Review numbering gap"},
+            })
+
+    # 4. Reference marker consistency, only suggest if there is a clear dominant marker and outliers.
+    dominant_marker = _dominant_reference_marker_style(references_raw)
+    if dominant_marker != "unknown" and len(references_raw or []) >= 4:
+        outlier_count = 0
+        for ref_text in references_raw:
+            marker = _leading_numeric_reference_marker_style(ref_text)
+            if marker in {"unknown", dominant_marker}:
+                continue
+            num = _numeric_reference_number_from_text(ref_text)
+            suggested_ref = _replace_leading_reference_marker(ref_text, dominant_marker)
+            if suggested_ref and suggested_ref != norm_space(ref_text):
+                outlier_count += 1
+                if outlier_count <= 15:
+                    reference_suggestions.append({
+                        "original": norm_space(ref_text),
+                        "suggested": suggested_ref,
+                        "confidence": 0.76,
+                        "issue_type": f"{family}_reference_number_marker_consistency",
+                        "reason": f"{label}: this reference uses marker style '{marker}', while most entries use '{dominant_marker}'. Review before applying because publisher house styles differ.",
+                        "fix_type": "optional_fix",
+                        "style_family": family,
+                        "style_label": label,
+                        "style_sample": sample,
+                        "citation_number": num,
+                        "action": "optional_fix",
+                        "apply": {
+                            "type": "replace_text",
+                            "target": norm_space(ref_text),
+                            "replacement": suggested_ref,
+                        },
+                    })
+
+    payload = {
+        "citations": citations_suggestions,
+        "references": reference_suggestions,
+        "missing": possible_match_suggestions,
+        "possible_matches": possible_match_suggestions,
+        "unmatched": [],
+    }
+    return _finalise_style_specific_suggestions(payload, style)
+
 # ============================================================================
 # ENHANCED API WITH AUTO-FIX (OPTIONAL - DOES NOT REPLACE ORIGINAL)
 # ============================================================================
@@ -5099,15 +5480,14 @@ def run_crosscheck_with_autofix(
         is_numeric = ("ieee" in style_s) or ("vancouver" in style_s) or ("numeric" in style_s) or _is_supported_numeric_style(style_s)
 
         if is_numeric:
+            suggestions_data = generate_numeric_style_suggestions(result, style_s)
+            profile = _citation_style_profile(style_s)
             result["autofix"] = {
                 "enabled": True,
-                "message": f"Auto-fix supports APA/Harvard. Current style: {style_s}",
-                "suggestions": {
-                    "citations": [],
-                    "missing": [],
-                    "unmatched": [],
-                    "references": []
-                }
+                "message": f"Style-specific suggestions enabled for {profile.get('label', style_s)}.",
+                "style_family": profile.get("family"),
+                "style_label": profile.get("label"),
+                "suggestions": suggestions_data,
             }
             return result
 
@@ -5195,6 +5575,7 @@ def run_crosscheck_with_autofix(
             references=refs,
             ref_map=ref_map
         )
+        suggestions_data = _finalise_style_specific_suggestions(suggestions_data, style_s)
 
         # -----------------------------
         # 6. Production safety
