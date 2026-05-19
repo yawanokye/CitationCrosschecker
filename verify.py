@@ -4840,3 +4840,659 @@ def _looks_like_rsc_author_piece(piece: str) -> bool:
     if " and " in p.lower():
         return len(patterns) >= 1
     return bool(patterns) and len(p) <= 120
+
+# ============================================================
+# STYLE-SPECIFIC NUMERIC VERIFICATION PATCH
+# Build: 2026-05-19-style-specific-numeric-verification
+# Purpose:
+# - Make online verification rules genuinely style-specific, not only style-labelled.
+# - For author-year, keep the previous commercial verifier.
+# - For numeric square/superscript/round, use DOI-first, title+author+year,
+#   or journal+year+volume+page tuple matching.
+# - Avoid displaying unrelated Crossref/OpenAlex candidates as "not_found" matches.
+# ============================================================
+
+__version__ = "1.5.22"
+VERIFY_BUILD = "commercial-2026-05-19-style-specific-numeric-verification-FINAL"
+
+try:
+    _V1522_PREVIOUS_BUILD_QUERY_PLAN = _build_verification_query_plan
+except Exception:
+    _V1522_PREVIOUS_BUILD_QUERY_PLAN = None
+
+try:
+    _V1522_PREVIOUS_SCORE_CANDIDATE = _score_candidate
+except Exception:
+    _V1522_PREVIOUS_SCORE_CANDIDATE = None
+
+try:
+    _V1522_PREVIOUS_CLASSIFY_FROM_META = _classify_from_meta
+except Exception:
+    _V1522_PREVIOUS_CLASSIFY_FROM_META = None
+
+try:
+    _V1522_PREVIOUS_VERIFY_SINGLE_REFERENCE = _verify_single_reference
+except Exception:
+    _V1522_PREVIOUS_VERIFY_SINGLE_REFERENCE = None
+
+try:
+    _V1522_PREVIOUS_VERIFY_BATCH = verify_references_batch
+except Exception:
+    _V1522_PREVIOUS_VERIFY_BATCH = None
+
+
+def _v1522_style_family(style: str) -> str:
+    try:
+        return _style_metadata(style).get("family", "author_year")
+    except Exception:
+        return "author_year"
+
+
+def _v1522_is_numeric_style(style: str) -> bool:
+    return _v1522_style_family(style) in {"numeric_square", "numeric_superscript", "numeric_round"}
+
+
+def _v1522_count_sig_words(text: str) -> int:
+    try:
+        return len(_significant_title_words(text or "", limit=30))
+    except Exception:
+        return len(re.findall(r"[A-Za-z]{4,}", str(text or "")))
+
+
+def _v1522_has_clear_title(fields: Dict[str, Any]) -> bool:
+    title = _safe_strip(fields.get("article_title") or fields.get("title") or "")
+    if not title:
+        return False
+    if _v1522_count_sig_words(title) < 4:
+        return False
+    # Journal-volume-page strings are structured metadata, not article titles.
+    journal = _safe_strip(fields.get("journal", ""))
+    volume = _safe_strip(fields.get("volume", ""))
+    pages = _safe_strip(fields.get("pages", ""))
+    compact_title = _norm_text(title)
+    compact_struct = _norm_text(" ".join([journal, volume, pages]))
+    if compact_struct and compact_title == compact_struct:
+        return False
+    return True
+
+
+def _v1522_numeric_publication_year(clean: str) -> str:
+    """Prefer the actual publication year in numeric references, not years inside titles."""
+    s = _normalise_reference_for_verify(clean)
+
+    # Vancouver/JAMA/Elsevier/NLM: Journal. 2024 Sep 1;75 or Journal. 2022;9(2):137-150
+    matches = list(re.finditer(r"\.\s*((?:19|20)\d{2})(?:\s+[A-Za-z]{3,9}\s+\d{1,2})?\s*;", s))
+    if matches:
+        return matches[-1].group(1)
+
+    # RSC/ACS: Journal, 2026, 649, 83-90.
+    matches = list(re.finditer(r",\s*((?:19|20)\d{2})\s*,\s*[A-Za-z]?\d+", s))
+    if matches:
+        return matches[-1].group(1)
+
+    # DOI/online-first references sometimes use month/day before the semicolon.
+    matches = list(re.finditer(r"\b((?:19|20)\d{2})\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\s*;", s, flags=re.I))
+    if matches:
+        return matches[-1].group(1)
+
+    # Fall back to the last plausible year after the author block. This avoids picking
+    # GBD 2019 or title ranges such as 1990-2019 when the publication year appears later.
+    years = re.findall(r"\b((?:19|20)\d{2})[a-z]?\b", s)
+    if years:
+        return years[-1]
+    return ""
+
+
+def _v1522_clean_numeric_journal(journal: str) -> str:
+    j = _clean_query_text(journal or "")
+    j = re.sub(r"\b\[Internet\]\b", "", j, flags=re.I)
+    j = re.sub(r"\bInternet\b", "", j, flags=re.I)
+    j = re.sub(r"\s+", " ", j).strip(" .,:;")
+    return j
+
+
+def _v1522_extract_vancouver_parts(clean: str) -> Tuple[str, str, str]:
+    """Extract authors, title, journal from Vancouver/JAMA/Elsevier numeric references."""
+    parts = [p.strip() for p in re.split(r"\.\s+", clean) if p.strip()]
+    if len(parts) < 2:
+        return "", "", ""
+
+    if not _looks_like_vancouver_author_segment(parts[0]):
+        return "", "", ""
+
+    author_parts = [parts[0]]
+    idx = 1
+
+    # Some PDFs split group authors into "Collaborators G. 2019 MD. Title ...".
+    # Treat short degree/year fragments before the real title as author continuation.
+    while idx < len(parts) - 1:
+        candidate = parts[idx]
+        sig = _v1522_count_sig_words(candidate)
+        looks_degree_or_group_tail = bool(
+            sig <= 2
+            or re.fullmatch(r"(?:19|20)\d{2}\s*[A-Z]{1,6}", candidate.strip())
+            or re.fullmatch(r"[A-Z]{1,6}", candidate.strip())
+        )
+        if looks_degree_or_group_tail:
+            author_parts.append(candidate)
+            idx += 1
+            continue
+        break
+
+    if idx >= len(parts):
+        return " ".join(author_parts), "", ""
+
+    title = parts[idx].strip(" ,.;")
+    journal = parts[idx + 1].strip(" ,.;") if idx + 1 < len(parts) else ""
+
+    # Remove year/volume material if it became attached to the journal segment.
+    journal = re.split(r"\b(?:19|20)\d{2}\b", journal, maxsplit=1)[0].strip(" ,.;") or journal.strip(" ,.;")
+    return " ".join(author_parts), title, journal
+
+
+def _extract_numeric_reference_fields(ref: str, style: str = "numeric_square") -> Dict[str, Any]:
+    """
+    Final numeric reference parser used by verification.
+
+    The earlier style-aware verifier often converted no-title RSC references into a fake
+    title like 'Nature 649 83-90'. This patch keeps article title and structured journal
+    metadata separate so verification can use the right evidence for each numeric style.
+    """
+    raw = _normalise_reference_for_verify(ref)
+    clean = _strip_leading_numbering(raw)
+    doi = _normalise_doi(_extract_doi(clean))
+    year = _v1522_numeric_publication_year(clean) or _extract_year(clean)
+    vip = _extract_numeric_volume_issue_pages(clean)
+
+    author_part = ""
+    title = ""
+    journal = ""
+    title_source_type = "unknown"
+
+    # Vancouver/NLM/JAMA/Elsevier numbered references.
+    v_author, v_title, v_journal = _v1522_extract_vancouver_parts(clean)
+    if v_author:
+        author_part, title, journal = v_author, v_title, v_journal
+        title_source_type = "article_title" if title else "none"
+    else:
+        # RSC/ACS compact references.
+        author_part, title, journal = _split_rsc_numeric_reference(clean)
+        if author_part:
+            title_source_type = "article_title" if title else "journal_tuple"
+        else:
+            # Last fallback: use the common parser, but mark it as weaker evidence.
+            fields = _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS(clean) if _STYLE_AWARE_ORIGINAL_EXTRACT_COMMON_FIELDS else {}
+            fields = dict(fields or {})
+            fields.setdefault("authors", [])
+            fields["year"] = year or fields.get("year", "")
+            fields["doi"] = doi or fields.get("doi", "")
+            fields.setdefault("title", "")
+            fields.setdefault("journal", fields.get("container_title", ""))
+            for k, v in vip.items():
+                fields[k] = fields.get(k) or v
+            info = _style_metadata(style)
+            fields.update({
+                "style_family": info["family"],
+                "style_label": info["label"],
+                "style_sample": info["sample"],
+                "reference_numbered": True,
+                "article_title": fields.get("title", ""),
+                "title_source_type": "fallback_common_parser",
+            })
+            return fields
+
+    authors = _extract_numeric_authors(author_part)
+    title = _clean_query_text(title)
+    journal = _v1522_clean_numeric_journal(journal)
+
+    if title and _YEAR_RE.search(title):
+        # Keep title text before publication-year/volume data if extraction merged them.
+        title = re.split(r"\.\s*(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\s*;", title, maxsplit=1)[0].strip(" ,.;")
+
+    if journal and _YEAR_RE.search(journal):
+        journal = re.split(r"\b(?:19|20)\d{2}\b", journal, maxsplit=1)[0].strip(" ,.;")
+
+    # If no article title exists, do not fake one. Use structured tuple matching instead.
+    article_title = title if _v1522_count_sig_words(title) >= 3 else ""
+    structured_key = " ".join([p for p in [journal, year, vip.get("volume", ""), vip.get("pages", "")] if p]).strip()
+
+    info = _style_metadata(style)
+    return {
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "title": article_title,
+        "article_title": article_title,
+        "title_source_type": title_source_type if article_title else "journal_tuple",
+        "journal": journal,
+        "container_title": journal,
+        "source": journal,
+        "volume": vip.get("volume", ""),
+        "issue": vip.get("issue", ""),
+        "pages": vip.get("pages", ""),
+        "structured_key": structured_key,
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+        "reference_numbered": True,
+    }
+
+
+def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    if canonical in _NUMERIC_VERIFY_STYLES:
+        return _extract_numeric_reference_fields(ref, canonical)
+    fields = _extract_apa_fields(ref)
+    info = _style_metadata(canonical)
+    fields.update({
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+    })
+    return fields
+
+
+def _v1522_generic_metadata_query(fields: Dict[str, Any]) -> str:
+    parts = []
+    if fields.get("title"):
+        parts.append(fields.get("title", ""))
+    if fields.get("journal"):
+        parts.append(fields.get("journal", ""))
+    if fields.get("year"):
+        parts.append(fields.get("year", ""))
+    if fields.get("volume"):
+        parts.append(fields.get("volume", ""))
+    if fields.get("pages"):
+        parts.append(fields.get("pages", ""))
+    if fields.get("authors"):
+        parts.append(" ".join((fields.get("authors") or [])[:2]))
+    return _clean_query_text(" ".join([p for p in parts if p]))
+
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+
+    if not _v1522_is_numeric_style(canonical):
+        if _V1522_PREVIOUS_BUILD_QUERY_PLAN:
+            return _V1522_PREVIOUS_BUILD_QUERY_PLAN(ref, canonical)
+
+    fields = _extract_fields_by_style(ref, canonical)
+    fields["reference"] = ref
+
+    for name, fn in [
+        ("isbn", globals().get("_extract_isbn")),
+        ("pmid", globals().get("_extract_pmid")),
+        ("pmcid", globals().get("_extract_pmcid")),
+        ("arxiv_id", globals().get("_extract_arxiv_id")),
+    ]:
+        try:
+            fields[name] = fn(ref) if callable(fn) else ""
+        except Exception:
+            fields[name] = ""
+
+    authors = fields.get("authors", []) or []
+    first_author = authors[0] if authors else ""
+    year = _safe_strip(fields.get("year", ""))
+    doi = _normalise_doi(fields.get("doi", "") or "")
+    title = _clean_query_text(fields.get("article_title") or fields.get("title") or "")
+    journal = _clean_query_text(fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", ""))
+    volume = _clean_query_text(fields.get("volume", "") or "")
+    issue = _clean_query_text(fields.get("issue", "") or "")
+    pages = _clean_query_text(fields.get("pages", "") or fields.get("page", "") or "")
+
+    title_words = _significant_title_words(title, limit=14)
+    title_key = " ".join(title_words[:10]).strip()
+    title_short = " ".join(title_words[:7]).strip()
+    has_clear_title = _v1522_has_clear_title({**fields, "title": title})
+    structured_query = _v1522_generic_metadata_query({**fields, "title": title, "journal": journal, "year": year, "volume": volume, "pages": pages})
+
+    crossref_queries: List[Dict[str, Any]] = []
+    openalex_queries: List[Dict[str, Any]] = []
+    fallback_queries: List[Dict[str, Any]] = []
+
+    if doi:
+        crossref_queries.append({"name": "crossref_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+        openalex_queries.append({"name": "openalex_doi_exact", "mode": "doi_exact", "doi": doi, "priority": 1})
+
+    # Numeric styles should not start with broad full-reference queries. Those are
+    # what returned unrelated matches such as 'Antibodies to watch in 2025'.
+    if has_clear_title and title_key:
+        crossref_queries.append({
+            "name": "numeric_title_author_year",
+            "mode": "bibliographic",
+            "query_bibliographic": " ".join([title_key, year]).strip(),
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 2,
+        })
+        if journal:
+            crossref_queries.append({
+                "name": "numeric_title_journal_year",
+                "mode": "bibliographic",
+                "query_bibliographic": " ".join([title_key, journal, year]).strip(),
+                "query_author": "",
+                "rows": VERIFY_CROSSREF_ROWS,
+                "priority": 3,
+            })
+        openalex_queries.append({
+            "name": "numeric_openalex_title_year",
+            "mode": "search",
+            "search": title_key,
+            "publication_year": year,
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 4,
+        })
+        if journal:
+            openalex_queries.append({
+                "name": "numeric_openalex_title_journal",
+                "mode": "search",
+                "search": f"{title_key} {journal}",
+                "publication_year": year,
+                "rows": VERIFY_OPENALEX_ROWS,
+                "priority": 5,
+            })
+    elif journal and year and (volume or pages):
+        # RSC/ACS no-title references: Authors, Journal, Year, Volume, Pages.
+        tuple_query = " ".join([p for p in [journal, year, volume, pages, first_author] if p]).strip()
+        crossref_queries.append({
+            "name": "numeric_journal_year_volume_page",
+            "mode": "bibliographic",
+            "query_bibliographic": tuple_query,
+            "query_author": first_author,
+            "rows": VERIFY_CROSSREF_ROWS,
+            "priority": 2,
+        })
+        openalex_queries.append({
+            "name": "numeric_openalex_journal_tuple",
+            "mode": "search",
+            "search": tuple_query,
+            "publication_year": year,
+            "rows": VERIFY_OPENALEX_ROWS,
+            "priority": 3,
+        })
+    elif structured_query and _v1522_count_sig_words(structured_query) >= 4:
+        # Last bounded numeric query. Still avoid raw full-reference search.
+        crossref_queries.append({
+            "name": "numeric_bounded_metadata_query",
+            "mode": "bibliographic",
+            "query_bibliographic": structured_query,
+            "query_author": first_author,
+            "rows": max(3, min(VERIFY_CROSSREF_ROWS, 6)),
+            "priority": 6,
+        })
+
+    # Only adaptive fallbacks when there is usable title evidence.
+    try:
+        flags = _reference_type_flags(ref, fields)
+    except Exception:
+        flags = {}
+    if has_clear_title:
+        if fields.get("pmid"):
+            fallback_queries.append({"name": "pubmed_pmid_exact", "source": "pubmed", "mode": "pmid_exact", "priority": 20})
+        if fields.get("doi"):
+            fallback_queries.append({"name": "datacite_doi_exact", "source": "datacite", "mode": "doi_exact", "priority": 21})
+        if flags.get("looks_health"):
+            fallback_queries.append({"name": "pubmed_search", "source": "pubmed", "mode": "search", "priority": 22})
+            fallback_queries.append({"name": "europepmc_search", "source": "europepmc", "mode": "search", "priority": 23})
+        fallback_queries.append({"name": "semantic_scholar_search", "source": "semantic_scholar", "mode": "search", "priority": 30})
+
+    fields.update({
+        "first_author": first_author,
+        "doi": doi,
+        "title": title,
+        "article_title": title,
+        "journal": journal,
+        "volume": volume,
+        "issue": issue,
+        "pages": pages,
+        "title_key": title_key,
+        "title_short": title_short,
+        "has_clear_title": has_clear_title,
+        "structured_key": structured_query,
+        "reference_type_flags": flags,
+        "verification_profile": "numeric_style_specific",
+    })
+
+    return {
+        "reference": ref,
+        "style": canonical,
+        "fields": fields,
+        "crossref_queries": crossref_queries,
+        "openalex_queries": openalex_queries,
+        "fallback_queries": fallback_queries,
+    }
+
+
+def _score_candidate(ref_fields: Dict[str, Any], cand: Dict[str, Any]) -> Dict[str, Any]:
+    if _V1522_PREVIOUS_SCORE_CANDIDATE:
+        meta = _V1522_PREVIOUS_SCORE_CANDIDATE(ref_fields, cand)
+    else:
+        meta = {}
+
+    family = ref_fields.get("style_family") or _v1522_style_family(ref_fields.get("style", "apa"))
+    if family not in {"numeric_square", "numeric_superscript", "numeric_round"}:
+        return meta
+
+    title_score = int(meta.get("title_score", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    author_overlap = int(meta.get("author_overlap", 0))
+    year_match = int(meta.get("year_match", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    doi_match = bool(meta.get("doi_match"))
+    volume_match = int(meta.get("volume_match", 0))
+    issue_match = int(meta.get("issue_match", 0))
+    page_match = int(meta.get("page_match", 0))
+    has_clear_title = _v1522_has_clear_title(ref_fields)
+    ref_has_doi = bool(ref_fields.get("doi"))
+    candidate_has_doi = bool(meta.get("doi"))
+
+    if doi_match:
+        score = 100
+    elif has_clear_title:
+        score = 0.0
+        score += title_score * 0.64
+        score += min(author_similarity, 100) * 0.12
+        score += 12 if year_delta <= 1 else (5 if year_delta <= 2 else 0)
+        score += journal_score * 0.06
+        score += 4 if volume_match else 0
+        score += 3 if issue_match else 0
+        score += 4 if page_match else 0
+        score += 4 if candidate_has_doi else 0
+
+        # Hard cap weak title matches. This prevents broad database results from
+        # appearing as real verification candidates.
+        if title_score < 55 and not doi_match:
+            score = min(score, 44)
+        elif title_score < 70 and not (author_overlap or journal_score >= 70 or year_delta <= 1):
+            score = min(score, 54)
+    else:
+        # Structured no-title references, mainly RSC/ACS: Journal + year + volume + page.
+        score = 0.0
+        score += journal_score * 0.38
+        score += 18 if year_delta <= 1 else (8 if year_delta <= 2 else 0)
+        score += 14 if volume_match else 0
+        score += 16 if page_match else 0
+        score += 8 if author_overlap >= 1 else (min(author_similarity, 100) * 0.05)
+        score += 4 if candidate_has_doi else 0
+        if journal_score < 55 and not doi_match:
+            score = min(score, 49)
+
+    # If the original reference has a DOI, a different DOI should not be treated as strong.
+    if ref_has_doi and candidate_has_doi and not doi_match:
+        score = min(score, 49)
+        meta["doi_conflict"] = 1
+
+    meta["score"] = int(max(0, min(100, round(score))))
+    meta["numeric_has_clear_title"] = bool(has_clear_title)
+    meta["numeric_structured_match"] = int((journal_score >= 70) and (year_delta <= 1) and (volume_match or page_match))
+    meta["candidate_has_doi"] = bool(candidate_has_doi)
+    return meta
+
+
+def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
+    family = ref_fields.get("style_family") or _v1522_style_family(ref_fields.get("style", "apa"))
+    if family not in {"numeric_square", "numeric_superscript", "numeric_round"}:
+        if _V1522_PREVIOUS_CLASSIFY_FROM_META:
+            return _V1522_PREVIOUS_CLASSIFY_FROM_META(ref_fields, meta)
+        return "not_found", "No classifier available."
+
+    title_score = int(meta.get("title_score", 0))
+    score = int(meta.get("score", 0))
+    year_delta = int(meta.get("year_delta", 999))
+    author_overlap = int(meta.get("author_overlap", 0))
+    author_similarity = int(meta.get("author_similarity", 0))
+    journal_score = int(meta.get("journal_score", 0))
+    doi_match = bool(meta.get("doi_match"))
+    volume_match = int(meta.get("volume_match", 0))
+    page_match = int(meta.get("page_match", 0))
+    has_clear_title = bool(meta.get("numeric_has_clear_title")) or _v1522_has_clear_title(ref_fields)
+    ref_has_doi = bool(ref_fields.get("doi"))
+    doi_conflict = bool(meta.get("doi_conflict"))
+    author_ok = author_overlap >= 1 or author_similarity >= 78 or not ref_fields.get("authors") or not meta.get("authors")
+    year_ok = year_delta <= 1
+
+    if doi_match:
+        if has_clear_title and title_score < 45 and not (year_ok or author_ok or journal_score >= 55):
+            return "needs_review", "Exact DOI was found, but the surrounding bibliographic metadata is weak."
+        return "verified", "Exact DOI match. Numeric-style reference verified using DOI-first matching."
+
+    if ref_has_doi and doi_conflict:
+        return "not_found", "Candidates had a different DOI from the original numeric reference."
+
+    if has_clear_title:
+        if title_score >= 92 and year_delta <= 1 and (author_ok or journal_score >= 55):
+            return "verified", "Numeric-style title, year, and author/journal evidence match."
+        if title_score >= 88 and (author_ok or journal_score >= 70) and year_delta <= 2:
+            return "verified", "Strong numeric-style title match with supporting bibliographic metadata."
+        if title_score >= 82 and (year_delta <= 2 or author_ok or journal_score >= 65):
+            return "likely", "Likely numeric-style match. Title is strong, but metadata needs review."
+        if title_score >= 72 and (year_delta <= 2 or author_ok or journal_score >= 60):
+            return "needs_review", "Possible numeric-style match, but evidence is below the verification threshold."
+        return "not_found", "No reliable numeric-style title match found. Weak database candidates were rejected."
+
+    # No-title RSC/ACS-style reference. Use bibliographic tuple.
+    if journal_score >= 86 and year_delta <= 1 and volume_match and page_match:
+        return "verified", "Numeric no-title reference verified by journal, year, volume, and page tuple."
+    if journal_score >= 78 and year_delta <= 1 and (volume_match or page_match) and (author_ok or score >= 76):
+        return "likely", "Likely numeric no-title match using journal-year-volume/page evidence."
+    if journal_score >= 65 and year_delta <= 2 and (volume_match or page_match):
+        return "needs_review", "Possible numeric no-title match. Check journal, volume, page and author manually."
+
+    return "not_found", "No reliable numeric-style bibliographic tuple match found."
+
+
+def _v1522_blank_unreliable_match(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Do not display unrelated candidates as matches when status is not_found."""
+    if not isinstance(row, dict):
+        return row
+    status = _normalize_verify_status(row.get("status"))
+    family = row.get("style_family") or _v1522_style_family(row.get("style", "apa"))
+    if family not in {"numeric_square", "numeric_superscript", "numeric_round"}:
+        return row
+    if status != "not_found":
+        return row
+    if int(row.get("doi_match", 0) or 0):
+        return row
+    # Keep query diagnostics, but remove misleading matched-source display.
+    row.setdefault("rejected_matched_title", row.get("matched_title", ""))
+    row.setdefault("rejected_matched_doi", row.get("doi", ""))
+    row.setdefault("rejected_match_score", row.get("score", 0))
+    for key in [
+        "source", "doi", "matched_title", "matched_year", "matched_authors", "matched_journal",
+        "matched_container_title", "matched_volume", "matched_issue", "matched_pages",
+        "matched_publisher", "matched_type", "matched_url",
+    ]:
+        row[key] = ""
+    row["score"] = 0
+    row["title_score"] = 0
+    row["journal_score"] = 0
+    row["confidence_reason"] = row.get("confidence_reason") or "No reliable style-specific numeric match found."
+    return row
+
+
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    canonical = _canonical_verify_style(style)
+    info = _style_metadata(canonical)
+
+    if _V1522_PREVIOUS_VERIFY_SINGLE_REFERENCE:
+        row = _V1522_PREVIOUS_VERIFY_SINGLE_REFERENCE(ref, canonical, use_crossref, use_openalex, enrich_metadata)
+    else:
+        row = {"reference": ref, "style": canonical, "status": "not_found"}
+
+    # Reattach final style metadata and parsed reference fields.
+    try:
+        fields = _extract_fields_by_style(ref, canonical)
+    except Exception:
+        fields = {}
+
+    row.update({
+        "style": canonical,
+        "selected_style": canonical,
+        "style_family": info["family"],
+        "style_label": info["label"],
+        "style_sample": info["sample"],
+        "reference_title": fields.get("article_title") or fields.get("title", row.get("reference_title", "")),
+        "reference_year": fields.get("year", row.get("reference_year", "")),
+        "reference_doi": fields.get("doi", row.get("reference_doi", "")),
+        "reference_journal": fields.get("journal", row.get("reference_journal", "")),
+        "reference_volume": fields.get("volume", row.get("reference_volume", "")),
+        "reference_issue": fields.get("issue", row.get("reference_issue", "")),
+        "reference_pages": fields.get("pages", row.get("reference_pages", "")),
+        "verification_profile": fields.get("verification_profile", "style_specific"),
+    })
+    row["status"] = _normalize_verify_status(row.get("status"))
+    row = _v1522_blank_unreliable_match(row)
+    if not row.get("correction_suggestions"):
+        row["correction_suggestions"] = _verification_style_suggestion(row)
+    return row
+
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    canonical = _canonical_verify_style(style)
+    refs = [r for r in (references or []) if _safe_strip(r)]
+    rows = []
+    total = len(refs)
+    for i, ref in enumerate(refs, start=1):
+        rows.append(_verify_single_reference(ref, canonical, use_crossref, use_openalex, enrich_metadata))
+        if job_id:
+            try:
+                update_job_progress(job_id, i)
+                if i == total:
+                    store_verification_results(job_id, rows)
+            except Exception:
+                pass
+        if throttle_s:
+            time.sleep(throttle_s)
+    return rows
+
+try:
+    if "__all__" in globals():
+        for name in [
+            "VERIFY_BUILD",
+            "_canonical_verify_style",
+            "_style_metadata",
+            "_extract_numeric_reference_fields",
+            "_build_verification_query_plan",
+            "_score_candidate",
+            "_classify_from_meta",
+            "verify_references_batch",
+        ]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
