@@ -24,14 +24,15 @@ import redis
 from rq import Queue
 
 # FastAPI and web frameworks
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Body
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from engine import run_crosscheck, run_crosscheck_with_autofix, recover_references_for_verification
-
+from manual_scholar_search import manual_scholar_search
+from certificate_builder import build_citation_integrity_certificate, render_certificate_html
 # Your custom modules
 from engine import run_crosscheck, run_crosscheck_with_autofix
 from verify import (
@@ -51,6 +52,43 @@ from reference_formatter import (
     export_references_to_html,
     DOCX_AVAILABLE
 )
+from admin_dashboard import (
+    router as admin_dashboard_router,
+    init_commercial_dashboard_table,
+    record_dashboard,
+    record_dashboard_from_result,
+)
+
+# Commercial access and Paystack payment helpers
+try:
+    from entitlements import (
+        build_plan_selection_payload,
+        apply_entitlements_to_result,
+    )
+    from access_control import (
+        init_commercial_tables,
+        purchase_is_paid_for_job,
+        validate_purchase_for_new_run,
+        record_purchase_run,
+    )
+    from paystack_payments import (
+        initialize_citeintegrity_payment,
+        verify_and_activate_purchase,
+        handle_paystack_webhook,
+    )
+    COMMERCIAL_FEATURES_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ Commercial/payment helpers not loaded: {e}")
+    COMMERCIAL_FEATURES_AVAILABLE = False
+    build_plan_selection_payload = None
+    apply_entitlements_to_result = None
+    init_commercial_tables = None
+    purchase_is_paid_for_job = None
+    validate_purchase_for_new_run = None
+    record_purchase_run = None
+    initialize_citeintegrity_payment = None
+    verify_and_activate_purchase = None
+    handle_paystack_webhook = None
 
 
 # ===============================
@@ -579,8 +617,19 @@ class StatsTracker:
 stats_tracker = StatsTracker()
 print(f"✅ Using {stats_tracker.db_type.upper()} database for persistent statistics")
 
+# Initialise commercial/payment tables if the payment helpers are available.
+if DATABASE_URL and COMMERCIAL_FEATURES_AVAILABLE and init_commercial_tables:
+    try:
+        init_commercial_tables(DATABASE_URL)
+        print("✅ Commercial payment tables checked")
+    except Exception as e:
+        print(f"⚠️ Could not initialise commercial payment tables: {e}")
 
-# ===============================
+    try:
+        init_commercial_dashboard_table()
+        print("✅ Commercial admin dashboard table checked")
+    except Exception as e:
+        print(f"⚠️ Could not initialise commercial admin dashboard table: {e}")
 # COUNTER SETUP
 # ===============================
 
@@ -614,6 +663,7 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
         )
 
 APP_TITLE = "CitationCrosschecker"
+MAIN_BUILD = "commercial-2026-05-19-payment-safe-style-passing-docx-ieee-main-FINAL"
 
 
 # ===============================
@@ -635,6 +685,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.include_router(admin_dashboard_router)
 
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
@@ -663,7 +714,17 @@ BAD_AGENTS = [
 async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
-    
+	    # Redirect old /new landing page to main homepage
+    if path in {"/new", "/new/"}:
+        return RedirectResponse(
+            url="https://citeintegrity.org/",
+            status_code=301
+        )
+    if path.startswith("/api/certificate/"):
+        return await call_next(request)
+
+    if path.startswith("/admin/commercial-dashboard") or path.startswith("/admin/api/commercial-dashboard"):
+        return await call_next(request)
     # ✅ ALLOW LIST - Critical endpoints that must work
     ALLOWED_PATHS = [
         "/",
@@ -682,12 +743,19 @@ async def security_middleware(request: Request, call_next):
         "/apply-autofix",
         "/queue/status",
         "/api/enrichment",
+		"/api/manual-search",
+		"/api/manual-verify",
+        "/api/plans",
+        "/api/paystack",
+        "/payment/paystack",
+        "/webhooks/paystack",
         "/new",
         "/analyse",
         "/results",
         "/features",
         "/pricing",
         "/contact",
+		"/api/certificate",
         "/private-stats"
     ]
     
@@ -714,7 +782,8 @@ async def security_middleware(request: Request, call_next):
 async def redirect_with_message(request: Request, call_next):
     host = request.headers.get("host", "")
     path = request.url.path
-    
+    if path.startswith("/admin/commercial-dashboard") or path.startswith("/admin/api/commercial-dashboard"):
+    	return await call_next(request)
     # Skip redirect for API endpoints
     if (
         path.startswith("/online/")
@@ -1228,6 +1297,298 @@ def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
         "error": error,
         "verification": verification
     }
+
+# ============================================================
+# PAYMENT ACCESS HELPERS
+# ============================================================
+
+def get_document_counts_from_result(result: Dict[str, Any]) -> Dict[str, int]:
+    """Return reference and in-text citation counts from a job result."""
+    result = result or {}
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+
+    reference_count = (
+        summary.get("reference_entries_found")
+        or summary.get("references_count")
+        or len(result.get("references_raw") or [])
+        or len(result.get("references") or [])
+        or 0
+    )
+
+    citation_count = (
+        summary.get("in_text_citations_found")
+        or summary.get("citations_count")
+        or len(result.get("in_text_citations") or [])
+        or len(result.get("citations") or [])
+        or len(result.get("reconciliation_intext_to_reference") or [])
+        or 0
+    )
+
+    try:
+        reference_count = int(reference_count or 0)
+    except Exception:
+        reference_count = 0
+
+    try:
+        citation_count = int(citation_count or 0)
+    except Exception:
+        citation_count = 0
+
+    return {
+        "reference_count": reference_count,
+        "citation_count": citation_count,
+    }
+
+
+def get_access_for_job(job_id: str) -> Dict[str, Any]:
+    """Return paid/free access metadata for a job."""
+    default = {
+        "paid": False,
+        "tier_key": "",
+        "currency": "GHS",
+        "purchase": None,
+    }
+
+    if not (DATABASE_URL and COMMERCIAL_FEATURES_AVAILABLE and purchase_is_paid_for_job):
+        return default
+
+    try:
+        access = purchase_is_paid_for_job(DATABASE_URL, job_id=job_id) or default
+        return {
+            "paid": bool(access.get("paid")),
+            "tier_key": access.get("tier_key", "") or "",
+            "currency": access.get("currency", "GHS") or "GHS",
+            "purchase": access.get("purchase"),
+        }
+    except Exception as e:
+        print(f"[ACCESS] Could not determine payment access for {job_id}: {e}")
+        return default
+
+
+def shape_result_for_access(job_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply Free Preview or paid Full Review entitlements before returning results."""
+    access = get_access_for_job(job_id)
+
+    if COMMERCIAL_FEATURES_AVAILABLE and apply_entitlements_to_result:
+        try:
+            shaped = apply_entitlements_to_result(
+                result or {},
+                tier_key=access.get("tier_key", ""),
+                paid=access.get("paid", False),
+                currency=access.get("currency", "GHS"),
+            )
+            shaped.setdefault("access", {})
+            shaped["access"].update({
+                "paid": access.get("paid", False),
+                "tier_key": access.get("tier_key", ""),
+                "currency": access.get("currency", "GHS"),
+                "remaining_analyses": (
+                    max(
+                        int((access.get("purchase") or {}).get("analyses_total") or 0)
+                        - int((access.get("purchase") or {}).get("analyses_used") or 0),
+                        0,
+                    )
+                    if access.get("purchase") else None
+                ),
+            })
+            return shaped
+        except Exception as e:
+            print(f"[ACCESS] Could not apply entitlements for {job_id}: {e}")
+
+    # Safe fallback: return raw result only if paid access is confirmed.
+    return result or {} if access.get("paid") else (result or {})
+
+
+def build_access_response(job_id: str) -> Dict[str, Any]:
+    access = get_access_for_job(job_id)
+    purchase = access.get("purchase") or {}
+    return {
+        "paid": access.get("paid", False),
+        "tier_key": access.get("tier_key", ""),
+        "currency": access.get("currency", "GHS"),
+        "analyses_total": purchase.get("analyses_total"),
+        "analyses_used": purchase.get("analyses_used"),
+        "remaining_analyses": (
+            max(int(purchase.get("analyses_total") or 0) - int(purchase.get("analyses_used") or 0), 0)
+            if purchase else None
+        ),
+    }
+# ============================================================
+# MANUAL VERIFICATION HELPERS
+# ============================================================
+
+MANUAL_DECISIONS = {
+    "manual_verified",
+    "manual_not_verified",
+    "not_indexed_but_plausible",
+    "keep_needs_review",
+}
+
+
+def _manual_norm_text(value: str) -> str:
+    value = str(value or "").lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _manual_reference_match(row: dict, reference_text: str, row_id: str = "") -> bool:
+    if row_id:
+        possible_ids = {
+            str(row.get("row_id") or ""),
+            str(row.get("id") or ""),
+            str(row.get("reference_id") or ""),
+        }
+        if str(row_id) in possible_ids:
+            return True
+
+    target = _manual_norm_text(reference_text)
+    if not target:
+        return False
+
+    row_ref = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or ""
+    )
+
+    row_norm = _manual_norm_text(row_ref)
+
+    if not row_norm:
+        return False
+
+    return (
+        row_norm == target
+        or target[:120] in row_norm
+        or row_norm[:120] in target
+    )
+
+
+def _manual_decision_label(decision: str) -> str:
+    labels = {
+        "manual_verified": "Manually verified",
+        "manual_not_verified": "Not verified after manual search",
+        "not_indexed_but_plausible": "Not indexed but plausible",
+        "keep_needs_review": "Manual review still required",
+    }
+    return labels.get(decision, decision)
+
+
+def _update_manual_decision_in_result(
+    result: dict,
+    *,
+    reference_text: str,
+    decision: str,
+    candidate: dict = None,
+    note: str = "",
+    user_email: str = "",
+    row_id: str = "",
+    row_type: str = "verification",
+) -> dict:
+    result = result or {}
+    candidate = candidate or {}
+
+    created_at = datetime.utcnow().isoformat()
+
+    decision_record = {
+        "reference": reference_text,
+        "decision": decision,
+        "decision_label": _manual_decision_label(decision),
+        "candidate": candidate,
+        "note": note,
+        "row_id": row_id,
+        "row_type": row_type,
+        "user_email": user_email,
+        "created_at": created_at,
+    }
+
+    ov = result.get("online_verification") or {}
+    rows = ov.get("rows") or []
+    updated = False
+
+    for row in rows:
+        if _manual_reference_match(row, reference_text, row_id=row_id):
+            row.setdefault("automated_status", row.get("status", ""))
+            row["manual_decision"] = decision
+            row["manual_decision_label"] = _manual_decision_label(decision)
+            row["manual_verified"] = decision == "manual_verified"
+            row["manual_not_verified"] = decision == "manual_not_verified"
+            row["manual_candidate"] = candidate
+            row["manual_note"] = note
+            row["manual_verified_by"] = user_email
+            row["manual_verified_at"] = created_at
+
+            if decision == "manual_verified":
+                row["display_status"] = "manual_verified"
+                row["verification_basis"] = "manual_search"
+            elif decision == "manual_not_verified":
+                row["display_status"] = "manual_not_verified"
+                row["verification_basis"] = "manual_search"
+            elif decision == "not_indexed_but_plausible":
+                row["display_status"] = "not_indexed_but_plausible"
+                row["verification_basis"] = "manual_bibliographic_review"
+            else:
+                row["display_status"] = row.get("status", "needs_review")
+
+            updated = True
+            break
+
+    if not updated and row_type == "verification":
+        rows.append({
+            "reference": reference_text,
+            "status": "needs_review",
+            "automated_status": "",
+            "display_status": decision,
+            "manual_decision": decision,
+            "manual_decision_label": _manual_decision_label(decision),
+            "manual_verified": decision == "manual_verified",
+            "manual_not_verified": decision == "manual_not_verified",
+            "manual_candidate": candidate,
+            "manual_note": note,
+            "manual_verified_by": user_email,
+            "manual_verified_at": created_at,
+            "verification_basis": "manual_search",
+            "source": "manual_verification",
+        })
+
+    ov["rows"] = rows
+    result["online_verification"] = ov
+
+    decisions = result.get("manual_verification_decisions") or []
+    decisions.append(decision_record)
+    result["manual_verification_decisions"] = decisions
+
+    result["manual_verification_summary"] = {
+        "total_manual_decisions": len(decisions),
+        "manual_verified": sum(1 for d in decisions if d.get("decision") == "manual_verified"),
+        "manual_not_verified": sum(1 for d in decisions if d.get("decision") == "manual_not_verified"),
+        "not_indexed_but_plausible": sum(1 for d in decisions if d.get("decision") == "not_indexed_but_plausible"),
+        "keep_needs_review": sum(1 for d in decisions if d.get("decision") == "keep_needs_review"),
+    }
+
+    return result
+
+
+def _save_manual_result_to_db_and_cache(job_id: str, result: dict):
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[MANUAL VERIFY] Redis refresh failed: {e}")
+
 def store_result(result):
     job_id = uuid.uuid4().hex
 
@@ -1471,6 +1832,15 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     cursor.close()
                                     conn.close()
                                     print(f"[DEBUG] Stored verification completion in PostgreSQL for job {job_id}")
+
+                                    try:
+                                        record_dashboard_from_result(
+                                            job_id,
+                                            final_result,
+                                            analysis_status="verification_completed",
+                                        )
+                                    except Exception as dash_error:
+                                        print(f"⚠️ Could not update commercial dashboard after verification completion: {dash_error}")
                                 except Exception as e:
                                     print(f"[DEBUG] Could not persist verification completion: {e}")
                         else:
@@ -1962,6 +2332,7 @@ async def test_suggestions():
 @app.post("/debug/retry-verification/{job_id}")
 async def debug_retry_verification(job_id: str):
     refs = []
+    result_for_retry = {}
     
     # Try to get references from PostgreSQL first
     if DATABASE_URL:
@@ -1977,7 +2348,8 @@ async def debug_retry_verification(job_id: str):
                 result = row["result"]
                 if isinstance(result, str):
                     result = json.loads(result)
-                refs = result.get("references_raw", [])
+                result_for_retry = result if isinstance(result, dict) else {}
+                refs = result_for_retry.get("references_raw", [])
         except Exception as e:
             print(f"PostgreSQL lookup error: {e}")
     
@@ -1986,7 +2358,8 @@ async def debug_retry_verification(job_id: str):
         job = get_job(job_id)
         if not job:
             return {"error": "Job not found"}
-        refs = job["result"].get("references_raw", [])
+        result_for_retry = job.get("result", {}) or {}
+        refs = result_for_retry.get("references_raw", [])
     
     if not refs:
         return {"error": "No references to verify"}
@@ -1995,7 +2368,9 @@ async def debug_retry_verification(job_id: str):
     
     try:
         temp_job_id = uuid.uuid4().hex
-        results = verify_references_batch(refs, style="apa", job_id=temp_job_id)
+        style_for_retry = _style_for_job_result(result_for_retry)
+        print(f"[DEBUG RETRY] Running direct verification for job {job_id} with style={style_for_retry}")
+        results = verify_references_batch(refs, style=style_for_retry, job_id=temp_job_id)
         
         stored_results = get_verification_results(temp_job_id)
         final_results = stored_results if stored_results else results
@@ -2128,7 +2503,7 @@ async def retry_stuck_verification(job_id: str):
         return {"error": "No references to verify"}
 
     selected_style = _style_for_job_result(job.get("result", {}) or {})
-    print(f"[VERIFY RETRY] Re-queueing job {job_id} with style={selected_style}")
+    print(f"[VERIFY RETRY] Re-queueing job {job_id} with selected_style={selected_style}")
     
     new_verification_job_id = f"verify:{job_id}:{uuid.uuid4().hex[:8]}"
     if not verification_queue:
@@ -2343,10 +2718,11 @@ async def new_results_dashboard_page(request: Request, job_id: str, verify: int 
     )
 
 # ============================================================
-# STYLE PASSING HELPERS FOR ONLINE VERIFICATION
+# STYLE HELPERS FOR VERIFICATION QUEUES
 # ============================================================
+
 def _main_style_token(style_value):
-    """Return the canonical style family that should be sent to worker.process_verification."""
+    """Return the canonical citation family to send to worker.process_verification."""
     s = str(style_value or "").strip().lower()
     s = s.replace("&", " and ")
     s = re.sub(r"[\s\-/]+", "_", s)
@@ -2449,7 +2825,7 @@ def _recovery_style_hint(selected_style):
 @app.post("/verify")
 async def verify(
     file: UploadFile = File(...),
-    style: str = Form("auto"),
+    style: str = Form("apa"),
     enable_autofix: str = Form("false"),  # CHANGE: Use str instead of bool
     enable_online_verification: str = Form("false"),  # CHANGE: Use str instead of bool
     request: Request = None
@@ -2458,7 +2834,6 @@ async def verify(
     autofix_enabled = enable_autofix.lower() == "true"
     online_verify_enabled = enable_online_verification.lower() == "true"
     
-    print(f"📚 Received citation style: {style}")
     print(f"📋 Received enable_autofix string: {enable_autofix}")
     print(f"📋 Converted to bool: {autofix_enabled}")
     print(f"📋 Received enable_online_verification: {online_verify_enabled}")
@@ -2472,25 +2847,11 @@ async def verify(
             content={"error": "No file provided", "message": "Please select a file to upload"}
         )
     
-    filename_lower = (file.filename or "").lower().strip()
-    is_docx = filename_lower.endswith(".docx")
-    is_pdf = filename_lower.endswith(".pdf")
-
-    if not (is_docx or is_pdf):
+    if not file.filename.lower().endswith('.docx'):
         return JSONResponse(
             status_code=400,
-            content={
-                "error": "Invalid file format",
-                "message": "Only DOCX and PDF files are accepted",
-                "instruction": (
-                    "Please upload a .docx file for best accuracy or a text-based .pdf file. "
-                    "Scanned or image-based PDFs may produce incomplete results."
-                )
-            }
+            content={"error": "Invalid file format", "message": "Only DOCX files are accepted"}
         )
-
-    if is_pdf:
-        print(f"[PDF UPLOAD] Accepted PDF for cautious analysis: {file.filename}")
     
     if is_server_busy():
         return JSONResponse(
@@ -2513,7 +2874,11 @@ async def verify(
     # 3. GENERATE JOB ID
     # =========================
     job_id = str(uuid.uuid4())
-
+    record_dashboard(
+    	job_id,
+    	file_name=file.filename,
+    	analysis_status="queued",
+    )
     # =========================
     # 4. STORE FILE IN REDIS
     # =========================
@@ -2600,14 +2965,8 @@ async def verify(
         "status": "queued",
         "message": "Document queued. Poll /job/{job_id} for status.",
         "file_name": file.filename,
-        "file_type": "pdf" if is_pdf else "docx",
         "file_size_mb": file_size_mb,
-        "pdf_caution": (
-            "PDF accepted for cautious analysis. Text-based PDFs work best. DOCX remains recommended for the most accurate citation analysis."
-            if is_pdf else ""
-        ),
-        "autofix_enabled": autofix_enabled,  # Include for debugging
-        "selected_style": _main_style_token(style)
+        "autofix_enabled": autofix_enabled  # Include for debugging
     }
 # ============================================================
 # RESULT CHECK ENDPOINT
@@ -2615,21 +2974,32 @@ async def verify(
 
 @app.get("/result/{job_id}")
 async def get_result(job_id: str, fresh: int = 0):
-    """Get job status and result.
+    """Get job status and result, shaped by Free Preview or paid Full Review access."""
 
-    Use fresh=1 when the browser is polling for enrichment updates, so
-    PostgreSQL is read directly instead of returning a possibly stale Redis value.
-    """
-    
-    # Check Redis cache first unless a fresh PostgreSQL read is requested
+    # Check Redis cache first unless a fresh PostgreSQL read is requested.
     if redis_conn and not fresh:
         cached = redis_conn.get(f"result:{job_id}")
         if cached:
             try:
-                return {"status": "completed", "data": json.loads(cached)}
-            except:
-                pass
-    
+                cached_result = json.loads(cached)
+                try:
+                    record_dashboard_from_result(
+                        job_id,
+                        cached_result,
+                        analysis_status="completed",
+                    )
+                except Exception as e:
+                    print(f"⚠️ Could not update commercial dashboard from Redis result: {e}")
+
+                safe_result = shape_result_for_access(job_id, cached_result)
+                return {
+                    "status": "completed",
+                    "data": safe_result,
+                    "access": build_access_response(job_id),
+                }
+            except Exception as e:
+                print(f"[RESULT] Redis result shaping failed for {job_id}: {e}")
+
     # Check PostgreSQL
     if DATABASE_URL:
         try:
@@ -2642,26 +3012,42 @@ async def get_result(job_id: str, fresh: int = 0):
             row = cursor.fetchone()
             cursor.close()
             conn.close()
-            
+
             if not row:
                 return {"status": "not_found", "error": "Job not found"}
-            
+
             if row["status"] == "completed":
                 result = row["result"]
                 if isinstance(result, str):
                     result = json.loads(result)
-                return {"status": "completed", "data": result}
+
+                try:
+                    record_dashboard_from_result(
+                        job_id,
+                        result,
+                        analysis_status="completed",
+                    )
+                except Exception as e:
+                    print(f"⚠️ Could not update commercial dashboard from PostgreSQL result: {e}")
+
+                safe_result = shape_result_for_access(job_id, result)
+                return {
+                    "status": "completed",
+                    "data": safe_result,
+                    "access": build_access_response(job_id),
+                }
+
             elif row["status"] == "processing":
                 return {"status": "processing", "message": "Processing in background"}
             elif row["status"] == "queued":
                 return {"status": "queued", "message": "Waiting in queue"}
             elif row["status"] == "failed":
                 return {"status": "failed", "error": row["error"]}
-            
+
         except Exception as e:
             print(f"Database error: {e}")
             return {"status": "error", "error": str(e)}
-    
+
     return {"status": "pending", "message": "Job not found"}
 
 @app.get("/job/{job_id}")
@@ -2670,11 +3056,432 @@ def get_job_endpoint(job_id: str):
     if not job:
         return {"status": "not_found"}
 
+    safe_result = shape_result_for_access(job_id, job.get("result") or {})
+
     return {
         "status": job.get("status", "unknown"),
-        "result": job.get("result"),
-        "verification": job.get("verification", {})
+        "result": safe_result,
+        "verification": job.get("verification", {}),
+        "access": build_access_response(job_id),
     }
+
+# ============================================================
+# PAYSTACK PAYMENT AND PLAN ENDPOINTS
+# ============================================================
+
+@app.get("/api/plans/recommend/{job_id}")
+async def recommend_package_for_job(job_id: str, currency: str = "GHS"):
+    if not (COMMERCIAL_FEATURES_AVAILABLE and build_plan_selection_payload):
+        raise HTTPException(status_code=503, detail="Payment features are not available.")
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = job.get("result") or {}
+    counts = get_document_counts_from_result(result)
+
+    return build_plan_selection_payload(
+        counts["reference_count"],
+        counts["citation_count"],
+        selected_currency=currency,
+    )
+
+
+@app.post("/api/paystack/initialize")
+async def paystack_initialize(payload: dict = Body(...)):
+    if not (COMMERCIAL_FEATURES_AVAILABLE and initialize_citeintegrity_payment):
+        raise HTTPException(status_code=503, detail="Payment features are not available.")
+
+    user_email = (payload.get("email") or "").strip()
+    tier_key = (payload.get("tier_key") or "").strip()
+    selected_currency = (payload.get("currency") or "GHS").strip().upper()
+    job_id = (payload.get("job_id") or "").strip()
+    file_name = (payload.get("file_name") or "").strip()
+
+    reference_count = int(payload.get("reference_count") or 0)
+    citation_count = int(payload.get("citation_count") or 0)
+
+    if not user_email or "@" not in user_email:
+        raise HTTPException(status_code=400, detail="A valid email is required.")
+
+    if not tier_key:
+        raise HTTPException(status_code=400, detail="A document package is required.")
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="A preview job ID is required.")
+
+    if not DATABASE_URL:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not configured.")
+
+    # Trust server-side counts when the preview job is available.
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Preview job not found.")
+
+    server_counts = get_document_counts_from_result(job.get("result") or {})
+    reference_count = server_counts["reference_count"] or reference_count
+    citation_count = server_counts["citation_count"] or citation_count
+
+    init = initialize_citeintegrity_payment(
+        database_url=DATABASE_URL,
+        user_email=user_email,
+        tier_key=tier_key,
+        reference_count=reference_count,
+        citation_count=citation_count,
+        selected_currency=selected_currency,
+        job_id=job_id,
+        file_name=file_name,
+        callback_path="/payment/paystack/callback",
+    )
+
+    if not init.get("ok"):
+        raise HTTPException(
+            status_code=402,
+            detail=init.get("error", "Could not initialize payment."),
+        )
+
+    try:
+        init_data = init.get("data") if isinstance(init.get("data"), dict) else {}
+        payment_reference = (
+            init.get("payment_reference")
+            or init.get("reference")
+            or init_data.get("reference")
+            or ""
+        )
+        amount_minor = (
+            init.get("amount_minor")
+            or init.get("amount")
+            or init_data.get("amount")
+            or 0
+        )
+        try:
+            amount_minor = int(float(amount_minor or 0))
+        except Exception:
+            amount_minor = 0
+
+        plan_name = (
+            init.get("plan_name")
+            or init.get("tier_name")
+            or init.get("package_name")
+            or tier_key
+        )
+
+        record_dashboard(
+            job_id,
+            email=user_email,
+            file_name=file_name,
+            plan_key=tier_key,
+            plan_name=plan_name,
+            currency=selected_currency,
+            amount=(amount_minor / 100) if amount_minor else None,
+            amount_minor=amount_minor,
+            payment_reference=payment_reference,
+            payment_status="initialized",
+            paid=False,
+            reference_count=reference_count,
+            citation_count=citation_count,
+        )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after payment initialization: {e}")
+
+    return init
+# ============================================================
+# CITATION INTEGRITY CERTIFICATE ENDPOINTS
+# ============================================================
+
+def _certificate_access_for_job(job_id: str) -> Dict[str, Any]:
+    try:
+        if "get_access_for_job" in globals():
+            return get_access_for_job(job_id) or {}
+    except Exception as e:
+        print(f"[CERTIFICATE] get_access_for_job failed: {e}")
+
+    try:
+        return build_access_response(job_id) or {}
+    except Exception as e:
+        print(f"[CERTIFICATE] build_access_response failed: {e}")
+
+    return {}
+
+
+def _certificate_is_paid(access: Dict[str, Any]) -> bool:
+    if not isinstance(access, dict):
+        return False
+
+    if access.get("paid") is True:
+        return True
+
+    nested = access.get("access")
+    if isinstance(nested, dict) and nested.get("paid") is True:
+        return True
+
+    return False
+
+
+def _save_certificate_result_to_db_and_cache(job_id: str, result: dict):
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[CERTIFICATE] Redis refresh failed: {e}")
+
+
+@app.get("/api/certificate/{job_id}")
+async def get_citation_integrity_certificate(job_id: str):
+    access = _certificate_access_for_job(job_id)
+
+    if not _certificate_is_paid(access):
+        return JSONResponse(
+            {
+                "ok": False,
+                "locked": True,
+                "error": "Citation Integrity Certificate is available after Full Review payment.",
+            },
+            status_code=402,
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+
+    certificate = build_citation_integrity_certificate(
+        result,
+        job_id=job_id,
+        access=access,
+    )
+
+    result["citation_integrity_certificate"] = certificate
+
+    try:
+        _save_certificate_result_to_db_and_cache(job_id, result)
+    except Exception as e:
+        print(f"[CERTIFICATE] Could not persist certificate: {e}")
+
+    try:
+        record_dashboard_from_result(
+            job_id,
+            result,
+            analysis_status="certificate_generated",
+            certificate_generated=True,
+        )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after certificate generation: {e}")
+
+    return {
+        "ok": True,
+        "certificate": certificate,
+    }
+
+
+@app.get("/api/certificate/{job_id}/download")
+async def download_citation_integrity_certificate(job_id: str):
+    access = _certificate_access_for_job(job_id)
+
+    if not _certificate_is_paid(access):
+        return JSONResponse(
+            {
+                "ok": False,
+                "locked": True,
+                "error": "Citation Integrity Certificate is available after Full Review payment.",
+            },
+            status_code=402,
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+
+    certificate = result.get("citation_integrity_certificate") or build_citation_integrity_certificate(
+        result,
+        job_id=job_id,
+        access=access,
+    )
+
+    html_doc = render_certificate_html(certificate)
+    filename = f"CiteIntegrity_Certificate_{job_id[:8]}.doc"
+
+    return Response(
+        content=html_doc,
+        media_type="application/msword",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+@app.get("/payment/paystack/callback")
+async def paystack_callback(request: Request, reference: str = "", trxref: str = ""):
+    payment_reference = (reference or trxref or "").strip()
+
+    if not payment_reference:
+        return HTMLResponse(
+            """
+            <h2>Payment reference missing</h2>
+            <p>Paystack did not return a valid payment reference. Please contact support.</p>
+            """,
+            status_code=400,
+        )
+
+    if not DATABASE_URL:
+        return HTMLResponse(
+            """
+            <h2>Database unavailable</h2>
+            <p>Payment was received, but CiteIntegrity could not access the database.</p>
+            """,
+            status_code=500,
+        )
+
+    try:
+        result = verify_and_activate_purchase(
+            database_url=DATABASE_URL,
+            reference=payment_reference,
+        )
+
+        if not result.get("activated"):
+            message = (
+                result.get("message")
+                or "Payment could not be confirmed."
+            )
+
+            return HTMLResponse(
+                f"""
+                <h2>Payment could not be confirmed</h2>
+                <p>{message}</p>
+                <p>Reference: {payment_reference}</p>
+                """,
+                status_code=400,
+            )
+
+        purchase = result.get("purchase") or {}
+        preview_job_id = purchase.get("preview_job_id") or ""
+
+        try:
+            amount_minor = (
+                purchase.get("amount_minor")
+                or purchase.get("amount")
+                or result.get("amount")
+                or 0
+            )
+            try:
+                amount_minor = int(float(amount_minor or 0))
+            except Exception:
+                amount_minor = 0
+
+            record_dashboard(
+                preview_job_id or purchase.get("job_id") or purchase.get("preview_job_id"),
+                email=(
+                    purchase.get("user_email")
+                    or purchase.get("email")
+                    or result.get("email")
+                ),
+                file_name=purchase.get("file_name") or result.get("file_name"),
+                plan_key=purchase.get("tier_key") or result.get("tier_key"),
+                plan_name=(
+                    purchase.get("plan_name")
+                    or purchase.get("tier_name")
+                    or result.get("plan_name")
+                    or purchase.get("tier_key")
+                ),
+                currency=purchase.get("currency") or result.get("currency"),
+                amount=(amount_minor / 100) if amount_minor else None,
+                amount_minor=amount_minor,
+                payment_reference=payment_reference,
+                payment_status="paid",
+                paid=True,
+            )
+        except Exception as e:
+            print(f"⚠️ Could not update commercial dashboard after payment activation: {e}")
+
+        if preview_job_id:
+            return RedirectResponse(
+                url=f"/new/results/{preview_job_id}?verify=1&paid=1",
+                status_code=303,
+            )
+
+        return HTMLResponse(
+            """
+            <h2>Payment successful</h2>
+            <p>Your CiteIntegrity review has been unlocked.</p>
+            <p>Please return to your results page and refresh.</p>
+            """
+        )
+
+    except Exception as e:
+        print(f"[PAYSTACK CALLBACK ERROR] {type(e).__name__}: {e}")
+
+        return HTMLResponse(
+            f"""
+            <h2>Payment received, but activation failed</h2>
+            <p>Your payment may have been successful, but CiteIntegrity could not unlock the result automatically.</p>
+            <p>Please contact support with this reference:</p>
+            <p><strong>{payment_reference}</strong></p>
+            <p>Error: {type(e).__name__}</p>
+            """,
+            status_code=500,
+        )
+
+
+@app.post("/webhooks/paystack")
+async def paystack_webhook(request: Request):
+    if not (COMMERCIAL_FEATURES_AVAILABLE and handle_paystack_webhook):
+        return JSONResponse({"ok": False, "message": "Payment features are not available."}, status_code=503)
+
+    raw_body = await request.body()
+    signature = request.headers.get("x-paystack-signature", "")
+
+    result = handle_paystack_webhook(
+        database_url=DATABASE_URL,
+        raw_body=raw_body,
+        signature=signature,
+    )
+
+    try:
+        purchase = result.get("purchase") or {}
+        if result.get("activated") or result.get("ok"):
+            job_id = purchase.get("preview_job_id") or purchase.get("job_id")
+            if job_id:
+                amount_minor = purchase.get("amount_minor") or purchase.get("amount") or 0
+                try:
+                    amount_minor = int(float(amount_minor or 0))
+                except Exception:
+                    amount_minor = 0
+
+                record_dashboard(
+                    job_id,
+                    email=purchase.get("user_email") or purchase.get("email"),
+                    file_name=purchase.get("file_name"),
+                    plan_key=purchase.get("tier_key"),
+                    plan_name=purchase.get("plan_name") or purchase.get("tier_name") or purchase.get("tier_key"),
+                    currency=purchase.get("currency"),
+                    amount=(amount_minor / 100) if amount_minor else None,
+                    amount_minor=amount_minor,
+                    payment_reference=purchase.get("payment_reference") or purchase.get("reference"),
+                    payment_status="paid",
+                    paid=True,
+                )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard from Paystack webhook: {e}")
+
+    return JSONResponse(result, status_code=result.get("status_code", 200))
+
 # ============================================================
 # AUTO-FIX ENDPOINTS
 # ============================================================
@@ -3044,7 +3851,22 @@ def online_status(job_id: str):
             or result.get("recovery")
             or result.get("claim_support")
         ):
-            response["result"] = result
+            response["result"] = shape_result_for_access(job_id, result)
+            response["access"] = build_access_response(job_id)
+
+        try:
+            if final_tables_ready or state == "completed" or rows:
+                record_dashboard_from_result(
+                    job_id,
+                    result,
+                    analysis_status=(
+                        "verification_completed"
+                        if final_tables_ready or state == "completed"
+                        else "verification_running"
+                    ),
+                )
+        except Exception as e:
+            print(f"⚠️ Could not update commercial dashboard from online status: {e}")
 
         return JSONResponse(content=response)
 
@@ -3082,6 +3904,18 @@ async def start_advanced_enrichment(job_id: str, request: Request):
             status_code=500
         )
 
+    access = get_access_for_job(job_id)
+    if not access.get("paid"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Advanced Enrichment is available after Full Review payment.",
+                "locked": True,
+                "required_plan": "Full Review",
+            },
+            status_code=402,
+        )
+
     try:
         payload = await request.json()
     except Exception:
@@ -3109,6 +3943,8 @@ async def start_advanced_enrichment(job_id: str, request: Request):
         )
 
     result = job.get("result") or {}
+    selected_style = _style_for_job_result(result)
+    print(f"[ENRICHMENT START] Queuing deep enrichment for job {job_id} with selected_style={selected_style}")
 
     enrichment = result.get("enrichment") or {}
     current_state = str(enrichment.get("state", "")).lower()
@@ -3127,7 +3963,7 @@ async def start_advanced_enrichment(job_id: str, request: Request):
     rq_job = deep_queue.enqueue(
         "worker.process_deep_enrichment",
         job_id,
-        "apa",
+        selected_style,
         scope,
         job_timeout=10800,
         result_ttl=86400,
@@ -3173,6 +4009,281 @@ async def start_advanced_enrichment(job_id: str, request: Request):
         "message": "Advanced enrichment queued.",
         "rq_job_id": rq_job.id,
         "scope": scope,
+    }
+
+@app.post("/api/manual-search")
+async def api_manual_search(payload: dict = Body(...)):
+    job_id = (payload.get("job_id") or "").strip()
+    query = (payload.get("query") or "").strip()
+    sources = payload.get("sources") or ["openalex", "crossref", "semantic_scholar", "datacite"]
+    rows_per_source = int(payload.get("rows_per_source") or 5)
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required.")
+
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query is required.")
+
+    access = get_access_for_job(job_id)
+
+    if not access.get("paid"):
+        raise HTTPException(
+            status_code=402,
+            detail="Manual Search is available after Full Review payment."
+        )
+
+    return manual_scholar_search(
+        query=query,
+        sources=sources,
+        rows_per_source=rows_per_source,
+    )
+
+
+# ============================================================
+# MANUAL VERIFICATION DECISION ENDPOINT
+# ============================================================
+
+MANUAL_DECISIONS = {
+    "manual_verified",
+    "manual_not_verified",
+    "not_indexed_but_plausible",
+    "keep_needs_review",
+}
+
+
+def _manual_norm_text(value: str) -> str:
+    value = str(value or "").lower()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _manual_decision_label(decision: str) -> str:
+    labels = {
+        "manual_verified": "Manually verified",
+        "manual_not_verified": "Not verified after manual search",
+        "not_indexed_but_plausible": "Not indexed but plausible",
+        "keep_needs_review": "Manual review still required",
+    }
+    return labels.get(decision, decision)
+
+
+def _manual_row_matches(row: dict, reference_text: str, row_id: str = "") -> bool:
+    if row_id:
+        possible_ids = {
+            str(row.get("row_id") or ""),
+            str(row.get("id") or ""),
+            str(row.get("reference_id") or ""),
+        }
+        if str(row_id) in possible_ids:
+            return True
+
+    target = _manual_norm_text(reference_text)
+    if not target:
+        return False
+
+    row_ref = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or ""
+    )
+
+    row_norm = _manual_norm_text(row_ref)
+
+    if not row_norm:
+        return False
+
+    return (
+        row_norm == target
+        or target[:120] in row_norm
+        or row_norm[:120] in target
+    )
+
+
+def _save_manual_result_to_db_and_cache(job_id: str, result: dict):
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[MANUAL VERIFY] Redis refresh failed: {e}")
+
+
+@app.post("/api/manual-verify/decision")
+async def api_manual_verify_decision(payload: dict = Body(...)):
+    job_id = (payload.get("job_id") or "").strip()
+    reference_text = (payload.get("reference") or "").strip()
+    decision = (payload.get("decision") or "").strip()
+    candidate = payload.get("candidate") or {}
+    note = (payload.get("note") or "").strip()
+    row_id = (payload.get("row_id") or "").strip()
+    row_type = (payload.get("row_type") or "verification").strip()
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required.")
+
+    if decision not in MANUAL_DECISIONS:
+        raise HTTPException(status_code=400, detail="Invalid manual verification decision.")
+
+    if not reference_text and not candidate:
+        raise HTTPException(status_code=400, detail="Reference text or candidate is required.")
+
+    access = get_access_for_job(job_id)
+
+    if not access.get("paid"):
+        raise HTTPException(
+            status_code=402,
+            detail="Manual verification decisions require Full Review payment."
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+
+    purchase = access.get("purchase") or {}
+    user_email = purchase.get("user_email") or ""
+
+    if not reference_text:
+        reference_text = candidate.get("title") or candidate.get("doi") or ""
+
+    created_at = datetime.utcnow().isoformat()
+
+    decision_record = {
+        "reference": reference_text,
+        "decision": decision,
+        "decision_label": _manual_decision_label(decision),
+        "candidate": candidate or {},
+        "note": note,
+        "row_id": row_id,
+        "row_type": row_type,
+        "user_email": user_email,
+        "created_at": created_at,
+    }
+
+    # 1. Update the relevant online verification row.
+    ov = result.get("online_verification") or {}
+    rows = ov.get("rows") or []
+
+    row_updated = False
+
+    for row in rows:
+        if _manual_row_matches(row, reference_text, row_id=row_id):
+            row.setdefault("automated_status", row.get("status", ""))
+
+            row["manual_decision"] = decision
+            row["manual_decision_label"] = _manual_decision_label(decision)
+            row["manual_verified"] = decision == "manual_verified"
+            row["manual_not_verified"] = decision == "manual_not_verified"
+            row["manual_candidate"] = candidate or {}
+            row["manual_note"] = note
+            row["manual_verified_by"] = user_email
+            row["manual_verified_at"] = created_at
+
+            if decision == "manual_verified":
+                row["display_status"] = "manual_verified"
+                row["verification_basis"] = "manual_search"
+            elif decision == "manual_not_verified":
+                row["display_status"] = "manual_not_verified"
+                row["verification_basis"] = "manual_search"
+            elif decision == "not_indexed_but_plausible":
+                row["display_status"] = "not_indexed_but_plausible"
+                row["verification_basis"] = "manual_bibliographic_review"
+            else:
+                row["display_status"] = row.get("status", "needs_review")
+
+            row_updated = True
+            break
+
+    # If no row matched, keep the decision as a manual verification row.
+    if not row_updated:
+        rows.append({
+            "reference": reference_text,
+            "status": "needs_review",
+            "automated_status": "",
+            "display_status": decision,
+            "manual_decision": decision,
+            "manual_decision_label": _manual_decision_label(decision),
+            "manual_verified": decision == "manual_verified",
+            "manual_not_verified": decision == "manual_not_verified",
+            "manual_candidate": candidate or {},
+            "manual_note": note,
+            "manual_verified_by": user_email,
+            "manual_verified_at": created_at,
+            "verification_basis": "manual_search",
+            "source": "manual_verification",
+        })
+
+    ov["rows"] = rows
+    result["online_verification"] = ov
+
+    # 2. Keep full click history for audit purposes.
+    audit_trail = result.get("manual_verification_audit") or []
+    audit_trail.append(decision_record)
+    result["manual_verification_audit"] = audit_trail
+
+    # 3. Keep only latest decision per unique reference for dashboard/certificate.
+    decisions = result.get("manual_verification_decisions") or []
+    current_key = _manual_norm_text(reference_text)
+
+    updated_existing = False
+
+    for idx, existing in enumerate(decisions):
+        existing_key = _manual_norm_text(existing.get("reference", ""))
+
+        if existing_key and current_key and existing_key == current_key:
+            decisions[idx] = decision_record
+            updated_existing = True
+            break
+
+    if not updated_existing:
+        decisions.append(decision_record)
+
+    result["manual_verification_decisions"] = decisions
+
+    # 4. Summary should count unique references, not repeated clicks.
+    result["manual_verification_summary"] = {
+        "unique_manual_decisions": len(decisions),
+        "total_manual_clicks": len(audit_trail),
+        "manual_verified": sum(1 for d in decisions if d.get("decision") == "manual_verified"),
+        "manual_not_verified": sum(1 for d in decisions if d.get("decision") == "manual_not_verified"),
+        "not_indexed_but_plausible": sum(1 for d in decisions if d.get("decision") == "not_indexed_but_plausible"),
+        "keep_needs_review": sum(1 for d in decisions if d.get("decision") == "keep_needs_review"),
+    }
+
+    _save_manual_result_to_db_and_cache(job_id, result)
+
+    try:
+        record_dashboard_from_result(
+            job_id,
+            result,
+            analysis_status="manual_verification_updated",
+        )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after manual verification: {e}")
+
+    safe_result = shape_result_for_access(job_id, result)
+
+    return {
+        "ok": True,
+        "message": _manual_decision_label(decision) + " recorded.",
+        "decision": decision,
+        "manual_verification_summary": result.get("manual_verification_summary", {}),
+        "result": safe_result,
     }
 
 @app.get("/debug/enrichment-counts/{job_id}")
