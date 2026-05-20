@@ -1,9 +1,18 @@
-"""paystack_payments.py, Paystack helpers with applicant currency choice, GHS or USD."""
+"""paystack_payments.py, Paystack helpers for CiteIntegrity.
+
+Payment model used in this build:
+- Paystack is charged in GHS for Ghana settlement.
+- If the applicant selects USD/international card, the app still sends GHS to Paystack.
+- Paystack/card issuer determines any foreign-card conversion outside the app.
+"""
 from __future__ import annotations
 import hashlib, hmac, json, os, secrets, urllib.error, urllib.parse, urllib.request
 from typing import Any, Dict, Optional
 from entitlements import DEFAULT_CURRENCY, get_price, normalise_currency, validate_paid_package_for_document
 from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
+
+PAYSTACK_PAYMENTS_VERSION = "1.5.31"
+PAYSTACK_PAYMENTS_BUILD = "commercial-2026-05-20-paystack-ghs-charge-for-usd-selection-FINAL"
 
 PAYSTACK_BASE_URL = "https://api.paystack.co"
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "").strip()
@@ -26,9 +35,59 @@ def amount_to_subunit(amount: float) -> int:
     return int(round(float(amount) * 100))
 
 def get_paystack_charge_amount(tier_key: str, currency: str = DEFAULT_CURRENCY) -> Dict[str, Any]:
-    currency = normalise_currency(currency)
-    price = get_price(tier_key, currency)
-    return {"amount": price["amount"], "currency": currency, "amount_subunit": amount_to_subunit(price["amount"]), "display": price["display"]}
+    """
+    Return the amount to send to Paystack.
+
+    Important Ghana Paystack rule for this setup:
+    - Paystack is always charged in GHS.
+    - If a user selects USD/international card, we do NOT send USD to Paystack.
+    - We send the GHS package price and let Paystack/card issuer determine any
+      foreign-card conversion outside CiteIntegrity.
+
+    This avoids the Paystack USD-not-enabled failure while still allowing an
+    international-card option on the frontend.
+    """
+    selected_currency = normalise_currency(currency)
+
+    # Paystack Ghana charge/settlement currency for this implementation.
+    # Keep this as GHS unless Paystack explicitly enables USD for the account.
+    charge_currency = os.environ.get("PAYSTACK_CHARGE_CURRENCY", "GHS").strip().upper() or "GHS"
+    if charge_currency != "GHS":
+        charge_currency = "GHS"
+
+    # Always use the GHS tier price for the Paystack charge.
+    ghs_price = get_price(tier_key, "GHS")
+    amount = float(ghs_price["amount"])
+
+    if selected_currency == "USD":
+        return {
+            "amount": amount,
+            "currency": "GHS",
+            "amount_subunit": amount_to_subunit(amount),
+            "display": f"{ghs_price['display']} charged through Paystack",
+            "selected_currency": "USD",
+            "selected_display": "International card payment",
+            "charged_currency": "GHS",
+            "charged_amount": amount,
+            "charged_display": ghs_price["display"],
+            "conversion_note": (
+                "Paystack/card issuer determines any foreign-card conversion. "
+                "CiteIntegrity sends the GHS charge amount to Paystack."
+            ),
+        }
+
+    return {
+        "amount": amount,
+        "currency": "GHS",
+        "amount_subunit": amount_to_subunit(amount),
+        "display": ghs_price["display"],
+        "selected_currency": "GHS",
+        "selected_display": ghs_price["display"],
+        "charged_currency": "GHS",
+        "charged_amount": amount,
+        "charged_display": ghs_price["display"],
+        "conversion_note": None,
+    }
 
 def _paystack_request(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     secret = _require_secret_key()
@@ -87,7 +146,9 @@ def initialize_citeintegrity_payment(
         database_url,
         user_email=user_email,
         tier_key=tier_key,
-        currency=selected_currency,
+        # Store the actual Paystack charge currency. For USD/international-card
+        # selection, Paystack still receives GHS.
+        currency=charge["currency"],
         provider_reference=provider_reference,
         payment_provider="paystack",
         preview_job_id=job_id,
@@ -107,6 +168,12 @@ def initialize_citeintegrity_payment(
         "citation_count": citation_count,
         "analysis_runs": purchase["analyses_total"],
         "selected_currency": selected_currency,
+        "selected_display": charge.get("selected_display"),
+        "charged_currency": charge["currency"],
+        "charged_amount": charge["amount"],
+        "charged_display": charge.get("charged_display") or charge.get("display"),
+        "conversion_note": charge.get("conversion_note"),
+        "payment_model": "paystack_ghs_charge_card_issuer_conversion",
     }
 
     payload = {
@@ -118,7 +185,21 @@ def initialize_citeintegrity_payment(
         "metadata": metadata,
     }
 
-    response = _paystack_request("POST", "/transaction/initialize", payload)
+    try:
+        response = _paystack_request("POST", "/transaction/initialize", payload)
+    except PaystackError as e:
+        return {
+            "ok": False,
+            "error": (
+                "Payment could not start. CiteIntegrity sends GHS to Paystack. "
+                "Please try again, or confirm that your Paystack test secret key is active."
+            ),
+            "gateway_error": str(e),
+            "selected_currency": selected_currency,
+            "currency": charge["currency"],
+            "amount": charge["amount"],
+            "display_amount": charge["display"],
+        }
 
     if not response.get("status"):
         return {
@@ -139,6 +220,13 @@ def initialize_citeintegrity_payment(
         "currency": charge["currency"],
         "amount_subunit": charge["amount_subunit"],
         "display_amount": charge["display"],
+        "selected_currency": charge.get("selected_currency"),
+        "selected_display": charge.get("selected_display"),
+        "charged_currency": charge.get("charged_currency") or charge["currency"],
+        "charged_amount": charge.get("charged_amount") or charge["amount"],
+        "charged_display": charge.get("charged_display") or charge["display"],
+        "conversion_note": charge.get("conversion_note"),
+        "payment_model": "paystack_ghs_charge_card_issuer_conversion",
         "access_token": purchase.get("access_token"),
     }
 
