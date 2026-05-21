@@ -638,7 +638,11 @@ def _lookup_context_suggestions_for_row(row, result, target=3):
 
     if suggest_for_unverified and reference:
         try:
-            suggestions.extend(suggest_for_unverified(reference, top_k=target) or [])
+            suggestions.extend(suggest_for_unverified(
+                reference,
+                top_k=target,
+                style=result.get("selected_style") or result.get("style_family") or result.get("style") or "auto"
+            ) or [])
         except Exception as e:
             print(f"[DEEP ENRICHMENT] Reference suggestion failed: {e}")
 
@@ -984,7 +988,11 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
     if include_reference and suggest_for_unverified and reference:
         try:
             suggestions.extend(
-                suggest_for_unverified(reference, top_k=target + 5) or []
+                suggest_for_unverified(
+                    reference,
+                    top_k=target + 5,
+                    style=result.get("selected_style") or result.get("style_family") or result.get("style") or "auto"
+                ) or []
             )
         except Exception as e:
             print(f"[DEEP ENRICHMENT] citation_suggester reference lookup failed: {e}")
