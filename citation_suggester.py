@@ -11,6 +11,9 @@ from verify import (
     _extract_fields_by_style,
 )
 
+CITATION_SUGGESTER_VERSION = "1.5.34"
+CITATION_SUGGESTER_BUILD = "commercial-2026-05-21-smart-context-query-and-claim-source-ranking-FINAL"
+
 # ============================================================
 # HELPER FUNCTIONS FOR ROBUST CONTEXT EXTRACTION
 # ============================================================
@@ -382,126 +385,307 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
     return ""
 
 
-def extract_keywords(text: str) -> List[str]:
-    """Extract meaningful keywords from text for search queries."""
-    words = re.findall(r"[A-Za-z]{4,}", (text or "").lower())
-    stop = {
-        "this", "that", "with", "from", "using", "study", "analysis",
-        "method", "approach", "results", "table", "figure", "paper",
-        "research", "journal", "review", "these", "those", "their",
-        "would", "could", "should", "might", "what", "when", "where",
-        "which", "while", "there", "about", "into", "through", "during"
-    }
-    seen = set()
-    out = []
+
+# ============================================================
+# SMART CONTEXT / CLAIM-BASED SOURCE SEARCH
+# ============================================================
+# These functions are deliberately conservative. They improve Advanced Recovery,
+# Claim Support alternatives, and Citation Needed enrichment without moving the
+# expensive external lookups into the fast verification path. The worker still
+# decides when to call these functions.
+
+_SMART_STOPWORDS = {
+    "this", "that", "with", "from", "using", "used", "study", "studies", "analysis",
+    "method", "methods", "approach", "results", "table", "figure", "paper", "article",
+    "research", "journal", "review", "these", "those", "their", "there", "where",
+    "would", "could", "should", "might", "what", "when", "which", "while", "during",
+    "about", "into", "through", "based", "claim", "claims", "citation", "source",
+    "sources", "evidence", "support", "supported", "manual", "required", "context",
+    "chapter", "section", "thesis", "dissertation", "manuscript", "finding", "findings",
+    "effect", "effects", "impact", "impacts", "relationship", "relationships", "role",
+    "model", "models", "framework", "conceptual", "empirical", "significant", "positive",
+    "negative", "increase", "decrease", "higher", "lower", "within", "between", "among",
+    "therefore", "however", "although", "because", "also", "more", "most", "such", "than",
+    "then", "they", "them", "were", "been", "have", "has", "had", "will", "may", "can"
+}
+
+_DOMAIN_KEEP_WORDS = {
+    "procurement", "sustainable", "literacy", "ethics", "ethical", "behaviour", "behavior",
+    "attitude", "digital", "centralisation", "centralization", "governance", "finance",
+    "financial", "performance", "inflation", "exchange", "education", "learning", "banking",
+    "credit", "risk", "climate", "policy", "public", "health", "supply", "chain", "logistics",
+    "culture", "gender", "women", "empowerment", "retirement", "planning", "employee",
+    "motivation", "personality", "corporate", "board", "audit", "accountability"
+}
+
+def _clean_search_text(text: str, max_len: int = 260) -> str:
+    text = re.sub(r"https?://\S+", " ", str(text or ""), flags=re.I)
+    text = re.sub(r"\b10\.\d{4,9}/\S+", " ", text, flags=re.I)
+    text = re.sub(r"\([^)]*(?:19|20)\d{2}[a-z]?[^)]*\)", " ", text)
+    text = re.sub(r"\[[0-9,\-–\s]+\]", " ", text)
+    text = re.sub(r"[^A-Za-z0-9\s:&,\-'’]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
+
+def _word_tokens(text: str) -> List[str]:
+    words = re.findall(r"[A-Za-z][A-Za-z\-'’]{2,}", str(text or "").lower())
+    out, seen = [], set()
     for w in words:
-        if w in stop or w in seen:
+        w = w.strip("-'’ ")
+        if len(w) < 4:
+            continue
+        if w in _SMART_STOPWORDS and w not in _DOMAIN_KEEP_WORDS:
+            continue
+        if w in seen:
             continue
         seen.add(w)
         out.append(w)
-    return out[:10]
+    return out
 
+def _significant_terms(text: str, limit: int = 12) -> List[str]:
+    return _word_tokens(text)[:limit]
 
-def suggest_from_context(context: str, citation: str = "", top_k: int = 3) -> List[Dict[str, Any]]:
-    """
-    Suggest references based on surrounding context AND citation text.
-    
-    Uses hybrid query: author(s) + year + context keywords for optimal precision.
-    
-    Args:
-        context: The surrounding text where the citation appears
-        citation: The original citation text (e.g., "(Beck et al., 2021)")
-        top_k: Number of suggestions to return
-    
-    Returns:
-        List of suggested reference dictionaries
-    """
-    keywords = extract_keywords(context)
+def extract_keywords(text: str) -> List[str]:
+    """Extract meaningful keywords from text for search queries."""
+    return _significant_terms(text, limit=10)
+
+def _claim_phrases(text: str, max_phrases: int = 4) -> List[str]:
+    """Create short phrase queries from adjacent significant words."""
+    clean = _clean_search_text(text, max_len=420)
+    raw = re.findall(r"[A-Za-z][A-Za-z\-'’]{2,}", clean.lower())
+    filtered = []
+    for w in raw:
+        w = w.strip("-'’ ")
+        if len(w) < 4:
+            continue
+        if w in _SMART_STOPWORDS and w not in _DOMAIN_KEEP_WORDS:
+            continue
+        filtered.append(w)
+    phrases, seen = [], set()
+    for n in (4, 3, 2):
+        for i in range(0, max(0, len(filtered) - n + 1)):
+            phrase = " ".join(filtered[i:i+n])
+            if phrase in seen:
+                continue
+            seen.add(phrase)
+            phrases.append(phrase)
+            if len(phrases) >= max_phrases:
+                return phrases
+    return phrases
+
+def _candidate_url(cand: Dict[str, Any], doi: str = "") -> str:
+    item = cand.get("item") if isinstance(cand, dict) else None
+    item = item if isinstance(item, dict) else cand
+    if not isinstance(item, dict):
+        return f"https://doi.org/{doi}" if doi else ""
+    if item.get("URL"):
+        return item.get("URL")
+    primary = item.get("primary_location") or {}
+    if isinstance(primary, dict) and primary.get("landing_page_url"):
+        return primary.get("landing_page_url")
+    if item.get("id") and str(item.get("id")).startswith("http"):
+        return item.get("id")
+    return f"https://doi.org/{doi}" if doi else ""
+
+def _author_match_score(query_authors: List[str], candidate_authors: List[str]) -> int:
+    if not query_authors or not candidate_authors:
+        return 0
+    cand_l = " ".join(candidate_authors).lower()
+    score = 0
+    for a in query_authors[:2]:
+        if a and a.lower() in cand_l:
+            score += 10
+    return min(score, 20)
+
+def _title_claim_score(title: str, context: str) -> Dict[str, Any]:
+    title_terms = set(_significant_terms(title, limit=20))
+    context_terms = set(_significant_terms(context, limit=24))
+    overlap = sorted(title_terms & context_terms)
+    phrase_hits = [p for p in _claim_phrases(context, max_phrases=6) if p and p in str(title or "").lower()]
+    if not title_terms or not context_terms:
+        ratio = 0.0
+    else:
+        ratio = len(overlap) / max(1, min(len(title_terms), len(context_terms)))
+    return {
+        "overlap_terms": overlap[:10],
+        "phrase_hits": phrase_hits[:5],
+        "overlap_ratio": ratio,
+        "overlap_score": min(45, int(round(ratio * 45)) + (8 * min(len(phrase_hits), 2))),
+    }
+
+def _quality_label(score: int) -> str:
+    if score >= 82:
+        return "strong_candidate"
+    if score >= 68:
+        return "good_candidate"
+    if score >= 55:
+        return "possible_candidate"
+    return "weak_candidate"
+
+def _build_context_queries(context: str, citation: str = "", *, use_citation_hint: bool = True) -> List[Dict[str, str]]:
+    context = _clean_search_text(context, max_len=420)
+    keywords = _significant_terms(context, limit=12)
+    phrases = _claim_phrases(context, max_phrases=4)
     authors, year = extract_citation_author_year(citation)
-    
-    # Build hybrid query
-    query_parts = []
-    if authors:
-        query_parts.extend(authors[:2])  # Use up to 2 authors
-    if year:
-        query_parts.append(year)
+
+    queries: List[Dict[str, str]] = []
+    def add(q: str, strategy: str):
+        q = _clean_search_text(q, max_len=220)
+        if len(q) >= 6 and q.lower() not in {x["query"].lower() for x in queries}:
+            queries.append({"query": q, "strategy": strategy})
+
+    # Claim/context-first queries. These are best for alternative sources and citation-needed claims.
+    if phrases:
+        add(" ".join(phrases[:2]), "claim_phrase_query")
     if keywords:
-        query_parts.extend(keywords[:8])  # Use up to 8 keywords
-    
-    query = " ".join(query_parts).strip()
-    
-    # Fallback to context-only if hybrid query is empty
-    if not query and keywords:
-        query = " ".join(keywords[:6])
-    
-    if not query:
+        add(" ".join(keywords[:8]), "claim_keyword_query")
+        add(" ".join(keywords[:5]), "compact_claim_keyword_query")
+
+    # Citation hint is useful for missing-reference recovery, but it should not dominate claim alternatives.
+    if use_citation_hint and (authors or year) and keywords:
+        add(" ".join(authors[:2] + ([year] if year else []) + keywords[:5]), "citation_plus_claim_query")
+    elif use_citation_hint and (authors or year):
+        add(" ".join(authors[:2] + ([year] if year else [])), "citation_only_query")
+
+    return queries[:5]
+
+def suggest_from_context(
+    context: str,
+    citation: str = "",
+    top_k: int = 3,
+    *,
+    use_citation_hint: bool = True,
+    min_relevance: int = 55,
+) -> List[Dict[str, Any]]:
+    """
+    Suggest review-only scholarly sources from a claim/context.
+
+    The previous version gave a high base score to any Crossref/OpenAlex result.
+    This version ranks candidates by concept overlap between the manuscript claim
+    and candidate title, with only small boosts for author/year. This reduces
+    attractive but weak alternatives.
+    """
+    context = _clean_search_text(context, max_len=500)
+    if not context or len(_significant_terms(context, limit=4)) < 2:
         return []
-    
-    # Search both CrossRef and OpenAlex
+
+    citation_authors, citation_year = extract_citation_author_year(citation)
+    queries = _build_context_queries(context, citation, use_citation_hint=use_citation_hint)
+    if not queries:
+        return []
+
     candidates = []
-    candidates.extend(_query_crossref(query, rows=8))
-    candidates.extend(_query_openalex(query, rows=8))
-    
-    # Deduplicate by title
+    for q in queries:
+        query = q["query"]
+        strategy = q["strategy"]
+        try:
+            for cand in _query_openalex(query, rows=8) or []:
+                cand["_query_used"] = query
+                cand["_query_strategy"] = strategy
+                candidates.append(cand)
+        except Exception:
+            pass
+        try:
+            for cand in _query_crossref(query, rows=8) or []:
+                cand["_query_used"] = query
+                cand["_query_strategy"] = strategy
+                candidates.append(cand)
+        except Exception:
+            pass
+
     seen = set()
     suggestions = []
-    
     for cand in candidates:
         doi, title, cand_year, authors_list = _candidate_fields(cand)
+        title = (title or "").strip()
         if not title:
             continue
-        
-        # Create unique key
+
         key = f"{title.lower()}|{cand_year}|{doi.lower()}"
         if key in seen:
             continue
         seen.add(key)
-        
-        # Calculate relevance score (prioritize year and author matches)
-        relevance = 75  # Base score
-        
-        # Boost if year matches
-        if year and cand_year and year[:4] == cand_year[:4]:
-            relevance += 15
-        
-        # Boost if any author matches
-        if authors and authors_list:
-            if any(a in [au.lower() for au in authors_list] for a in authors):
-                relevance += 20
-        
+
+        title_score = _title_claim_score(title, context)
+        author_boost = _author_match_score(citation_authors, authors_list)
+        year_boost = 8 if (citation_year and cand_year and citation_year[:4] == str(cand_year)[:4]) else 0
+        doi_boost = 5 if doi else 0
+
+        relevance = min(100, 35 + title_score["overlap_score"] + author_boost + year_boost + doi_boost)
+
+        # Conservative gate: do not return candidates with no concept signal unless author+year is strong.
+        has_concept_signal = bool(title_score["overlap_terms"] or title_score["phrase_hits"])
+        strong_citation_signal = bool(author_boost >= 10 and year_boost > 0)
+        if relevance < min_relevance or not (has_concept_signal or strong_citation_signal):
+            continue
+
         suggestions.append({
             "title": title,
             "year": cand_year,
             "authors": authors_list,
             "doi": doi,
+            "url": _candidate_url(cand, doi),
             "type": "context",
-            "relevance": relevance
+            "source": cand.get("source", "scholarly_lookup"),
+            "relevance": relevance,
+            "candidate_quality": _quality_label(relevance),
+            "query_used": cand.get("_query_used", ""),
+            "query_strategy": cand.get("_query_strategy", ""),
+            "match_basis": {
+                "title_claim_overlap_terms": title_score["overlap_terms"],
+                "title_phrase_hits": title_score["phrase_hits"],
+                "title_claim_overlap_ratio": round(title_score["overlap_ratio"], 3),
+                "author_boost": author_boost,
+                "year_boost": year_boost,
+                "doi_boost": doi_boost,
+            },
+            "suggestion_type": "context_specific_source",
+            "reason": "Ranked by claim-title concept overlap and citation metadata. Review before using.",
+            "review_required": True,
         })
-    
-    # Sort by relevance
-    suggestions.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+
+    suggestions.sort(key=lambda x: (x.get("relevance", 0), bool(x.get("doi"))), reverse=True)
     return suggestions[:top_k]
 
+def _extract_fields_multi_style(ref: str, style: str = "apa") -> Dict[str, Any]:
+    styles = []
+    if style:
+        styles.append(style)
+    styles.extend(["apa", "author_year", "numeric_square", "numeric_superscript", "numeric_round"])
+    seen = set()
+    best = {}
+    for st in styles:
+        if st in seen:
+            continue
+        seen.add(st)
+        try:
+            fields = _extract_fields_by_style(ref, st) or {}
+        except Exception:
+            fields = {}
+        title = fields.get("title") or ""
+        doi = fields.get("doi") or ""
+        if doi or len(title) > len(best.get("title", "") or ""):
+            best = fields
+        if doi and title:
+            break
+    return best
 
-def suggest_for_unverified(ref: str, top_k: int = 3) -> List[Dict[str, Any]]:
+def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa") -> List[Dict[str, Any]]:
     """
     Suggest corrected references for unverified/needs_review references.
-    
-    Uses extracted fields from the reference string.
-    
-    Args:
-        ref: The reference string to correct
-        top_k: Number of suggestions to return
-    
-    Returns:
-        List of suggested reference dictionaries
+
+    This version is style-aware and requires strong title/metadata evidence.
+    It is intended for Deep Recovery, not automatic replacement.
     """
-    fields = _extract_fields_by_style(ref, "apa")
+    fields = _extract_fields_multi_style(ref, style=style)
     title = fields.get("title", "") or ""
     authors = fields.get("authors", []) or []
     year = fields.get("year", "") or ""
+    doi = fields.get("doi", "") or ""
 
     query_parts = []
+    if doi:
+        query_parts.append(doi)
     if title:
         query_parts.append(title)
     if authors:
@@ -509,46 +693,84 @@ def suggest_for_unverified(ref: str, top_k: int = 3) -> List[Dict[str, Any]]:
     if year:
         query_parts.append(year)
 
-    query = " ".join(query_parts).strip()
+    query = _clean_search_text(" ".join(query_parts), max_len=260)
     if not query:
         return []
 
-    # Search both CrossRef and OpenAlex
     candidates = []
-    candidates.extend(_query_crossref(query, rows=8))
-    candidates.extend(_query_openalex(query, rows=8))
+    try:
+        candidates.extend(_query_crossref(query, rows=10) or [])
+    except Exception:
+        pass
+    try:
+        candidates.extend(_query_openalex(query, rows=10) or [])
+    except Exception:
+        pass
 
     seen = set()
     suggestions = []
-
     for cand in candidates:
-        doi, cand_title, cand_year, cand_authors = _candidate_fields(cand)
+        cand_doi, cand_title, cand_year, cand_authors = _candidate_fields(cand)
         if not cand_title:
             continue
 
-        # Calculate score using existing _score function
         meta = _score(title, authors, year, cand_title, cand_authors, cand_year)
+        doi_match = bool(doi and cand_doi and doi.lower().strip() == cand_doi.lower().strip())
+        title_score = float(meta.get("title_score", 0) or 0)
+        overall = float(meta.get("score", 0) or 0)
 
-        # Require at least 70% title similarity for corrections
-        if meta["title_score"] < 70:
+        # Keep only correction candidates with strong evidence.
+        if not doi_match and title_score < 78:
+            continue
+        if not doi_match and overall < 65:
             continue
 
-        key = f"{cand_title.lower()}|{cand_year}|{doi.lower()}"
+        key = f"{cand_title.lower()}|{cand_year}|{cand_doi.lower()}"
         if key in seen:
             continue
         seen.add(key)
 
+        relevance = min(100, int(max(overall, title_score) + (10 if doi_match else 0)))
         suggestions.append({
             "title": cand_title,
             "year": cand_year,
             "authors": cand_authors,
-            "doi": doi,
-            "score": meta["score"],
-            "title_score": meta["title_score"],
-            "author_similarity": meta["author_similarity"],
-            "year_match": meta["year_match"],
-            "type": "correction"
+            "doi": cand_doi,
+            "url": _candidate_url(cand, cand_doi),
+            "score": meta.get("score", 0),
+            "title_score": meta.get("title_score", 0),
+            "author_similarity": meta.get("author_similarity", 0),
+            "year_match": meta.get("year_match", 0),
+            "doi_match": doi_match,
+            "type": "correction",
+            "source": cand.get("source", "scholarly_lookup"),
+            "relevance": relevance,
+            "candidate_quality": _quality_label(relevance),
+            "query_used": query,
+            "query_strategy": "reference_metadata_correction",
+            "suggestion_type": "reference_correction_candidate",
+            "reason": "Suggested from reference metadata. Accept only after confirming author, year, title and DOI.",
+            "review_required": True,
         })
 
-    suggestions.sort(key=lambda x: (x.get("score", 0), x.get("title_score", 0)), reverse=True)
+    suggestions.sort(key=lambda x: (x.get("doi_match", False), x.get("score", 0), x.get("title_score", 0)), reverse=True)
     return suggestions[:top_k]
+
+def build_claim_validation_queries(claim: str, source_title: str = "", doi: str = "", citation: str = "") -> List[Dict[str, str]]:
+    """
+    Build transparent queries for deep claim validation.
+    The worker/claim checker may use these to fetch source metadata without
+    adding latency to the initial verification path.
+    """
+    queries = []
+    def add(q: str, strategy: str):
+        q = _clean_search_text(q, max_len=220)
+        if len(q) >= 6 and q.lower() not in {x["query"].lower() for x in queries}:
+            queries.append({"query": q, "strategy": strategy})
+    if doi:
+        add(doi, "doi_exact")
+    if source_title:
+        add(source_title, "matched_source_title")
+    for q in _build_context_queries(claim, citation, use_citation_hint=False):
+        add(q["query"], q["strategy"])
+    return queries[:5]
