@@ -1,8 +1,11 @@
 # claim_checker.py
 
 from typing import List, Dict, Any
-from citation_suggester import extract_context, split_citation_cluster, suggest_from_context
+from citation_suggester import extract_context, split_citation_cluster, suggest_from_context, build_claim_validation_queries
 from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by_doi
+
+CLAIM_CHECKER_VERSION = "1.5.34"
+CLAIM_CHECKER_BUILD = "commercial-2026-05-21-smart-claim-alternative-source-query-FINAL"
 
 def clean_extracted_claim_text(claim: str) -> str:
     """
@@ -119,10 +122,16 @@ def suggest_alternative_sources_for_claim(
     top_k: int = 3
 ):
     """
-    Suggest alternative sources when the current matched source gives
-    no evidence, weak evidence, or is excluded.
+    Suggest alternative sources when the current matched source gives no evidence,
+    weak evidence, or is excluded.
 
-    This is review-only. It should not replace the citation automatically.
+    Commercial logic:
+    - The query is claim-first, not author/year-first. This avoids simply finding
+      the same weak cited source again.
+    - Author/year from the existing citation is not allowed to dominate the search.
+    - Candidates are kept only when the smart suggester reports a usable relevance
+      signal from title/claim concept overlap or strong citation metadata.
+    - Output remains review-only and does not replace citations automatically.
     """
     claim = (claim or "").strip()
     citation = (citation or "").strip()
@@ -131,11 +140,17 @@ def suggest_alternative_sources_for_claim(
     if len(claim) < 20:
         return []
 
+    # Do not create alternatives from extraction-failure placeholders.
+    if claim.lower().startswith("claim could not be extracted"):
+        return []
+
     try:
         candidates = suggest_from_context(
             context=claim,
             citation=citation,
-            top_k=top_k + 3
+            top_k=top_k + 8,
+            use_citation_hint=False,   # important: search by claim, not by the weak source's author/year
+            min_relevance=55,
         )
     except Exception as e:
         print(f"[ALT SOURCE ERROR] {citation}: {e}")
@@ -144,18 +159,19 @@ def suggest_alternative_sources_for_claim(
     suggestions = []
     seen = set()
 
-    for cand in candidates:
+    for cand in candidates or []:
         title = (cand.get("title", "") or "").strip()
         doi = (cand.get("doi", "") or "").strip()
         year = cand.get("year", "")
         authors = cand.get("authors", []) or []
+        relevance = float(cand.get("relevance", 0) or 0)
 
-        if not title:
+        if not title or relevance < 55:
             continue
 
         title_key = title.lower()
 
-        # Avoid suggesting the same weak/current source again
+        # Avoid suggesting the same weak/current source again.
         if current_source_title and (
             title_key == current_source_title
             or title_key in current_source_title
@@ -173,15 +189,44 @@ def suggest_alternative_sources_for_claim(
             "year": year,
             "authors": authors,
             "doi": doi,
-            "relevance": cand.get("relevance", 0),
+            "url": cand.get("url", ""),
+            "relevance": relevance,
+            "candidate_quality": cand.get("candidate_quality", "possible_candidate"),
+            "query_used": cand.get("query_used", ""),
+            "query_strategy": cand.get("query_strategy", "claim_keyword_query"),
+            "match_basis": cand.get("match_basis", {}),
             "suggestion_type": "alternative_source",
-            "reason": "Suggested because the current matched source provided weak or no evidence for the extracted claim."
+            "review_required": True,
+            "reason": (
+                "Suggested from the manuscript claim because the current matched source "
+                "gave weak, insufficient, or no evidence. Review before using."
+            ),
         })
 
         if len(suggestions) >= top_k:
             break
 
     return suggestions
+
+
+def build_claim_validation_query_plan(claim: str, source_title: str = "", doi: str = "", citation: str = "") -> Dict[str, Any]:
+    """
+    Expose the deep validation search plan for debugging and UI transparency.
+    The heavy lookup can still run later in the deep enrichment/payment path.
+    """
+    return {
+        "claim": (claim or "")[:500],
+        "source_title": source_title or "",
+        "doi": doi or "",
+        "citation": citation or "",
+        "queries": build_claim_validation_queries(
+            claim=claim,
+            source_title=source_title,
+            doi=doi,
+            citation=citation,
+        ),
+        "note": "Queries are used for deep claim-support validation; they are not run in the fast path unless enabled by the worker.",
+    }
 
 def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -451,5 +496,23 @@ def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                     f"relation={support.get('relation_overlap', 0)}"
                 )
             })
+
+    # Add transparent query plans for deep claim validation.
+    # These are not executed in the fast path; they explain what the deep layer
+    # should search when the row is paid/enriched or manually triggered.
+    for _row in out:
+        try:
+            _row.setdefault(
+                "validation_query_plan",
+                build_claim_validation_query_plan(
+                    claim=_row.get("claim", ""),
+                    source_title=_row.get("source_title", ""),
+                    doi=_row.get("doi", ""),
+                    citation=_row.get("citation", ""),
+                )
+            )
+            _row.setdefault("review_required", True)
+        except Exception:
+            pass
 
     return out
