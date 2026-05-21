@@ -26,8 +26,8 @@ from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
-__version__ = "1.5.24"
-WORKER_BUILD = "commercial-2026-05-21-smart-deep-enrichment-query-ranking-FINAL"
+__version__ = "1.5.25"
+WORKER_BUILD = "commercial-2026-05-21-style-aware-suggestion-routing-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -166,6 +166,68 @@ def _worker_style_sample(style):
         "auto": "Experimental auto-detection",
     }.get(family, "(Adam, 2020), Adam (2020)")
 
+
+def _selected_style_for_suggestions(result):
+    """
+    Resolve the selected citation style for Deep Recovery / Advanced Enrichment
+    calls so reference parsing does not fall back to APA for numeric styles.
+    """
+    if not isinstance(result, dict):
+        return "auto"
+    return (
+        result.get("selected_style")
+        or result.get("style_family")
+        or result.get("style")
+        or result.get("citation_style")
+        or "auto"
+    )
+
+
+def _call_suggest_from_context(context="", citation="", top_k=3, use_citation_hint=True):
+    """
+    Backward-compatible wrapper for citation_suggester.suggest_from_context.
+
+    New citation_suggester versions support use_citation_hint. Older deployed
+    versions may not, so we retry without the keyword if needed.
+    """
+    if not suggest_from_context:
+        return []
+    try:
+        return suggest_from_context(
+            context=context,
+            citation=citation if use_citation_hint else "",
+            top_k=top_k,
+            use_citation_hint=use_citation_hint,
+        ) or []
+    except TypeError:
+        return suggest_from_context(
+            context=context,
+            citation=citation if use_citation_hint else "",
+            top_k=top_k,
+        ) or []
+
+
+def _call_suggest_for_unverified(reference="", top_k=3, result=None):
+    """
+    Backward-compatible wrapper for citation_suggester.suggest_for_unverified.
+
+    Passes the selected style whenever supported, preventing APA-only parsing
+    for IEEE, Vancouver, AMA, Nature, RSC, ACS and related numeric styles.
+    """
+    if not suggest_for_unverified:
+        return []
+    style = _selected_style_for_suggestions(result or {})
+    try:
+        return suggest_for_unverified(
+            reference,
+            top_k=top_k,
+            style=style,
+        ) or []
+    except TypeError:
+        return suggest_for_unverified(
+            reference,
+            top_k=top_k,
+        ) or []
 
 def _add_worker_style_metadata(row, style):
     if not isinstance(row, dict):
@@ -627,22 +689,25 @@ def _lookup_context_suggestions_for_row(row, result, target=3):
     if suggest_from_context and context:
         try:
             suggestions.extend(
-                suggest_from_context(
+                _call_suggest_from_context(
                     context=context,
                     citation=citation,
                     top_k=target,
-                ) or []
+                    use_citation_hint=True,
+                )
             )
         except Exception as e:
             print(f"[DEEP ENRICHMENT] Context lookup failed: {e}")
 
     if suggest_for_unverified and reference:
         try:
-            suggestions.extend(suggest_for_unverified(
-                reference,
-                top_k=target,
-                style=result.get("selected_style") or result.get("style_family") or result.get("style") or "auto"
-            ) or [])
+            suggestions.extend(
+                _call_suggest_for_unverified(
+                    reference,
+                    top_k=target,
+                    result=result,
+                )
+            )
         except Exception as e:
             print(f"[DEEP ENRICHMENT] Reference suggestion failed: {e}")
 
@@ -975,11 +1040,12 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
     if suggest_from_context and context:
         try:
             suggestions.extend(
-                suggest_from_context(
+                _call_suggest_from_context(
                     context=context,
                     citation=citation,
-                    top_k=target + 5
-                ) or []
+                    top_k=target + 5,
+                    use_citation_hint=bool(include_reference),
+                )
             )
         except Exception as e:
             print(f"[DEEP ENRICHMENT] citation_suggester context lookup failed: {e}")
@@ -988,11 +1054,11 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
     if include_reference and suggest_for_unverified and reference:
         try:
             suggestions.extend(
-                suggest_for_unverified(
+                _call_suggest_for_unverified(
                     reference,
                     top_k=target + 5,
-                    style=result.get("selected_style") or result.get("style_family") or result.get("style") or "auto"
-                ) or []
+                    result=result,
+                )
             )
         except Exception as e:
             print(f"[DEEP ENRICHMENT] citation_suggester reference lookup failed: {e}")
