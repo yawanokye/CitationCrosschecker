@@ -26,8 +26,8 @@ from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
-__version__ = "1.5.23"
-WORKER_BUILD = "commercial-2026-05-19-docx-ieee-style-normalise-worker-FINAL"
+__version__ = "1.5.24"
+WORKER_BUILD = "commercial-2026-05-21-smart-deep-enrichment-query-ranking-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -995,7 +995,9 @@ def _deep_context_source_suggestions(row, result, target=3, include_reference=Tr
     try:
         suggestions.extend(
             _direct_scholarly_source_lookup(
-                citation=citation,
+                # For claim alternatives and citation-needed claims, do not let
+                # the weak/current citation author-year dominate the query.
+                citation=citation if include_reference else "",
                 reference=reference if include_reference else "",
                 context=context,
                 source_title=source_title,
@@ -1033,20 +1035,74 @@ def _context_suggestions_for_row(row, result):
 
     return _lookup_context_suggestions_for_row(row, result, target=3)
 
+
+def _source_candidate_quality(item, title, year="", doi=""):
+    """Conservative quality score for deep enrichment candidates."""
+    try:
+        relevance = float(item.get("relevance") or item.get("confidence") or item.get("score") or item.get("title_score") or 0)
+    except Exception:
+        relevance = 0
+
+    query_used = str(item.get("query_used") or "")
+    title_words = set(_extract_enrichment_keywords(title, limit=18))
+    query_words = set(_extract_enrichment_keywords(query_used, limit=18))
+    overlap = sorted(title_words & query_words)
+
+    quality = 0
+    if relevance:
+        # Raw Crossref/OpenAlex scores can be large, so compress them.
+        quality += min(35, int(relevance) if relevance <= 100 else 35)
+    if doi:
+        quality += 8
+    if year:
+        quality += 4
+    if overlap:
+        quality += min(35, 10 + len(overlap) * 7)
+
+    # Preserve quality already computed by citation_suggester.
+    if item.get("candidate_quality") in {"strong_candidate", "good_candidate"}:
+        quality = max(quality, 70)
+    elif item.get("candidate_quality") == "possible_candidate":
+        quality = max(quality, 55)
+
+    if quality >= 82:
+        label = "strong_candidate"
+    elif quality >= 68:
+        label = "good_candidate"
+    elif quality >= 55:
+        label = "possible_candidate"
+    else:
+        label = "weak_candidate"
+
+    return quality, label, overlap
+
+
 def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title=""):
     """
-    Keep only real source candidates and normalise them for the UI.
+    Keep only real, review-worthy source candidates and normalise them for the UI.
 
-    This intentionally does not create fake fallback sources. If fewer than
-    three real candidates are returned by Crossref/OpenAlex, the row receives
-    an enrichment_note so the reviewer understands why fewer sources appear.
+    This function intentionally removes Recovery Lite prompts and weak database hits.
+    It is used only in deep enrichment, so the extra quality gate does not delay
+    the initial dashboard.
     """
     clean = []
     seen = set()
     exclude_title = str(exclude_title or "").strip().lower()
 
+    blocked_sources = {
+        "context_review_fallback",
+        "metadata_review_fallback",
+        "claim_support_review_fallback",
+        "missing_reference_recovery_lite",
+        "metadata_review_fallback",
+    }
+
     for item in suggestions or []:
         if not isinstance(item, dict):
+            continue
+
+        source = str(item.get("source") or item.get("type") or "context_source_lookup").strip()
+        if source in blocked_sources or source.endswith("_recovery_lite"):
             continue
 
         title = str(
@@ -1066,12 +1122,23 @@ def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title=""):
         if not title:
             continue
 
-        title_key = title.lower()
+        # Remove obviously non-source or publisher-only candidates.
+        low_title = title.lower()
+        if low_title in {"elsevier", "springer", "wiley", "sage", "taylor & francis", "nature"}:
+            continue
+        if re.search(r"\b(table|figure|appendix|chapter|homepage|editorial board)\b", low_title):
+            continue
+
+        title_key = low_title
         if exclude_title and (
             title_key == exclude_title
             or title_key in exclude_title
             or exclude_title in title_key
         ):
+            continue
+
+        quality_score, quality_label, overlap_terms = _source_candidate_quality(item, title, year, doi)
+        if quality_score < 55:
             continue
 
         key = f"{title_key}|{year}|{doi.lower()}"
@@ -1086,9 +1153,15 @@ def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title=""):
             "authors": authors,
             "doi": doi,
             "url": item.get("url") or item.get("source_url") or item.get("openalex_url") or "",
-            "relevance": item.get("relevance") or item.get("confidence") or item.get("score") or item.get("title_score") or 0,
-            "source": item.get("source") or item.get("type") or "context_source_lookup",
+            "relevance": item.get("relevance") or item.get("confidence") or item.get("score") or item.get("title_score") or quality_score,
+            "candidate_quality": item.get("candidate_quality") or quality_label,
+            "quality_score": quality_score,
+            "source": source,
+            "query_used": item.get("query_used") or "",
+            "query_strategy": item.get("query_strategy") or "deep_enrichment_query",
+            "match_basis": item.get("match_basis") or {"query_title_overlap_terms": overlap_terms},
             "suggestion_type": item.get("suggestion_type") or "context_specific_source",
+            "review_required": True,
             "reason": item.get("reason") or "Suggested from manuscript context during Advanced Enrichment. Review before using."
         })
 
@@ -1096,7 +1169,6 @@ def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title=""):
             break
 
     return clean[:target]
-
 
 def _source_enrichment_note(items, target=3):
     count = len(items or [])
