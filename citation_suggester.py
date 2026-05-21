@@ -11,8 +11,8 @@ from verify import (
     _extract_fields_by_style,
 )
 
-CITATION_SUGGESTER_VERSION = "1.5.34"
-CITATION_SUGGESTER_BUILD = "commercial-2026-05-21-smart-context-query-and-claim-source-ranking-FINAL"
+CITATION_SUGGESTER_VERSION = "1.5.35"
+CITATION_SUGGESTER_BUILD = "commercial-2026-05-21-strict-reference-recovery-candidates-FINAL"
 
 # ============================================================
 # HELPER FUNCTIONS FOR ROBUST CONTEXT EXTRACTION
@@ -670,7 +670,60 @@ def _extract_fields_multi_style(ref: str, style: str = "apa") -> Dict[str, Any]:
             break
     return best
 
-def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa") -> List[Dict[str, Any]]:
+
+def _reference_title_similarity(reference_title: str, candidate_title: str) -> int:
+    import difflib
+    a = _clean_search_text(reference_title, max_len=260).lower()
+    b = _clean_search_text(candidate_title, max_len=260).lower()
+    if not a or not b:
+        return 0
+    return int(round(difflib.SequenceMatcher(None, a, b).ratio() * 100))
+
+
+def _reference_title_terms(reference_title: str, candidate_title: str) -> List[str]:
+    return sorted(set(_significant_terms(reference_title, limit=24)) & set(_significant_terms(candidate_title, limit=24)))[:12]
+
+
+def _strict_reference_candidate_pass(fields: Dict[str, Any], cand_title: str, cand_year: str, cand_authors: List[str], cand_doi: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    ref_title = fields.get("title", "") or ""
+    ref_year = str(fields.get("year", "") or "")[:4]
+    ref_doi = str(fields.get("doi", "") or "").lower().strip()
+    ref_authors = fields.get("authors", []) or []
+
+    title_similarity = _reference_title_similarity(ref_title, cand_title)
+    overlap_terms = _reference_title_terms(ref_title, cand_title)
+    year_match = bool(ref_year and cand_year and ref_year == str(cand_year)[:4])
+    doi_match = bool(ref_doi and cand_doi and ref_doi == str(cand_doi).lower().strip())
+    author_similarity = int(meta.get("author_similarity", 0) or 0)
+
+    strict_pass = bool(
+        doi_match
+        or title_similarity >= 82
+        or (title_similarity >= 72 and (year_match or author_similarity >= 50))
+        or (len(overlap_terms) >= 6 and title_similarity >= 62 and (year_match or author_similarity >= 50))
+    )
+
+    fit_score = 0
+    if doi_match:
+        fit_score += 100
+    fit_score += min(70, title_similarity)
+    fit_score += min(20, len(overlap_terms) * 4)
+    if year_match:
+        fit_score += 8
+    if author_similarity:
+        fit_score += min(12, int(author_similarity / 10))
+
+    return {
+        "strict_pass": strict_pass,
+        "reference_title_similarity": title_similarity,
+        "reference_title_overlap_terms": overlap_terms,
+        "reference_year_match": year_match,
+        "reference_doi_match": doi_match,
+        "reference_author_similarity": author_similarity,
+        "reference_fit_score": min(100, fit_score),
+    }
+
+def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa", strict_reference: bool = True) -> List[Dict[str, Any]]:
     """
     Suggest corrected references for unverified/needs_review references.
 
@@ -719,10 +772,16 @@ def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa") -> List
         title_score = float(meta.get("title_score", 0) or 0)
         overall = float(meta.get("score", 0) or 0)
 
-        # Keep only correction candidates with strong evidence.
-        if not doi_match and title_score < 78:
+        strict_fit = _strict_reference_candidate_pass(fields, cand_title, cand_year, cand_authors, cand_doi, meta)
+
+        # Keep only correction candidates with strong evidence. In strict mode,
+        # broad author/year hits are not enough; the candidate title must be very
+        # close to the reference title, or there must be an exact DOI match.
+        if strict_reference and not strict_fit.get("strict_pass"):
             continue
-        if not doi_match and overall < 65:
+        if not strict_reference and not doi_match and title_score < 78:
+            continue
+        if not strict_reference and not doi_match and overall < 65:
             continue
 
         key = f"{cand_title.lower()}|{cand_year}|{cand_doi.lower()}"
@@ -745,12 +804,22 @@ def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa") -> List
             "type": "correction",
             "source": cand.get("source", "scholarly_lookup"),
             "relevance": relevance,
-            "candidate_quality": _quality_label(relevance),
+            "candidate_quality": _quality_label(max(relevance, int(strict_fit.get("reference_fit_score", 0) or 0))),
             "query_used": query,
-            "query_strategy": "reference_metadata_correction",
+            "query_strategy": "strict_reference_metadata_correction" if strict_reference else "reference_metadata_correction",
             "suggestion_type": "reference_correction_candidate",
-            "reason": "Suggested from reference metadata. Accept only after confirming author, year, title and DOI.",
+            "match_basis": {
+                "reference_title": title,
+                "reference_title_similarity": strict_fit.get("reference_title_similarity", 0),
+                "reference_title_overlap_terms": strict_fit.get("reference_title_overlap_terms", []),
+                "reference_year_match": strict_fit.get("reference_year_match", False),
+                "reference_doi_match": strict_fit.get("reference_doi_match", False),
+                "reference_author_similarity": strict_fit.get("reference_author_similarity", 0),
+                "reference_fit_score": strict_fit.get("reference_fit_score", 0),
+            },
+            "reason": "Suggested from strict reference metadata. Accept only after confirming author, year, title and DOI.",
             "review_required": True,
+            "is_real_source": True,
         })
 
     suggestions.sort(key=lambda x: (x.get("doi_match", False), x.get("score", 0), x.get("title_score", 0)), reverse=True)
