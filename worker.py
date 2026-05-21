@@ -1,74 +1,101 @@
-# claim_checker.py
-
-from typing import List, Dict, Any, Tuple
+# worker.py - Complete with all mismatch detection (COVERS ALL TEST SCENARIOS)
+import os
+import sys
+import json
 import re
-from citation_suggester import extract_context, split_citation_cluster, suggest_from_context, build_claim_validation_queries
-from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by_doi
+import time
+import hashlib
+import urllib.parse
+import urllib.request
+import urllib.error
+import redis
+import psycopg2
+from collections import Counter
+from difflib import SequenceMatcher
+from rq import Worker, Queue, Connection
+from engine import run_crosscheck_with_autofix
 
-CLAIM_CHECKER_VERSION = "1.5.35"
-CLAIM_CHECKER_BUILD = "commercial-2026-05-21-style-aware-claim-context-extraction-FINAL"
+try:
+    from engine import recover_references_for_verification
+except Exception:
+    recover_references_for_verification = None
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+from verify import verify_references_batch
+from acii import compute_acii
+from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
-def clean_extracted_claim_text(claim: str) -> str:
-    """
-    Remove citation residue from extracted claim text.
-    Keeps the manuscript claim but removes fragments such as:
-    'Button et al., 2013).' or 'Lohr, 2010).'
-    """
-    import re
+__version__ = "1.5.26"
+WORKER_BUILD = "commercial-2026-05-21-strict-recovery-reference-filter-FINAL"
 
-    claim = claim or ""
-    claim = re.sub(r"\s+", " ", claim).strip()
+try:
+    from claim_support_scorer import score_claim_support
+except Exception:
+    score_claim_support = None
 
-    # Remove leading broken closing punctuation from citation clusters
-    claim = re.sub(r"^[\s\)\]\.,;:]+", "", claim)
+try:
+    from citation_suggester import suggest_for_unverified, suggest_from_context
+except Exception as e:
+    print(f"[DEEP ENRICHMENT] citation_suggester import failed; direct OpenAlex/Crossref fallback will be used: {e}")
+    suggest_for_unverified = None
+    suggest_from_context = None
+# Get connection strings
+REDIS_URL = os.environ.get("REDIS_URL")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-    # Remove leading single citation fragment
-    claim = re.sub(
-        r"^[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?\s*,?\s*(?:19|20)\d{2}[a-z]?\)?[\s\.,;:]*",
-        "",
-        claim,
-        flags=re.I
-    )
+if not REDIS_URL or not DATABASE_URL:
+    print("ERROR: Missing REDIS_URL or DATABASE_URL")
+    sys.exit(1)
 
-    # Remove leading multiple citation fragments
-    claim = re.sub(
-        r"^(?:[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s*(?:&|and)\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,?\s*(?:19|20)\d{2}[a-z]?\s*;?\s*)+\)?[\s\.,;:]*",
-        "",
-        claim,
-        flags=re.I
-    )
+# Connect to Redis
+redis_conn = redis.from_url(REDIS_URL)
 
-    return claim.strip(" ,;:-")
+# ============================================================
+# DURABLE VERIFICATION HELPERS
+# ============================================================
 
+VERIFY_CHUNK_SIZE = int(os.environ.get("VERIFY_CHUNK_SIZE", "10"))
+CLAIM_SUPPORT_TIMEOUT = int(os.environ.get("CLAIM_SUPPORT_TIMEOUT", "60"))
+MAX_ALT_SOURCES_IN_VERIFY = int(os.environ.get("MAX_ALT_SOURCES_IN_VERIFY", "5"))
+
+# Commercial performance controls
+# Keep the main verification path fast and predictable. Deep Crossref/OpenAlex
+# lookups should run only in the deep_enrichment queue unless deliberately enabled.
+def _env_flag(name, default="0"):
+    return str(os.environ.get(name, default)).strip().lower() in {"1", "true", "yes", "on"}
+
+DEEP_LOOKUPS_IN_VERIFY = _env_flag("DEEP_LOOKUPS_IN_VERIFY", "0")
+RUN_REAL_CLAIM_CHECK_IN_VERIFY = _env_flag("RUN_REAL_CLAIM_CHECK_IN_VERIFY", "0")
+ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY = _env_flag("ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY", "0")
+DEEP_ENRICHMENT_LIMIT = int(os.environ.get("DEEP_ENRICHMENT_LIMIT", "80"))
+DEEP_LOOKUP_TOP_K = int(os.environ.get("DEEP_LOOKUP_TOP_K", "3"))
+DEEP_ENRICHMENT_BATCH_SAVE = int(os.environ.get("DEEP_ENRICHMENT_BATCH_SAVE", "10"))
 
 
 # ============================================================
-# STYLE-AWARE CLAIM CONTEXT EXTRACTION
+# STYLE-AWARE WORKER HELPERS
 # ============================================================
-# This keeps the existing architecture intact: claim_checker.py remains the
-# claim-support module, worker.py still calls build_claim_support_rows(), and
-# citation_suggester.extract_context() remains available as a fallback.
-# The improvement is that Claim Support now first uses the same citation-style
-# logic already used by the worker for Recovery: parenthetical = left claim,
-# narrative = right claim, numeric = full sentence with marker removed.
+# The engine and verify.py now support condensed style families. The worker
+# must preserve the selected family so Recovery, Claim Support, verification
+# caching, and suggestions do not fall back to APA/Harvard assumptions.
 
-_SUP_DIGITS_CLAIM = "⁰¹²³⁴⁵⁶⁷⁸⁹"
-_SUP_TO_NORMAL_CLAIM = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻−–—", "0123456789----")
-_NORMAL_TO_SUP_CLAIM = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
-_YEAR_RE_CLAIM = r"(?:19|20)\d{2}[a-z]?"
+_SUP_DIGITS_WORKER = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_SUP_TO_NORMAL_WORKER = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻−–—", "0123456789----")
+_NORMAL_TO_SUP_WORKER = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
 
 
-def _claim_style_token(style: str = "") -> str:
-    s = str(style or "auto").strip().lower()
+def _worker_style_token(style):
+    s = str(style or "apa").strip().lower()
     s = s.replace("&", " and ")
     s = re.sub(r"[\s\-/]+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
     aliases = {
         "author_year": "author_year",
-        "apa": "author_year",
-        "harvard": "author_year",
-        "chicago": "author_year",
-        "chicago_author_date": "author_year",
+        "apa": "apa",
+        "harvard": "harvard",
+        "chicago": "chicago_author_date",
+        "chicago_author_date": "chicago_author_date",
         "apa_harvard_chicago": "author_year",
         "ieee": "numeric_square",
         "ieee_square": "numeric_square",
@@ -102,11 +129,11 @@ def _claim_style_token(style: str = "") -> str:
         "round_numeric": "numeric_round",
         "numeric_round": "numeric_round",
     }
-    return aliases.get(s, s or "auto")
+    return aliases.get(s, s)
 
 
-def _claim_style_family(style: str = "") -> str:
-    token = _claim_style_token(style)
+def _worker_style_family(style):
+    token = _worker_style_token(style)
     if token in {"numeric_square", "numeric_superscript", "numeric_round"}:
         return token
     if token == "auto":
@@ -114,794 +141,4652 @@ def _claim_style_family(style: str = "") -> str:
     return "author_year"
 
 
-def _claim_style_hint(result: Dict[str, Any] = None, row: Dict[str, Any] = None) -> str:
-    result = result or {}
-    row = row or {}
+def _worker_is_author_year(style):
+    return _worker_style_family(style) in {"author_year", "auto"}
+
+
+def _worker_style_label(style):
+    family = _worker_style_family(style)
+    return {
+        "author_year": "Author-year, APA / Harvard / Chicago",
+        "numeric_square": "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+        "numeric_superscript": "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+        "numeric_round": "Numeric round bracket, Vancouver / ACS",
+        "auto": "Auto-detect, experimental",
+    }.get(family, "Author-year, APA / Harvard / Chicago")
+
+
+def _worker_style_sample(style):
+    family = _worker_style_family(style)
+    return {
+        "author_year": "(Adam, 2020), Adam (2020)",
+        "numeric_square": "[1], [1,2], [3–5]",
+        "numeric_superscript": "text¹, text¹,², text¹–³",
+        "numeric_round": "(1), (1,2), (3–5)",
+        "auto": "Experimental auto-detection",
+    }.get(family, "(Adam, 2020), Adam (2020)")
+
+
+def _selected_style_for_suggestions(result):
+    """
+    Resolve the selected citation style for Deep Recovery / Advanced Enrichment
+    calls so reference parsing does not fall back to APA for numeric styles.
+    """
+    if not isinstance(result, dict):
+        return "auto"
     return (
-        row.get("selected_style")
-        or row.get("style_family")
-        or row.get("style")
-        or result.get("selected_style")
+        result.get("selected_style")
         or result.get("style_family")
         or result.get("style")
-        or (result.get("summary") or {}).get("selected_style")
+        or result.get("citation_style")
         or "auto"
     )
 
 
-def _to_claim_superscript(num_text: str) -> str:
-    return str(num_text or "").translate(_NORMAL_TO_SUP_CLAIM)
-
-
-def _normalise_claim_text(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip()
-
-
-def _sentence_span_around(text: str, pos: int, window: int = 600) -> Tuple[int, int]:
-    """Find safe sentence-like boundaries around a citation position."""
-    if not text:
-        return 0, 0
-    if pos < 0:
-        return 0, min(len(text), window)
-
-    left = max(
-        text.rfind(".", 0, pos),
-        text.rfind("?", 0, pos),
-        text.rfind("!", 0, pos),
-        text.rfind(";", 0, pos),
-        text.rfind("\n", 0, pos),
-    )
-    left = 0 if left == -1 else left + 1
-
-    rights = [
-        text.find(".", pos),
-        text.find("?", pos),
-        text.find("!", pos),
-        text.find(";", pos),
-        text.find("\n", pos),
-    ]
-    rights = [r for r in rights if r != -1]
-    right = min(rights) + 1 if rights else min(len(text), pos + window)
-
-    # Avoid extreme accidental captures in PDFs with missing punctuation.
-    if right - left > window:
-        left = max(0, pos - window // 2)
-        right = min(len(text), pos + window // 2)
-
-    return left, right
-
-
-def _extract_author_year_parts(citation: str) -> Tuple[str, str, str]:
-    c = str(citation or "").strip().strip("()[] ")
-    m = re.search(rf"\b({_YEAR_RE_CLAIM})\b", c, flags=re.I)
-    year = m.group(1) if m else ""
-    author_part = c[:m.start()].strip(" ,;()[]") if m else c.strip(" ,;()[]")
-    tokens = [
-        t for t in re.findall(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", author_part)
-        if t.lower() not in {"et", "al", "and"}
-    ]
-    author = tokens[0] if tokens else ""
-    return author_part, author, year
-
-
-def _numeric_citation_variants(citation: str) -> List[str]:
-    raw = str(citation or "").strip()
-    norm = raw.translate(_SUP_TO_NORMAL_CLAIM)
-    nums = re.findall(r"\d{1,4}", norm)
-    variants = set()
-
-    if not nums:
-        return [raw] if raw else []
-
-    joined_comma = ",".join(nums)
-    joined_comma_sp = ", ".join(nums)
-    joined_dash = f"{nums[0]}–{nums[-1]}" if len(nums) > 1 else nums[0]
-    joined_hyphen = f"{nums[0]}-{nums[-1]}" if len(nums) > 1 else nums[0]
-
-    for n in set(nums + [joined_comma, joined_comma_sp, joined_dash, joined_hyphen]):
-        if not n:
-            continue
-        variants.add(n)
-        variants.add(f"[{n}]")
-        variants.add(f"({n})")
-        sup = _to_claim_superscript(n.replace(", ", ","))
-        variants.add(sup)
-        variants.add(f" {sup}")
-        variants.add(f",{sup}")
-        variants.add(f".{sup}")
-
-    variants.add(raw)
-    return sorted((v for v in variants if v), key=len, reverse=True)
-
-
-def _author_year_citation_variants(citation: str) -> List[str]:
-    raw = str(citation or "").strip()
-    base = raw.strip("() ")
-    variants = {raw, base, f"({base})"}
-
-    author_part, author, year = _extract_author_year_parts(raw)
-    if year and author_part:
-        variants.add(f"{author_part}, {year}")
-        variants.add(f"({author_part}, {year})")
-        variants.add(f"{author_part} ({year})")
-        variants.add(f"{author_part}, {year[:4]}")
-        variants.add(f"({author_part}, {year[:4]})")
-        variants.add(f"{author_part} ({year[:4]})")
-
-        if " and " in author_part.lower():
-            amp_author = re.sub(r"\s+and\s+", " & ", author_part, flags=re.I)
-            variants.add(f"{amp_author}, {year}")
-            variants.add(f"({amp_author}, {year})")
-            variants.add(f"{amp_author} ({year})")
-
-        if "&" in author_part:
-            and_author = author_part.replace("&", "and")
-            variants.add(f"{and_author}, {year}")
-            variants.add(f"({and_author}, {year})")
-            variants.add(f"{and_author} ({year})")
-
-    return sorted((v for v in variants if v), key=len, reverse=True)
-
-
-def _is_numeric_citation(citation: str, style_hint: str = "") -> bool:
-    family = _claim_style_family(style_hint)
-    raw = str(citation or "").strip()
-    norm = raw.translate(_SUP_TO_NORMAL_CLAIM)
-    if family.startswith("numeric_"):
-        return True
-    if not re.search(r"\d", norm):
-        return False
-    if re.search(rf"\b{_YEAR_RE_CLAIM}\b", norm):
-        return False
-    return bool(re.fullmatch(r"[\s\[\](),.;:\-–—0-9⁰¹²³⁴⁵⁶⁷⁸⁹]+", raw))
-
-
-def _find_variant_match(text: str, variants: List[str]):
-    for variant in variants or []:
-        variant = str(variant or "").strip()
-        if not variant:
-            continue
-        m = re.search(re.escape(variant), text, flags=re.I)
-        if m:
-            return m.start(), m.end(), text[m.start():m.end()]
-    return -1, -1, ""
-
-
-def _find_author_year_fallback_match(text: str, citation: str):
-    author_part, author, year = _extract_author_year_parts(citation)
-    if not (text and author and year):
-        return -1, -1, ""
-
-    author_re = re.escape(author)
-    year_re = re.escape(year[:4])
-    patterns = [
-        rf"\([^)]{{0,220}}{author_re}[^)]{{0,220}}{year_re}[a-z]?[^)]{{0,220}}\)",
-        rf"{author_re}\s*(?:et\s+al\.?)?\s*\(\s*{year_re}[a-z]?\s*\)",
-        rf"{author_re}\s*(?:et\s+al\.?)?\s*,?\s*{year_re}[a-z]?",
-    ]
-
-    for pat in patterns:
-        m = re.search(pat, text, flags=re.I)
-        if m:
-            return m.start(), m.end(), text[m.start():m.end()]
-    return -1, -1, ""
-
-
-def _expand_author_year_parenthetical_cluster(text: str, start: int, end: int):
-    if not text or start < 0:
-        return None
-
-    left_paren = text.rfind("(", 0, start + 1)
-    right_paren = text.find(")", end)
-    if left_paren == -1 or right_paren == -1:
-        return None
-
-    prev_boundary = max(
-        text.rfind(".", 0, start),
-        text.rfind("?", 0, start),
-        text.rfind("!", 0, start),
-        text.rfind("\n", 0, start),
-    )
-    if prev_boundary > left_paren:
-        return None
-
-    cluster = text[left_paren:right_paren + 1]
-    if len(cluster) > 350:
-        return None
-    if not re.search(rf"\b{_YEAR_RE_CLAIM}\b", cluster):
-        return None
-    if not re.search(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", cluster):
-        return None
-
-    return left_paren, right_paren + 1, cluster
-
-
-def _remove_citation_markers(sentence: str, citation: str, variants: List[str], style_hint: str = "") -> str:
-    out = str(sentence or "")
-
-    # Remove exact variants first.
-    for variant in sorted(set(variants or []), key=len, reverse=True):
-        if not variant or len(variant.strip()) == 0:
-            continue
-        out = re.sub(re.escape(variant), " ", out, flags=re.I)
-
-    if _is_numeric_citation(citation, style_hint):
-        out = re.sub(r"\[(?:\s*\d{1,4}\s*(?:[-,;–—]\s*\d{1,4}\s*)*)\]", " ", out)
-        out = re.sub(r"\(\s*\d{1,4}\s*(?:[-,;–—]\s*\d{1,4}\s*)*\)", " ", out)
-        out = re.sub(r"(?<=[A-Za-z\)\]])\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+(?:\s*[,;\-–—]\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+)*", " ", out)
-    else:
-        out = re.sub(rf"\([^()]*\b{_YEAR_RE_CLAIM}\b[^()]*\)", " ", out, flags=re.I)
-
-    out = re.sub(r"\s+([.,;:!?])", r"\1", out)
-    out = re.sub(r"\s+", " ", out)
-    return _normalise_claim_text(out).strip(" ,;:-.")
-
-
-def _extract_claim_style_aware(
-    full_text: str,
-    citation: str,
-    row: Dict[str, Any] = None,
-    style_hint: str = "auto",
-    window: int = 600,
-) -> Tuple[str, str]:
+def _call_suggest_from_context(context="", citation="", top_k=3, use_citation_hint=True):
     """
-    Extract the manuscript claim around a citation using citation-family rules.
+    Backward-compatible wrapper for citation_suggester.suggest_from_context.
 
-    Rules:
-    - Parenthetical author-year: use the left-side claim before the citation cluster.
-    - Narrative author-year: use the right-side claim after Author (Year).
-    - Numeric styles: use the full citation-bearing sentence, then remove the marker.
-    - Clusters: extract the claim once and reuse it for all citations in the cluster.
+    New citation_suggester versions support use_citation_hint. Older deployed
+    versions may not, so we retry without the keyword if needed.
     """
-    text = str(full_text or "")
-    citation = str(citation or "").strip()
-    if not text or not citation:
-        return "", ""
-
-    style_hint = style_hint or (row or {}).get("selected_style") or "auto"
-    is_numeric = _is_numeric_citation(citation, style_hint)
-
-    if is_numeric:
-        variants = _numeric_citation_variants(citation)
-        start, end, matched = _find_variant_match(text, variants)
-        if start >= 0:
-            left, right = _sentence_span_around(text, start, window=window)
-            sentence = text[left:right]
-            claim = _remove_citation_markers(sentence, citation, variants, style_hint)
-            if len(claim) >= 10:
-                return claim, f"style_aware_{_claim_style_family(style_hint)}_sentence"
-        return "", ""
-
-    variants = _author_year_citation_variants(citation)
-    start, end, matched = _find_variant_match(text, variants)
-
-    if start < 0:
-        start, end, matched = _find_author_year_fallback_match(text, citation)
-
-    if start < 0:
-        return "", ""
-
-    expanded = _expand_author_year_parenthetical_cluster(text, start, end)
-    if expanded:
-        start, end, matched = expanded
-
-    left, right = _sentence_span_around(text, start, window=window)
-    sentence = text[left:right]
-
-    is_parenthetical = matched.strip().startswith("(") and matched.strip().endswith(")")
-
-    if is_parenthetical:
-        claim = text[left:start]
-        claim = _remove_citation_markers(claim, citation, variants, style_hint)
-        if len(claim) >= 10:
-            return claim, "style_aware_parenthetical_left_context"
-
-        # If the left side is too short, use the full sentence without the citation.
-        claim = _remove_citation_markers(sentence, citation, variants, style_hint)
-        if len(claim) >= 10:
-            return claim, "style_aware_parenthetical_sentence_fallback"
-
-    else:
-        after = text[end:right]
-        after = _remove_citation_markers(after, citation, variants, style_hint)
-        if len(after) >= 10:
-            return after, "style_aware_narrative_right_context"
-
-        claim = _remove_citation_markers(sentence, citation, variants, style_hint)
-        if len(claim) >= 10:
-            return claim, "style_aware_narrative_sentence_fallback"
-
-    return "", ""
-
-
-def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], window: int = 600, style_hint: str = "auto"):
-    """
-    Always return a claim candidate once a citation exists.
-
-    Priority, without changing the existing architecture:
-    1. Use local style-aware extractor for parenthetical, narrative, numeric, and clusters.
-    2. Use context fields from the reconciliation row.
-    3. Use citation_suggester.extract_context() as compatibility fallback.
-    4. Use author-year fallback sentence search.
-    5. Return extraction_failed marker.
-    """
-    citation = (citation or "").strip()
-    row = row or {}
-    style_hint = style_hint or row.get("selected_style") or row.get("style_family") or row.get("style") or "auto"
-
-    # 1. Style-aware extractor shared by Recovery/Validation logic in this module.
-    claim, claim_source = _extract_claim_style_aware(
-        full_text=full_text,
-        citation=citation,
-        row=row,
-        style_hint=style_hint,
-        window=window,
-    )
-    claim = (claim or "").strip()
-    if len(claim) >= 10:
-        return claim, claim_source
-
-    # 2. Reconciliation row fallback.
-    for key in ["context", "sentence", "citation_context", "nearby_text", "left_context", "right_context"]:
-        val = (row.get(key, "") or "").strip()
-        if len(val) >= 10:
-            return val, f"row_{key}"
-
-    # 3. Existing citation_suggester fallback retained for compatibility.
+    if not suggest_from_context:
+        return []
     try:
-        claim = extract_context(full_text, citation, window=window)
-        claim = (claim or "").strip()
-        if len(claim) >= 10:
-            return claim, "extract_context_fallback"
-    except Exception:
-        pass
+        return suggest_from_context(
+            context=context,
+            citation=citation if use_citation_hint else "",
+            top_k=top_k,
+            use_citation_hint=use_citation_hint,
+        ) or []
+    except TypeError:
+        return suggest_from_context(
+            context=context,
+            citation=citation if use_citation_hint else "",
+            top_k=top_k,
+        ) or []
 
-    # 4. Last manuscript-text fallback using author-year pieces.
-    years = re.findall(rf"{_YEAR_RE_CLAIM}", citation)
-    year = years[0] if years else ""
 
-    tokens = re.findall(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", citation)
-    stop = {"And", "Et", "Al"}
-    authors = [t for t in tokens if t not in stop]
-    author = authors[0] if authors else ""
-
-    if full_text and author and year:
-        pattern = rf"{re.escape(author)}[^.?!;]{{0,180}}(?:\(\s*)?{re.escape(year[:4])}[a-z]?(?:\s*\))?"
-        m = re.search(pattern, full_text, flags=re.I)
-
-        if m:
-            pos = m.start()
-            left, right = _sentence_span_around(full_text, pos, window=window)
-            candidate = full_text[left:right]
-            candidate = _normalise_claim_text(candidate).strip(" ,;:-")
-
-            if len(candidate) >= 10:
-                return candidate, "fallback_sentence_window"
-
-    # 5. Final forced output.
-    return (
-        f"Claim could not be extracted from the manuscript context. Citation searched: {citation}",
-        "extraction_failed"
-    )
-
-def suggest_alternative_sources_for_claim(
-    claim: str,
-    citation: str = "",
-    current_source_title: str = "",
-    top_k: int = 3
-):
+def _call_suggest_for_unverified(reference="", top_k=3, result=None, strict_reference=True):
     """
-    Suggest alternative sources when the current matched source gives no evidence,
-    weak evidence, or is excluded.
+    Backward-compatible wrapper for citation_suggester.suggest_for_unverified.
 
-    Commercial logic:
-    - The query is claim-first, not author/year-first. This avoids simply finding
-      the same weak cited source again.
-    - Author/year from the existing citation is not allowed to dominate the search.
-    - Candidates are kept only when the smart suggester reports a usable relevance
-      signal from title/claim concept overlap or strong citation metadata.
-    - Output remains review-only and does not replace citations automatically.
+    Passes the selected style whenever supported, preventing APA-only parsing
+    for IEEE, Vancouver, AMA, Nature, RSC, ACS and related numeric styles.
+
+    strict_reference=True is important for Needs Review / Not Found Recovery:
+    it prevents broad author/year database hits from being displayed as if they
+    were corrections for the exact reference.
     """
-    claim = (claim or "").strip()
-    citation = (citation or "").strip()
-    current_source_title = (current_source_title or "").strip().lower()
-
-    if len(claim) < 20:
+    if not suggest_for_unverified:
         return []
+    style = _selected_style_for_suggestions(result or {})
+    try:
+        return suggest_for_unverified(
+            reference,
+            top_k=top_k,
+            style=style,
+            strict_reference=strict_reference,
+        ) or []
+    except TypeError:
+        try:
+            return suggest_for_unverified(
+                reference,
+                top_k=top_k,
+                style=style,
+            ) or []
+        except TypeError:
+            return suggest_for_unverified(
+                reference,
+                top_k=top_k,
+            ) or []
 
-    # Do not create alternatives from extraction-failure placeholders.
-    if claim.lower().startswith("claim could not be extracted"):
-        return []
+def _add_worker_style_metadata(row, style):
+    if not isinstance(row, dict):
+        return row
+    family = _worker_style_family(style)
+    row.setdefault("selected_style", style)
+    row.setdefault("style_family", family)
+    row.setdefault("style_label", _worker_style_label(style))
+    row.setdefault("style_sample", _worker_style_sample(style))
+    return row
+
+
+def _add_worker_style_metadata_to_rows(rows, style):
+    return [_add_worker_style_metadata(r, style) for r in (rows or [])]
+
+
+def _to_worker_superscript(num_text):
+    return str(num_text or "").translate(_NORMAL_TO_SUP_WORKER)
+
+
+def _normalise_numeric_citation_number(value):
+    raw = str(value or "")
+    raw = raw.translate(_SUP_TO_NORMAL_WORKER)
+    nums = re.findall(r"\d{1,4}", raw)
+    return nums[0] if nums else ""
+
+# Citation-needed claims tab controls
+CITATION_NEEDED_MAX_ROWS = int(os.environ.get("CITATION_NEEDED_MAX_ROWS", "250"))
+CITATION_NEEDED_MIN_CONFIDENCE = float(os.environ.get("CITATION_NEEDED_MIN_CONFIDENCE", "0.55"))
+
+# Fast verification controls
+# Parallel mode verifies individual references concurrently inside each chunk.
+# This is the main speed lever for reducing 10-reference jobs from about a minute
+# to a few seconds, subject to Crossref/OpenAlex latency and rate limits.
+VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
+VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_CACHE_TTL", "0"))  # no Redis reference cache by default
+VERIFY_USE_CACHE = _env_flag("VERIFY_USE_CACHE", "0")
+VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
+
+# Privacy-first cache controls. Defaults are OFF.
+CACHE_RESULTS_IN_REDIS = _env_flag("CACHE_RESULTS_IN_REDIS", "0")
+DELETE_FILE_AFTER_PROCESSING = _env_flag("DELETE_FILE_AFTER_PROCESSING", "1")
+FILE_CACHE_TTL = int(os.environ.get("FILE_CACHE_TTL", "900"))
+RESULT_CACHE_TTL = int(os.environ.get("RESULT_CACHE_TTL", "0"))
+
+
+def now_iso():
+    return datetime.utcnow().isoformat()
+
+
+def _safe_json_loads(value):
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _load_job_result(job_id):
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    cursor = conn.cursor()
 
     try:
-        candidates = suggest_from_context(
-            context=claim,
-            citation=citation,
-            top_k=top_k + 8,
-            use_citation_hint=False,   # important: search by claim, not by the weak source's author/year
-            min_relevance=55,
-        )
+        cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            raise Exception(f"Job {job_id} not found")
+
+        return _safe_json_loads(row["result"])
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _save_job_result(job_id, result, status=None):
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+
+    try:
+        if status:
+            cursor.execute(
+                """
+                UPDATE jobs
+                SET result = %s::jsonb,
+                    status = %s,
+                    completed_at = CASE WHEN %s = 'completed' THEN NOW() ELSE completed_at END
+                WHERE job_id = %s
+                """,
+                (json.dumps(result), status, status, job_id)
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE jobs
+                SET result = %s::jsonb
+                WHERE job_id = %s
+                """,
+                (json.dumps(result), job_id)
+            )
+
+        conn.commit()
+
+    finally:
+        cursor.close()
+        conn.close()
+
+    if CACHE_RESULTS_IN_REDIS:
+        try:
+            ttl = max(1, int(RESULT_CACHE_TTL or 900))
+            redis_conn.setex(f"result:{job_id}", ttl, json.dumps(result))
+        except Exception as e:
+            print(f"[VERIFY WORKER] Could not refresh Redis result cache: {e}")
+
+def _set_verification_meta(result, **kwargs):
+    """
+    Update verification metadata inside the result object.
+
+    This helper is required by process_verification() for running,
+    finalising, completed, and error states.
+    """
+    if result is None:
+        result = {}
+
+    verification = result.get("verification") or {}
+
+    for key, value in kwargs.items():
+        if value is not None:
+            verification[key] = value
+
+    result["verification"] = verification
+    return result
+
+def _compute_verification_summary(rows):
+    rows = rows or []
+    return {
+        "total": len(rows),
+        "verified": sum(1 for r in rows if r and r.get("status") == "verified"),
+        "likely": sum(1 for r in rows if r and r.get("status") == "likely"),
+        "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
+        "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
+        "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
+    }
+
+
+def _reference_cache_key(ref, style="apa", enrich_metadata=False):
+    """Stable Redis cache key for a reference verification result."""
+    raw = json.dumps({
+        "reference": str(ref or "").strip(),
+        "style": _worker_style_family(style),
+        "selected_style": str(style or "").strip(),
+        "enrich_metadata": bool(enrich_metadata),
+    }, sort_keys=True)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"verify:v2:{digest}"
+
+
+def _make_offline_verification_row(ref, error="Verification failed or timed out", style="apa"):
+    """Create a safe row if a single-reference verification fails."""
+    return _add_worker_style_metadata({
+        "status": "offline",
+        "reference": ref,
+        "original_reference": ref,
+        "source": "worker_parallel_fallback",
+        "score": 0,
+        "title_score": 0,
+        "doi": "",
+        "year": "",
+        "authors": "",
+        "matched_title": "",
+        "message": error,
+        "error": error,
+    }, style)
+
+
+def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
+    """
+    Verify one reference with Redis caching.
+
+    The existing verify_references_batch() is reused for correctness, but it is
+    called with a single reference so many references can be processed in
+    parallel by _verify_chunk_parallel().
+    """
+    cache_key = _reference_cache_key(ref, style=style, enrich_metadata=enrich_metadata)
+
+    if VERIFY_USE_CACHE:
+        try:
+            cached = redis_conn.get(cache_key)
+            if cached:
+                row = json.loads(cached)
+                if isinstance(row, dict):
+                    row.setdefault("cache_hit", True)
+                    return _add_worker_style_metadata(row, style)
+        except Exception as e:
+            print(f"[VERIFY CACHE] Cache read failed: {e}")
+
+    try:
+        rows = verify_references_batch(
+            [ref],
+            style=style,
+            use_crossref=True,
+            use_openalex=True,
+            job_id=None,
+            enrich_metadata=enrich_metadata
+        ) or []
+
+        row = rows[0] if rows else _make_offline_verification_row(ref, "No verification row returned", style)
+        if isinstance(row, dict):
+            row.setdefault("reference", ref)
+            row.setdefault("original_reference", ref)
+            row.setdefault("cache_hit", False)
+            row = _add_worker_style_metadata(row, style)
+
+        if VERIFY_USE_CACHE and isinstance(row, dict):
+            try:
+                redis_conn.setex(cache_key, VERIFY_CACHE_TTL, json.dumps(row))
+            except Exception as e:
+                print(f"[VERIFY CACHE] Cache write failed: {e}")
+
+        return row
+
     except Exception as e:
-        print(f"[ALT SOURCE ERROR] {citation}: {e}")
+        return _make_offline_verification_row(ref, str(e), style)
+
+
+def _verify_chunk_parallel(chunk, style="apa", enrich_metadata=False):
+    """
+    Verify a chunk concurrently while preserving input order.
+
+    If parallel mode is disabled or there is only one reference, it falls back
+    to the existing batch verifier.
+    """
+    chunk = list(chunk or [])
+
+    if not chunk:
         return []
 
-    suggestions = []
+    if not VERIFY_PARALLEL_MODE or VERIFY_PARALLEL_WORKERS <= 1 or len(chunk) == 1:
+        rows = verify_references_batch(
+            chunk,
+            style=style,
+            use_crossref=True,
+            use_openalex=True,
+            job_id=None,
+            enrich_metadata=enrich_metadata
+        ) or []
+        return rows
+
+    max_workers = max(1, min(VERIFY_PARALLEL_WORKERS, len(chunk)))
+    ordered_rows = [None] * len(chunk)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(_verify_single_reference_cached, ref, style, enrich_metadata): i
+            for i, ref in enumerate(chunk)
+        }
+
+        for future in as_completed(future_map):
+            i = future_map[future]
+            ref = chunk[i]
+            try:
+                ordered_rows[i] = future.result()
+            except Exception as e:
+                ordered_rows[i] = _make_offline_verification_row(ref, str(e), style)
+
+    return [r for r in ordered_rows if r is not None]
+
+def _reference_year_from_text(text):
+    m = re.search(r"(?:19|20)\d{2}[a-z]?", str(text or ""), flags=re.I)
+    return m.group(0) if m else ""
+
+
+def _fallback_recovery_suggestions(row, result, target=3):
+    """
+    Return review prompts only when no reliable external source candidate is
+    available. These must not inherit authors/DOI/URL from weak database hits,
+    otherwise the UI can make a review prompt look like a real source.
+    """
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_reference")
+        or row.get("reference_text")
+        or ""
+    )
+
+    status = row.get("status", "")
+    ref_year = row.get("reference_year") or _reference_year_from_text(reference)
+
+    fallback = [
+        {
+            "title": "Check citation-source fit",
+            "year": ref_year,
+            "authors": "",
+            "doi": "",
+            "url": "",
+            "reason": (
+                f"This reference has verification status '{status}'. "
+                "No reliable replacement source was found automatically. Compare the cited sentence with the intended source before making changes."
+            ),
+            "suggested": reference[:250] if reference else "Review the matched reference manually.",
+            "confidence": 0.50,
+            "source": "context_review_fallback",
+            "suggestion_type": "review_prompt",
+            "candidate_quality": "review_prompt",
+            "review_required": True,
+            "is_real_source": False,
+            "citation": citation,
+            "reference": reference,
+        },
+        {
+            "title": "Verify author, year, title, and DOI metadata",
+            "year": ref_year,
+            "authors": "",
+            "doi": "",
+            "url": "",
+            "reason": "The system could not confirm this reference with enough confidence. Check author names, publication year, article/dissertation title, journal or repository, and DOI/URL manually.",
+            "suggested": reference[:250] if reference else "Search the exact reference title manually in Crossref, OpenAlex, Google Scholar, ProQuest, or the university repository.",
+            "confidence": 0.45,
+            "source": "metadata_review_fallback",
+            "suggestion_type": "review_prompt",
+            "candidate_quality": "review_prompt",
+            "review_required": True,
+            "is_real_source": False,
+            "citation": citation,
+            "reference": reference,
+        },
+        {
+            "title": "Confirm claim support before replacing the source",
+            "year": ref_year,
+            "authors": "",
+            "doi": "",
+            "url": "",
+            "reason": "A source should not be replaced only because another database item has a similar author or year. Confirm that the source supports the claim in the manuscript.",
+            "suggested": "Review the cited sentence against the intended source abstract, findings, or full text.",
+            "confidence": 0.40,
+            "source": "claim_support_review_fallback",
+            "suggestion_type": "review_prompt",
+            "candidate_quality": "review_prompt",
+            "review_required": True,
+            "is_real_source": False,
+            "citation": citation,
+            "reference": reference,
+        },
+    ]
+
+    return fallback[:target]
+
+def _normalise_recovery_suggestion(item, row, result):
+    """Convert different suggestion shapes into one UI-friendly shape."""
+    if not isinstance(item, dict):
+        item = {"title": str(item)}
+
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or item.get("citation")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or item.get("reference")
+        or ""
+    )
+
+    return {
+        "title": item.get("title") or item.get("suggested_title") or item.get("source_title") or "Suggested source for review",
+        "year": item.get("year") or item.get("matched_year") or row.get("year") or row.get("matched_year") or "",
+        "authors": item.get("authors") or item.get("matched_authors") or row.get("authors") or row.get("matched_authors") or "",
+        "doi": item.get("doi") or row.get("doi") or "",
+        "reason": item.get("reason") or item.get("match_note") or "Review this suggestion before making changes.",
+        "suggested": item.get("suggested") or item.get("reference") or item.get("title") or reference[:250],
+        "confidence": item.get("confidence") or item.get("relevance") or item.get("score") or 0.50,
+        "source": item.get("source") or item.get("type") or "context_lookup",
+        "citation": citation,
+        "reference": reference,
+    }
+
+
+def _dedupe_and_pad_suggestions(suggestions, row, result, target=3):
+    """Deduplicate lookup suggestions and pad to three review-ready items."""
+    clean = []
     seen = set()
 
-    for cand in candidates or []:
-        title = (cand.get("title", "") or "").strip()
-        doi = (cand.get("doi", "") or "").strip()
-        year = cand.get("year", "")
-        authors = cand.get("authors", []) or []
-        relevance = float(cand.get("relevance", 0) or 0)
+    for item in suggestions or []:
+        norm = _normalise_recovery_suggestion(item, row, result)
+        key = (
+            str(norm.get("doi") or "").lower().strip(),
+            str(norm.get("title") or norm.get("suggested") or "").lower().strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(norm)
+        if len(clean) >= target:
+            return clean[:target]
 
-        if not title or relevance < 55:
+    for item in _fallback_recovery_suggestions(row, result, target=target):
+        key = (
+            str(item.get("doi") or "").lower().strip(),
+            str(item.get("title") or item.get("suggested") or "").lower().strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(item)
+        if len(clean) >= target:
+            break
+
+    return clean[:target]
+
+
+def _lookup_context_suggestions_for_row(row, result, target=3):
+    """
+    Slower deep lookup path for context/reference suggestions.
+    This may call Crossref/OpenAlex through citation_suggester, so it should be used
+    only in the deep_enrichment queue or when DEEP_LOOKUPS_IN_VERIFY is explicitly enabled.
+    """
+    existing = (
+        row.get("suggested_references")
+        or row.get("correction_suggestions")
+        or row.get("suggestions")
+        or []
+    )
+
+    if existing:
+        return _dedupe_and_pad_suggestions(existing, row, result, target=target)
+
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_title")
+        or row.get("title")
+        or row.get("source_title")
+        or ""
+    )
+
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+    context = ""
+
+    try:
+        sentences = _split_sentences(main_text)
+        context = _find_sentence_for_citation(sentences, citation)
+    except Exception:
+        context = ""
+
+    if not context and main_text:
+        context = main_text[:1500]
+
+    suggestions = []
+
+    if suggest_from_context and context:
+        try:
+            suggestions.extend(
+                _call_suggest_from_context(
+                    context=context,
+                    citation=citation,
+                    top_k=target,
+                    use_citation_hint=True,
+                )
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Context lookup failed: {e}")
+
+    if suggest_for_unverified and reference:
+        try:
+            suggestions.extend(
+                _call_suggest_for_unverified(
+                    reference,
+                    top_k=target,
+                    result=result,
+                )
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Reference suggestion failed: {e}")
+
+    return _dedupe_and_pad_suggestions(suggestions, row, result, target=target)
+
+
+# ============================================================
+# ROBUST ADVANCED ENRICHMENT LOOKUP HELPERS
+# ============================================================
+# These helpers make Advanced Enrichment independent of the citation_suggester
+# import path. If citation_suggester fails to import, or if its strict filters
+# return nothing, we still query Crossref/OpenAlex directly and return real
+# review-only source candidates.
+
+ENRICHMENT_HTTP_TIMEOUT = int(os.environ.get("ENRICHMENT_HTTP_TIMEOUT", "12"))
+ENRICHMENT_QUERY_LIMIT = int(os.environ.get("ENRICHMENT_QUERY_LIMIT", "6"))
+CROSSREF_MAILTO = os.environ.get("CROSSREF_MAILTO", "").strip()
+OPENALEX_MAILTO = os.environ.get("OPENALEX_MAILTO", "").strip()
+
+_ENRICHMENT_STOPWORDS = {
+    "about", "above", "after", "again", "against", "among", "because", "before",
+    "being", "between", "could", "during", "either", "figure", "found", "given",
+    "having", "however", "include", "including", "into", "method", "methods", "model",
+    "paper", "research", "result", "results", "review", "should", "study", "table",
+    "their", "there", "these", "those", "through", "using", "where", "which", "while",
+    "would", "claim", "citation", "source", "evidence", "analysis", "based", "support",
+    "manual", "required", "matched", "available", "extracted", "context"
+}
+
+
+def _safe_get_json_url(url, timeout=None):
+    """Small dependency-free JSON GET helper for Crossref/OpenAlex."""
+    timeout = timeout or ENRICHMENT_HTTP_TIMEOUT
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "CiteIntegrity/1.0 (advanced-enrichment)",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[DEEP ENRICHMENT] API lookup failed: {e} | {url[:180]}")
+        return {}
+
+
+def _clean_query_text(text, max_len=220):
+    text = re.sub(r"https?://\S+", " ", str(text or ""), flags=re.I)
+    text = re.sub(r"doi\s*:?\s*10\.\S+", " ", text, flags=re.I)
+    text = re.sub(r"\b10\.\d{4,9}/\S+", " ", text, flags=re.I)
+    text = re.sub(r"[^A-Za-z0-9\s:&,\-']", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
+
+
+def _extract_enrichment_keywords(text, limit=10):
+    words = re.findall(r"[A-Za-z][A-Za-z\-']{3,}", str(text or "").lower())
+    out = []
+    seen = set()
+    for word in words:
+        word = word.strip("-' ")
+        if len(word) < 4 or word in _ENRICHMENT_STOPWORDS or word in seen:
+            continue
+        seen.add(word)
+        out.append(word)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extract_reference_title_for_lookup(reference):
+    """Extract a usable title phrase from an APA-like reference string."""
+    ref = re.sub(r"\s+", " ", str(reference or "")).strip()
+    if not ref:
+        return ""
+
+    # Prefer title after the year, e.g. Author. (2021). Title. Journal.
+    m = re.search(r"\((?:19|20)\d{2}[a-z]?\)\s*\.\s*(.+?)(?:\.\s+[A-Z][A-Za-z& ]{2,}|$)", ref)
+    if m:
+        title = m.group(1).strip()
+        if len(title) >= 8:
+            return _clean_query_text(title, max_len=180)
+
+    # Handle references without a full stop immediately after year.
+    m = re.search(r"(?:19|20)\d{2}[a-z]?\)?\s*\.\s*(.+?)(?:\.\s+[A-Z][A-Za-z& ]{2,}|$)", ref)
+    if m:
+        title = m.group(1).strip()
+        if len(title) >= 8:
+            return _clean_query_text(title, max_len=180)
+
+    # Fallback: remove author/year leading material and use significant words.
+    fallback = re.sub(r"^.{0,140}?(?:19|20)\d{2}[a-z]?\)?\s*\.\s*", "", ref)
+    fallback = _clean_query_text(fallback or ref, max_len=180)
+    return fallback
+
+
+def _candidate_from_crossref_item(item, query=""):
+    title = ""
+    if isinstance(item.get("title"), list) and item.get("title"):
+        title = item.get("title")[0] or ""
+    elif isinstance(item.get("title"), str):
+        title = item.get("title")
+
+    if not title:
+        return None
+
+    year = ""
+    for key in ("published-print", "published-online", "issued", "created"):
+        parts = ((item.get(key) or {}).get("date-parts") or [])
+        if parts and parts[0]:
+            year = str(parts[0][0])
+            break
+
+    authors = []
+    for au in item.get("author") or []:
+        name = " ".join(x for x in [au.get("given"), au.get("family")] if x).strip()
+        if name:
+            authors.append(name)
+
+    doi = str(item.get("DOI") or item.get("doi") or "").strip()
+    url = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
+
+    return {
+        "title": title,
+        "year": year,
+        "authors": authors[:6],
+        "doi": doi,
+        "url": url,
+        "source": "crossref_direct",
+        "relevance": item.get("score") or 0,
+        "query_used": query,
+        "suggestion_type": "context_specific_source",
+        "reason": "Retrieved from Crossref using Advanced Enrichment query expansion. Review before using."
+    }
+
+
+def _candidate_from_openalex_item(item, query=""):
+    title = item.get("title") or item.get("display_name") or ""
+    if not title:
+        return None
+
+    authors = []
+    for auth in item.get("authorships") or []:
+        au = auth.get("author") or {}
+        name = au.get("display_name") or ""
+        if name:
+            authors.append(name)
+
+    doi = str(item.get("doi") or "").strip()
+    if doi.lower().startswith("https://doi.org/"):
+        doi = doi.split("https://doi.org/", 1)[1]
+
+    primary = item.get("primary_location") or {}
+    url = primary.get("landing_page_url") or item.get("id") or (f"https://doi.org/{doi}" if doi else "")
+
+    return {
+        "title": title,
+        "year": item.get("publication_year") or "",
+        "authors": authors[:6],
+        "doi": doi,
+        "url": url,
+        "source": "openalex_direct",
+        "relevance": item.get("relevance_score") or 0,
+        "query_used": query,
+        "suggestion_type": "context_specific_source",
+        "reason": "Retrieved from OpenAlex using Advanced Enrichment query expansion. Review before using."
+    }
+
+
+def _query_crossref_direct(query, rows=6):
+    query = _clean_query_text(query)
+    if not query:
+        return []
+    params = {
+        "query.bibliographic": query,
+        "rows": str(rows),
+        "select": "DOI,title,author,issued,published-print,published-online,created,URL,score",
+    }
+    if CROSSREF_MAILTO:
+        params["mailto"] = CROSSREF_MAILTO
+    url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
+    data = _safe_get_json_url(url)
+    items = (((data or {}).get("message") or {}).get("items") or [])
+    return [c for c in (_candidate_from_crossref_item(item, query) for item in items) if c]
+
+
+def _query_openalex_direct(query, rows=6):
+    query = _clean_query_text(query)
+    if not query:
+        return []
+    params = {"search": query, "per-page": str(rows)}
+    if OPENALEX_MAILTO:
+        params["mailto"] = OPENALEX_MAILTO
+    url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
+    data = _safe_get_json_url(url)
+    items = (data or {}).get("results") or []
+    return [c for c in (_candidate_from_openalex_item(item, query) for item in items) if c]
+
+
+def _build_deep_enrichment_queries(citation="", reference="", context="", source_title="", target=3):
+    """Build several fallback queries so one strict query does not kill enrichment."""
+    queries = []
+
+    ref_title = _extract_reference_title_for_lookup(reference or source_title)
+    if ref_title:
+        queries.append(ref_title)
+
+    citation_bits = []
+    try:
+        years = re.findall(r"(?:19|20)\d{2}[a-z]?", str(citation or ""))
+        names = [n for n in re.findall(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", str(citation or "")) if n.lower() not in {"et", "al"}]
+        citation_bits = names[:2] + years[:1]
+    except Exception:
+        citation_bits = []
+
+    if ref_title and citation_bits:
+        queries.append(" ".join(citation_bits + [ref_title]))
+
+    context_keywords = _extract_enrichment_keywords(context, limit=10)
+    if context_keywords:
+        queries.append(" ".join(context_keywords[:8]))
+        if citation_bits:
+            queries.append(" ".join(citation_bits + context_keywords[:6]))
+
+    compact_ref = _clean_query_text(reference, max_len=220)
+    if compact_ref and compact_ref not in queries:
+        queries.append(compact_ref)
+
+    # Keep unique and not too many.
+    out = []
+    seen = set()
+    for q in queries:
+        q = _clean_query_text(q)
+        key = q.lower()
+        if len(q) < 6 or key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+        if len(out) >= ENRICHMENT_QUERY_LIMIT:
+            break
+    return out
+
+
+def _direct_scholarly_source_lookup(citation="", reference="", context="", source_title="", target=3):
+    candidates = []
+    queries = _build_deep_enrichment_queries(
+        citation=citation,
+        reference=reference,
+        context=context,
+        source_title=source_title,
+        target=target,
+    )
+
+    for query in queries:
+        # Query OpenAlex first because it is often better for books, reports,
+        # older works, and non-DOI records. Then add Crossref.
+        candidates.extend(_query_openalex_direct(query, rows=max(target * 2, 6)))
+        candidates.extend(_query_crossref_direct(query, rows=max(target * 2, 6)))
+        if len(candidates) >= target * 3:
+            break
+
+    return candidates
+
+def _deep_context_source_suggestions(row, result, target=3, include_reference=True):
+    """
+    Force Advanced Enrichment to search for real review-only source candidates.
+
+    Important distinction:
+    - include_reference=True is used for Needs Review / Not Found Recovery. It
+      must find the same or very close reference, so it is strict and
+      reference-first.
+    - include_reference=False is used for claim alternatives and citation-needed
+      enrichment. It is claim/context-first and may recommend alternative
+      sources that support the claim.
+    """
+    citation = (
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    )
+
+    reference = (
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("matched_reference")
+        or row.get("reference_text")
+        or ""
+    )
+
+    source_title = str(
+        row.get("source_title")
+        or row.get("matched_source")
+        or row.get("matched_title")
+        or row.get("title")
+        or ""
+    ).strip()
+
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+
+    context = (
+        row.get("context")
+        or row.get("claim")
+        or row.get("claim_extracted")
+        or row.get("extracted_claim")
+        or row.get("citation_context")
+        or row.get("nearby_text")
+        or ""
+    )
+
+    if not context and main_text and citation:
+        try:
+            sentences = _split_sentences(main_text)
+            context = _find_sentence_for_citation(sentences, citation)
+        except Exception:
+            context = ""
+
+    if not context and main_text and not include_reference:
+        # Only claim-alternative enrichment may use this weak fallback. Exact
+        # reference recovery should not use unrelated first-page/chapter text.
+        context = main_text[:1500]
+
+    suggestions = []
+
+    if include_reference:
+        # Strict reference recovery: search by exact reference metadata only.
+        # Do not use broad manuscript context here; it causes unrelated source
+        # candidates for surnames such as Saya, Xue, Yellowbird, etc.
+        if suggest_for_unverified and reference:
+            try:
+                suggestions.extend(
+                    _call_suggest_for_unverified(
+                        reference,
+                        top_k=target + 8,
+                        result=result,
+                        strict_reference=True,
+                    )
+                )
+            except Exception as e:
+                print(f"[DEEP ENRICHMENT] citation_suggester reference lookup failed: {e}")
+
+        try:
+            suggestions.extend(
+                _direct_scholarly_source_lookup(
+                    citation="",
+                    reference=reference,
+                    context="",
+                    source_title=source_title,
+                    target=target + 8,
+                )
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Direct reference lookup failed: {e}")
+
+    else:
+        # Claim alternative / citation-needed enrichment: claim/context-first.
+        if suggest_from_context and context:
+            try:
+                suggestions.extend(
+                    _call_suggest_from_context(
+                        context=context,
+                        citation="",
+                        top_k=target + 8,
+                        use_citation_hint=False,
+                    )
+                )
+            except Exception as e:
+                print(f"[DEEP ENRICHMENT] citation_suggester context lookup failed: {e}")
+
+        try:
+            suggestions.extend(
+                _direct_scholarly_source_lookup(
+                    citation="",
+                    reference="",
+                    context=context,
+                    source_title=source_title,
+                    target=target + 8,
+                )
+            )
+        except Exception as e:
+            print(f"[DEEP ENRICHMENT] Direct claim/context lookup failed: {e}")
+
+    return _dedupe_real_source_suggestions(
+        suggestions,
+        target=target,
+        exclude_title=source_title,
+        reference_text=reference,
+        strict_reference=bool(include_reference),
+        context_text=context,
+    )
+
+def _context_suggestions_for_row(row, result):
+    """
+    Fast Recovery Lite path for the main verification job.
+    By default, this never calls Crossref/OpenAlex. It returns existing suggestions
+    if already present, otherwise three review-ready fallback prompts.
+    """
+    existing = (
+        row.get("suggested_references")
+        or row.get("correction_suggestions")
+        or row.get("suggestions")
+        or []
+    )
+
+    if existing:
+        return _dedupe_and_pad_suggestions(existing, row, result, target=3)
+
+    if not DEEP_LOOKUPS_IN_VERIFY:
+        return _fallback_recovery_suggestions(row, result, target=3)
+
+    return _lookup_context_suggestions_for_row(row, result, target=3)
+
+
+
+def _normalise_recovery_text_for_match(text):
+    text = _clean_query_text(text, max_len=500).lower()
+    text = re.sub(r"\b(?:a|an|the|of|and|for|to|in|on|with|by|from|using|use|study|studies|analysis|effect|effects)\b", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _extract_reference_surnames(reference_text, limit=6):
+    """Extract likely author surnames from the author segment of a reference."""
+    ref = str(reference_text or "")
+    author_part = ref
+    m = re.search(r"\((?:19|20)\d{2}[a-z]?\)|\b(?:19|20)\d{2}[a-z]?\b", ref, flags=re.I)
+    if m:
+        author_part = ref[:m.start()]
+    # APA references are usually surname-first; keep tokens before initials too.
+    tokens = re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}\b", author_part)
+    stop = {"And", "The", "Journal", "International", "University", "Press", "Doctoral", "Dissertation"}
+    out = []
+    seen = set()
+    for t in tokens:
+        if t in stop:
+            continue
+        low = t.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append(low)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _reference_candidate_fit(item, reference_text="", candidate_title="", candidate_year="", candidate_doi=""):
+    """
+    Decide whether a database result is a plausible correction for the exact
+    reference. This is stricter than context-source matching and is used for
+    Needs Review / Not Found Recovery so unrelated author/year hits are removed.
+    """
+    ref = str(reference_text or "")
+    cand_title = str(candidate_title or "").strip()
+    ref_title = _extract_reference_title_for_lookup(ref)
+    ref_title_norm = _normalise_recovery_text_for_match(ref_title)
+    cand_title_norm = _normalise_recovery_text_for_match(cand_title)
+
+    title_similarity = 0
+    if ref_title_norm and cand_title_norm:
+        title_similarity = int(round(SequenceMatcher(None, ref_title_norm, cand_title_norm).ratio() * 100))
+
+    ref_terms = set(_extract_enrichment_keywords(ref_title or ref, limit=24))
+    cand_terms = set(_extract_enrichment_keywords(cand_title, limit=24))
+    overlap_terms = sorted(ref_terms & cand_terms)
+    overlap_count = len(overlap_terms)
+
+    ref_year = _reference_year_from_text(ref)
+    cand_year = str(candidate_year or "")[:4]
+    year_match = bool(ref_year and cand_year and ref_year[:4] == cand_year)
+
+    ref_doi_match = re.search(r"10\.\d{4,9}/\S+", ref, flags=re.I)
+    ref_doi = ref_doi_match.group(0).rstrip(".,;)") if ref_doi_match else ""
+    doi_match = bool(ref_doi and candidate_doi and ref_doi.lower() == str(candidate_doi).lower().strip())
+
+    ref_surnames = _extract_reference_surnames(ref)
+    authors = item.get("authors") or item.get("matched_authors") or []
+    if isinstance(authors, str):
+        cand_auth_text = authors.lower()
+    else:
+        cand_auth_text = " ".join(str(a) for a in authors).lower()
+    author_overlap = [a for a in ref_surnames if a and a in cand_auth_text]
+
+    # Conservative exact-reference evidence. A mere surname hit is not enough.
+    evidence_score = 0
+    if doi_match:
+        evidence_score += 100
+    evidence_score += min(70, title_similarity)
+    evidence_score += min(20, overlap_count * 4)
+    if year_match:
+        evidence_score += 8
+    if author_overlap:
+        evidence_score += min(12, len(author_overlap) * 6)
+
+    strict_pass = bool(
+        doi_match
+        or title_similarity >= 82
+        or (title_similarity >= 72 and (year_match or bool(author_overlap)))
+        or (overlap_count >= 6 and title_similarity >= 62 and (year_match or bool(author_overlap)))
+    )
+
+    return {
+        "strict_pass": strict_pass,
+        "reference_title": ref_title,
+        "reference_year": ref_year,
+        "title_similarity": title_similarity,
+        "title_overlap_terms": overlap_terms[:12],
+        "title_overlap_count": overlap_count,
+        "year_match": year_match,
+        "doi_match": doi_match,
+        "author_overlap": author_overlap,
+        "reference_fit_score": min(100, evidence_score),
+    }
+
+def _source_candidate_quality(item, title, year="", doi="", reference_fit=None):
+    """Conservative quality score for deep enrichment candidates."""
+    try:
+        relevance = float(item.get("relevance") or item.get("confidence") or item.get("score") or item.get("title_score") or 0)
+    except Exception:
+        relevance = 0
+
+    query_used = str(item.get("query_used") or "")
+    title_words = set(_extract_enrichment_keywords(title, limit=18))
+    query_words = set(_extract_enrichment_keywords(query_used, limit=18))
+    overlap = sorted(title_words & query_words)
+
+    quality = 0
+    if relevance:
+        # Raw Crossref/OpenAlex scores can be large, so compress them.
+        quality += min(35, int(relevance) if relevance <= 100 else 35)
+    if doi:
+        quality += 8
+    if year:
+        quality += 4
+    if overlap:
+        quality += min(35, 10 + len(overlap) * 7)
+
+    # Preserve quality already computed by citation_suggester.
+    if item.get("candidate_quality") in {"strong_candidate", "good_candidate"}:
+        quality = max(quality, 70)
+    elif item.get("candidate_quality") == "possible_candidate":
+        quality = max(quality, 55)
+
+    # Exact-reference recovery gets an additional fit score. This prevents
+    # unrelated database hits that merely share a surname/year from appearing
+    # as useful suggestions.
+    if reference_fit:
+        quality = max(quality, int(reference_fit.get("reference_fit_score", 0) or 0))
+
+    if quality >= 82:
+        label = "strong_candidate"
+    elif quality >= 68:
+        label = "good_candidate"
+    elif quality >= 55:
+        label = "possible_candidate"
+    else:
+        label = "weak_candidate"
+
+    return quality, label, overlap
+
+
+def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title="", reference_text="", strict_reference=False, context_text=""):
+    """
+    Keep only real, review-worthy source candidates and normalise them for the UI.
+
+    When strict_reference=True, candidates must be close matches to the exact
+    reference. This prevents unrelated OpenAlex/Crossref hits from appearing in
+    Needs Review / Not Found Recovery. When strict_reference=False, candidates
+    are treated as alternative sources for a claim/context and are filtered by
+    contextual quality.
+    """
+    clean = []
+    seen = set()
+    exclude_title = str(exclude_title or "").strip().lower()
+
+    blocked_sources = {
+        "context_review_fallback",
+        "metadata_review_fallback",
+        "claim_support_review_fallback",
+        "missing_reference_recovery_lite",
+        "metadata_check_recovery_lite",
+        "claim_context_recovery_lite",
+    }
+
+    for item in suggestions or []:
+        if not isinstance(item, dict):
             continue
 
-        title_key = title.lower()
+        source = str(item.get("source") or item.get("type") or "context_source_lookup").strip()
+        if source in blocked_sources or source.endswith("_recovery_lite"):
+            continue
 
-        # Avoid suggesting the same weak/current source again.
-        if current_source_title and (
-            title_key == current_source_title
-            or title_key in current_source_title
-            or current_source_title in title_key
+        title = str(
+            item.get("title")
+            or item.get("suggested_title")
+            or item.get("source_title")
+            or item.get("suggested")
+            or ""
+        ).strip()
+        doi = str(item.get("doi") or item.get("DOI") or "").strip()
+        year = item.get("year") or item.get("published_year") or item.get("matched_year") or ""
+        authors = item.get("authors") or item.get("matched_authors") or []
+
+        if isinstance(authors, str):
+            authors = [a.strip() for a in authors.split(",") if a.strip()]
+
+        if not title:
+            continue
+
+        low_title = title.lower()
+        if low_title in {"elsevier", "springer", "wiley", "sage", "taylor & francis", "nature"}:
+            continue
+        if re.search(r"\b(table|figure|appendix|chapter|homepage|editorial board)\b", low_title):
+            continue
+
+        title_key = low_title
+        if exclude_title and (
+            title_key == exclude_title
+            or title_key in exclude_title
+            or exclude_title in title_key
         ):
+            continue
+
+        reference_fit = _reference_candidate_fit(item, reference_text, title, year, doi) if reference_text else {}
+
+        if strict_reference and not reference_fit.get("strict_pass"):
+            continue
+
+        quality_score, quality_label, overlap_terms = _source_candidate_quality(
+            item,
+            title,
+            year,
+            doi,
+            reference_fit=reference_fit,
+        )
+
+        # Claim/context alternative candidates need some concept signal. Exact
+        # reference candidates already passed the stricter reference-fit gate.
+        if not strict_reference and quality_score < 55:
+            continue
+        if strict_reference and quality_score < 68:
             continue
 
         key = f"{title_key}|{year}|{doi.lower()}"
         if key in seen:
             continue
+
         seen.add(key)
 
-        suggestions.append({
+        match_basis = item.get("match_basis") or {}
+        if reference_fit:
+            match_basis = {
+                **match_basis,
+                "reference_title": reference_fit.get("reference_title", ""),
+                "reference_title_similarity": reference_fit.get("title_similarity", 0),
+                "reference_title_overlap_terms": reference_fit.get("title_overlap_terms", []),
+                "reference_year_match": reference_fit.get("year_match", False),
+                "reference_author_overlap": reference_fit.get("author_overlap", []),
+                "reference_doi_match": reference_fit.get("doi_match", False),
+                "reference_fit_score": reference_fit.get("reference_fit_score", 0),
+            }
+        else:
+            match_basis = {**match_basis, "query_title_overlap_terms": overlap_terms}
+
+        clean.append({
             "title": title,
             "year": year,
             "authors": authors,
             "doi": doi,
-            "url": cand.get("url", ""),
-            "relevance": relevance,
-            "candidate_quality": cand.get("candidate_quality", "possible_candidate"),
-            "query_used": cand.get("query_used", ""),
-            "query_strategy": cand.get("query_strategy", "claim_keyword_query"),
-            "match_basis": cand.get("match_basis", {}),
-            "suggestion_type": "alternative_source",
+            "url": item.get("url") or item.get("source_url") or item.get("openalex_url") or "",
+            "relevance": item.get("relevance") or item.get("confidence") or item.get("score") or item.get("title_score") or quality_score,
+            "candidate_quality": item.get("candidate_quality") or quality_label,
+            "quality_score": quality_score,
+            "source": source,
+            "query_used": item.get("query_used") or "",
+            "query_strategy": item.get("query_strategy") or ("strict_reference_recovery" if strict_reference else "deep_enrichment_query"),
+            "match_basis": match_basis,
+            "suggestion_type": item.get("suggestion_type") or ("reference_correction_candidate" if strict_reference else "context_specific_source"),
             "review_required": True,
-            "reason": (
-                "Suggested from the manuscript claim because the current matched source "
-                "gave weak, insufficient, or no evidence. Review before using."
-            ),
+            "is_real_source": True,
+            "reason": item.get("reason") or (
+                "Candidate passed strict reference-title metadata checks. Review before using."
+                if strict_reference else
+                "Suggested from manuscript context during Advanced Enrichment. Review before using."
+            )
         })
 
-        if len(suggestions) >= top_k:
+        if len(clean) >= target:
             break
 
-    return suggestions
+    return clean[:target]
 
+def _source_enrichment_note(items, target=3):
+    count = len(items or [])
+    if count >= target:
+        return ""
+    if count == 0:
+        return "No context-specific source was returned by Crossref/OpenAlex. Manual review is required."
+    return f"Only {count} context-specific source(s) were returned by Crossref/OpenAlex. Manual review is required."
+def _context_suggestions_for_missing_citation(citation, result, count=1, target=3):
+    """
+    Fast Recovery Lite suggestions for in-text citations that are missing from
+    the reference list. These are instant review prompts, not external lookups.
+    Deep source suggestions can be added later by process_deep_enrichment().
+    """
+    citation = str(citation or "").strip()
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+    style_hint = result.get("selected_style") or result.get("style") or result.get("style_family") or "apa"
+    style_family = _worker_style_family(style_hint)
 
-def build_claim_validation_query_plan(claim: str, source_title: str = "", doi: str = "", citation: str = "") -> Dict[str, Any]:
+    if style_family.startswith("numeric_"):
+        num = _normalise_numeric_citation_number(citation)
+        display = citation or (num if num else "the cited number")
+        style_label = _worker_style_label(style_hint)
+        sample = _worker_style_sample(style_hint)
+        return [
+            {
+                "title": "Add the missing numbered reference entry",
+                "authors": "",
+                "year": "",
+                "doi": "",
+                "reason": f"The {style_label} in-text citation '{display}' appears in the manuscript, but the matching numbered reference was not found.",
+                "suggested": f"Add the full reference-list entry for citation number {num or display}, or change the in-text citation to the correct existing reference number.",
+                "confidence": 0.72,
+                "source": f"{style_family}_missing_reference_recovery_lite",
+                "citation": citation,
+                "citation_number": num,
+                "style_family": style_family,
+                "style_label": style_label,
+                "style_sample": sample,
+                "count": count,
+                "fix_type": "review_required",
+            },
+            {
+                "title": "Check numeric sequence and renumbering",
+                "authors": "",
+                "year": "",
+                "doi": "",
+                "reason": "Numeric citation systems depend on a consistent sequence between in-text numbers and reference-list numbers.",
+                "suggested": "Check whether an earlier reference was deleted, inserted, or split, then renumber in-text citations and reference-list entries consistently.",
+                "confidence": 0.62,
+                "source": f"{style_family}_sequence_check_recovery_lite",
+                "citation": citation,
+                "citation_number": num,
+                "style_family": style_family,
+                "style_label": style_label,
+                "style_sample": sample,
+                "count": count,
+                "fix_type": "review_required",
+            },
+            {
+                "title": "Confirm the cited claim before fixing the number",
+                "authors": "",
+                "year": "",
+                "doi": "",
+                "reason": "Do not add or renumber a numeric citation mechanically. Confirm that the numbered source supports the sentence.",
+                "suggested": f"Review the sentence containing '{display}' and confirm which source should support it.",
+                "confidence": 0.55,
+                "source": f"{style_family}_claim_context_recovery_lite",
+                "citation": citation,
+                "citation_number": num,
+                "style_family": style_family,
+                "style_label": style_label,
+                "style_sample": sample,
+                "count": count,
+                "fix_type": "review_required",
+            },
+        ][:target]
+
+    context = ""
+    claim = ""
+
+    try:
+        sentences = _split_sentences(main_text)
+        context = _find_sentence_for_citation(sentences, citation)
+        claim = _extract_claim_from_sentence(context, citation)
+    except Exception:
+        context = ""
+        claim = ""
+
+    if not context and main_text:
+        # Give the reviewer useful context without doing expensive search.
+        context = main_text[:500]
+
+    if not claim:
+        claim = "Claim could not be extracted automatically. Review the cited sentence manually."
+
+    return [
+        {
+            "title": "Add the missing reference entry",
+            "authors": "",
+            "year": extract_year_from_text(citation) or "",
+            "doi": "",
+            "reason": (
+                f"The in-text citation '{citation}' appears in the manuscript "
+                "but no matching reference-list entry was found. Add the full reference if the citation is valid."
+            ),
+            "suggested": f"Create a full reference-list entry for {citation}.",
+            "confidence": 0.70,
+            "source": "missing_reference_recovery_lite",
+            "citation": citation,
+            "claim": claim,
+            "context": context,
+            "count": count,
+        },
+        {
+            "title": "Check author and year spelling",
+            "authors": "",
+            "year": extract_year_from_text(citation) or "",
+            "doi": "",
+            "reason": (
+                "The citation may be unmatched because of a spelling, author-order, suffix, "
+                "or year difference between the in-text citation and the reference list."
+            ),
+            "suggested": "Compare the author name, publication year, suffix letters such as 2020a/2020b, and punctuation with the reference list.",
+            "confidence": 0.60,
+            "source": "metadata_check_recovery_lite",
+            "citation": citation,
+            "claim": claim,
+            "context": context,
+            "count": count,
+        },
+        {
+            "title": "Confirm the cited claim before adding the source",
+            "authors": "",
+            "year": extract_year_from_text(citation) or "",
+            "doi": "",
+            "reason": "A missing reference should not be added mechanically. Confirm that the source supports the cited claim.",
+            "suggested": claim if claim and not claim.startswith("Claim could not") else "Review the sentence containing the citation and confirm the source supports the claim.",
+            "confidence": 0.55,
+            "source": "claim_context_recovery_lite",
+            "citation": citation,
+            "claim": claim,
+            "context": context,
+            "count": count,
+        },
+    ][:target]
+
+def _build_recovery_payload(result, verification_rows):
     """
-    Expose the deep validation search plan for debugging and UI transparency.
-    The heavy lookup can still run later in the deep enrichment/payment path.
+    Safe recovery builder for the new worker flow.
+    It avoids depending on web-process memory and always returns UI-ready arrays.
     """
+    missing_recovery = []
+    verification_recovery = []
+
+    for item in result.get("missing_in_references", []) or []:
+        if isinstance(item, str):
+            citation = item
+            count = 1
+        else:
+            citation = item.get("citation_in_text") or item.get("citation") or item.get("in_text") or ""
+            count = item.get("count_in_text") or item.get("count") or 1
+
+        missing_recovery.append({
+            "citation": citation,
+            "count": count,
+            "suggestions": _context_suggestions_for_missing_citation(
+                citation=citation,
+                result=result,
+                count=count,
+                target=3
+            )
+        })
+
+    for row in verification_rows or []:
+        status = row.get("status", "")
+        if status not in {"needs_review", "not_found", "offline"}:
+               continue
+
+        suggestions = _context_suggestions_for_row(row, result)
+
+        verification_recovery.append({
+            "status": status,
+            "citation": (
+                row.get("citation")
+                or row.get("in_text")
+                or row.get("citation_in_text")
+                or ""
+            ),
+            "reference": (
+                row.get("reference")
+                or row.get("original_reference")
+                or row.get("matched_title")
+                or row.get("title")
+                or row.get("source_title")
+                or ""
+            ),
+            "suggestions": suggestions
+        })
+
     return {
-        "claim": (claim or "")[:500],
-        "source_title": source_title or "",
-        "doi": doi or "",
-        "citation": citation or "",
-        "queries": build_claim_validation_queries(
-            claim=claim,
-            source_title=source_title,
-            doi=doi,
-            citation=citation,
-        ),
-        "note": "Queries are used for deep claim-support validation; they are not run in the fast path unless enabled by the worker.",
+        "missing_recovery": missing_recovery,
+        "verification_recovery": verification_recovery
     }
 
-def build_claim_support_rows(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _split_sentences(text):
     """
-    Build claim-to-source support rows.
-    Never silently drops a row.
+    Lightweight sentence splitter for claim extraction.
+    Keeps enough context for citation-bearing sentences.
+    """
+    text = str(text or "")
+    text = re.sub(r"\s+", " ", text).strip()
 
-    Clear separation:
-    - claim field: what was extracted, or "No claim extracted"
-    - source_title field: matched source, or reason source is unavailable
-    - support_status field: support decision, including "no_evidence_found"
+    if not text:
+        return []
+
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(])", text)
+    return [s.strip() for s in sentences if len(s.strip()) > 20]
+
+
+def _citation_variants(citation):
     """
-    out = []
-    MAX_ALT_SOURCE_ROWS = 100
-    alt_source_count = 0
-    
-    full_text = (
+    Build possible citation forms found in manuscript text.
+    Handles:
+    Cohen, 1988
+    (Cohen, 1988)
+    Cohen (1988)
+    Button et al., 2013
+    Button et al. (2013)
+    """
+    citation = str(citation or "").strip()
+    citation = citation.strip("() ")
+    variants = set()
+
+    if not citation:
+        return []
+
+    # Numeric styles, including square bracket, round bracket, Unicode superscript,
+    # and flattened PDF digits. This lets Claim Support locate sentences in
+    # IEEE/Vancouver/NLM and AMA/Nature/RSC/ACS manuscripts.
+    numeric_candidate = citation.translate(_SUP_TO_NORMAL_WORKER)
+    nums = re.findall(r"\d{1,4}", numeric_candidate)
+    if nums and re.fullmatch(r"[\s\[\](),.;:\-–—⁰¹²³⁴⁵⁶⁷⁸⁹0-9]+", citation):
+        first = nums[0]
+        cluster_comma = ",".join(nums)
+        cluster_dash = f"{nums[0]}–{nums[-1]}" if len(nums) > 1 else first
+        for n in {first, cluster_comma, cluster_dash}:
+            if not n:
+                continue
+            variants.add(n)
+            variants.add(f"[{n}]")
+            variants.add(f"({n})")
+            variants.add(_to_worker_superscript(n))
+            variants.add(f" {_to_worker_superscript(n)}")
+            variants.add(f",{_to_worker_superscript(n)}")
+            variants.add(f".{_to_worker_superscript(n)}")
+        return sorted(variants, key=len, reverse=True)
+
+    variants.add(citation)
+    variants.add(f"({citation})")
+
+    year_match = re.search(r"\b((?:19|20)\d{2}[a-z]?)\b", citation, flags=re.I)
+
+    if year_match:
+        year = year_match.group(1)
+        author_part = citation[:year_match.start()].strip(" ,;()")
+
+        if author_part:
+            variants.add(f"{author_part}, {year}")
+            variants.add(f"({author_part}, {year})")
+            variants.add(f"{author_part} ({year})")
+
+            # Handle "and" and "&" variants
+            if " and " in author_part.lower():
+                amp_author = re.sub(r"\s+and\s+", " & ", author_part, flags=re.I)
+                variants.add(f"{amp_author}, {year}")
+                variants.add(f"({amp_author}, {year})")
+                variants.add(f"{amp_author} ({year})")
+
+            if "&" in author_part:
+                and_author = author_part.replace("&", "and")
+                variants.add(f"{and_author}, {year}")
+                variants.add(f"({and_author}, {year})")
+                variants.add(f"{and_author} ({year})")
+
+    # Longest first helps locate full forms before partial forms
+    return sorted(variants, key=len, reverse=True)
+
+
+def _clean_extracted_claim(text):
+    """
+    Clean claim text without destroying its meaning.
+    """
+    text = str(text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Remove leftover citation brackets where possible
+    text = re.sub(
+        r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)",
+        "",
+        text,
+        flags=re.I
+    )
+
+    text = re.sub(r"\s+", " ", text).strip(" ,;:.")
+    return text
+
+
+def _extract_claim_from_sentence(sentence, citation):
+    """
+    Extract the claim around a citation.
+
+    For parenthetical citations, the claim is usually before the citation.
+    Example: Sample size affects statistical power (Cohen, 1988).
+
+    For narrative citations, useful claim text may come after the citation.
+    Example: Cohen (1988) argued that power depends on effect size...
+    """
+    sentence = str(sentence or "").strip()
+    variants = _citation_variants(citation)
+
+    if not sentence:
+        return ""
+
+    lower_sentence = sentence.lower()
+
+    for variant in variants:
+        lower_variant = variant.lower()
+        idx = lower_sentence.find(lower_variant)
+
+        if idx == -1:
+            continue
+
+        before = sentence[:idx].strip(" ,;:")
+        after = sentence[idx + len(variant):].strip(" ,;:")
+
+        before_clean = _clean_extracted_claim(before)
+        after_clean = _clean_extracted_claim(after)
+        full_clean = _clean_extracted_claim(sentence)
+
+        # Parenthetical citation, claim normally before citation
+        if variant.startswith("(") and len(before_clean) >= 25:
+            return before_clean
+
+        # Narrative citation, claim often after citation
+        if not variant.startswith("(") and "(" in variant and len(after_clean) >= 25:
+            return after_clean
+
+        # If before is meaningful, use it
+        if len(before_clean) >= 25:
+            return before_clean
+
+        # If after is meaningful, use it
+        if len(after_clean) >= 25:
+            return after_clean
+
+        # Fallback to full cleaned sentence
+        if len(full_clean) >= 25:
+            return full_clean
+
+    # If citation form was not found exactly, return the cleaned sentence
+    return _clean_extracted_claim(sentence)
+
+
+def _find_sentence_for_citation(sentences, citation):
+    """
+    Find the sentence containing a citation variant.
+    """
+    variants = _citation_variants(citation)
+
+    if not variants:
+        return ""
+
+    for sentence in sentences:
+        sentence_lower = sentence.lower()
+
+        for variant in variants:
+            if variant.lower() in sentence_lower:
+                return sentence
+
+    return ""
+
+def _has_existing_citation_marker(sentence):
+    """
+    Detect common in-text citation markers so the citation-needed tab only
+    flags claims that appear to have no citation.
+    Supports APA/Harvard author-year, narrative citations, and numeric styles.
+    """
+    text = str(sentence or "")
+    if not text:
+        return False
+
+    patterns = [
+        # Parenthetical author-year clusters: (Adam, 2021), (Adam & Mensah, 2021; Boateng, 2020)
+        r"\([^()]{0,220}\b(?:19|20)\d{2}[a-z]?\b[^()]{0,220}\)",
+        # Narrative author-year: Adam (2021), Adam et al. (2021), Adam and Mensah (2021)
+        r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s+(?:and|&)\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*\(\s*(?:19|20)\d{2}[a-z]?\s*\)",
+        # Loose author-year: Adam et al., 2021 or Adam and Mensah, 2021
+        r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s+(?:and|&)\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,\s*(?:19|20)\d{2}[a-z]?\b",
+        # Numeric citation styles: [1], [1, 2], [1-3], (1), (1,2)
+        r"\[(?:\s*\d{1,3}\s*(?:[-,;–—]\s*\d{1,3}\s*)*)\]",
+        r"\(\s*\d{1,3}\s*(?:[-,;–—]\s*\d{1,3}\s*)*\)",
+        # True Unicode superscript citations: text¹, text¹,², text¹–³
+        r"(?<=[A-Za-z\)\]])\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+(?:\s*[,;\-–—]\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]+)*",
+    ]
+
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _is_low_value_citation_needed_sentence(sentence):
+    """Avoid headings, methods boilerplate, table notes, and thesis housekeeping text."""
+    text = re.sub(r"\s+", " ", str(sentence or "")).strip()
+    lower = text.lower()
+
+    if not text or len(text) < 55 or len(text) > 520:
+        return True
+
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", text)
+    if len(words) < 9:
+        return True
+
+    if text.endswith("?"):
+        return True
+
+    skip_starts = (
+        "table ", "figure ", "appendix ", "chapter ", "section ",
+        "source:", "note:", "notes:", "author's computation", "authors' computation",
+        "this chapter", "this study", "the study", "the researcher", "the objective",
+        "the purpose of this study", "the research question", "the hypothesis",
+        "in this study", "in this chapter", "the next section"
+    )
+    if lower.startswith(skip_starts):
+        return True
+
+    if re.match(r"^(hypothesis|objective|research question)\s*\d*[:.]", lower):
+        return True
+
+    # Avoid obvious reference-list residue.
+    if re.search(r"\bdoi\b|https?://|retrieved from|journal of|vol\.|pp\.", lower):
+        return True
+
+    return False
+
+
+def _score_citation_needed_sentence(sentence):
+    """
+    Heuristic score for uncited claims that probably need a source.
+    This is intentionally conservative and review-only.
+    """
+    text = re.sub(r"\s+", " ", str(sentence or "")).strip()
+    lower = text.lower()
+    score = 0.15
+    reasons = []
+
+    if _has_existing_citation_marker(text):
+        return 0.0, ["Existing citation detected"]
+
+    if _is_low_value_citation_needed_sentence(text):
+        return 0.0, ["Low-value or non-claim sentence"]
+
+    evidence_patterns = [
+        r"\b(previous studies|prior studies|earlier studies|studies show|studies have shown|research shows|research suggests|empirical evidence|the literature|scholars argue|authors argue)\b",
+        r"\b(it is widely|it is generally|it is commonly|it is well established|it is known)\b",
+    ]
+    if any(re.search(p, lower) for p in evidence_patterns):
+        score += 0.35
+        reasons.append("Refers to prior studies, literature, or established evidence")
+
+    causal_patterns = [
+        r"\b(affects|influences|impacts|determines|predicts|drives|leads to|results in|contributes to|is associated with|is linked to|has a significant|significantly)\b",
+        r"\b(effect of|impact of|relationship between|association between|determinants of|influence of|role of)\b",
+    ]
+    if any(re.search(p, lower) for p in causal_patterns):
+        score += 0.25
+        reasons.append("Makes a causal, relational, or empirical-effect claim")
+
+    definition_patterns = [
+        r"\b(is defined as|are defined as|refers to|can be defined as|is conceptualised as|is conceptualized as|theory posits|theory suggests|framework assumes)\b",
+    ]
+    if any(re.search(p, lower) for p in definition_patterns):
+        score += 0.22
+        reasons.append("Defines or explains a concept that may require scholarly support")
+
+    numeric_patterns = [
+        r"\b\d+(?:\.\d+)?\s*(?:%|percent|per cent)\b",
+        r"\b(p\s*[<=>]\s*0\.\d+|coefficient|regression|correlation|sample size|respondents|odds ratio|confidence interval)\b",
+    ]
+    if any(re.search(p, lower) for p in numeric_patterns):
+        score += 0.18
+        reasons.append("Contains statistical, numerical, or empirical information")
+
+    generalisation_patterns = [
+        r"\b(most|many|several|major|critical|central|important|increasingly|widely|commonly|generally|often|frequently)\b",
+        r"\b(challenge|problem|barrier|driver|indicator|predictor|determinant|factor)\b",
+    ]
+    if any(re.search(p, lower) for p in generalisation_patterns):
+        score += 0.14
+        reasons.append("Makes a broad generalisation or importance claim")
+
+    # Sentences with country/institution/economy claims often need evidence, but keep this light.
+    if re.search(r"\b(ghana|africa|sub-saharan|government|public sector|university|students|households|firms|banks|economy|inflation|procurement)\b", lower):
+        score += 0.08
+        reasons.append("Contains a contextual factual claim that may need evidence")
+
+    score = min(score, 0.95)
+    return score, reasons
+
+
+def _build_citation_needed_claims(result, limit=None):
+    """
+    Identify thesis/manuscript sentences that look like evidence-based claims
+    but contain no visible citation. Returns review-only rows for the dashboard.
+    """
+    limit = int(limit or CITATION_NEEDED_MAX_ROWS)
+    main_text = (
         result.get("main_text", "")
         or result.get("full_text", "")
         or result.get("data", {}).get("main_text", "")
         or result.get("data", {}).get("full_text", "")
         or ""
     )
-    print("[CLAIM DEBUG] full_text length:", len(full_text or ""))
-    c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
 
-    online_verification = result.get("online_verification", {}) or {}
-    verify_rows = online_verification.get("rows", []) or []
+    if not main_text:
+        return []
 
-    verified_lookup = {}
-    all_verify_lookup = {}
+    # Avoid scanning the reference list if it is still present in the extracted text.
+    parts = re.split(r"\n\s*(references|bibliography|works cited)\s*\n", main_text, maxsplit=1, flags=re.I)
+    body_text = parts[0] if parts else main_text
 
-    for row in verify_rows:
-        ref = row.get("reference", "") or ""
-        if ref:
-            all_verify_lookup[ref] = row
+    rows = []
+    seen = set()
 
-        status = row.get("status", "")
-        if status in ["verified", "likely"] and ref:
-            verified_lookup[ref] = row
-
-    for row in c2r_rows:
-        matched_ref = row.get("matched_reference", "") or ""
-        citation_text = (
-            row.get("in_text", "")
-            or row.get("citation", "")
-            or row.get("citation_in_text", "")
-            or ""
-        )
-
-        if not matched_ref or not citation_text:
-            claim = ""
-            claim_source = "mapping_incomplete"
-        
-            if citation_text:
-                claim, claim_source = force_claim_candidate(
-                    full_text=full_text,
-                    citation=citation_text,
-                    row=row,
-                    window=600,
-                    style_hint=_claim_style_hint(result, row)
-                )
-                claim = clean_extracted_claim_text(claim)
-        
-            if not claim or claim_source == "extraction_failed":
-                claim = "Claim not extracted because citation-reference mapping was incomplete."
-        
-            out.append({
-                "citation": citation_text,
-                "claim": claim,
-                "claim_source": claim_source,
-                "reference": matched_ref,
-                "source_title": "No source found",
-                "doi": "",
-                "support_score": 0,
-                "support_status": "mapping_incomplete",
-                "evidence_used": "none",
-                "alternative_sources": [],
-                "title_overlap": 0,
-                "abstract_overlap": 0,
-                "keyword_overlap": 0,
-                "direction_overlap": 0,
-                "relation_overlap": 0,
-                "partial_support": False,
-                "concept_matches": [],
-                "score_explanation": "Citation-reference mapping was incomplete, so source-support checking could not be performed."
-            })
+    for idx, sentence in enumerate(_split_sentences(body_text), start=1):
+        clean = re.sub(r"\s+", " ", str(sentence or "")).strip()
+        if not clean:
             continue
 
-        vr = verified_lookup.get(matched_ref)
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
 
-        if not vr:
-            fallback_vr = all_verify_lookup.get(matched_ref, {})
-            mismatch_flag = int(fallback_vr.get("author_mismatch_flag", 0))
-        
-            source_label = "No source found"
-            note = "No trusted source evidence was available."
-        
-            if fallback_vr:
-                source_label = fallback_vr.get("matched_title", "") or "No source found"
-                if mismatch_flag == 1:
-                    source_label = "Source excluded, author mismatch"
-                    note = "Matched source was excluded because of author mismatch."
-                elif fallback_vr.get("status") in {"needs_review", "not_found"}:
-                    note = f"Matched source was not trusted because verification status is {fallback_vr.get('status')}."
-        
-            claim, claim_source = force_claim_candidate(
-                full_text=full_text,
-                citation=citation_text,
-                row=row,
-                window=600,
-                style_hint=_claim_style_hint(result, row)
-            )
-            claim = clean_extracted_claim_text(claim)
-        
-            alternative_sources = []
-        
-            
-        
-            out.append({
-                "citation": citation_text,
-                "claim": claim,
-                "claim_source": claim_source,
-                "reference": matched_ref,
-                "source_title": source_label,
-                "doi": fallback_vr.get("doi", "") or "",
-                "support_score": 0,
-                "support_status": "no_evidence_found",
-                "evidence_used": "none",
-                "alternative_sources": alternative_sources,
-                "title_overlap": 0,
-                "abstract_overlap": 0,
-                "keyword_overlap": 0,
-                "direction_overlap": 0,
-                "relation_overlap": 0,
-                "partial_support": False,
-                "concept_matches": [],
-                "match_note": fallback_vr.get("match_note", ""),
-                "score_explanation": note
-            })
+        confidence, reasons = _score_citation_needed_sentence(clean)
+        if confidence < CITATION_NEEDED_MIN_CONFIDENCE:
             continue
 
-        citation_items = split_citation_cluster(citation_text)
+        if confidence >= 0.78:
+            priority = "high"
+        elif confidence >= 0.65:
+            priority = "medium"
+        else:
+            priority = "low"
 
-        # First extract claim using the full citation or full citation cluster.
-        # This is important because individual split citations may not appear
-        # as standalone text in the manuscript. The style-aware extractor handles
-        # parenthetical, narrative, numeric-square, numeric-superscript, and
-        # numeric-round contexts before falling back to citation_suggester.
-        style_hint = _claim_style_hint(result, row)
-        cluster_claim, cluster_claim_source = _extract_claim_style_aware(
-            full_text=full_text,
-            citation=citation_text,
-            row=row,
-            style_hint=style_hint,
-            window=600,
-        )
-        cluster_claim = (cluster_claim or "").strip()
-        if not cluster_claim or len(cluster_claim) < 10:
-            try:
-                cluster_claim = extract_context(full_text, citation_text, window=600)
-                cluster_claim = (cluster_claim or "").strip()
-                cluster_claim_source = "extract_context_fallback" if cluster_claim else ""
-            except Exception:
-                cluster_claim = ""
-                cluster_claim_source = ""
-        
-        for cit in citation_items:
-            claim = cluster_claim
-            claim_source = cluster_claim_source or ("cluster_context" if claim and len(claim) >= 10 else "")
-            claim = clean_extracted_claim_text(claim)
-        
-            # If cluster-level extraction fails, use the forced claim candidate fallback.
-            if not claim or len(claim) < 10:
-                claim, claim_source = force_claim_candidate(
-                    full_text=full_text,
-                    citation=cit,
-                    row=row,
-                    window=600,
-                    style_hint=_claim_style_hint(result, row)
-                )
-                claim = clean_extracted_claim_text(claim)
-                            
-            source_title = vr.get("matched_title", "") or ""
-            doi = vr.get("doi", "") or ""
-            
-            if claim_source == "extraction_failed":
-                out.append({
-                    "citation": cit,
-                    "claim": claim,
-                    "claim_source": claim_source,
-                    "reference": matched_ref,
-                    "source_title": source_title or "No source found",
-                    "doi": doi,
-                    "support_score": 0,
-                    "support_status": "claim_not_extracted",
-                    "evidence_used": "claim_extraction_failed",
-                    "title_overlap": 0,
-                    "abstract_overlap": 0,
-                    "keyword_overlap": 0,
-                    "direction_overlap": 0,
-                    "relation_overlap": 0,
-                    "partial_support": False,
-                    "concept_matches": [],
-                    "match_note": vr.get("match_note", ""),
-                    "score_explanation": "A citation was detected, but the system could not extract a meaningful manuscript claim around it."
-                })
-                continue
+        rows.append({
+            "sentence_no": idx,
+            "claim": clean,
+            "context": clean,
+            "status": "citation_needed",
+            "priority": priority,
+            "confidence": round(confidence, 2),
+            "reason": "; ".join(reasons) if reasons else "The sentence appears to make an evidence-based claim without a visible citation.",
+            "suggested_action": "Add a credible citation after this claim, or revise the sentence if it is your own interpretation.",
+            "has_citation": False,
+            "alternative_sources": [],
+            "deep_suggestions": [],
+            "suggestions": [],
+            "enriched": False,
+            "enrichment_type": "citation_needed_claim",
+        })
 
-            # Fast mode: do not fetch OpenAlex metadata during the main verification flow.
-            # Claim support will use the already-verified source title only.
-            metadata = {}
-            source_abstract = ""
-            source_concepts = []
+        if len(rows) >= limit:
+            break
 
-            if not source_title and not source_abstract and not source_concepts:
-                alternative_sources = suggest_alternative_sources_for_claim(
-                    claim=claim,
-                    citation=cit,
-                    current_source_title=source_title,
-                    top_k=3
-                )
-            
-                out.append({
-                    "citation": cit,
-                    "claim": claim,
-                    "claim_source": claim_source,
-                    "reference": matched_ref,
-                    "source_title": "No source found",
-                    "doi": doi,
-                    "support_score": 0,
-                    "support_status": "no_evidence_found",
-                    "evidence_used": "none",
-                    "alternative_sources": alternative_sources,
-                    "title_overlap": 0,
-                    "abstract_overlap": 0,
-                    "keyword_overlap": 0,
-                    "direction_overlap": 0,
-                    "relation_overlap": 0,
-                    "partial_support": False,
-                    "concept_matches": [],
-                    "match_note": vr.get("match_note", ""),
-                    "score_explanation": "No usable source title, abstract, or concepts were available for support checking."
-                })
-                continue
+    return rows
 
+
+def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3, allow_external=False):
+    """
+    Alternative-source lookup is expensive. In the main verification job it is
+    disabled by default so Recovery and Claim Support can populate quickly.
+    Set allow_external=True only from the deep_enrichment queue.
+    """
+    if not (allow_external or DEEP_LOOKUPS_IN_VERIFY):
+        return []
+
+    claim = str(claim or "").strip()
+
+    if not claim or len(claim) < 20:
+        return []
+
+    if claim.lower().startswith("claim could not be extracted"):
+        return []
+
+    try:
+        return suggest_alternative_sources_for_claim(
+            claim=claim,
+            citation=citation,
+            current_source_title=current_source_title,
+            top_k=top_k
+        ) or []
+    except Exception as e:
+        print(f"[DEEP ENRICHMENT] Alternative source suggestion failed for {citation}: {e}")
+        return []
+
+def _basic_keyword_overlap_score(claim, source_title):
+    """Small fallback score when only a title is available."""
+    stop = {
+        "this", "that", "with", "from", "using", "used", "study", "analysis",
+        "method", "approach", "results", "paper", "research", "journal", "review",
+        "effect", "effects", "relationship", "role", "model", "models", "findings",
+    }
+    claim_words = set(re.findall(r"[a-z]{4,}", str(claim or "").lower())) - stop
+    title_words = set(re.findall(r"[a-z]{4,}", str(source_title or "").lower())) - stop
+
+    if not claim_words or not title_words:
+        return 0
+
+    overlap = claim_words & title_words
+    if not overlap:
+        return 0
+
+    return min(40, 10 + (len(overlap) * 10))
+
+
+def _score_claim_support_for_worker(claim, source_title):
+    """
+    Score claim support even in fallback mode.
+    Uses the main scorer when available and a conservative title-overlap fallback otherwise.
+    """
+    claim = str(claim or "").strip()
+    source_title = str(source_title or "").strip()
+
+    empty = {
+        "score": 0,
+        "status": "manual_review_required",
+        "title_overlap": 0,
+        "abstract_overlap": 0,
+        "keyword_overlap": 0,
+        "direction_overlap": 0,
+        "relation_overlap": 0,
+        "partial_support": False,
+        "concept_matches": [],
+        "score_explanation": "No usable claim or source title was available for scoring.",
+        "evidence_used": "none",
+    }
+
+    if not claim or not source_title or source_title.lower().startswith(("matched source not available", "source title not available", "no source found")):
+        return empty
+
+    if score_claim_support:
+        try:
             support = score_claim_support(
                 claim=claim,
                 source_title=source_title,
-                source_abstract=source_abstract,
-                source_concepts=source_concepts,
-                source_metadata=metadata
-            )
-            support_status = support.get("status", "insufficient_evidence")
-            support_score = support.get("score", 0)
-            
-            alternative_sources = []
-            
-            alternative_sources = []
-            out.append({
-                "citation": cit,
-                "claim": claim,
-                "claim_source": claim_source,
-                "reference": matched_ref,
-                "source_title": source_title,
-                "doi": doi,
-                "support_score": support_score,
-                "support_status": support_status,
-                "alternative_sources": alternative_sources,
-                "evidence_used": (
-                    "title+abstract+concepts"
-                    if source_concepts else
-                    ("title+abstract" if source_abstract else "title_only")
-                ),
-                "title_overlap": support.get("title_overlap", 0),
-                "abstract_overlap": support.get("abstract_overlap", 0),
-                "keyword_overlap": support.get("keyword_overlap", 0),
-                "direction_overlap": support.get("direction_overlap", 0),
-                "relation_overlap": support.get("relation_overlap", 0),
-                "partial_support": support.get("partial_support", False),
-                "concept_matches": support.get("concept_matches", []),
-                "match_note": vr.get("match_note", ""),
-                "score_explanation": (
-                    f"title={support.get('title_overlap', 0)}, "
-                    f"abstract={support.get('abstract_overlap', 0)}, "
-                    f"keyword={support.get('keyword_overlap', 0)}, "
-                    f"direction={support.get('direction_overlap', 0)}, "
-                    f"relation={support.get('relation_overlap', 0)}"
-                )
-            })
+                source_abstract="",
+                source_concepts=[],
+                source_metadata={},
+            ) or {}
 
-    # Add transparent query plans for deep claim validation.
-    # These are not executed in the fast path; they explain what the deep layer
-    # should search when the row is paid/enriched or manually triggered.
-    for _row in out:
-        try:
-            _row.setdefault(
-                "validation_query_plan",
-                build_claim_validation_query_plan(
-                    claim=_row.get("claim", ""),
-                    source_title=_row.get("source_title", ""),
-                    doi=_row.get("doi", ""),
-                    citation=_row.get("citation", ""),
-                )
+            score = int(support.get("score", 0) or 0)
+            if score > 0:
+                support.setdefault("evidence_used", "title_only")
+                support.setdefault("score_explanation", "Worker fallback used title-only support scoring.")
+                return support
+
+        except Exception as e:
+            print(f"[VERIFY WORKER] Title-only claim scoring failed: {e}")
+
+    score = _basic_keyword_overlap_score(claim, source_title)
+
+    if score > 0:
+        return {
+            "score": score,
+            "status": "title_overlap_review_required",
+            "title_overlap": score,
+            "abstract_overlap": 0,
+            "keyword_overlap": score,
+            "direction_overlap": 0,
+            "relation_overlap": 0,
+            "partial_support": score >= 30,
+            "concept_matches": [],
+            "score_explanation": "Conservative title-keyword overlap score. Human review is still required.",
+            "evidence_used": "title_keyword_overlap",
+        }
+
+    return {
+        **empty,
+        "status": "insufficient_title_overlap",
+        "score_explanation": "The extracted claim and source title had no meaningful keyword overlap.",
+        "evidence_used": "title_only",
+    }
+
+
+def _enhance_claim_support_scores(rows):
+    """Fill zero scores when a claim and source title allow conservative title-only scoring."""
+    enhanced = []
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        current_score = int(row.get("support_score", 0) or 0)
+        if current_score <= 0:
+            source_title = (
+                row.get("source_title")
+                or row.get("matched_source")
+                or row.get("reference")
+                or ""
             )
-            _row.setdefault("review_required", True)
+            support = _score_claim_support_for_worker(row.get("claim", ""), source_title)
+
+            if int(support.get("score", 0) or 0) > 0:
+                row["support_score"] = support.get("score", 0)
+                row["support_status"] = support.get("status", row.get("support_status", "manual_review_required"))
+                row["evidence_used"] = support.get("evidence_used", "title_only")
+                row["title_overlap"] = support.get("title_overlap", row.get("title_overlap", 0))
+                row["abstract_overlap"] = support.get("abstract_overlap", row.get("abstract_overlap", 0))
+                row["keyword_overlap"] = support.get("keyword_overlap", row.get("keyword_overlap", 0))
+                row["direction_overlap"] = support.get("direction_overlap", row.get("direction_overlap", 0))
+                row["relation_overlap"] = support.get("relation_overlap", row.get("relation_overlap", 0))
+                row["partial_support"] = support.get("partial_support", row.get("partial_support", False))
+                row["concept_matches"] = support.get("concept_matches", row.get("concept_matches", []))
+                row["score_explanation"] = support.get("score_explanation", row.get("score_explanation", ""))
+
+        enhanced.append(row)
+
+    return enhanced
+
+
+# ============================================================
+# CLAIM-SUPPORT VERIFICATION GATE
+# ============================================================
+# A claim-support score must never outrank the trustworthiness of the source.
+# If the matched reference is needs_review/not_found/offline, the claim may be
+# semantically related to the title, but it cannot be labelled strong_support.
+
+
+def _norm_claim_lookup_key(text):
+    """Normalise citation/reference/title text for safer verification lookup."""
+    text = str(text or "").lower()
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"\bdoi\s*:?\s*10\.\S+", " ", text, flags=re.I)
+    text = re.sub(r"\b10\.\d{4,9}/\S+", " ", text, flags=re.I)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _build_verification_claim_lookups(verification_rows):
+    """
+    Build citation and reference/title lookup tables so claim-support rows inherit
+    the real online verification status of the matched source.
+    """
+    citation_lookup = {}
+    reference_lookup = {}
+
+    for vr in verification_rows or []:
+        if not isinstance(vr, dict):
+            continue
+
+        status = str(vr.get("status") or "").strip().lower()
+
+        citation_key = str(
+            vr.get("citation")
+            or vr.get("in_text")
+            or vr.get("citation_in_text")
+            or ""
+        ).strip().lower()
+
+        reference_value = (
+            vr.get("reference")
+            or vr.get("original_reference")
+            or vr.get("matched_title")
+            or vr.get("title")
+            or vr.get("source_title")
+            or ""
+        )
+
+        payload = {
+            "reference": reference_value,
+            "doi": vr.get("doi", ""),
+            "status": status,
+            "matched_title": vr.get("matched_title") or vr.get("title") or vr.get("source_title") or "",
+            "matched_authors": vr.get("matched_authors") or vr.get("authors") or "",
+            "matched_year": vr.get("matched_year") or vr.get("year") or "",
+            "source": vr.get("source") or "",
+        }
+
+        if citation_key and citation_key not in citation_lookup:
+            citation_lookup[citation_key] = payload
+
+        for key_text in [
+            vr.get("reference"),
+            vr.get("original_reference"),
+            vr.get("matched_title"),
+            vr.get("title"),
+            vr.get("source_title"),
+            reference_value,
+        ]:
+            key = _norm_claim_lookup_key(key_text)
+            if key and key not in reference_lookup:
+                reference_lookup[key] = payload
+
+    return citation_lookup, reference_lookup
+
+
+def _attach_verification_status_to_claim_row(row, citation_lookup=None, reference_lookup=None):
+    """Attach source verification status to a claim-support row when possible."""
+    if not isinstance(row, dict):
+        return row
+
+    citation_lookup = citation_lookup or {}
+    reference_lookup = reference_lookup or {}
+
+    existing_status = str(
+        row.get("verification_status")
+        or row.get("source_verification_status")
+        or row.get("citation_match_status")
+        or ""
+    ).strip().lower()
+
+    payload = None
+
+    citation_key = str(
+        row.get("citation")
+        or row.get("in_text")
+        or row.get("citation_in_text")
+        or ""
+    ).strip().lower()
+
+    if citation_key:
+        payload = citation_lookup.get(citation_key)
+
+    if not payload:
+        for key_text in [
+            row.get("matched_source"),
+            row.get("reference"),
+            row.get("source_title"),
+            row.get("matched_title"),
+            row.get("title"),
+        ]:
+            key = _norm_claim_lookup_key(key_text)
+            if key and key in reference_lookup:
+                payload = reference_lookup[key]
+                break
+
+    if payload:
+        status = str(payload.get("status") or "").strip().lower()
+        if status:
+            row["verification_status"] = status
+            row["source_verification_status"] = status
+            row["citation_match_status"] = status
+
+        row.setdefault("doi", payload.get("doi", ""))
+        row.setdefault("verification_matched_title", payload.get("matched_title", ""))
+        row.setdefault("verification_matched_authors", payload.get("matched_authors", ""))
+        row.setdefault("verification_matched_year", payload.get("matched_year", ""))
+
+    elif existing_status:
+        row["verification_status"] = existing_status
+        row["source_verification_status"] = existing_status
+        row["citation_match_status"] = existing_status
+
+    else:
+        row.setdefault("verification_status", "unknown")
+        row.setdefault("source_verification_status", "unknown")
+        row.setdefault("citation_match_status", "unknown")
+
+    return row
+
+
+def _apply_verification_gate_to_claim_row(row):
+    """
+    Prevent unverified or uncertain sources from being labelled as strong claim support.
+    Verification confidence must dominate claim-support confidence.
+    """
+    if not isinstance(row, dict):
+        return row
+
+    trusted_statuses = {"verified", "likely"}
+    weak_verify_statuses = {
+        "needs_review", "not_found", "offline", "error", "failed",
+        "unverified", "unknown", "", "none"
+    }
+
+    verification_status = str(
+        row.get("verification_status")
+        or row.get("source_verification_status")
+        or row.get("citation_match_status")
+        or "unknown"
+    ).strip().lower()
+
+    support_status = str(row.get("support_status") or "").strip().lower()
+
+    try:
+        support_score = int(float(row.get("support_score") or row.get("score") or 0))
+    except Exception:
+        support_score = 0
+
+    row["verification_status"] = verification_status or "unknown"
+    row["source_verification_status"] = verification_status or "unknown"
+    row["citation_match_status"] = verification_status or "unknown"
+
+    if verification_status in trusted_statuses:
+        return row
+
+    positive_or_high = (
+        support_status in {
+            "strong_support",
+            "moderate_support",
+            "related_evidence",
+            "weak_or_unclear",
+            "title_overlap_review_required",
+        }
+        or support_score >= 50
+    )
+
+    # If the row is already negative and low-scoring, do not replace its more
+    # specific no-evidence explanation. The gate is mainly to prevent false
+    # confidence such as needs_review + strong_support.
+    if not positive_or_high:
+        return row
+
+    if verification_status in weak_verify_statuses:
+        row["ungated_support_status"] = row.get("support_status", "")
+        row["ungated_support_score"] = row.get("support_score", 0)
+
+        row["support_status"] = (
+            "source_needs_review"
+            if verification_status not in {"", "unknown", "none"}
+            else "source_verification_unknown"
+        )
+        row["support_score"] = min(support_score, 49)
+        row["evidence_used"] = "unverified_source_metadata"
+        row["partial_support"] = False
+        row["score_explanation"] = (
+            "The extracted claim appears related to the matched source, but the source itself "
+            f"has verification status '{verification_status or 'unknown'}'. Claim support is capped "
+            "until the reference is verified or accepted after manual review."
+        )
+        row["note"] = (
+            "Potential support detected, but the matched source is not trusted. "
+            "Review the reference before accepting this claim-support result."
+        )
+
+    return row
+
+
+def _apply_verification_gate_to_claim_rows(rows, verification_rows=None):
+    citation_lookup, reference_lookup = _build_verification_claim_lookups(verification_rows or [])
+    gated = []
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        row = _attach_verification_status_to_claim_row(row, citation_lookup, reference_lookup)
+        row = _apply_verification_gate_to_claim_row(row)
+        gated.append(row)
+
+    return gated
+
+
+def _fallback_claim_support_rows(result, verification_rows):
+    """
+    Claim-support fallback with real claim extraction from main_text.
+
+    It extracts the claim sentence around the citation, scores title-level
+    relatedness, then applies a verification gate so untrusted sources cannot
+    appear as strong claim support.
+    """
+    rows = []
+
+    main_text = result.get("main_text", "") or ""
+    sentences = _split_sentences(main_text)
+
+    c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
+
+    citation_lookup, reference_lookup = _build_verification_claim_lookups(verification_rows)
+
+    for row in c2r_rows:
+        citation = (
+            row.get("in_text")
+            or row.get("citation")
+            or row.get("citation_in_text")
+            or ""
+        )
+
+        citation = str(citation or "").strip()
+
+        matched_reference = (
+            row.get("matched_reference")
+            or row.get("reference")
+            or row.get("matched_title")
+            or ""
+        )
+
+        lookup = (
+            citation_lookup.get(citation.lower())
+            or reference_lookup.get(_norm_claim_lookup_key(matched_reference))
+            or {}
+        )
+
+        if not matched_reference:
+            matched_reference = lookup.get("reference", "")
+
+        sentence = _find_sentence_for_citation(sentences, citation)
+        claim = _extract_claim_from_sentence(sentence, citation)
+
+        if not claim:
+            claim = "Claim could not be extracted automatically. Review the cited sentence manually."
+
+        alt_sources = _safe_alternative_sources(
+            claim=claim,
+            citation=citation,
+            current_source_title=matched_reference,
+            top_k=3
+        )
+
+        support = _score_claim_support_for_worker(claim, matched_reference)
+
+        verification_status = str(lookup.get("status") or "unknown").strip().lower()
+
+        claim_row = {
+            "citation": citation,
+            "claim": claim,
+            "source_title": matched_reference[:250] if matched_reference else "Matched source not available",
+            "matched_source": matched_reference,
+            "support_status": support.get(
+                "status",
+                "claim_extracted_review_required"
+                if claim.startswith("Claim could not") is False
+                else "manual_review_required"
+            ),
+            "support_score": support.get("score", 0),
+            "evidence_used": support.get("evidence_used", "title_only"),
+            "title_overlap": support.get("title_overlap", 0),
+            "abstract_overlap": support.get("abstract_overlap", 0),
+            "keyword_overlap": support.get("keyword_overlap", 0),
+            "direction_overlap": support.get("direction_overlap", 0),
+            "relation_overlap": support.get("relation_overlap", 0),
+            "partial_support": support.get("partial_support", False),
+            "concept_matches": support.get("concept_matches", []),
+            "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
+            "doi": lookup.get("doi", ""),
+            "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
+            "citation_match_status": verification_status,
+            "verification_status": verification_status,
+            "source_verification_status": verification_status,
+            "alternative_sources": alt_sources
+        }
+
+        rows.append(_apply_verification_gate_to_claim_row(claim_row))
+
+    # If c2r rows are available, return gated rows immediately.
+    if rows:
+        return rows
+
+    # If c2r rows are unavailable, fall back to verification rows.
+    for row in verification_rows or []:
+        citation = (
+            row.get("citation")
+            or row.get("in_text")
+            or row.get("citation_in_text")
+            or ""
+        )
+
+        reference = (
+            row.get("reference")
+            or row.get("original_reference")
+            or row.get("matched_title")
+            or row.get("title")
+            or row.get("source_title")
+            or ""
+        )
+
+        sentence = _find_sentence_for_citation(sentences, citation)
+        claim = _extract_claim_from_sentence(sentence, citation)
+
+        if not claim:
+            claim = "Claim could not be extracted automatically. Review the cited sentence manually."
+
+        source_title = row.get("matched_title") or reference or "Source title not available"
+
+        alt_sources = _safe_alternative_sources(
+            claim=claim,
+            citation=citation,
+            current_source_title=source_title,
+            top_k=3
+        )
+
+        support = _score_claim_support_for_worker(claim, source_title)
+        verification_status = str(row.get("status") or "unknown").strip().lower()
+
+        claim_row = {
+            "citation": citation,
+            "claim": claim,
+            "source_title": source_title[:250],
+            "matched_source": reference,
+            "support_status": support.get(
+                "status",
+                "claim_extracted_review_required"
+                if claim.startswith("Claim could not") is False
+                else "manual_review_required"
+            ),
+            "support_score": support.get("score", 0),
+            "evidence_used": support.get("evidence_used", "title_only"),
+            "title_overlap": support.get("title_overlap", 0),
+            "abstract_overlap": support.get("abstract_overlap", 0),
+            "keyword_overlap": support.get("keyword_overlap", 0),
+            "direction_overlap": support.get("direction_overlap", 0),
+            "relation_overlap": support.get("relation_overlap", 0),
+            "partial_support": support.get("partial_support", False),
+            "concept_matches": support.get("concept_matches", []),
+            "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
+            "doi": row.get("doi", ""),
+            "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
+            "citation_match_status": verification_status,
+            "verification_status": verification_status,
+            "source_verification_status": verification_status,
+            "alternative_sources": alt_sources
+        }
+
+        rows.append(_apply_verification_gate_to_claim_row(claim_row))
+
+    return rows
+
+
+
+def _normalise_reference_for_verification(ref):
+    """Clean Word/DOCX numeric reference markers before online verification."""
+    ref = str(ref or "")
+    ref = ref.replace("\xa0", " ").replace("\t", " ")
+    ref = re.sub(r"\s+", " ", ref).strip()
+
+    # DOCX IEEE commonly appears as [1]. P. Author...; make it [1] P. Author...
+    ref = re.sub(r"^\s*\[(\d{1,4})\]\s*[\.)]\s*", r"[\1] ", ref)
+
+    # Numeric round sometimes appears as (1). Author...
+    ref = re.sub(r"^\s*\((\d{1,4})\)\s*\.\s*", r"(\1) ", ref)
+
+    # Plain numbered references sometimes appear as 1). Author...
+    ref = re.sub(r"^\s*(\d{1,4})\)\s*", r"\1. ", ref)
+
+    return ref.strip()
+
+
+def _normalise_reference_list_for_verification(refs):
+    return [
+        _normalise_reference_for_verification(r)
+        for r in (refs or [])
+        if str(r or "").strip()
+    ]
+
+def _normalise_references_for_verification(result, style="apa"):
+    # Prefer the style stored by process_document if process_verification is called with a fallback style.
+    stored_style = result.get("selected_style") or result.get("style_family") or result.get("style") or style
+    if _worker_style_family(style) == "author_year" and _worker_style_family(stored_style).startswith("numeric_"):
+        style = stored_style
+
+    refs = result.get("references_raw", []) or []
+
+    if refs:
+        return _normalise_reference_list_for_verification(refs)
+
+    if recover_references_for_verification:
+        try:
+            recovered = recover_references_for_verification(
+                result.get("main_text", ""),
+                style_hint="numeric" if _worker_style_family(style).startswith("numeric_") else "apa"
+            )
+            if recovered:
+                recovered = _normalise_reference_list_for_verification(recovered)
+                result["references_raw"] = recovered
+                result.setdefault("summary", {})["reference_entries_found"] = len(recovered)
+                return recovered
+        except Exception as e:
+            print(f"[VERIFY WORKER] Reference recovery failed: {e}")
+
+    return []
+def _is_real_claim_row(row):
+    claim = str(row.get("claim") or row.get("claim_extracted") or "").strip()
+
+    if not claim:
+        return False
+
+    fallback_phrases = [
+        "Claim extraction not available",
+        "Review the cited sentence manually",
+        "Fallback row generated"
+    ]
+
+    return not any(p.lower() in claim.lower() for p in fallback_phrases)
+
+
+def _build_claim_support_safe(result, verification_rows):
+    """
+    Claim Support Lite for the main verification job.
+    By default, this returns fast fallback rows with title-only scoring.
+    The slower full claim checker should run in deep_enrichment, not here.
+    """
+    fallback_rows = _fallback_claim_support_rows(result, verification_rows)
+
+    if not RUN_REAL_CLAIM_CHECK_IN_VERIFY:
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
+
+    executor = None
+
+    try:
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        future = executor.submit(build_claim_support_rows, result)
+        claim_rows = future.result(timeout=CLAIM_SUPPORT_TIMEOUT)
+
+        if isinstance(claim_rows, list) and claim_rows:
+            real_count = sum(1 for row in claim_rows if _is_real_claim_row(row))
+
+            if real_count > 0:
+                print(f"[VERIFY WORKER] Real claim-support rows generated: {real_count}/{len(claim_rows)}")
+
+                for row in claim_rows:
+                    row.setdefault("fallback", False)
+
+                return _apply_verification_gate_to_claim_rows(
+                    _enhance_claim_support_scores(claim_rows),
+                    verification_rows
+                )
+
+        print("[VERIFY WORKER] Claim-support checker returned no real extracted claims. Using fallback rows.")
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
+
+    except FutureTimeoutError:
+        print(f"[VERIFY WORKER] Claim-support timed out after {CLAIM_SUPPORT_TIMEOUT}s. Using fallback rows.")
+        try:
+            future.cancel()
         except Exception:
             pass
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
 
-    return out
+    except Exception as e:
+        print(f"[VERIFY WORKER] Claim-support failed: {e}. Using fallback rows.")
+        return _apply_verification_gate_to_claim_rows(
+            _enhance_claim_support_scores(fallback_rows),
+            verification_rows
+        )
+
+    finally:
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def similarity_ratio(a, b):
+    """Calculate similarity ratio between two strings."""
+    if not a or not b:
+        return 0
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def extract_year_from_text(text):
+    """Extract year from citation or reference text, including suffixes like 2020a."""
+    if not text:
+        return None
+
+    match = re.search(r'\b((?:19|20)\d{2}[a-z]?)\b', str(text), flags=re.I)
+    return match.group(1) if match else None
+
+def year_to_int(year):
+    """Convert 2020a or 2020 to 2020."""
+    if not year:
+        return None
+    m = re.search(r'(?:19|20)\d{2}', str(year))
+    return int(m.group(0)) if m else None
+
+
+def normalize_name_text(text):
+    """Normalise author/institution names safely."""
+    text = str(text or "")
+    text = text.replace("‐", "-").replace("–", "-").replace("—", "-")
+    text = text.replace("’", "'")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def clean_org_author(author_part):
+    """Clean organisational author names such as Bank of Ghana, OECD, IMF."""
+    org = normalize_name_text(author_part)
+    org = re.sub(r"\(?\s*$", "", org).strip()
+    org = org.strip(" .,(;:")
+
+    # Remove leftover year punctuation if any slipped in
+    org = re.sub(r"\(\s*$", "", org).strip()
+    org = org.strip(" .,(;:")
+
+    return org
+
+
+def looks_like_institutional_author(name):
+    """Detect likely organisational or institutional author."""
+    if not name:
+        return False
+
+    n = normalize_name_text(name)
+    lower = n.lower()
+
+    institutional_terms = {
+        "bank", "reserve", "ministry", "department", "office", "bureau",
+        "authority", "commission", "organisation", "organization",
+        "university", "institute", "fund", "chamber", "conference",
+        "nations", "monetary", "oecd", "imf", "world bank", "unctad"
+    }
+
+    if n.isupper() and len(n) >= 2:
+        return True
+
+    return any(term in lower for term in institutional_terms)
+
+
+def looks_like_merged_reference(ref):
+    """Detect references that appear to contain two or more joined entries."""
+    if not ref:
+        return False
+
+    text = normalize_name_text(ref)
+
+    # Multiple APA-style author-year starts inside one entry
+    starts = re.findall(
+        r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+){0,7}\.\s*\((?:19|20)\d{2}",
+        text
+    )
+
+    # Multiple years in brackets can indicate joined refs, especially with long text
+    year_brackets = re.findall(r"\((?:19|20)\d{2}[a-z]?(?:,\s*[A-Za-z]+)?\)", text)
+
+    return len(starts) >= 2 or (len(year_brackets) >= 2 and len(text) > 250)
+
+
+def force_review_only(suggestion):
+    """Ensure every suggestion is review-only and not auto-applied."""
+    suggestion["fix_type"] = "review_required"
+    suggestion["action"] = "review_required"
+    suggestion["apply"] = None
+    return suggestion
+
+
+def make_suggestion(original, suggested, confidence, issue_type, reason, category, field=""):
+    """Create one standard review-only suggestion."""
+    return force_review_only({
+        "original": original,
+        "suggested": suggested,
+        "confidence": confidence,
+        "issue_type": issue_type,
+        "reason": reason,
+        "fix_type": "review_required",
+        "action": "review_required",
+        "category": category,
+        "field": field,
+        "apply": None
+    })
+
+def extract_authors_from_citation(citation):
+    """
+    Extract author surnames from in-text citation.
+    Handles:
+    (Adam, 2020)
+    (Adam & Mensah, 2020)
+    Adam and Mensah (2020)
+    Adam et al. (2020)
+    (World Bank, 2020)
+    """
+    if not citation:
+        return []
+
+    text = str(citation).strip()
+
+    # Remove year and brackets
+    text = re.sub(r'\b(?:19|20)\d{2}[a-z]?\b', '', text, flags=re.I)
+    text = re.sub(r'[()]', ' ', text)
+    text = re.sub(r'\bet\s+al\.?\b', '', text, flags=re.I)
+    text = text.replace('&', ' and ')
+    text = re.sub(r'\s+', ' ', text).strip(" ,;.")
+
+    if not text:
+        return []
+
+    parts = re.split(r'\s+and\s+|;', text, flags=re.I)
+
+    authors = []
+    for part in parts:
+        part = part.strip(" ,.")
+        if not part:
+            continue
+
+        # For names such as "van der Merwe", keep last token as surname fallback
+        tokens = part.split()
+        if len(tokens) >= 2 and tokens[0].lower() in {"van", "von", "de", "da", "di", "der", "al"}:
+            surname = " ".join(tokens)
+        else:
+            surname = tokens[-1]
+
+        surname = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ'\- ]", "", surname).strip()
+        if len(surname) >= 2:
+            authors.append(surname)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    clean = []
+    for a in authors:
+        key = a.lower()
+        if key not in seen:
+            seen.add(key)
+            clean.append(a)
+
+    return clean
+
+
+def extract_authors_from_reference(ref_text):
+    """
+    Extract author surnames or institutional authors from reference list entry.
+    Avoids malformed outputs like 'Bank of Ghana. ('.
+    """
+    if not ref_text:
+        return []
+
+    text = normalize_name_text(ref_text)
+
+    year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", text, flags=re.I)
+    if not year_match:
+        return []
+
+    author_part = text[:year_match.start()].strip()
+    author_part = re.sub(r"\s+", " ", author_part)
+    author_part = author_part.strip(" .,(;:")
+
+    # Institutional author fallback first
+    if looks_like_institutional_author(author_part):
+        org = clean_org_author(author_part)
+        return [org] if org else []
+
+    author_part_for_people = author_part.replace("&", ",")
+
+    # APA personal author pattern: Surname, Initials
+    surnames = re.findall(
+        r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)\s*,\s*(?:[A-Z]\.?\s*)+",
+        author_part_for_people
+    )
+
+    if surnames:
+        seen = set()
+        clean = []
+        for s in surnames:
+            s = normalize_name_text(s)
+            key = s.lower()
+            if key not in seen:
+                seen.add(key)
+                clean.append(s)
+        return clean
+
+    # Final fallback, only for short organisation-like author part
+    org = clean_org_author(author_part)
+    if org and len(org.split()) <= 8:
+        return [org]
+
+    return []
+
+
+def extract_full_author_string_from_reference(ref_text):
+    """Extract the full author string from reference for replacement."""
+    if not ref_text:
+        return ""
+    
+    year_match = re.search(r'\b(19|20)\d{2}\b', ref_text)
+    if not year_match:
+        return ""
+    
+    return ref_text[:year_match.start()].strip()
+
+
+def is_narrative_citation(citation):
+    """Check if citation is narrative (Adam and Mensah, 2020)."""
+    if not citation:
+        return False
+    # Narrative: Author names BEFORE the parenthesis with year inside
+    return bool(re.match(r'^[A-Z][a-z]', citation)) and '(' in citation
+
+
+def is_parenthetical_citation(citation):
+    """Check if citation is parenthetical (Adam & Mensah, 2020)."""
+    if not citation:
+        return False
+    return citation.startswith('(')
+
+
+# ============================================================
+# MISMATCH DETECTION FUNCTIONS
+# ============================================================
+
+def detect_year_mismatch(citation, reference):
+    """Detect year mismatch between citation and reference."""
+    citation_year = extract_year_from_text(citation)
+    ref_year = extract_year_from_text(reference)
+    
+    if citation_year and ref_year and citation_year != ref_year:
+        return {
+            "citation_year": citation_year,
+            "ref_year": ref_year,
+            "mismatch": True
+        }
+    return {"mismatch": False}
+
+def find_reference_by_author_different_year(citation, references_raw):
+    """
+    Conservative unmatched year-mismatch detector.
+    Only flags likely year errors when:
+    - first author matches very strongly
+    - second author also matches when present
+    - the year difference is small
+    This avoids false matches in long theses.
+    """
+    citation_authors = extract_authors_from_citation(citation)
+    citation_year = extract_year_from_text(citation)
+
+    if not citation_authors or not citation_year:
+        return None
+
+    cit_year_int = year_to_int(citation_year)
+    if not cit_year_int:
+        return None
+
+    cit_first = citation_authors[0].lower()
+    cit_second = citation_authors[1].lower() if len(citation_authors) >= 2 else ""
+
+    best = None
+    best_score = 0
+
+    for ref in references_raw or []:
+        ref_authors = extract_authors_from_reference(ref)
+        ref_year = extract_year_from_text(ref)
+
+        if not ref_authors or not ref_year:
+            continue
+
+        ref_year_int = year_to_int(ref_year)
+        if not ref_year_int:
+            continue
+
+        if ref_year == citation_year:
+            continue
+
+        year_diff = abs(cit_year_int - ref_year_int)
+
+        # Only allow small year differences for unmatched year suggestions.
+        # Larger differences are usually different publications, not citation-year errors.
+        if year_diff > 2:
+            continue
+
+        ref_first = ref_authors[0].lower()
+        ref_second = ref_authors[1].lower() if len(ref_authors) >= 2 else ""
+
+        cit_key = re.sub(r"[^a-z0-9]", "", cit_first)
+        ref_key = re.sub(r"[^a-z0-9]", "", ref_first)
+
+        first_score = 1.0 if cit_key == ref_key else similarity_ratio(cit_first, ref_first)
+
+        if first_score < 0.95:
+            continue
+
+        # If citation has two authors, require the second author too.
+        if cit_second:
+            second_score = similarity_ratio(cit_second, ref_second)
+            if second_score < 0.90:
+                continue
+
+        # Do not make unmatched year suggestions for et al. citations.
+        # Too risky without title/context verification.
+        if re.search(r"\bet\s+al\.?\b", citation, flags=re.I):
+            continue
+
+        score = first_score
+
+        if score > best_score:
+            best_score = score
+            best = {
+                "reference": ref,
+                "ref_year": ref_year,
+                "citation_year": citation_year,
+                "ref_authors": ref_authors,
+                "citation_authors": citation_authors,
+                "score": score
+            }
+
+    return best
+
+def detect_author_mismatch(citation, reference):
+    """
+    Conservative author mismatch detection.
+    Only flags clear spelling/order differences.
+    Avoids institutional and ambiguous partial-match false positives.
+    """
+    citation_authors = extract_authors_from_citation(citation)
+    ref_authors = extract_authors_from_reference(reference)
+
+    if not citation_authors or not ref_authors:
+        return {"mismatch": False}
+
+    cit_first = citation_authors[0]
+    ref_first = ref_authors[0]
+
+    cit_first = citation_authors[0]
+    ref_first = ref_authors[0]
+    
+    def comparable_author_key(x):
+        return re.sub(r"[^a-z0-9]", "", str(x).lower())
+    
+    if comparable_author_key(cit_first) == comparable_author_key(ref_first):
+        return {"mismatch": False}
+    
+    # Exact case-insensitive match
+    if [a.lower() for a in citation_authors] == [a.lower() for a in ref_authors]:
+        return {"mismatch": False}
+
+    # Do not flag institutional author partial matches, e.g. Ghana vs Bank of Ghana
+    if looks_like_institutional_author(cit_first) or looks_like_institutional_author(ref_first):
+        if cit_first.lower() in ref_first.lower() or ref_first.lower() in cit_first.lower():
+            return {"mismatch": False}
+
+    # Avoid reducing De Silva to Silva, Olasehinde-Williams to Williams
+    if cit_first.lower().endswith(ref_first.lower()) or ref_first.lower().endswith(cit_first.lower()):
+        return {"mismatch": False}
+
+    # Order mismatch, only if same number of authors and at least two authors
+    if (
+        len(citation_authors) == len(ref_authors)
+        and len(citation_authors) >= 2
+        and sorted(a.lower() for a in citation_authors) == sorted(a.lower() for a in ref_authors)
+        and [a.lower() for a in citation_authors] != [a.lower() for a in ref_authors]
+    ):
+        return {
+            "mismatch": True,
+            "type": "order_mismatch",
+            "citation_authors": citation_authors,
+            "ref_authors": ref_authors,
+            "suggested_authors": ref_authors
+        }
+
+    # Spelling error, only for strong similarity and same author count
+    if len(citation_authors) == len(ref_authors):
+        for i, ca in enumerate(citation_authors):
+            if i < len(ref_authors):
+                ratio = similarity_ratio(ca, ref_authors[i])
+                if 0.88 <= ratio < 1.0:
+                    return {
+                        "mismatch": True,
+                        "type": "spelling_error",
+                        "citation_authors": citation_authors,
+                        "ref_authors": ref_authors,
+                        "suggested_authors": ref_authors
+                    }
+
+    return {"mismatch": False}
+
+
+def detect_et_al_misuse(citation, reference, style="apa"):
+    """
+    Conservative et al. misuse detection.
+    Only flags when the reference clearly has one or two authors.
+    """
+    if not citation or not reference:
+        return {"misuse": False}
+
+    if style.lower() != "apa":
+        return {"misuse": False}
+
+    citation_uses_et_al = bool(re.search(r"\bet\s+al\.?\b", citation, flags=re.I))
+    if not citation_uses_et_al:
+        return {"misuse": False}
+
+    year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", reference, flags=re.I)
+    if not year_match:
+        return {"misuse": False}
+
+    author_part = reference[:year_match.start()]
+    personal_author_count = len(re.findall(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'\-]+,\s*(?:[A-Z]\.?\s*)+",
+        author_part
+    ))
+
+    ref_authors = extract_authors_from_reference(reference)
+
+    # If reference clearly has 3+ personal authors, et al. is acceptable
+    if personal_author_count >= 3:
+        return {"misuse": False}
+
+    # Only flag when clearly one or two authors
+    if 1 <= len(ref_authors) <= 2 and personal_author_count <= 2:
+        return {
+            "misuse": True,
+            "citation_authors": extract_authors_from_citation(citation),
+            "ref_authors": ref_authors,
+            "reason": "APA 7 uses 'et al.' for three or more authors. This reference appears to have one or two authors, so review the in-text citation."
+        }
+
+    return {"misuse": False}
+
+def build_citation_string(authors, year, citation_type="parenthetical", style="apa"):
+    """Build a corrected in-text citation string."""
+    authors = authors or []
+    year = year or ""
+
+    if not authors or not year:
+        return ""
+
+    if style.lower() == "apa":
+        if len(authors) == 1:
+            author_str_parenthetical = authors[0]
+            author_str_narrative = authors[0]
+        elif len(authors) == 2:
+            author_str_parenthetical = f"{authors[0]} & {authors[1]}"
+            author_str_narrative = f"{authors[0]} and {authors[1]}"
+        else:
+            author_str_parenthetical = f"{authors[0]} et al."
+            author_str_narrative = f"{authors[0]} et al."
+    else:
+        if len(authors) == 1:
+            author_str_parenthetical = authors[0]
+            author_str_narrative = authors[0]
+        elif len(authors) == 2:
+            author_str_parenthetical = f"{authors[0]} & {authors[1]}"
+            author_str_narrative = f"{authors[0]} and {authors[1]}"
+        else:
+            author_str_parenthetical = f"{authors[0]} et al."
+            author_str_narrative = f"{authors[0]} et al."
+
+    if citation_type == "parenthetical":
+        return f"({author_str_parenthetical}, {year})"
+
+    return f"{author_str_narrative} ({year})"
+
+
+# ============================================================
+# MAIN DETECTION FUNCTIONS FOR EACH SCENARIO
+# ============================================================
+
+def scenario_1_year_mismatch(c2r_rows):
+    """Detect year mismatches (Scenario 1)."""
+    suggestions = []
+    
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        
+        if not in_text or not matched_ref:
+            continue
+        
+        year_check = detect_year_mismatch(in_text, matched_ref)
+        
+        if year_check["mismatch"]:
+            # Preserve original format
+            suggested = in_text.replace(year_check["citation_year"], year_check["ref_year"])
+            
+            # Determine confidence based on year difference
+            cy = year_to_int(year_check["citation_year"])
+            ry = year_to_int(year_check["ref_year"])
+            year_diff = abs(cy - ry) if cy and ry else 99
+            if year_diff == 1:
+                confidence = 0.95
+            elif year_diff <= 3:
+                confidence = 0.90
+            else:
+                confidence = 0.80
+            
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=confidence,
+                issue_type="year_mismatch",
+                reason=f"Year mismatch: '{year_check['citation_year']}' may need review against reference year '{year_check['ref_year']}'.",
+                category="citation_accuracy"
+            ))
+    
+    return suggestions
+
+def scenario_1b_unmatched_year_mismatch(c2r_rows, references_raw):
+    """
+    Detect likely year mismatches for citations that were not matched
+    because the citation year differs from the reference year.
+    """
+    suggestions = []
+
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        status = row.get("status", "")
+
+        # Only inspect citations that normal reconciliation did not match
+        if not in_text:
+            continue
+
+        if matched_ref and status == "matched":
+            continue
+
+        candidate = find_reference_by_author_different_year(in_text, references_raw)
+
+        if not candidate:
+            continue
+
+        citation_year = candidate["citation_year"]
+        ref_year = candidate["ref_year"]
+
+        suggested = in_text.replace(citation_year, ref_year)
+
+        cy = year_to_int(citation_year)
+        ry = year_to_int(ref_year)
+        year_diff = abs(cy - ry) if cy and ry else 99
+
+        if year_diff == 1:
+            confidence = 0.88
+        elif year_diff <= 3:
+            confidence = 0.82
+        else:
+            confidence = 0.72
+
+        suggestions.append(make_suggestion(
+            original=in_text,
+            suggested=suggested,
+            confidence=confidence,
+            issue_type="possible_year_mismatch_unmatched",
+            reason=(
+                f"The citation was not matched, but a reference with a similar author "
+                f"uses year '{ref_year}' instead of '{citation_year}'. Review manually."
+            ),
+            category="citation_accuracy"
+        ))
+
+    return suggestions
+
+
+def scenario_2_author_name_mismatch(c2r_rows, style="apa"):
+    """Detect author name mismatches (spelling, missing parts like -Koduah)."""
+    suggestions = []
+    
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        
+        if not in_text or not matched_ref:
+            continue
+        
+        author_check = detect_author_mismatch(in_text, matched_ref)
+        
+        if author_check["mismatch"]:
+            # Determine citation type
+            is_narrative = is_narrative_citation(in_text)
+            citation_year = extract_year_from_text(in_text)
+            
+            # Build corrected citation
+            # Build corrected citation
+            suggested = build_citation_string(
+                author_check["suggested_authors"],
+                citation_year,
+                "narrative" if is_narrative else "parenthetical",
+                style
+            )
+            
+            # Set confidence based on mismatch type
+            if author_check["type"] == "spelling_error":
+                confidence = 0.90
+                reason = f"Author name spelling error: '{author_check['citation_authors'][0]}' should be '{author_check['suggested_authors'][0]}'"
+            elif author_check["type"] == "partial_match":
+                confidence = 0.85
+                reason = f"Author name incomplete: '{author_check['citation_authors'][0]}' should be '{author_check['suggested_authors'][0]}'"
+            else:
+                confidence = 0.75
+                reason = f"Author name mismatch: Expected '{author_check['suggested_authors'][0]}'"
+            
+            item = make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=confidence,
+                issue_type="author_mismatch",
+                reason=reason + " Review before changing.",
+                category="citation_accuracy"
+            )
+            item["mismatch_type"] = author_check["type"]
+            suggestions.append(item)
+    
+    return suggestions
+
+
+def scenario_3_author_order_mismatch(c2r_rows, style="apa"):
+    """Detect author order mismatches (Scenario 3)."""
+    suggestions = []
+    
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        
+        if not in_text or not matched_ref:
+            continue
+        
+        citation_authors = extract_authors_from_citation(in_text)
+        ref_authors = extract_authors_from_reference(matched_ref)
+        
+        # Check if same authors but different order
+        if (citation_authors and ref_authors and 
+            sorted(citation_authors) == sorted(ref_authors) and 
+            citation_authors != ref_authors):
+            
+            is_narrative = is_narrative_citation(in_text)
+            citation_year = extract_year_from_text(in_text)
+            
+            suggested = build_citation_string(
+                ref_authors,
+                citation_year,
+                "narrative" if is_narrative else "parenthetical",
+                style
+            )
+            
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=0.80,
+                issue_type="author_order_mismatch",
+                reason="Author order may differ from the reference entry. Review before changing.",
+                category="citation_accuracy"
+            ))
+    
+    return suggestions
+
+
+def scenario_4_combined_mismatch(c2r_rows, style="apa"):
+    """Detect combined author and year mismatches (Scenario 4)."""
+    suggestions = []
+    
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        
+        if not in_text or not matched_ref:
+            continue
+        
+        year_check = detect_year_mismatch(in_text, matched_ref)
+        author_check = detect_author_mismatch(in_text, matched_ref)
+        
+        if year_check["mismatch"] and author_check["mismatch"]:
+            is_narrative = is_narrative_citation(in_text)
+            citation_year = extract_year_from_text(in_text)
+            
+            # Build corrected citation with both fixes
+            suggested_author = build_citation_string(
+                author_check["suggested_authors"],
+                citation_year,
+                "narrative" if is_narrative else "parenthetical",
+                style
+            )
+            suggested = suggested_author.replace(citation_year, year_check["ref_year"])
+            
+            confidence = 0.85
+            
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=confidence,
+                issue_type="author_year_mismatch",
+                reason="Both author and year appear to differ from the matched reference. Review carefully before changing.",
+                category="citation_accuracy"
+            ))
+    
+    return suggestions
+
+
+def scenario_5_et_al_misuse(c2r_rows, style="apa"):
+    """Detect et al. misuse (Scenario 5)."""
+    suggestions = []
+    
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        
+        if not in_text or not matched_ref:
+            continue
+        
+        et_al_check = detect_et_al_misuse(in_text, matched_ref, style)
+        
+        if et_al_check["misuse"]:
+            is_narrative = is_narrative_citation(in_text)
+            citation_year = extract_year_from_text(in_text)
+            
+            suggested = build_citation_string(
+                et_al_check["ref_authors"], 
+                citation_year, 
+                "narrative" if is_narrative else "parenthetical",
+                style
+            )
+            
+            suggestions.append(make_suggestion(
+                original=in_text,
+                suggested=suggested,
+                confidence=0.75,
+                issue_type="et_al_misuse",
+                reason=et_al_check["reason"],
+                category="citation_accuracy"
+            ))
+                
+    return suggestions
+
+
+def scenario_6_potential_wrong_reference(c2r_rows):
+    """Detect potential wrong reference matches (Scenario 6 - Low confidence)."""
+    suggestions = []
+    
+    for row in c2r_rows:
+        in_text = row.get("in_text", "")
+        matched_ref = row.get("matched_reference", "")
+        status = row.get("status", "")
+        
+        if not in_text or not matched_ref:
+            continue
+        
+        # Check for potential wrong reference (status might be "likely" or "needs_review")
+        if status in ["likely", "needs_review"]:
+            citation_authors = extract_authors_from_citation(in_text)
+            ref_authors = extract_authors_from_reference(matched_ref)
+            citation_year = extract_year_from_text(in_text)
+            ref_year = extract_year_from_text(matched_ref)
+            
+            # If authors match but years differ significantly
+            if citation_authors and ref_authors and citation_authors[0] == ref_authors[0]:
+                if citation_year and ref_year and citation_year != ref_year:
+                    cy = year_to_int(citation_year)
+                    ry = year_to_int(ref_year)
+                    year_diff = abs(cy - ry) if cy and ry else 99
+                    if year_diff > 3:
+                        suggestions.append(make_suggestion(
+                            original=in_text,
+                            suggested="Verify the matched reference manually",
+                            confidence=0.60,
+                            issue_type="potential_wrong_reference",
+                            reason=f"The closest matched reference has a different year ({ref_year} vs {citation_year}). Review whether this is the correct source.",
+                            category="citation_accuracy"
+                        ))
+    
+    return suggestions
+
+
+def detect_reference_quality_issues(references_raw, style="apa", enable_online_suggestions=False):
+    """
+    Safer reference-quality checks.
+    Only flags high-value, lower-risk issues:
+    - merged references
+    - DOI format
+    - HTTP to HTTPS
+    - seriously incomplete reference
+
+    Disabled due to false positives:
+    - missing_period
+    - missing_journal_details
+    - missing page range
+    """
+    suggestions = []
+
+    for ref in references_raw:
+        original = ref or ""
+        ref = normalize_name_text(original)
+
+        if not ref:
+            continue
+
+        # 1. Merged references
+        if looks_like_merged_reference(ref):
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested="Split into separate reference entries",
+                confidence=0.90,
+                issue_type="merged_references",
+                reason="This entry appears to contain two or more references joined together.",
+                category="reference_quality",
+                field="reference_structure"
+            ))
+            continue
+
+        year = extract_year_from_text(ref)
+
+        # Normalise broken DOI URL spacing such as "https://doi. org/"
+        # 2. DOI format and DOI spacing
+        ref_for_doi = ref
+        
+        # Fix broken DOI URL spacing such as "https://doi. org/"
+        ref_for_doi = re.sub(
+            r"https?://doi\.\s*org/",
+            "https://doi.org/",
+            ref_for_doi,
+            flags=re.I
+        )
+        
+        # Convert dx.doi.org to doi.org
+        ref_for_doi = re.sub(
+            r"https?://dx\.doi\.org/",
+            "https://doi.org/",
+            ref_for_doi,
+            flags=re.I
+        )
+        
+        # Convert DOI labels to DOI URL
+        # Handles:
+        # DOI: 10.xxxx
+        # doi:10.xxxx
+        # DOI http://dx.doi.org/10.xxxx
+        # DOI: org/10.xxxx
+        doi_label_match = re.search(
+            r"\bdoi\s*:?\s*(?:https?://(?:dx\.)?doi\.org/)?(?:org/)?(10\.\d{4,9}/[^\s\)]*)",
+            ref_for_doi,
+            flags=re.I
+        )
+        
+        if doi_label_match:
+            doi = doi_label_match.group(1).rstrip(".,")
+            cleaned = (
+                ref_for_doi[:doi_label_match.start()]
+                + f"https://doi.org/{doi}"
+                + ref_for_doi[doi_label_match.end():]
+            )
+        
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested=cleaned,
+                confidence=0.95,
+                issue_type="doi_format",
+                reason="The DOI format appears non-standard. Review the DOI URL before applying.",
+                category="reference_quality",
+                field="doi"
+            ))
+        
+        elif ref_for_doi != ref:
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested=ref_for_doi,
+                confidence=0.95,
+                issue_type="doi_spacing",
+                reason="The DOI URL appears to contain spacing or dx.doi.org formatting. Review before applying.",
+                category="reference_quality",
+                field="doi"
+            ))
+        
+        else:
+            # Raw DOI without DOI URL
+            raw_doi_match = re.search(r"(?<!doi\.org/)\b10\.\d{4,9}/[^\s\)]*", ref_for_doi, flags=re.I)
+        
+            if raw_doi_match and style.lower() == "apa":
+                doi = raw_doi_match.group(0).rstrip(".,")
+                cleaned = ref_for_doi.replace(doi, f"https://doi.org/{doi}")
+        
+                suggestions.append(make_suggestion(
+                    original=original,
+                    suggested=cleaned,
+                    confidence=0.95,
+                    issue_type="doi_format",
+                    reason="APA 7 recommends DOI in URL format. Review before applying.",
+                    category="reference_quality",
+                    field="doi"
+                ))
+        # 3. HTTP to HTTPS
+        if "http://" in ref:
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested=ref.replace("http://", "https://"),
+                confidence=0.90,
+                issue_type="http_to_https",
+                reason="The reference uses HTTP. Review whether HTTPS is available and appropriate.",
+                category="reference_quality",
+                field="url"
+            ))
+
+        # 4. Seriously incomplete reference only
+        has_enough_length = len(ref) >= 45
+        has_title_after_year = False
+
+        if year and str(year) in ref:
+            after_year = ref.split(str(year), 1)[-1]
+            has_title_after_year = len(after_year.strip(" .,)")) >= 15
+
+        if not year or not has_enough_length or not has_title_after_year:
+            suggestions.append(make_suggestion(
+                original=original,
+                suggested="Review reference manually",
+                confidence=0.80,
+                issue_type="seriously_incomplete_reference",
+                reason="The reference appears to be missing a year, title, or essential bibliographic content.",
+                category="reference_quality",
+                field="bibliographic_details"
+            ))
+
+        # Missing DOI online suggestions remain disabled for speed and safety
+        # Do not add missing_period, missing_journal_details, or missing page-range suggestions here.
+
+    return dedupe_suggestions_by_priority(suggestions)
+
+       
+def dedupe_suggestions_by_priority(suggestions):
+    """
+    Keep the strongest suggestion for each original text.
+    Prevents combined author-year mismatch from being replaced by weaker year-only mismatch.
+    """
+    priority = {
+        "author_year_mismatch": 1,
+        "potential_wrong_reference": 2,
+        "author_mismatch": 3,
+        "year_mismatch": 4,
+        "possible_year_mismatch_unmatched": 4,
+        "author_order_mismatch": 5,
+        "et_al_misuse": 6,
+        "missing_doi": 7,
+        "doi_format": 8,
+        "doi_spacing": 8,
+        "incomplete_reference": 9,
+        "missing_journal_details": 10,
+        "http_to_https": 11,
+        "missing_period": 12,
+    }
+
+    best = {}
+
+    for s in suggestions:
+        original = s.get("original", "")
+        if not original:
+            continue
+
+        issue_type = s.get("issue_type", "")
+        new_rank = priority.get(issue_type, 99)
+        new_conf = s.get("confidence", 0)
+
+        if original not in best:
+            best[original] = s
+            continue
+
+        old = best[original]
+        old_rank = priority.get(old.get("issue_type", ""), 99)
+        old_conf = old.get("confidence", 0)
+
+        if new_rank < old_rank or (new_rank == old_rank and new_conf > old_conf):
+            best[original] = s
+
+    return list(best.values())
+# ============================================================
+# MAIN PROCESS_DOCUMENT FUNCTION
+# ============================================================
+
+def process_document(job_id, filename, style="apa", enable_autofix=False):
+    """Process a document - runs in background"""
+    print(f"🔥 Processing job {job_id}: {filename}")
+    print(f"📋 enable_autofix flag received: {enable_autofix}")
+    
+    enable_autofix = bool(enable_autofix)
+    print(f"📋 Using enable_autofix: {enable_autofix}")
+    
+    # Load file from Redis
+    file_content = redis_conn.get(f"file:{job_id}")
+    
+    print(f"📦 File size from Redis: {len(file_content) if file_content else 0} bytes")
+    
+    if not file_content:
+        raise Exception(f"❌ File not found in Redis for job {job_id}")
+
+    try:
+        # DB CONNECTION
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE jobs SET status = 'processing', started_at = NOW() WHERE job_id = %s",
+            (job_id,)
+        )
+        conn.commit()
+
+        print("⚡ Running run_crosscheck_with_autofix...")
+
+        result = run_crosscheck_with_autofix(
+            file_bytes=file_content,
+            filename=filename,
+            style=style,
+            verify_online=False,
+            enable_autofix=enable_autofix
+        )
+
+        result.setdefault("selected_style", style)
+        result.setdefault("style_family", _worker_style_family(style))
+        result.setdefault("style_label", _worker_style_label(style))
+        result.setdefault("style_sample", _worker_style_sample(style))
+
+        print("🔍 === RESULT DEBUG ===")
+        print("🔍 'autofix' in result:", "autofix" in result)
+        
+        # Ensure result has proper structure
+        if "autofix" not in result:
+            result["autofix"] = {
+                "enabled": True,
+                "suggestions": {
+                    "citations": [],
+                    "references": []
+                }
+            }
+        
+        # Get data for analysis
+        c2r_rows = result.get("reconciliation_intext_to_reference", [])
+        references_raw = result.get("references_raw", [])
+        
+        print(f"📊 Found {len(c2r_rows)} citation-reference pairs")
+        print(f"📊 Found {len(references_raw)} references")
+        
+        # COLLECT ALL SUGGESTIONS BY SCENARIO
+        all_suggestions = []
+        
+
+        style_family = _worker_style_family(style)
+        if style_family == "author_year":
+                # Scenario 4 first: Combined author + year mismatch
+                combined_suggestions = scenario_4_combined_mismatch(c2r_rows, style)
+                all_suggestions.extend(combined_suggestions)
+                print(f"🔀 Scenario 4 - Combined mismatches: {len(combined_suggestions)}")
+        
+                # Scenario 6: Potential wrong reference
+                wrong_ref_suggestions = scenario_6_potential_wrong_reference(c2r_rows)
+                all_suggestions.extend(wrong_ref_suggestions)
+                print(f"⚠️ Scenario 6 - Potential wrong references: {len(wrong_ref_suggestions)}")
+        
+                # Scenario 2: Author name mismatch (spelling, missing parts)
+                author_suggestions = scenario_2_author_name_mismatch(c2r_rows, style)
+                all_suggestions.extend(author_suggestions)
+                print(f"👤 Scenario 2 - Author name mismatches: {len(author_suggestions)}")
+        
+                # Scenario 1: Year mismatch
+                year_suggestions = scenario_1_year_mismatch(c2r_rows)
+                all_suggestions.extend(year_suggestions)
+                print(f"📅 Scenario 1 - Year mismatches: {len(year_suggestions)}")
+                # Scenario 1b: Year mismatch among unmatched citations
+                unmatched_year_suggestions = scenario_1b_unmatched_year_mismatch(
+                    c2r_rows,
+                    references_raw
+                )
+                all_suggestions.extend(unmatched_year_suggestions)
+                print(f"📅 Scenario 1b - Unmatched year mismatches: {len(unmatched_year_suggestions)}")
+        
+                # Scenario 3: Author order mismatch
+                order_suggestions = scenario_3_author_order_mismatch(c2r_rows, style)
+                all_suggestions.extend(order_suggestions)
+                print(f"🔄 Scenario 3 - Author order mismatches: {len(order_suggestions)}")
+        
+                # Scenario 5: Et al. misuse
+                # Scenario 5: Et al. misuse
+                # Disabled for now because et al. suggestions require highly reliable author extraction.
+                et_al_suggestions = []
+                print("📝 Scenario 5 - Et al. misuse: disabled")
+
+        else:
+            print(f"🔢 Numeric style selected ({style_family}). Skipping author-year mismatch scenarios; using engine/verification style-specific suggestions instead.")
+
+        # Reference quality issues
+        ref_suggestions = detect_reference_quality_issues(
+            references_raw,
+            style=style,
+            enable_online_suggestions=False
+        )
+        all_suggestions.extend(ref_suggestions)
+        print(f"📚 Reference quality issues: {len(ref_suggestions)}")
+        
+        # Remove duplicates (by original text)
+        unique_suggestions = dedupe_suggestions_by_priority(all_suggestions)
+        unique_suggestions = [force_review_only(s) for s in unique_suggestions]
+        
+        print(f"💡 TOTAL UNIQUE SUGGESTIONS: {len(unique_suggestions)}")
+        
+        # Count by category
+        categories = Counter(s.get("category", "other") for s in unique_suggestions)
+        for cat, count in categories.items():
+            print(f"  - {cat}: {count}")
+        
+        # Print details of each suggestion for debugging
+        for i, s in enumerate(unique_suggestions):
+            print(f"  Suggestion {i+1}: [{s.get('issue_type')}] {s.get('original')} -> {s.get('suggested')}")
+        
+        # Merge worker suggestions with the engine's existing style-specific suggestions.
+        # This prevents numeric-square / numeric-superscript suggestions generated by
+        # engine.py from being overwritten by older author-year worker checks.
+        existing_suggestions = result.get("autofix", {}).get("suggestions", {}) or {}
+        existing_citation_suggestions = list(existing_suggestions.get("citations", []) or [])
+        existing_reference_suggestions = list(existing_suggestions.get("references", []) or [])
+
+        worker_citation_suggestions = [
+            _add_worker_style_metadata(dict(s), style)
+            for s in unique_suggestions
+            if s.get("category") not in {"reference", "reference_quality"}
+        ]
+
+        worker_reference_suggestions = [
+            _add_worker_style_metadata(dict(s), style)
+            for s in unique_suggestions
+            if s.get("category") in {"reference", "reference_quality"}
+        ]
+
+        def _merge_suggestion_lists(*groups):
+            merged = []
+            seen = set()
+            for group in groups:
+                for item in group or []:
+                    if not isinstance(item, dict):
+                        continue
+                    item = _add_worker_style_metadata(dict(item), style)
+                    key = (
+                        str(item.get("issue_type") or item.get("type") or "").lower(),
+                        str(item.get("citation_number") or item.get("citation") or item.get("original") or item.get("reference") or "").lower(),
+                        str(item.get("suggested") or item.get("suggested_action") or "").lower(),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(item)
+            return merged
+
+        citation_suggestions = _merge_suggestion_lists(
+            existing_citation_suggestions,
+            worker_citation_suggestions,
+        )
+        reference_suggestions = _merge_suggestion_lists(
+            existing_reference_suggestions,
+            worker_reference_suggestions,
+        )
+
+        result["autofix"]["suggestions"]["citations"] = citation_suggestions
+        result["autofix"]["suggestions"]["references"] = reference_suggestions
+        result["suggestions"] = result["autofix"]["suggestions"]
+
+        all_final_suggestions = citation_suggestions + reference_suggestions
+        result["autofix"]["statistics"] = {
+            "total": len(all_final_suggestions),
+            "citation_accuracy_total": len(citation_suggestions),
+            "reference_quality_total": len(reference_suggestions),
+            "review_high_confidence": len([s for s in all_final_suggestions if s.get("confidence", 0) >= 0.85]),
+            "review_medium_confidence": len([s for s in all_final_suggestions if 0.70 <= s.get("confidence", 0) < 0.85]),
+            "review_low_confidence": len([s for s in all_final_suggestions if s.get("confidence", 0) < 0.70]),
+            "by_category": dict(Counter(s.get("category", "other") for s in all_final_suggestions)),
+            "by_issue_type": dict(Counter(s.get("issue_type", "other") for s in all_final_suggestions)),
+            "style_family": _worker_style_family(style),
+            "style_label": _worker_style_label(style),
+        }
+
+        print(f"✅ Suggestions preserved/merged: {len(citation_suggestions)} citation + {len(reference_suggestions)} reference suggestions")
+        
+        # Save result
+        cursor.execute(
+            "UPDATE jobs SET status = 'completed', result = %s, completed_at = NOW() WHERE job_id = %s",
+            (json.dumps(result), job_id)
+        )
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        # Privacy-first: do not cache full results in Redis unless explicitly enabled.
+        if CACHE_RESULTS_IN_REDIS:
+            ttl = max(1, int(RESULT_CACHE_TTL or 900))
+            redis_conn.setex(f"result:{job_id}", ttl, json.dumps(result))
+
+        if DELETE_FILE_AFTER_PROCESSING:
+            redis_conn.delete(f"file:{job_id}")
+        
+        print(f"✅ Completed job {job_id}")
+        return result
+        
+    except Exception as e:
+        print(f"❌ Failed job {job_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE jobs SET status = 'failed', error = %s WHERE job_id = %s",
+                (str(e), job_id)
+            )
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except:
+            pass
+        if DELETE_FILE_AFTER_PROCESSING:
+            try:
+                redis_conn.delete(f"file:{job_id}")
+            except Exception:
+                pass
+
+        raise e
+
+
+# ============================================================
+# COMMERCIAL DEEP ENRICHMENT JOB
+# ============================================================
+
+def _enqueue_deep_enrichment(job_id, style="apa", scope="weak_only"):
+    """Queue expensive enrichment after the usable dashboard is already ready."""
+    if not ENQUEUE_DEEP_ENRICHMENT_AFTER_VERIFY:
+        return None
+
+    try:
+        deep_queue = Queue("deep_enrichment", connection=redis_conn)
+        rq_job = deep_queue.enqueue(
+            "worker.process_deep_enrichment",
+            job_id,
+            style,
+            scope,
+            job_timeout=10800,
+            result_ttl=86400,
+            failure_ttl=86400,
+        )
+        print(f"[DEEP ENRICHMENT] Queued enrichment job {rq_job.id} for {job_id}")
+        return rq_job.id
+    except Exception as e:
+        print(f"[DEEP ENRICHMENT] Could not queue enrichment for {job_id}: {e}")
+        return None
+
+
+def _set_enrichment_meta(result, **kwargs):
+    if result is None:
+        result = {}
+
+    enrichment = result.get("enrichment") or {}
+    for key, value in kwargs.items():
+        if value is not None:
+            enrichment[key] = value
+
+    result["enrichment"] = enrichment
+    return result
+WEAK_CLAIM_STATUSES = {
+    "weak_or_unclear",
+    "insufficient_evidence",
+    "no_evidence_found",
+    "no_source_found",
+    "source_not_found",
+    "matched_source_not_available",
+    "manual_review_required",
+    "insufficient_title_overlap",
+    "title_overlap_review_required",
+    "claim_not_extracted",
+}
+
+WEAK_VERIFY_STATUSES = {
+    "needs_review",
+    "not_found",
+    "offline",
+}
+
+def _should_enrich_claim_row(row, scope="weak_only"):
+    """
+    Select only claim-support rows that need deeper alternative-source lookup.
+    Deep enrichment should run for weak, insufficient, no-evidence, and no-source cases.
+    """
+    if scope == "recovery_only":
+        return False
+
+    status = str(
+        row.get("support_status")
+        or row.get("status")
+        or ""
+    ).strip().lower()
+
+    try:
+        score = float(row.get("support_score") or row.get("score") or 0)
+    except Exception:
+        score = 0
+
+    source_title = str(
+        row.get("source_title")
+        or row.get("matched_source")
+        or row.get("matched_title")
+        or ""
+    ).strip().lower()
+
+    no_source = (
+        not source_title
+        or source_title in {"no source found", "no source title available"}
+        or source_title.startswith("matched source not available")
+        or source_title.startswith("source title not available")
+        or source_title.startswith("no source")
+    )
+
+    if row.get("alternative_sources"):
+        return False
+
+    return (
+        status in WEAK_CLAIM_STATUSES
+        or score < 20
+        or no_source
+    )
+
+
+def _should_enrich_recovery_row(row, scope="weak_only"):
+    if scope == "claim_only":
+        return False
+
+    if scope == "all_problem_rows":
+        return not bool(row.get("deep_suggestions")) and not bool(row.get("enriched"))
+
+    status = str(row.get("status") or "").strip().lower()
+
+    already_enriched = bool(row.get("deep_suggestions")) or bool(row.get("enriched"))
+
+    if already_enriched:
+        return False
+
+    return status in WEAK_VERIFY_STATUSES
+DEEP_RECOVERY_STATUSES = {
+    "needs_review",
+    "not_found",
+    "offline",
+}
+
+DEEP_CLAIM_STATUSES = {
+    "weak_or_unclear",
+    "insufficient_evidence",
+    "no_evidence_found",
+    "no_source_found",
+    "source_not_found",
+    "matched_source_not_available",
+    "manual_review_required",
+    "insufficient_title_overlap",
+    "title_overlap_review_required",
+}
+
+def _should_deep_enrich_recovery_row(row, scope="weak_only"):
+    """
+    Deep enrichment for verification recovery should run only on
+    needs_review, not_found, and offline rows.
+    """
+    if scope == "claim_only":
+        return False
+
+    status = str(row.get("status") or "").strip().lower()
+
+    if status not in DEEP_RECOVERY_STATUSES:
+        return False
+
+    if row.get("deep_suggestions") or row.get("enriched") is True:
+        return False
+
+    return True
+
+
+def _should_deep_enrich_claim_row(row, scope="weak_only"):
+    """
+    Deep enrichment for claim support should run only where the current
+    source is weak, insufficient, missing, or no evidence was found.
+    """
+    if scope == "recovery_only":
+        return False
+
+    status = str(
+        row.get("support_status")
+        or row.get("status")
+        or ""
+    ).strip().lower()
+
+    try:
+        score = float(row.get("support_score") or row.get("score") or 0)
+    except Exception:
+        score = 0
+
+    source_title = str(
+        row.get("source_title")
+        or row.get("matched_source")
+        or row.get("matched_title")
+        or ""
+    ).strip().lower()
+
+    no_source = (
+        not source_title
+        or source_title.startswith("matched source not available")
+        or source_title.startswith("source title not available")
+        or source_title.startswith("no source")
+    )
+
+    if row.get("alternative_sources"):
+        return False
+
+    return (
+        status in DEEP_CLAIM_STATUSES
+        or score < 20
+        or no_source
+    )
+def process_deep_enrichment(job_id, style="apa", scope="weak_only", limit=None):
+    """
+    Expensive background enrichment. This runs after the dashboard is already usable.
+    It adds deep Recovery suggestions and alternative claim-support sources without
+    blocking verification completion.
+    """
+    print(f"[DEEP ENRICHMENT] Starting for job {job_id}")
+    start_time = time.time()
+    limit = int(limit or DEEP_ENRICHMENT_LIMIT)
+    scope = str(scope or "weak_only").strip().lower()
+    if scope not in {"weak_only", "recovery_only", "claim_only", "citation_needed_only", "all_problem_rows"}:
+        scope = "weak_only"
+    result = _load_job_result(job_id)
+    result = _set_enrichment_meta(
+        result,
+        state="running",
+        scope=scope,
+        message="Advanced Recovery, Claim Support, and Citation Needed enrichment is running.",
+        started_at=now_iso(),
+        deep_recovery_ready=False,
+        deep_claim_support_ready=False,
+        progress=0,
+        total=0,
+    )
+    _save_job_result(job_id, result, status="completed")
+
+    recovery = result.get("recovery") or {"missing_recovery": [], "verification_recovery": []}
+    verification_rows = (result.get("online_verification") or {}).get("rows") or []
+    missing_rows = recovery.get("missing_recovery") or []
+    recovery_rows = recovery.get("verification_recovery") or []
+    claim_rows = result.get("claim_support") or []
+    citation_needed_rows = result.get("citation_needed_claims") or []
+
+    if scope in {"claim_only", "citation_needed_only"}:
+        missing_rows_to_enrich = []
+    else:
+        missing_rows_to_enrich = [
+            row for row in missing_rows
+            if not row.get("deep_suggestions") and row.get("enriched") is not True
+        ]
+    
+    recovery_rows_to_enrich = [] if scope == "citation_needed_only" else [
+        row for row in recovery_rows
+        if _should_deep_enrich_recovery_row(row, scope=scope)
+    ]
+    
+    claim_rows_to_enrich = [] if scope == "citation_needed_only" else [
+        row for row in claim_rows
+        if _should_deep_enrich_claim_row(row, scope=scope)
+    ]
+
+    citation_needed_rows_to_enrich = [
+        row for row in citation_needed_rows
+        if scope in {"citation_needed_only", "all_problem_rows"}
+        and not row.get("deep_suggestions")
+        and row.get("enriched") is not True
+    ]
+    
+    total_work = (
+        min(len(missing_rows_to_enrich), limit)
+        + min(len(recovery_rows_to_enrich), limit)
+        + min(len(claim_rows_to_enrich), limit)
+        + min(len(citation_needed_rows_to_enrich), limit)
+    )
+    
+    done = 0
+    
+    result = _set_enrichment_meta(
+        result,
+        total=total_work,
+        progress=done,
+        scope=scope,
+        message=f"Advanced enrichment queued for {total_work} problem rows.",
+    )
+    _save_job_result(job_id, result, status="completed")
+    # Enrich missing in-text citation recovery rows first. These rows have no
+    # matched reference, so the deep lookup relies mainly on the citation context.
+    for idx, rec in enumerate(missing_rows_to_enrich[:limit], start=1):
+        citation = str(rec.get("citation") or "").strip()
+        source_row = {
+            "citation": citation,
+            "in_text": citation,
+            "reference": "",
+            "status": "missing_reference",
+            "context": rec.get("context") or rec.get("citation_context") or "",
+            "claim": rec.get("claim") or rec.get("suggested") or "",
+            "suggestions": rec.get("suggestions") or [],
+        }
+
+        try:
+            deep_suggestions = _deep_context_source_suggestions(
+                source_row,
+                result,
+                target=DEEP_LOOKUP_TOP_K,
+                include_reference=False
+            )
+            rec["deep_suggestions"] = deep_suggestions
+            # Advanced enrichment must replace Recovery Lite, not silently reuse it.
+            rec["suggestions"] = deep_suggestions
+            rec["enriched"] = bool(deep_suggestions)
+            rec["enrichment_type"] = "missing_citation_context_sources"
+            rec["enrichment_note"] = _source_enrichment_note(deep_suggestions, target=DEEP_LOOKUP_TOP_K)
+        except Exception as e:
+            rec["suggestions"] = rec.get("suggestions") or _context_suggestions_for_missing_citation(citation, result, rec.get("count") or 1, target=3)
+            rec["enriched"] = False
+            rec["enrichment_error"] = str(e)
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            recovery["missing_recovery"] = missing_rows
+            result["recovery"] = recovery
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    recovery["missing_recovery"] = missing_rows
+    result["recovery"] = recovery
+    _save_job_result(job_id, result, status="completed")
+
+    # Build lookup for richer recovery suggestions.
+    verify_lookup = {}
+    for row in verification_rows:
+        key = (
+            str(row.get("citation") or row.get("in_text") or row.get("citation_in_text") or "").strip().lower(),
+            str(row.get("reference") or row.get("original_reference") or row.get("matched_title") or row.get("title") or row.get("source_title") or "").strip().lower(),
+        )
+        verify_lookup[key] = row
+
+    for idx, rec in enumerate(recovery_rows_to_enrich[:limit], start=1):
+        citation = str(rec.get("citation") or "").strip().lower()
+        reference = str(rec.get("reference") or "").strip().lower()
+        source_row = verify_lookup.get((citation, reference)) or rec
+
+        try:
+            deep_suggestions = _deep_context_source_suggestions(
+                source_row,
+                result,
+                target=DEEP_LOOKUP_TOP_K,
+                include_reference=True
+            )
+            rec["deep_suggestions"] = deep_suggestions
+            # Advanced enrichment must replace Recovery Lite, not silently reuse it.
+            rec["suggestions"] = deep_suggestions
+            rec["enriched"] = bool(deep_suggestions)
+            rec["enrichment_type"] = "verification_recovery_context_sources"
+            rec["enrichment_note"] = _source_enrichment_note(deep_suggestions, target=DEEP_LOOKUP_TOP_K)
+        except Exception as e:
+            rec["enriched"] = False
+            rec["enrichment_error"] = str(e)
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            recovery["verification_recovery"] = recovery_rows
+            result["recovery"] = recovery
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    recovery["verification_recovery"] = recovery_rows
+    recovery["deep_recovery_ready"] = True
+    result["recovery"] = recovery
+    result = _set_enrichment_meta(
+        result,
+        deep_recovery_ready=True,
+        progress=done,
+        message="Deep Recovery enrichment completed. Enriching Claim Support alternatives...",
+        last_heartbeat=now_iso(),
+    )
+    _save_job_result(job_id, result, status="completed")
+
+    for idx, row in enumerate(claim_rows_to_enrich[:limit], start=1):
+        citation = str(row.get("citation") or "").strip()
+    
+        claim = str(
+            row.get("claim")
+            or row.get("claim_extracted")
+            or row.get("extracted_claim")
+            or row.get("context")
+            or ""
+        ).strip()
+    
+        source_title = str(
+            row.get("source_title")
+            or row.get("matched_source")
+            or row.get("matched_title")
+            or ""
+        ).strip()
+    
+        try:
+            alt_sources = _safe_alternative_sources(
+                claim=claim,
+                citation=citation,
+                current_source_title=source_title,
+                top_k=DEEP_LOOKUP_TOP_K + 3,
+                allow_external=True,
+            )
+
+            if len(alt_sources or []) < DEEP_LOOKUP_TOP_K:
+                alt_sources = (alt_sources or []) + _deep_context_source_suggestions(
+                    {
+                        "citation": citation,
+                        "in_text": citation,
+                        "claim": claim,
+                        "context": claim,
+                        "source_title": source_title,
+                        "matched_title": source_title,
+                    },
+                    result,
+                    target=DEEP_LOOKUP_TOP_K + 3,
+                    include_reference=False,
+                )
+
+            alt_sources = _dedupe_real_source_suggestions(
+                alt_sources,
+                target=DEEP_LOOKUP_TOP_K,
+                exclude_title=source_title,
+            )
+
+            row["alternative_sources"] = alt_sources
+            row["deep_suggestions"] = alt_sources
+            row["suggestions"] = alt_sources
+            row["enriched"] = bool(alt_sources)
+            row["enrichment_type"] = "claim_support_alternative_sources"
+            row["enrichment_note"] = _source_enrichment_note(alt_sources, target=DEEP_LOOKUP_TOP_K)
+    
+        except Exception as e:
+            row["alternative_sources"] = row.get("alternative_sources") or []
+            row["deep_suggestions"] = row.get("deep_suggestions") or row.get("alternative_sources") or []
+            row["suggestions"] = row.get("suggestions") or row.get("deep_suggestions") or []
+            row["enriched"] = False
+            row["enrichment_error"] = str(e)
+            row["enrichment_note"] = "Advanced enrichment failed for this claim-support row. Manual review is required."
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            result["claim_support"] = claim_rows
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    result["claim_support"] = claim_rows
+
+    # Enrich uncited claims that appear to need citations.
+    for idx, row in enumerate(citation_needed_rows_to_enrich[:limit], start=1):
+        claim = str(row.get("claim") or row.get("context") or "").strip()
+
+        try:
+            alt_sources = _deep_context_source_suggestions(
+                {
+                    "citation": "",
+                    "in_text": "",
+                    "claim": claim,
+                    "context": claim,
+                    "source_title": "",
+                    "matched_title": "",
+                },
+                result,
+                target=DEEP_LOOKUP_TOP_K + 3,
+                include_reference=False,
+            )
+
+            alt_sources = _dedupe_real_source_suggestions(
+                alt_sources,
+                target=DEEP_LOOKUP_TOP_K,
+                exclude_title="",
+            )
+
+            row["alternative_sources"] = alt_sources
+            row["deep_suggestions"] = alt_sources
+            row["suggestions"] = alt_sources
+            row["enriched"] = bool(alt_sources)
+            row["enrichment_type"] = "citation_needed_source_suggestions"
+            row["enrichment_note"] = _source_enrichment_note(alt_sources, target=DEEP_LOOKUP_TOP_K)
+
+        except Exception as e:
+            row["alternative_sources"] = row.get("alternative_sources") or []
+            row["deep_suggestions"] = row.get("deep_suggestions") or row.get("alternative_sources") or []
+            row["suggestions"] = row.get("suggestions") or row.get("deep_suggestions") or []
+            row["enriched"] = False
+            row["enrichment_error"] = str(e)
+            row["enrichment_note"] = "Advanced enrichment failed for this citation-needed claim. Manual source search is required."
+
+        done += 1
+        if done % DEEP_ENRICHMENT_BATCH_SAVE == 0:
+            result["citation_needed_claims"] = citation_needed_rows
+            result = _set_enrichment_meta(
+                result,
+                progress=done,
+                message=f"Advanced enrichment running: {done}/{total_work}",
+                last_heartbeat=now_iso(),
+            )
+            _save_job_result(job_id, result, status="completed")
+
+    result["citation_needed_claims"] = citation_needed_rows
+    result.setdefault("summary", {})["citation_needed_claims"] = len(citation_needed_rows)
+    elapsed = round(time.time() - start_time, 2)
+    result = _set_enrichment_meta(
+        result,
+        state="completed",
+        progress=total_work,
+        total=total_work,
+        percentage=100,
+        deep_recovery_ready=True,
+        deep_claim_support_ready=True,
+        deep_citation_needed_ready=True,
+        message=f"Advanced enrichment completed for scope: {scope}.",
+        scope=scope,
+        completed_at=now_iso(),
+        processing_time_seconds=elapsed,
+    )
+    _save_job_result(job_id, result, status="completed")
+    print(f"[DEEP ENRICHMENT] Completed for {job_id} in {elapsed}s")
+    return result
+
+# ============================================================
+# VERIFICATION WORKER FUNCTION
+# ============================================================
+def process_verification(job_id, style="apa", enrich_metadata=False):
+    """
+    Durable online verification job.
+
+    This replaces the old verify.py daemon-thread flow.
+    It runs inside the RQ worker, persists progress after every chunk,
+    updates PostgreSQL and Redis, and builds final dashboard tables.
+    """
+    print(f"🌐 Starting durable verification for job {job_id}")
+
+    start_time = time.time()
+    all_rows = []
+
+    try:
+        result = _load_job_result(job_id)
+        stored_style = result.get("selected_style") or result.get("style_family") or result.get("style") or style
+        if _worker_style_family(style) == "author_year" and _worker_style_family(stored_style).startswith("numeric_"):
+            print(f"[VERIFY WORKER] Incoming style={style} overridden by stored style={stored_style}")
+            style = stored_style
+        else:
+            print(f"[VERIFY WORKER] Using verification style={style}")
+
+        refs = _normalise_references_for_verification(result, style=style)
+        total = len(refs)
+
+        if not total:
+            result = _set_verification_meta(
+                result,
+                state="completed",
+                progress=0,
+                total=0,
+                percentage=100,
+                message=result.get("reference_detection_message", "No references extracted"),
+                completed_at=now_iso(),
+                final_tables_ready=True
+            )
+
+            result["final_tables_ready"] = True
+            result["verification_completed_at"] = now_iso()
+
+            result["online_verification"] = {
+                "rows": [],
+                "summary": _compute_verification_summary([])
+            }
+
+            result["recovery"] = {
+                "missing_recovery": [],
+                "verification_recovery": [],
+                "note": "No references were available for recovery."
+            }
+
+            result["claim_support"] = []
+            result["citation_needed_claims"] = _build_citation_needed_claims(result)
+            result.setdefault("summary", {})["citation_needed_claims"] = len(result["citation_needed_claims"])
+
+            _save_job_result(job_id, result)
+            return result
+
+        result = _set_verification_meta(
+            result,
+            state="running",
+            progress=0,
+            total=total,
+            percentage=0,
+            message=f"Verification started for {total} references",
+            started_at=now_iso(),
+            completed_at=None,
+            error=None
+        )
+
+        result["online_verification"] = {
+            "rows": [],
+            "summary": _compute_verification_summary([])
+        }
+
+        result["recovery"] = {
+            "missing_recovery": [],
+            "verification_recovery": []
+        }
+
+        result["claim_support"] = []
+        result["citation_needed_claims"] = []
+
+        _save_job_result(job_id, result)
+
+        chunks = [
+            refs[i:i + VERIFY_CHUNK_SIZE]
+            for i in range(0, total, VERIFY_CHUNK_SIZE)
+        ]
+
+        print(f"🌐 Verification split into {len(chunks)} chunks of {VERIFY_CHUNK_SIZE}")
+        print(f"⚡ Parallel verification: {VERIFY_PARALLEL_MODE}, workers={VERIFY_PARALLEL_WORKERS}, cache={VERIFY_USE_CACHE}")
+
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            print(f"🌐 Verifying chunk {chunk_index}/{len(chunks)} with {len(chunk)} refs")
+
+            chunk_rows = _verify_chunk_parallel(
+                chunk,
+                style=style,
+                enrich_metadata=enrich_metadata
+            )
+            chunk_rows = _add_worker_style_metadata_to_rows(chunk_rows, style)
+
+            all_rows.extend(chunk_rows or [])
+
+            progress = min(len(all_rows), total)
+            percentage = int((progress / total) * 100) if total else 0
+            summary = _compute_verification_summary(all_rows)
+
+            result["online_verification"] = {
+                "rows": all_rows,
+                "summary": summary
+            }
+
+            result = _set_verification_meta(
+                result,
+                state="running",
+                progress=progress,
+                total=total,
+                percentage=percentage,
+                message=f"Verifying references: {progress}/{total}",
+                last_heartbeat=now_iso(),
+                chunks_completed=chunk_index,
+                chunks_total=len(chunks)
+            )
+
+            _save_job_result(job_id, result)
+
+            print(f"🌐 Persisted verification progress {progress}/{total}")
+
+        summary = _compute_verification_summary(all_rows)
+
+        result["online_verification"] = {
+            "rows": all_rows,
+            "summary": summary
+        }
+        result = _set_verification_meta(
+            result,
+            state="finalising",
+            progress=total,
+            total=total,
+            percentage=100,
+            message="Verification complete. Building Recovery and Claim Support tables...",
+            final_tables_ready=False,
+            last_heartbeat=now_iso()
+        )
+        
+        _save_job_result(job_id, result)
+        # Build Recovery immediately using safe fallback suggestions.
+        try:
+            result["recovery"] = _build_recovery_payload(result, all_rows)
+
+            if (
+                not result["recovery"].get("missing_recovery")
+                and not result["recovery"].get("verification_recovery")
+            ):
+                result["recovery"] = {
+                    "missing_recovery": [],
+                    "verification_recovery": [
+                        {
+                            "status": r.get("status", ""),
+                            "citation": (
+                                r.get("citation")
+                                or r.get("in_text")
+                                or r.get("citation_in_text")
+                                or ""
+                            ),
+                            "reference": (
+                                r.get("reference")
+                                or r.get("original_reference")
+                                or r.get("matched_title")
+                                or r.get("title")
+                                or r.get("source_title")
+                                or ""
+                            ),
+                            "suggestions": _fallback_recovery_suggestions(r, result, target=3)
+                        }
+                        for r in all_rows
+                        if r.get("status") in {"likely", "needs_review", "not_found", "offline"}
+                    ],
+                    "note": "Fallback recovery rows generated."
+                }
+
+        except Exception as e:
+            print(f"[VERIFY WORKER] Recovery error: {e}")
+            result["recovery"] = {
+                "missing_recovery": [],
+                "verification_recovery": [],
+                "note": f"Recovery generation failed: {e}"
+            }
+
+       # Build claim-support rows with scoring.
+       # Uses the real checker first, then a safe title-only fallback so scores are not forced to zero.
+        try:
+            claim_rows = _build_claim_support_safe(result, all_rows)
+        
+            for row in claim_rows:
+                row.setdefault("alternative_sources", [])
+        
+            result["claim_support"] = claim_rows
+        
+        except Exception as e:
+            print(f"[VERIFY WORKER] Claim-support scoring failed: {e}")
+            result["claim_support"] = _apply_verification_gate_to_claim_rows(
+                _enhance_claim_support_scores(_fallback_claim_support_rows(result, all_rows)),
+                all_rows
+            )
+
+        # Build citation-needed claims: claims that appear to need a citation but have no visible citation.
+        try:
+            citation_needed_rows = _build_citation_needed_claims(result)
+            result["citation_needed_claims"] = citation_needed_rows
+            result.setdefault("summary", {})["citation_needed_claims"] = len(citation_needed_rows)
+        except Exception as e:
+            print(f"[VERIFY WORKER] Citation-needed claim detection failed: {e}")
+            result["citation_needed_claims"] = []
+            result.setdefault("summary", {})["citation_needed_claims"] = 0
+
+        # ACII should not block completion.
+        try:
+            result["acii"] = compute_acii(result, all_rows)
+        except Exception as e:
+            print(f"[VERIFY WORKER] ACII error: {e}")
+            result["acii"] = {"error": str(e)}
+
+        elapsed = round(time.time() - start_time, 2)
+
+        result = _set_verification_meta(
+            result,
+            state="completed",
+            progress=total,
+            total=total,
+            percentage=100,
+            results_count=len(all_rows),
+            summary=summary,
+            message=f"Verification completed for {len(all_rows)} references",
+            completed_at=now_iso(),
+            processing_time_seconds=elapsed,
+            final_tables_ready=True
+        )
+
+        result["final_tables_ready"] = True
+        result["verification_completed_at"] = now_iso()
+
+        result["finalise"] = {
+            "state": "completed",
+            "recovery_lite_ready": True,
+            "claim_lite_ready": True,
+            "completed_at": now_iso()
+        }
+
+        deep_job_id = _enqueue_deep_enrichment(job_id, style=style, scope="weak_only")
+        result = _set_enrichment_meta(
+            result,
+            state="queued" if deep_job_id else "not_queued",
+            rq_job_id=deep_job_id,
+            deep_recovery_ready=False,
+            deep_claim_support_ready=False,
+            message=(
+                "Advanced enrichment queued. Recovery Lite, Claim Support Lite, and Citation Needed checks are ready."
+                if deep_job_id else
+                "Advanced enrichment not queued. Recovery Lite, Claim Support Lite, and Citation Needed checks are ready."
+            )
+        )
+
+        _save_job_result(job_id, result, status="completed")
+
+        print(f"✅ Durable verification completed for job {job_id}: {len(all_rows)} rows")
+        return result
+
+    except Exception as e:
+        print(f"❌ Durable verification failed for job {job_id}: {e}")
+        import traceback
+        traceback.print_exc()
+
+        try:
+            result = _load_job_result(job_id)
+
+            result["online_verification"] = {
+                "rows": all_rows,
+                "summary": _compute_verification_summary(all_rows)
+            }
+
+            result.setdefault("recovery", {
+                "missing_recovery": [],
+                "verification_recovery": []
+            })
+
+            result.setdefault("claim_support", [])
+
+            result = _set_verification_meta(
+                result,
+                state="error",
+                message=str(e),
+                error=str(e),
+                completed_at=now_iso()
+            )
+
+            _save_job_result(job_id, result)
+
+        except Exception as db_error:
+            print(f"[VERIFY WORKER] Could not persist verification error: {db_error}")
+
+        raise
+
+
+   
+# Start the worker
+if __name__ == "__main__":
+    print("🚀 Starting worker...")
+    print(f"📊 Redis: {REDIS_URL[:50]}..." if REDIS_URL else "📊 Redis: NOT SET")
+    print(f"💾 PostgreSQL: {'Connected' if DATABASE_URL else 'NOT SET'}")
+
+    queue_env = os.environ.get("WORKER_QUEUES", "document_processing,verification,deep_enrichment")
+    queues_to_listen = [q.strip() for q in queue_env.split(",") if q.strip()]
+
+    with Connection(redis_conn):
+        for queue_name in queues_to_listen:
+            q = Queue(queue_name, connection=redis_conn)
+            print(f"📌 Queue: {q.name}, jobs waiting: {q.count}")
+
+        worker = Worker(queues_to_listen, connection=redis_conn)
+
+        print(f"✅ Worker ready, listening to: {queues_to_listen}")
+        print("📋 Detection scenarios enabled:")
+        print("   Scenario 1: Year mismatches")
+        print("   Scenario 2: Author name mismatches")
+        print("   Scenario 3: Author order mismatches")
+        print("   Scenario 4: Combined author + year mismatches")
+        print("   Scenario 5: Et al. misuse")
+        print("   Scenario 6: Potential wrong references")
+        print("   Reference quality issues")
+
+        worker.work(burst=False)
