@@ -1049,7 +1049,7 @@
                         </table>
                     </div>
 
-                    <h4 style="margin-bottom: 12px;">Needs Review / Not Found Recovery</h4>
+                    <h4 style="margin-bottom: 12px;">Needs Review / Not Found Recovery Guidance</h4>
                     <div class="tableWrap">
                         <table class="tbl">
                             <thead>
@@ -1057,7 +1057,7 @@
                                     <th style="width:50px;">No.</th>
                                     <th style="width:120px;">Status</th>
                                     <th>Reference</th>
-                                    <th style="width:320px;">Context Suggestions</th>
+                                    <th style="width:360px;">Recovery Guidance</th>
                                 </tr>
                             </thead>
                             <tbody id="recoveryVerifyBody"></tbody>
@@ -1918,23 +1918,31 @@ function formatSuggestionAuthors(authors) {
 
     return String(authors || "");
 }
-
 function renderRecoverySuggestionItem(s) {
     const authors = formatSuggestionAuthors(s.authors);
-    const title = s.title || s.suggested || "Untitled suggestion";
+    const title = s.title || s.suggested || "Review this reference";
     const year = s.year ? `(${esc(s.year)})` : "";
     const doi = s.doi
-        ? `<a class="doi-link" href="https://doi.org/${encodeURIComponent(s.doi)}" target="_blank">View</a>`
+        ? `<a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank">View</a>`
         : "";
+    const label = s.is_real_source === true ? "Exact reference candidate" : (s.candidate_type || s.suggestion_type || "Review guidance");
+    const problem = s.problem_detected ? `<div class="suggestion-meta"><strong>Problem:</strong> ${esc(s.problem_detected)}</div>` : "";
+    const why = s.why_it_failed ? `<div class="suggestion-meta"><strong>Why:</strong> ${esc(s.why_it_failed)}</div>` : "";
+    const action = s.recommended_action ? `<div class="suggestion-meta"><strong>Action:</strong> ${esc(s.recommended_action)}</div>` : "";
+    const query = s.manual_search_query ? `<div class="suggestion-meta"><strong>Manual search:</strong> ${esc(s.manual_search_query)}</div>` : "";
 
     return `
         <li>
+            <div><span class="badge likely">${esc(label)}</span></div>
             <div><strong>${esc(title)}</strong> ${year}</div>
-            <div class="suggestion-meta">${esc(authors)}</div>
+            ${authors ? `<div class="suggestion-meta">${esc(authors)}</div>` : ""}
+            ${s.reason ? `<div class="suggestion-meta">${esc(s.reason)}</div>` : ""}
+            ${problem}${why}${action}${query}
             <div>${doi}</div>
         </li>
     `;
 }
+
 function renderRecovery(data) {
     const missingBody = $("recoveryMissingBody");
     const verifyBody = $("recoveryVerifyBody");
@@ -1951,7 +1959,7 @@ function renderRecovery(data) {
             const suggestions = row.suggestions || [];
             const suggestionHtml = suggestions.length ? `
                 <div class="suggestion-box">
-                    <div class="suggestion-title">💡 Suggested references</div>
+                    <div class="suggestion-title">🛠 Recovery guidance</div>
                     <ul class="suggestion-list">
                          ${suggestions.map(s => renderRecoverySuggestionItem(s)).join("")}   
                     </ul>
@@ -1969,7 +1977,7 @@ function renderRecovery(data) {
             let badgeClass = row.status === "needs_review" ? "needs_review" : (row.status === "not_found" ? "not_found" : "offline");
             const suggestionHtml = suggestions.length ? `
                 <div class="suggestion-box">
-                    <div class="suggestion-title">🔧 Context suggestions</div>
+                    <div class="suggestion-title">🛠 Recovery guidance</div>
                     <ul class="suggestion-list">
                         ${suggestions.map(s => renderRecoverySuggestionItem(s)).join("")}
                     </ul>
