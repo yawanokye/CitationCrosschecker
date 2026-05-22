@@ -1804,7 +1804,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "manual-verification-in-verification-tab-recovery-guidance-v1.5.40";
+    const RESULTS_UI_BUILD = "manual-verification-dedupe-sort-v1.5.41";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2328,30 +2328,93 @@ document.addEventListener("DOMContentLoaded", function () {
         return "https://www.google.com/search?q=" + encodeURIComponent('"' + title + '"');
     }
     
+    function normaliseManualReferenceKey(row) {
+        const raw = manualQueryFromRow(row) || "";
+        return String(raw)
+            .toLowerCase()
+            .replace(/https?:\/\/\S+/g, " ")
+            .replace(/\bdoi\s*:?\s*10\.\S+/gi, " ")
+            .replace(/\b10\.\d{4,9}\/\S+/gi, " ")
+            .replace(/[^a-z0-9]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 260);
+    }
+
+    function manualStatusPriority(row) {
+        const status = manualRowStatus(row);
+        const order = {
+            "not_found": 1,
+            "offline": 2,
+            "needs_review": 3,
+            "source_needs_review": 4,
+            "manual_review_required": 5,
+            "not_indexed": 6,
+            "weak_match": 7,
+            "manual_not_verified": 8,
+            "not_indexed_but_plausible": 9,
+            "manual_verified": 99
+        };
+        return order[status] || 50;
+    }
+
+    function chooseBetterManualRow(existing, incoming) {
+        if (!existing) return incoming;
+        const existingType = existing._manual_row_type || "";
+        const incomingType = incoming._manual_row_type || "";
+
+        // Prefer the real verification row over a Recovery copy of the same reference.
+        if (existingType !== "verification" && incomingType === "verification") return incoming;
+        if (existingType === "verification" && incomingType !== "verification") return existing;
+
+        // Prefer rows with a DOI, matched title, manual decision, or richer metadata.
+        const scoreRow = (r) => {
+            let score = 0;
+            if (r.manual_decision || r.manual_verification_status) score += 20;
+            if (r.doi || r.DOI || r.reference_doi) score += 12;
+            if (r.matched_title || r.title || r.source_title) score += 8;
+            if (r.matched_authors || r.authors) score += 4;
+            if (r.matched_year || r.year) score += 3;
+            if (r.confidence_reason || r.problem_detected || r.why_it_failed) score += 2;
+            return score;
+        };
+
+        return scoreRow(incoming) > scoreRow(existing) ? incoming : existing;
+    }
+
     function getManualVerificationRows(data) {
-        const rows = [];
-    
-        const verifyRows = data?.online_verification?.rows || [];
-        verifyRows.forEach((row) => {
-            if (isManualReviewRow(row)) {
-                rows.push({
-                    ...row,
-                    _manual_row_type: "verification"
-                });
+        const byKey = new Map();
+
+        function addRow(row, type) {
+            if (!row || !isManualReviewRow(row)) return;
+            const enriched = { ...row, _manual_row_type: type };
+            let key = normaliseManualReferenceKey(enriched);
+
+            // If a row has no reference text but has a DOI/title, still dedupe safely.
+            if (!key) {
+                key = String(enriched.doi || enriched.DOI || enriched.matched_title || enriched.title || "")
+                    .toLowerCase()
+                    .replace(/[^a-z0-9]+/g, " ")
+                    .trim()
+                    .slice(0, 260);
             }
+            if (!key) return;
+
+            byKey.set(key, chooseBetterManualRow(byKey.get(key), enriched));
+        }
+
+        // Primary source: online verification rows. These should drive Manual Verification.
+        (data?.online_verification?.rows || []).forEach((row) => addRow(row, "verification"));
+
+        // Secondary source: Recovery rows only fill gaps; they must not duplicate verification rows.
+        (data?.recovery?.verification_recovery || []).forEach((row) => addRow(row, "recovery"));
+
+        return Array.from(byKey.values()).sort((a, b) => {
+            const pa = manualStatusPriority(a);
+            const pb = manualStatusPriority(b);
+            if (pa !== pb) return pa - pb;
+            return manualQueryFromRow(a).localeCompare(manualQueryFromRow(b));
         });
-    
-        const recoveryRows = data?.recovery?.verification_recovery || [];
-        recoveryRows.forEach((row) => {
-            if (isManualReviewRow(row)) {
-                rows.push({
-                    ...row,
-                    _manual_row_type: "recovery"
-                });
-            }
-        });
-    
-        return rows;
     }
     
 
@@ -2989,7 +3052,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const manualHtml = manualDecision
                 ? `<span class="badge verified">${esc(manualDecision)}</span>`
                 : (isManualReviewRow(row)
-                    ? `<button class="btn btn-outline manual-jump" data-manual-index="${manualIndex}" type="button">Manual verify</button>`
+                    && manualIndex >= 0 ? `<button class="btn btn-outline manual-jump" data-manual-index="${manualIndex}" type="button">Manual verify</button>`
                     : `<span class="small-muted">—</span>`);
             return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td><td>${manualHtml}</td></tr>`;
         }).join("");
