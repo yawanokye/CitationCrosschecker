@@ -1804,7 +1804,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "manual-verification-dedupe-sort-v1.5.41";
+    const RESULTS_UI_BUILD = "manual-verification-stable-decision-v1.5.42";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2280,16 +2280,26 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     
     function manualRowStatus(row) {
+        // Keep the automated status as the row driver.
+        // Manual decisions are displayed as a separate badge and should not
+        // remove or re-sort the card after the user clicks a decision.
         return String(
             row.display_status ||
-            row.manual_decision ||
             row.status ||
             row.support_status ||
+            row.manual_verification_status ||
+            row.manual_decision ||
             "needs_review"
         ).toLowerCase();
     }
     
     function isManualReviewRow(row) {
+        if (!row) return false;
+
+        // Once a manual decision has been recorded, keep the row visible.
+        // Otherwise it appears to record and then disappear from the panel.
+        if (row.manual_decision || row.manual_verification_status) return true;
+
         const status = manualRowStatus(row);
         return [
             "needs_review",
@@ -2298,8 +2308,10 @@ document.addEventListener("DOMContentLoaded", function () {
             "not_indexed",
             "weak_match",
             "manual_review_required",
+            "manual_verified",
             "manual_not_verified",
-            "not_indexed_but_plausible"
+            "not_indexed_but_plausible",
+            "keep_needs_review"
         ].includes(status);
     }
     
@@ -2676,11 +2688,21 @@ document.addEventListener("DOMContentLoaded", function () {
             setStatus(js.message || "Manual verification decision recorded.", "good");
     
             if (js.result) {
-                latestResults = js.result;
-                window.latestResults = js.result;
-                renderAll(js.result);
+                latestResults = hydrateFinalDefaults(normalizeData(js.result));
+                latestResults.job_id = latestResults.job_id || JOB_ID;
+                window.latestResults = latestResults;
+
+                // Do not call renderAll() here. It rebuilds the Manual Verification
+                // panel, clears candidate search results, and can make the card
+                // appear to drop/disappear after the decision is recorded.
+                // The current card has already been updated by applyManualDecisionUI().
+                renderVerification(latestResults);
+                renderCertificate(latestResults);
+                updateCounts(latestResults);
             } else {
-                loadExistingResult(false);
+                // Keep the visible card stable even if the backend response has no result.
+                // A normal refresh will pull the saved decision later.
+                setTimeout(() => loadExistingResult(false), 1200);
             }
     
         } catch (error) {
