@@ -31,8 +31,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "1.5.29"
-WORKER_BUILD = "commercial-2026-05-22-use-canonical-claim-extractor-FINAL"
+__version__ = "1.5.30"
+WORKER_BUILD = "commercial-2026-05-22-manual-verification-tab-recovery-guidance-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -520,125 +520,216 @@ def _reference_year_from_text(text):
     return m.group(0) if m else ""
 
 
-def _fallback_recovery_suggestions(row, result, target=3):
-    """
-    Return review prompts only when no reliable external source candidate is
-    available. These must not inherit authors/DOI/URL from weak database hits,
-    otherwise the UI can make a review prompt look like a real source.
-    """
-    citation = (
+
+
+def _recovery_citation_for_row(row):
+    return (
         row.get("citation")
         or row.get("in_text")
         or row.get("citation_in_text")
         or ""
     )
 
-    reference = (
+
+def _recovery_reference_for_row(row):
+    return (
         row.get("reference")
         or row.get("original_reference")
         or row.get("matched_reference")
         or row.get("reference_text")
-        or ""
-    )
-
-    status = row.get("status", "")
-    ref_year = row.get("reference_year") or _reference_year_from_text(reference)
-
-    fallback = [
-        {
-            "title": "Check citation-source fit",
-            "year": ref_year,
-            "authors": "",
-            "doi": "",
-            "url": "",
-            "reason": (
-                f"This reference has verification status '{status}'. "
-                "No reliable replacement source was found automatically. Compare the cited sentence with the intended source before making changes."
-            ),
-            "suggested": reference[:250] if reference else "Review the matched reference manually.",
-            "confidence": 0.50,
-            "source": "context_review_fallback",
-            "suggestion_type": "review_prompt",
-            "candidate_quality": "review_prompt",
-            "review_required": True,
-            "is_real_source": False,
-            "citation": citation,
-            "reference": reference,
-        },
-        {
-            "title": "Verify author, year, title, and DOI metadata",
-            "year": ref_year,
-            "authors": "",
-            "doi": "",
-            "url": "",
-            "reason": "The system could not confirm this reference with enough confidence. Check author names, publication year, article/dissertation title, journal or repository, and DOI/URL manually.",
-            "suggested": reference[:250] if reference else "Search the exact reference title manually in Crossref, OpenAlex, Google Scholar, ProQuest, or the university repository.",
-            "confidence": 0.45,
-            "source": "metadata_review_fallback",
-            "suggestion_type": "review_prompt",
-            "candidate_quality": "review_prompt",
-            "review_required": True,
-            "is_real_source": False,
-            "citation": citation,
-            "reference": reference,
-        },
-        {
-            "title": "Confirm claim support before replacing the source",
-            "year": ref_year,
-            "authors": "",
-            "doi": "",
-            "url": "",
-            "reason": "A source should not be replaced only because another database item has a similar author or year. Confirm that the source supports the claim in the manuscript.",
-            "suggested": "Review the cited sentence against the intended source abstract, findings, or full text.",
-            "confidence": 0.40,
-            "source": "claim_support_review_fallback",
-            "suggestion_type": "review_prompt",
-            "candidate_quality": "review_prompt",
-            "review_required": True,
-            "is_real_source": False,
-            "citation": citation,
-            "reference": reference,
-        },
-    ]
-
-    return fallback[:target]
-
-def _normalise_recovery_suggestion(item, row, result):
-    """Convert different suggestion shapes into one UI-friendly shape."""
-    if not isinstance(item, dict):
-        item = {"title": str(item)}
-
-    citation = (
-        row.get("citation")
-        or row.get("in_text")
-        or row.get("citation_in_text")
-        or item.get("citation")
-        or ""
-    )
-
-    reference = (
-        row.get("reference")
-        or row.get("original_reference")
         or row.get("matched_title")
         or row.get("title")
         or row.get("source_title")
-        or item.get("reference")
         or ""
     )
 
-    return {
-        "title": item.get("title") or item.get("suggested_title") or item.get("source_title") or "Suggested source for review",
+
+def _recovery_context_for_row(row, result=None, max_chars=420):
+    result = result or {}
+    context = (
+        row.get("citation_context")
+        or row.get("nearby_text")
+        or row.get("context")
+        or row.get("claim")
+        or row.get("sentence")
+        or ""
+    )
+    citation = _recovery_citation_for_row(row)
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
+    if not context and citation and main_text:
+        try:
+            sentences = _split_sentences(main_text)
+            context = _find_sentence_for_citation(sentences, citation)
+        except Exception:
+            context = ""
+    return re.sub(r"\s+", " ", str(context or "")).strip()[:max_chars]
+
+
+def _manual_search_query_for_recovery(row, result=None):
+    reference = _recovery_reference_for_row(row)
+    if reference:
+        return _clean_query_text(reference, max_len=260)
+    title = row.get("matched_title") or row.get("source_title") or row.get("title") or ""
+    year = row.get("matched_year") or row.get("year") or _reference_year_from_text(reference)
+    authors = row.get("matched_authors") or row.get("authors") or ""
+    return _clean_query_text(" ".join(str(x) for x in [title, authors, year] if x), max_len=260)
+
+
+def _recovery_failure_reason(row):
+    status = str(row.get("status") or "").strip() or "needs_review"
+    reason = (
+        row.get("confidence_reason")
+        or row.get("match_note")
+        or row.get("message")
+        or row.get("error")
+        or ""
+    )
+    if reason:
+        return str(reason)
+    if status == "not_found":
+        return "No reliable Crossref/OpenAlex candidate matched the reference metadata."
+    if status == "offline":
+        return "Online verification could not complete or timed out."
+    return "The automated match was below the verification threshold and requires human review."
+
+
+def _decorate_recovery_suggestion(item, row, result=None, candidate_type="review_prompt"):
+    item = dict(item or {})
+    status = str(row.get("status") or "needs_review")
+    citation = _recovery_citation_for_row(row)
+    reference = _recovery_reference_for_row(row)
+    context = _recovery_context_for_row(row, result)
+    manual_query = item.get("manual_search_query") or _manual_search_query_for_recovery(row, result)
+    item.setdefault("problem_detected", f"Reference verification status is {status}.")
+    item.setdefault("why_it_failed", _recovery_failure_reason(row))
+    item.setdefault("citation_context", context)
+    item.setdefault("recommended_action", "Use Manual Verify in the Verification tab. Search the exact reference title, DOI, publisher page, thesis repository, or Google Scholar before changing the reference.")
+    item.setdefault("manual_search_query", manual_query)
+    item.setdefault("candidate_type", candidate_type)
+    item.setdefault("action_target", "verification_tab_manual_verify")
+    item.setdefault("manual_verify_available", True)
+    item.setdefault("review_required", True)
+    item.setdefault("citation", citation)
+    item.setdefault("reference", reference)
+    return item
+
+def _fallback_recovery_suggestions(row, result, target=3):
+    """
+    Return structured Recovery Guidance when no reliable external source candidate
+    is available. These are review prompts, not replacement sources. They point
+    users to the Manual Verify workflow now shown in the Verification tab.
+    """
+    citation = _recovery_citation_for_row(row)
+    reference = _recovery_reference_for_row(row)
+    status = row.get("status", "")
+    ref_year = row.get("reference_year") or _reference_year_from_text(reference)
+    manual_query = _manual_search_query_for_recovery(row, result)
+    why = _recovery_failure_reason(row)
+    context = _recovery_context_for_row(row, result)
+
+    fallback = [
+        {
+            "title": "Use Manual Verify for this reference",
+            "year": ref_year,
+            "authors": "",
+            "doi": "",
+            "url": "",
+            "reason": "No reliable automatic replacement source was found. A human decision is required before accepting, rejecting, or keeping this reference.",
+            "suggested": reference[:250] if reference else "Review the matched reference manually.",
+            "confidence": 0.50,
+            "source": "manual_verification_guidance",
+            "suggestion_type": "manual_verification_action",
+            "candidate_quality": "review_prompt",
+            "candidate_type": "manual_verification",
+            "is_real_source": False,
+            "problem_detected": f"Verification status is '{status}'.",
+            "why_it_failed": why,
+            "citation_context": context,
+            "recommended_action": "Open the Verification tab, click Manual verify, search exact title/DOI/repository record, then record the decision.",
+            "manual_search_query": manual_query,
+        },
+        {
+            "title": "Check exact reference metadata",
+            "year": ref_year,
+            "authors": "",
+            "doi": "",
+            "url": "",
+            "reason": "Check author names, publication year, title, journal/repository, volume, pages, DOI and URL. Many books, theses and institutional records are not indexed consistently.",
+            "suggested": reference[:250] if reference else "Search the exact reference title manually in Crossref, OpenAlex, Google Scholar, ProQuest, or the university repository.",
+            "confidence": 0.45,
+            "source": "metadata_review_guidance",
+            "suggestion_type": "metadata_review_prompt",
+            "candidate_quality": "review_prompt",
+            "candidate_type": "metadata_review",
+            "is_real_source": False,
+            "problem_detected": f"Automatic metadata verification did not confidently resolve this reference.",
+            "why_it_failed": why,
+            "citation_context": context,
+            "recommended_action": "Correct any spelling, punctuation, DOI, journal, page, or repository detail, then re-run verification.",
+            "manual_search_query": manual_query,
+        },
+        {
+            "title": "Confirm citation-source fit before replacement",
+            "year": ref_year,
+            "authors": "",
+            "doi": "",
+            "url": "",
+            "reason": "Do not replace a source merely because another database item shares a surname or year. Confirm that the intended source supports the manuscript claim.",
+            "suggested": "Review the cited sentence against the intended source abstract, findings, or full text.",
+            "confidence": 0.40,
+            "source": "claim_support_review_guidance",
+            "suggestion_type": "claim_source_fit_prompt",
+            "candidate_quality": "review_prompt",
+            "candidate_type": "claim_source_fit",
+            "is_real_source": False,
+            "problem_detected": f"The reference needs human review before it can be used as reliable evidence.",
+            "why_it_failed": why,
+            "citation_context": context,
+            "recommended_action": "After manual verification, check whether the source supports the specific sentence where it is cited.",
+            "manual_search_query": manual_query,
+        },
+    ]
+
+    return [_decorate_recovery_suggestion(x, row, result, candidate_type=x.get("candidate_type", "review_prompt")) for x in fallback[:target]]
+
+def _normalise_recovery_suggestion(item, row, result):
+    """Convert different suggestion shapes into one UI-friendly Recovery Guidance shape."""
+    if not isinstance(item, dict):
+        item = {"title": str(item)}
+
+    citation = _recovery_citation_for_row(row) or item.get("citation") or ""
+    reference = _recovery_reference_for_row(row) or item.get("reference") or ""
+    candidate_type = item.get("candidate_type") or item.get("suggestion_type") or "reference_review"
+
+    norm = {
+        "title": item.get("title") or item.get("suggested_title") or item.get("source_title") or "Review this reference",
         "year": item.get("year") or item.get("matched_year") or row.get("year") or row.get("matched_year") or "",
         "authors": item.get("authors") or item.get("matched_authors") or row.get("authors") or row.get("matched_authors") or "",
         "doi": item.get("doi") or row.get("doi") or "",
-        "reason": item.get("reason") or item.get("match_note") or "Review this suggestion before making changes.",
+        "url": item.get("url") or item.get("source_url") or "",
+        "reason": item.get("reason") or item.get("match_note") or _recovery_failure_reason(row),
         "suggested": item.get("suggested") or item.get("reference") or item.get("title") or reference[:250],
         "confidence": item.get("confidence") or item.get("relevance") or item.get("score") or 0.50,
-        "source": item.get("source") or item.get("type") or "context_lookup",
+        "source": item.get("source") or item.get("type") or "recovery_guidance",
+        "candidate_type": candidate_type,
+        "suggestion_type": item.get("suggestion_type") or candidate_type,
+        "candidate_quality": item.get("candidate_quality") or ("real_source_candidate" if item.get("is_real_source") else "review_prompt"),
+        "is_real_source": bool(item.get("is_real_source", False)),
+        "review_required": True,
         "citation": citation,
         "reference": reference,
+        "problem_detected": item.get("problem_detected"),
+        "why_it_failed": item.get("why_it_failed"),
+        "citation_context": item.get("citation_context"),
+        "recommended_action": item.get("recommended_action"),
+        "manual_search_query": item.get("manual_search_query"),
+        "action_target": item.get("action_target"),
+        "manual_verify_available": item.get("manual_verify_available", True),
+        "match_basis": item.get("match_basis") or {},
+        "query_used": item.get("query_used") or "",
+        "query_strategy": item.get("query_strategy") or "",
     }
-
+    return _decorate_recovery_suggestion(norm, row, result, candidate_type=candidate_type)
 
 def _dedupe_and_pad_suggestions(suggestions, row, result, target=3):
     """Deduplicate lookup suggestions and pad to three review-ready items."""
@@ -1408,7 +1499,7 @@ def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title="", ref
         else:
             match_basis = {**match_basis, "query_title_overlap_terms": overlap_terms}
 
-        clean.append({
+        candidate = {
             "title": title,
             "year": year,
             "authors": authors,
@@ -1422,14 +1513,23 @@ def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title="", ref
             "query_strategy": item.get("query_strategy") or ("strict_reference_recovery" if strict_reference else "deep_enrichment_query"),
             "match_basis": match_basis,
             "suggestion_type": item.get("suggestion_type") or ("reference_correction_candidate" if strict_reference else "context_specific_source"),
+            "candidate_type": "exact_reference_candidate" if strict_reference else "context_specific_source",
             "review_required": True,
             "is_real_source": True,
             "reason": item.get("reason") or (
                 "Candidate passed strict reference-title metadata checks. Review before using."
                 if strict_reference else
                 "Suggested from manuscript context during Advanced Enrichment. Review before using."
-            )
-        })
+            ),
+            "problem_detected": "The original reference could not be verified automatically.",
+            "why_it_failed": "A strict candidate was found, but it still requires human confirmation before it replaces or confirms the reference." if strict_reference else "This is a context-based source suggestion and must be checked against the cited claim.",
+            "citation_context": context_text or "",
+            "recommended_action": "Use Manual Verify in the Verification tab to confirm the candidate's title, authors, year and DOI before accepting." if strict_reference else "Use this only if it supports the manuscript claim and is more appropriate than the current source.",
+            "manual_search_query": item.get("query_used") or title,
+            "action_target": "verification_tab_manual_verify" if strict_reference else "advanced_enrichment_review",
+            "manual_verify_available": True,
+        }
+        clean.append(candidate)
 
         if len(clean) >= target:
             break
@@ -1611,27 +1711,23 @@ def _build_recovery_payload(result, verification_rows):
 
     for row in verification_rows or []:
         status = row.get("status", "")
-        if status not in {"needs_review", "not_found", "offline"}:
+        if status not in {"needs_review", "not_found", "offline", "source_needs_review"}:
                continue
 
         suggestions = _context_suggestions_for_row(row, result)
 
+        citation = _recovery_citation_for_row(row)
+        reference = _recovery_reference_for_row(row)
         verification_recovery.append({
             "status": status,
-            "citation": (
-                row.get("citation")
-                or row.get("in_text")
-                or row.get("citation_in_text")
-                or ""
-            ),
-            "reference": (
-                row.get("reference")
-                or row.get("original_reference")
-                or row.get("matched_title")
-                or row.get("title")
-                or row.get("source_title")
-                or ""
-            ),
+            "citation": citation,
+            "reference": reference,
+            "problem_detected": f"Reference verification status is {status}.",
+            "why_it_failed": _recovery_failure_reason(row),
+            "citation_context": _recovery_context_for_row(row, result),
+            "recommended_action": "Use Manual Verify in the Verification tab, then re-run verification after correcting any metadata.",
+            "manual_search_query": _manual_search_query_for_recovery(row, result),
+            "manual_verify_available": True,
             "suggestions": suggestions
         })
 
