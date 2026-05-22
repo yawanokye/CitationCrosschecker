@@ -1500,7 +1500,7 @@
                         <span class="count-pill" id="countClaim">0</span>
                     </button>
                     <button class="tab-btn" data-tab="enrichmentPane">
-                        <span class="tab-title">Advanced Enrichment <span class="tab-help" title="Deeper source suggestions and manual verification tools for weak or unresolved cases." aria-label="Deeper source suggestions and manual verification tools for weak or unresolved cases.">?</span></span>
+                        <span class="tab-title">Advanced Enrichment <span class="tab-help" title="Deeper source suggestions for weak claim-support, citation-needed, and recovery cases." aria-label="Deeper source suggestions for weak claim-support, citation-needed, and recovery cases.">?</span></span>
                         <span class="count-pill" id="countEnrichment">Optional</span>
                     </button>
                     <button class="tab-btn" data-tab="suggestionsPane">
@@ -1639,8 +1639,8 @@
                 <div class="card">
                     <div class="section-title">
                         <div>
-                            <h2>Online Verification</h2>
-                            <p>Reference verification results and scholarly metadata matches.</p>
+                            <h2>Online & Manual Verification</h2>
+                            <p>Reference verification results, scholarly metadata matches, and manual decisions for unresolved references.</p>
                         </div>
                     </div>
 
@@ -1660,10 +1660,12 @@
 
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th></tr></thead>
+                            <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th><th>Manual</th></tr></thead>
                             <tbody id="verifyBody"></tbody>
                         </table>
                     </div>
+
+                    <div id="manualVerificationBox" class="manual-verification-panel" style="margin-top:18px; border-top:1px solid var(--line); padding-top:16px;"></div>
                 </div>
             </div>
 
@@ -1672,7 +1674,7 @@
                     <div class="section-title">
                         <div>
                             <h2>Recovery</h2>
-                            <p>Suggestions for missing citations and unverifiable references.</p>
+                            <p>Review guidance for missing citations and references that need manual verification or strict metadata recovery.</p>
                         </div>
                     </div>
 
@@ -1687,7 +1689,7 @@
                     <h3 style="margin-bottom:10px;">Needs Review / Not Found Recovery</h3>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>No.</th><th>Status</th><th>Citation</th><th>Reference</th><th>Context Suggestions</th></tr></thead>
+                            <thead><tr><th>No.</th><th>Status</th><th>Citation</th><th>Reference</th><th>Recovery Guidance</th></tr></thead>
                             <tbody id="recoveryVerifyBody"></tbody>
                         </table>
                     </div>
@@ -1748,7 +1750,7 @@
                         Advanced enrichment has not been started. Run it after verification is complete.
                     </div>
 
-                    <div id="manualVerificationBox" class="manual-verification-panel"></div>
+                    <!-- Manual Verification moved to the Verification tab. -->
                 </div>
             </div>
             <div class="tab-pane" id="certificatePane">
@@ -1802,6 +1804,8 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
+    const RESULTS_UI_BUILD = "manual-verification-in-verification-tab-recovery-guidance-v1.5.40";
+
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
         MAX_CLAIM_DISPLAY: 500,
@@ -2416,7 +2420,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
 
     function renderManualVerification(data) {
-        const box = $("manualVerificationBox") || $("enrichmentStatusBox");
+        const box = $("manualVerificationBox");
         if (!box) return;
     
         manualVerifyRows = getManualVerificationRows(data);
@@ -2596,7 +2600,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     candidate,
                     row_type: row._manual_row_type || "verification",
                     row_id: String(index),
-                    note: "Decision recorded from Advanced Enrichment manual verification."
+                    note: "Decision recorded from Verification tab manual verification."
                 })
             });
     
@@ -2622,6 +2626,28 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
     
+
+    function scrollToManualVerification(index) {
+        const section = $("manualVerificationBox");
+        if (!section) return;
+        section.scrollIntoView({behavior: "smooth", block: "start"});
+        if (Number.isInteger(index) && index >= 0) {
+            const card = document.querySelector(`.manual-card[data-manual-index="${index}"]`);
+            if (card) {
+                card.style.boxShadow = "0 0 0 3px rgba(79,70,229,0.24)";
+                setTimeout(() => { card.style.boxShadow = ""; }, 1800);
+            }
+        }
+    }
+
+    document.addEventListener("click", function (event) {
+        const jump = event.target.closest(".manual-jump");
+        if (!jump) return;
+        event.preventDefault();
+        const index = Number(jump.dataset.manualIndex);
+        scrollToManualVerification(Number.isInteger(index) ? index : -1);
+    });
+
     document.addEventListener("click", function (event) {
         const btn = event.target.closest(".manual-action");
         if (!btn) return;
@@ -2929,7 +2955,6 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!rows.length) { body.innerHTML = `<tr><td colspan="4"><div class="empty">No reference-citation mapping available.</div></td></tr>`; return; }
         body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td><strong>${esc(row.times_cited ?? 0)}</strong></td><td>${esc(row.reference || "")}</td><td>${esc((row.cited_by || []).slice(0, 8).join("; "))}</td></tr>`).join("");
     }
-
     function renderVerification(data) {
         const ov = data.online_verification || {};
         const rows = ov.rows || [];
@@ -2946,13 +2971,30 @@ document.addEventListener("DOMContentLoaded", function () {
             kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
         if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="8"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="9"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
+
+        const manualRowsForIndex = getManualVerificationRows(data);
+        const manualIndexByReference = new Map();
+        manualRowsForIndex.forEach((mr, idx) => {
+            const key = manualQueryFromRow(mr).toLowerCase();
+            if (key && !manualIndexByReference.has(key)) manualIndexByReference.set(key, idx);
+        });
+
         body.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((row, i) => {
             const doi = row.doi || "";
             const doiHtml = doi ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a><div class="small-muted">${esc(doi)}</div>` : "—";
-            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td></tr>`;
+            const queryKey = manualQueryFromRow(row).toLowerCase();
+            const manualIndex = manualIndexByReference.has(queryKey) ? manualIndexByReference.get(queryKey) : -1;
+            const manualDecision = row.manual_decision_label || manualDecisionLabel(row.manual_decision || row.manual_verification_status || "");
+            const manualHtml = manualDecision
+                ? `<span class="badge verified">${esc(manualDecision)}</span>`
+                : (isManualReviewRow(row)
+                    ? `<button class="btn btn-outline manual-jump" data-manual-index="${manualIndex}" type="button">Manual verify</button>`
+                    : `<span class="small-muted">—</span>`);
+            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td><td>${manualHtml}</td></tr>`;
         }).join("");
     }
+
 
     function csvCell(value) {
         return `"${String(value ?? "").replaceAll('"', '""')}"`;
@@ -3013,24 +3055,47 @@ document.addEventListener("DOMContentLoaded", function () {
             </details>
         `;
     }
+    function recoverySuggestionLabel(s) {
+        const t = String(s.candidate_type || s.suggestion_type || s.candidate_quality || s.source || "").toLowerCase();
+        if (s.is_real_source === true || t.includes("candidate")) return "Exact reference candidate";
+        if (t.includes("metadata")) return "Metadata review";
+        if (t.includes("manual")) return "Manual verification";
+        if (t.includes("claim")) return "Claim-source fit";
+        return "Review guidance";
+    }
 
     function renderSuggestionList(suggestions, note = "") {
         if (!suggestions || !suggestions.length) {
             return `
-                <span class="badge no_evidence_found">No context-specific source found</span>
+                <span class="badge no_evidence_found">No reliable source candidate found</span>
+                <div class="small-muted" style="margin-top:6px;">Use Manual Verify in the Verification tab and search the exact title, DOI, repository, or publisher record.</div>
                 ${note ? `<div class="small-muted" style="margin-top:6px;">${esc(note)}</div>` : ""}
             `;
         }
         return `<div class="suggestion-box">${suggestions.slice(0, 3).map((s, i) => {
             const authors = Array.isArray(s.authors) ? s.authors.join(", ") : (s.authors || "");
             const doi = s.doi ? `<div><a class="doi-link" href="${normalizeDoiUrl(s.doi)}" target="_blank" rel="noopener">View DOI</a></div>` : "";
-            const reason = s.reason ? `<div class="small-muted">${esc(s.reason)}</div>` : "";
-            return `<div style="margin-bottom:10px;"><strong>${i+1}. ${esc(s.title || s.suggested || "Untitled suggestion")}</strong><div class="small-muted">${esc(authors)} ${s.year ? "(" + esc(s.year) + ")" : ""}</div>${reason}${doi}</div>`;
-        }).join("")}</div>`;
+            const url = s.url && !s.doi ? `<div><a class="doi-link" href="${esc(s.url)}" target="_blank" rel="noopener">Open source</a></div>` : "";
+            const label = recoverySuggestionLabel(s);
+            const reason = s.reason || s.why_it_failed || "Review before making changes.";
+            const problem = s.problem_detected ? `<div class="small-muted"><strong>Problem:</strong> ${esc(s.problem_detected)}</div>` : "";
+            const context = s.citation_context ? `<div class="small-muted"><strong>Citation context:</strong> ${esc(String(s.citation_context).slice(0, 260))}</div>` : "";
+            const action = s.recommended_action ? `<div class="small-muted"><strong>Recommended action:</strong> ${esc(s.recommended_action)}</div>` : "";
+            const query = s.manual_search_query ? `<div class="small-muted"><strong>Manual search:</strong> ${esc(s.manual_search_query)}</div>` : "";
+            const meta = [authors, s.year ? `(${s.year})` : ""].filter(Boolean).join(" ");
+            return `<div style="margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid #e2e8f0;">
+                <div><span class="badge likely">${esc(label)}</span></div>
+                <strong>${i+1}. ${esc(s.title || s.suggested || "Review this reference")}</strong>
+                ${meta ? `<div class="small-muted">${esc(meta)}</div>` : ""}
+                <div class="small-muted">${esc(reason)}</div>
+                ${problem}${context}${action}${query}${doi}${url}
+            </div>`;
+        }).join("")}</div>${note ? `<div class="small-muted" style="margin-top:6px;">${esc(note)}</div>` : ""}`;
     }
 
 
-    // --------------------- MANUAL VERIFICATION INSIDE ADVANCED ENRICHMENT ---------------------
+
+    // --------------------- MANUAL VERIFICATION INSIDE VERIFICATION TAB ---------------------
     const MANUAL_REVIEW_STATUSES = new Set([
         "needs_review",
         "not_found",
