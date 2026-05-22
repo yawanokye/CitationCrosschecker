@@ -11,8 +11,8 @@ from verify import (
     _extract_fields_by_style,
 )
 
-CITATION_SUGGESTER_VERSION = "1.5.37"
-CITATION_SUGGESTER_BUILD = "commercial-2026-05-22-context-cleanup-for-claim-extraction-FINAL"
+CITATION_SUGGESTER_VERSION = "1.5.38"
+CITATION_SUGGESTER_BUILD = "commercial-2026-05-22-recovery-guidance-manual-query-FINAL"
 
 # ============================================================
 # HELPER FUNCTIONS FOR ROBUST CONTEXT EXTRACTION
@@ -896,6 +896,13 @@ def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa", strict_
                 "reference_fit_score": strict_fit.get("reference_fit_score", 0),
             },
             "reason": "Suggested from strict reference metadata. Accept only after confirming author, year, title and DOI.",
+            "candidate_type": "exact_reference_candidate" if strict_reference else "reference_metadata_candidate",
+            "problem_detected": "The original reference could not be verified automatically.",
+            "why_it_failed": "Automated verification could not confirm the reference with sufficient confidence from the original metadata.",
+            "recommended_action": "Use Manual Verify in the Verification tab to confirm the candidate before accepting it.",
+            "manual_search_query": query,
+            "action_target": "verification_tab_manual_verify",
+            "manual_verify_available": True,
             "review_required": True,
             "is_real_source": True,
         })
