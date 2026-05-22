@@ -26,8 +26,8 @@ from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
-__version__ = "1.5.27"
-WORKER_BUILD = "commercial-2026-05-21-claim-extraction-gate-sourcewise-FINAL"
+__version__ = "1.5.28"
+WORKER_BUILD = "commercial-2026-05-22-aggressive-claim-extraction-sourcewise-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
