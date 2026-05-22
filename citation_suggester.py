@@ -11,8 +11,8 @@ from verify import (
     _extract_fields_by_style,
 )
 
-CITATION_SUGGESTER_VERSION = "1.5.35"
-CITATION_SUGGESTER_BUILD = "commercial-2026-05-21-strict-reference-recovery-candidates-FINAL"
+CITATION_SUGGESTER_VERSION = "1.5.36"
+CITATION_SUGGESTER_BUILD = "commercial-2026-05-21-cluster-aware-context-query-FINAL"
 
 # ============================================================
 # HELPER FUNCTIONS FOR ROBUST CONTEXT EXTRACTION
@@ -108,23 +108,82 @@ def _expand_to_parenthetical_cluster(text: str, cit_start: int, cit_end: int):
 
     return left_paren, right_paren + 1, cluster
 
+_SUP_DIGITS_SPLIT = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_SUP_TO_NORMAL_SPLIT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻−–—", "0123456789----")
+_NORMAL_TO_SUP_SPLIT = str.maketrans("0123456789-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁻")
+
+
+def _expand_numeric_cluster_numbers(text: str, max_range: int = 60) -> List[str]:
+    """Return numeric items from comma/range clusters, expanding small ranges."""
+    raw = str(text or "").translate(_SUP_TO_NORMAL_SPLIT)
+    raw = raw.replace("–", "-").replace("—", "-").replace("−", "-")
+    out = []
+
+    for part in re.split(r"\s*[,;]\s*", raw):
+        part = part.strip()
+        if not part:
+            continue
+
+        m = re.fullmatch(r"(\d{1,4})\s*-\s*(\d{1,4})", part)
+        if m:
+            start, end = int(m.group(1)), int(m.group(2))
+            if start <= end and (end - start) <= max_range:
+                out.extend(str(i) for i in range(start, end + 1))
+            else:
+                out.extend([m.group(1), m.group(2)])
+            continue
+
+        out.extend(re.findall(r"\d{1,4}", part))
+
+    seen = set()
+    clean = []
+    for n in out:
+        if n not in seen:
+            seen.add(n)
+            clean.append(n)
+    return clean
+
+
 def split_citation_cluster(citation_text: str) -> List[str]:
     """
-    Split clustered citations like:
-    (Beck et al., 2021; Zhang et al., 2022; Patel, 2023)
-    into individual citation strings.
+    Split clustered citations into individual citation strings.
+
+    Covers author-year clusters and major numeric families:
+    - (Beck et al., 2021; Zhang et al., 2022)
+    - [1,2,3], [1-3], [1–3]
+    - (1,2,3), (1-3) when the content is numeric only
+    - Unicode superscript clusters: ¹,²,³ and ¹–³
+
+    The claim should be extracted once from the full cluster, but each returned
+    citation item can then be judged separately against its own matched source.
     """
     if not citation_text:
         return []
 
     c = citation_text.strip()
 
+    # Numeric square: [1,2], [1-3]
+    if re.fullmatch(r"\[\s*\d{1,4}(?:\s*[,;\-–—]\s*\d{1,4})*\s*\]", c):
+        nums = _expand_numeric_cluster_numbers(c.strip("[]"))
+        return [f"[{n}]" for n in nums] or [c]
+
+    # Numeric round: (1,2), (1-3). Avoid author-year parentheticals by requiring numeric-only content.
+    if re.fullmatch(r"\(\s*\d{1,4}(?:\s*[,;\-–—]\s*\d{1,4})*\s*\)", c):
+        nums = _expand_numeric_cluster_numbers(c.strip("()"))
+        return [f"({n})" for n in nums] or [c]
+
+    # Unicode superscript clusters: ¹,²,³ or ¹–³.
+    if re.fullmatch(rf"[\s{_SUP_DIGITS_SPLIT},;\-–—⁻−]+", c) and re.search(rf"[{_SUP_DIGITS_SPLIT}]", c):
+        nums = _expand_numeric_cluster_numbers(c)
+        return [str(n).translate(_NORMAL_TO_SUP_SPLIT) for n in nums] or [c]
+
+    # Author-year parenthetical clusters split by semicolon.
     if c.startswith("(") and c.endswith(")"):
         inner = c[1:-1]
-        parts = [p.strip() for p in re.split(r"\s*;\s*", inner) if p.strip()]
-        return [f"({p})" for p in parts]
+        if re.search(_YEAR_RE, inner) and ";" in inner:
+            parts = [p.strip() for p in re.split(r"\s*;\s*", inner) if p.strip()]
+            return [f"({p})" for p in parts]
 
-    # fallback, keep as single citation
     return [c]
 
 # ============================================================
