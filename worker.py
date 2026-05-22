@@ -31,8 +31,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "1.5.30"
-WORKER_BUILD = "commercial-2026-05-22-manual-verification-tab-recovery-guidance-FINAL"
+__version__ = "1.5.31"
+WORKER_BUILD = "commercial-2026-05-22-numeric-verification-claim-diagnostics-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -270,6 +270,26 @@ def _normalise_numeric_citation_number(value):
     raw = raw.translate(_SUP_TO_NORMAL_WORKER)
     nums = re.findall(r"\d{1,4}", raw)
     return nums[0] if nums else ""
+
+
+def _numeric_style_diagnostic_note(style, rows):
+    """Explain why numeric styles usually produce fewer verified/claim-support rows."""
+    family = _worker_style_family(style)
+    if family not in {"numeric_square", "numeric_superscript", "numeric_round"}:
+        return ""
+    rows = rows or []
+    if not rows:
+        return "No numeric verification rows were produced. Check whether reference extraction recovered the numbered reference list."
+    total = len(rows)
+    verified = sum(1 for r in rows if str((r or {}).get("status") or "") == "verified")
+    likely = sum(1 for r in rows if str((r or {}).get("status") or "") == "likely")
+    no_title = sum(1 for r in rows if not (((r or {}).get("query_plan") or {}).get("parsed_title") or (r or {}).get("matched_title")))
+    no_candidates = sum(1 for r in rows if int((r or {}).get("candidate_count") or 0) == 0 and str((r or {}).get("status") or "") in {"not_found", "needs_review"})
+    return (
+        f"Numeric style diagnostic: {verified} verified and {likely} likely out of {total}. "
+        f"{no_title} row(s) had weak or missing parsed article titles; {no_candidates} row(s) returned no strong Crossref/OpenAlex candidates. "
+        "Claim support is capped when the source is not verified or likely."
+    )
 
 # Citation-needed claims tab controls
 CITATION_NEEDED_MAX_ROWS = int(os.environ.get("CITATION_NEEDED_MAX_ROWS", "250"))
@@ -4685,6 +4705,10 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             print(f"🌐 Persisted verification progress {progress}/{total}")
 
         summary = _compute_verification_summary(all_rows)
+        numeric_note = _numeric_style_diagnostic_note(style, all_rows)
+        if numeric_note:
+            result.setdefault("summary", {})["numeric_verification_note"] = numeric_note
+            result.setdefault("diagnostics", {})["numeric_verification"] = numeric_note
 
         result["online_verification"] = {
             "rows": all_rows,
