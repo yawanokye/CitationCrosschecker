@@ -5,40 +5,70 @@ import re
 from citation_suggester import extract_context, split_citation_cluster, suggest_from_context, build_claim_validation_queries
 from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by_doi
 
-CLAIM_CHECKER_VERSION = "1.5.36"
-CLAIM_CHECKER_BUILD = "commercial-2026-05-21-forced-claim-sourcewise-judgement-FINAL"
+CLAIM_CHECKER_VERSION = "1.5.37"
+CLAIM_CHECKER_BUILD = "commercial-2026-05-22-aggressive-claim-extraction-context-cleanup-FINAL"
 
 def clean_extracted_claim_text(claim: str) -> str:
     """
-    Remove citation residue from extracted claim text.
-    Keeps the manuscript claim but removes fragments such as:
-    'Button et al., 2013).' or 'Lohr, 2010).'
+    Remove citation residue from extracted claim text while preserving the
+    manuscript claim. This is deliberately stronger than the earlier cleaner
+    because many failed/weak rows came from partial citation clusters such as:
+    '(Klassen & Klassen, 2018', 'Schneider & Preckel, 2017)' or a dangling '('.
     """
-    import re
-
     claim = claim or ""
     claim = re.sub(r"\s+", " ", claim).strip()
 
-    # Remove leading broken closing punctuation from citation clusters
-    claim = re.sub(r"^[\s\)\]\.,;:]+", "", claim)
+    if not claim:
+        return ""
 
-    # Remove leading single citation fragment
+    # Remove known placeholder text. These should never be treated as claims.
+    if re.search(r"claim\s+(?:could\s+not|not)\s+be\s+extracted", claim, flags=re.I):
+        return ""
+
+    # Remove leading broken punctuation and citation fragments.
+    claim = re.sub(r"^[\s\)\]\.,;:]+", "", claim)
     claim = re.sub(
         r"^[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?\s*,?\s*(?:19|20)\d{2}[a-z]?\)?[\s\.,;:]*",
         "",
         claim,
-        flags=re.I
+        flags=re.I,
     )
-
-    # Remove leading multiple citation fragments
     claim = re.sub(
         r"^(?:[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s*(?:&|and)\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,?\s*(?:19|20)\d{2}[a-z]?\s*;?\s*)+\)?[\s\.,;:]*",
         "",
         claim,
-        flags=re.I
+        flags=re.I,
     )
 
-    return claim.strip(" ,;:-")
+    # Remove full parenthetical citation clusters anywhere in the candidate.
+    claim = re.sub(r"\([^()]{0,260}\b(?:19|20)\d{2}[a-z]?[^()]{0,260}\)", " ", claim, flags=re.I)
+    claim = re.sub(r"\[[0-9,;\-–—\s]+\]", " ", claim)
+
+    # Remove dangling/incomplete citation clusters at the end.
+    claim = re.sub(r"\s*\([^)]*\b(?:19|20)\d{2}[a-z]?[^)]*$", "", claim, flags=re.I)
+    claim = re.sub(r"\s*\[[^\]]*\d[^\]]*$", "", claim)
+    claim = re.sub(r"\s*[\(\[\{]+\s*$", "", claim)
+
+    # Remove trailing author-year residue without brackets.
+    claim = re.sub(
+        r"\s*(?:;|,)?\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s*(?:&|and)\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,?\s*(?:19|20)\d{2}[a-z]?\)?\s*$",
+        "",
+        claim,
+        flags=re.I,
+    )
+
+    # Remove dangling reporting-introducer phrases left after removing a citation.
+    claim = re.sub(
+        r"\b(?:as\s+(?:later\s+)?(?:highlighted|reported|noted|suggested|found|shown|argued|demonstrated|stated|explained)\s+by|according\s+to|as\s+cited\s+by|supported\s+by|by)\s*$",
+        "",
+        claim,
+        flags=re.I,
+    )
+
+    # Remove repeated spaces and spaces before punctuation.
+    claim = re.sub(r"\s+([.,;:!?])", r"\1", claim)
+    claim = re.sub(r"\s+", " ", claim).strip()
+    return claim.strip(" ,;:-.")
 
 
 
@@ -168,6 +198,50 @@ def _sentence_span_around(text: str, pos: int, window: int = 600) -> Tuple[int, 
         left = max(0, pos - window // 2)
         right = min(len(text), pos + window // 2)
 
+    return left, right
+
+
+def _sentence_span_for_match(text: str, start: int, end: int = None, window: int = 600) -> Tuple[int, int]:
+    """Sentence boundaries for a citation match; the right boundary starts after the match.
+
+    This avoids stopping at the full stop in 'et al.' before the citation/year has
+    finished, which was a major cause of empty narrative claims.
+    """
+    if not text:
+        return 0, 0
+    start = max(0, int(start or 0))
+    end = max(start, int(end if end is not None else start))
+
+    left = max(
+        text.rfind(".", 0, start),
+        text.rfind("?", 0, start),
+        text.rfind("!", 0, start),
+        text.rfind(";", 0, start),
+        text.rfind("\n", 0, start),
+    )
+    left = 0 if left == -1 else left + 1
+
+    # Search for the next sentence boundary AFTER the citation match.
+    scan_from = min(len(text), end)
+    right = -1
+    for i in range(scan_from, min(len(text), scan_from + window)):
+        ch = text[i]
+        if ch in "!?;\n":
+            right = i + 1
+            break
+        if ch == ".":
+            # Avoid common abbreviation periods in citations and initials.
+            prev = text[max(0, i - 8):i + 1].lower()
+            if prev.endswith("et al.") or re.search(r"\b[A-Z]\.$", text[max(0, i-3):i+1]):
+                continue
+            right = i + 1
+            break
+    if right == -1:
+        right = min(len(text), scan_from + window)
+
+    if right - left > window:
+        left = max(0, start - window // 3)
+        right = min(len(text), end + (2 * window // 3))
     return left, right
 
 
@@ -337,6 +411,175 @@ def _remove_citation_markers(sentence: str, citation: str, variants: List[str], 
     return _normalise_claim_text(out).strip(" ,;:-.")
 
 
+def _claim_word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", str(text or "")))
+
+
+def _looks_like_citation_residue(text: str) -> bool:
+    t = _normalise_claim_text(text).strip(" ,;:-.")
+    if not t:
+        return True
+    if re.search(r"claim\s+(?:could\s+not|not)\s+be\s+extracted", t, flags=re.I):
+        return True
+    # Pure or near-pure author-year citation fragment.
+    if re.fullmatch(
+        rf"[\(\[]?\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s*(?:&|and)\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,?\s*{_YEAR_RE_CLAIM}\s*[\)\]]?",
+        t,
+        flags=re.I,
+    ):
+        return True
+    if _claim_word_count(t) < 3:
+        return True
+    # Many extraction errors were only the tail of a citation cluster.
+    if re.search(rf"^[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?\s*,?\s*{_YEAR_RE_CLAIM}\)?$", t, flags=re.I):
+        return True
+    return False
+
+
+def _valid_claim_candidate(text: str, min_words: int = 3) -> bool:
+    t = clean_extracted_claim_text(text)
+    if not t or len(t) < 12:
+        return False
+    if _looks_like_citation_residue(t):
+        return False
+    if _claim_word_count(t) < min_words:
+        return False
+    return True
+
+
+def _clean_candidate_with_markers(text: str, citation: str = "", variants: List[str] = None, style_hint: str = "") -> str:
+    candidate = str(text or "")
+    if citation:
+        try:
+            candidate = _remove_citation_markers(candidate, citation, variants or [], style_hint)
+        except Exception:
+            pass
+    candidate = clean_extracted_claim_text(candidate)
+    return candidate
+
+
+def _claim_from_row_context(row: Dict[str, Any], citation: str = "", style_hint: str = "") -> Tuple[str, str]:
+    """Use reconciliation context fields as a low-confidence but useful fallback."""
+    row = row or {}
+    context_keys = [
+        "citation_sentence", "sentence", "context", "citation_context",
+        "nearby_text", "paragraph", "left_context", "right_context",
+    ]
+    variants = _numeric_citation_variants(citation) if _is_numeric_citation(citation, style_hint) else _author_year_citation_variants(citation)
+
+    for key in context_keys:
+        val = str(row.get(key, "") or "").strip()
+        if len(val) < 12:
+            continue
+
+        # If the row context contains the citation, use the citation-bearing sentence/window.
+        start, end, _matched = _find_variant_match(val, variants)
+        if start >= 0:
+            left, right = _sentence_span_for_match(val, start, end, window=600)
+            local = val[left:right]
+            claim = _clean_candidate_with_markers(local, citation, variants, style_hint)
+            if _valid_claim_candidate(claim):
+                return claim, f"forced_row_{key}_sentence"
+
+        # Otherwise clean the whole row context. This is often the only usable
+        # evidence when the main text was normalised differently from the citation.
+        claim = _clean_candidate_with_markers(val, citation, variants, style_hint)
+        if _valid_claim_candidate(claim):
+            return claim, f"forced_row_{key}"
+
+    # Combine left and right context when they exist separately.
+    combined = " ".join(str(row.get(k, "") or "").strip() for k in ["left_context", "right_context"] if row.get(k))
+    claim = _clean_candidate_with_markers(combined, citation, variants, style_hint)
+    if _valid_claim_candidate(claim):
+        return claim, "forced_row_left_right_context"
+
+    return "", ""
+
+
+def _fuzzy_author_year_sentence_claim(full_text: str, citation: str, style_hint: str = "", window: int = 900) -> Tuple[str, str]:
+    """
+    Last manuscript-text search: locate the author/year anywhere in a citation
+    cluster or narrative sentence, then return the full citation-bearing sentence
+    with all citation markers removed. This reduces false claim_not_extracted
+    cases caused by minor punctuation, ampersand/and, and cluster differences.
+    """
+    text = str(full_text or "")
+    if not text or not citation:
+        return "", ""
+
+    if _is_numeric_citation(citation, style_hint):
+        variants = _numeric_citation_variants(citation)
+        start, end, _matched = _find_variant_match(text, variants)
+        if start >= 0:
+            left, right = _sentence_span_for_match(text, start, end, window=window)
+            claim = _clean_candidate_with_markers(text[left:right], citation, variants, style_hint)
+            if _valid_claim_candidate(claim):
+                return claim, "forced_numeric_sentence_candidate"
+        return "", ""
+
+    author_part, author, year = _extract_author_year_parts(citation)
+    if not (author or author_part or year):
+        return "", ""
+
+    author_patterns = []
+    if author:
+        author_patterns.append(re.escape(author))
+    if author_part:
+        # Handle 'and'/'&' and et al. differences.
+        ap = re.escape(author_part)
+        ap = ap.replace(r"\ \&\ ", r"\s*(?:&|and)\s*")
+        ap = re.sub(r"\\\s+and\\\s+", r"\\s*(?:&|and)\\s*", ap)
+        author_patterns.append(ap)
+
+    year_re = re.escape((year or "")[:4]) if year else r"(?:19|20)\d{2}"
+    patterns = []
+    for ap in author_patterns or [r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+"]:
+        # Full parenthetical cluster containing author and year.
+        patterns.append(rf"\([^)]{{0,320}}{ap}[^)]{{0,320}}{year_re}[a-z]?[^)]{{0,320}}\)")
+        # Narrative: Author (Year) / Author, Year / Author et al., Year
+        patterns.append(rf"{ap}\s*(?:et\s+al\.?)?\s*\(\s*{year_re}[a-z]?\s*\)")
+        patterns.append(rf"{ap}\s*(?:et\s+al\.?)?\s*,?\s*{year_re}[a-z]?")
+
+    variants = _author_year_citation_variants(citation)
+    for pat in patterns:
+        try:
+            matches = list(re.finditer(pat, text, flags=re.I))
+        except Exception:
+            continue
+        for m in matches[:8]:
+            start, end = m.start(), m.end()
+            left, right = _sentence_span_for_match(text, start, end, window=window)
+            sentence = text[left:right]
+            matched = text[start:end]
+
+            # Parenthetical clusters normally support the claim to the left.
+            if matched.strip().startswith("(") and matched.strip().endswith(")"):
+                left_claim = _clean_candidate_with_markers(text[left:start], citation, variants + [matched], style_hint)
+                if _valid_claim_candidate(left_claim):
+                    return left_claim, "forced_parenthetical_cluster_left_context"
+
+            # Narrative citations often have the claim after the citation, but
+            # if the right side is too short, use the full sentence without the citation.
+            right_claim = _clean_candidate_with_markers(text[end:right], citation, variants + [matched], style_hint)
+            if _valid_claim_candidate(right_claim):
+                return right_claim, "forced_narrative_right_context"
+
+            sentence_claim = _clean_candidate_with_markers(sentence, citation, variants + [matched], style_hint)
+            if _valid_claim_candidate(sentence_claim):
+                return sentence_claim, "forced_sentence_candidate"
+
+    # Author-only fallback when year or punctuation was badly normalised. This is
+    # low-confidence, but better than a placeholder when a real sentence exists.
+    if author:
+        for m in re.finditer(re.escape(author), text, flags=re.I):
+            left, right = _sentence_span_for_match(text, m.start(), m.end(), window=window)
+            claim = _clean_candidate_with_markers(text[left:right], citation, _author_year_citation_variants(citation), style_hint)
+            if _valid_claim_candidate(claim, min_words=5):
+                return claim, "forced_author_only_sentence_low_confidence"
+
+    return "", ""
+
+
 def _extract_claim_style_aware(
     full_text: str,
     citation: str,
@@ -349,7 +592,7 @@ def _extract_claim_style_aware(
 
     Rules:
     - Parenthetical author-year: use the left-side claim before the citation cluster.
-    - Narrative author-year: use the right-side claim after Author (Year).
+    - Narrative author-year: use the right-side claim; if too short, use the full sentence.
     - Numeric styles: use the full citation-bearing sentence, then remove the marker.
     - Clusters: extract the claim once and reuse it for all citations in the cluster.
     """
@@ -365,12 +608,11 @@ def _extract_claim_style_aware(
         variants = _numeric_citation_variants(citation)
         start, end, matched = _find_variant_match(text, variants)
         if start >= 0:
-            left, right = _sentence_span_around(text, start, window=window)
-            sentence = text[left:right]
-            claim = _remove_citation_markers(sentence, citation, variants, style_hint)
-            if len(claim) >= 10:
+            left, right = _sentence_span_for_match(text, start, end, window=window)
+            claim = _clean_candidate_with_markers(text[left:right], citation, variants + [matched], style_hint)
+            if _valid_claim_candidate(claim):
                 return claim, f"style_aware_{_claim_style_family(style_hint)}_sentence"
-        return "", ""
+        return _fuzzy_author_year_sentence_claim(text, citation, style_hint=style_hint, window=max(window, 900))
 
     variants = _author_year_citation_variants(citation)
     start, end, matched = _find_variant_match(text, variants)
@@ -379,57 +621,53 @@ def _extract_claim_style_aware(
         start, end, matched = _find_author_year_fallback_match(text, citation)
 
     if start < 0:
-        return "", ""
+        return _fuzzy_author_year_sentence_claim(text, citation, style_hint=style_hint, window=max(window, 900))
 
     expanded = _expand_author_year_parenthetical_cluster(text, start, end)
     if expanded:
         start, end, matched = expanded
+        variants = variants + [matched]
 
-    left, right = _sentence_span_around(text, start, window=window)
+    left, right = _sentence_span_for_match(text, start, end, window=window)
     sentence = text[left:right]
-
     is_parenthetical = matched.strip().startswith("(") and matched.strip().endswith(")")
 
     if is_parenthetical:
-        claim = text[left:start]
-        claim = _remove_citation_markers(claim, citation, variants, style_hint)
-        if len(claim) >= 10:
+        claim = _clean_candidate_with_markers(text[left:start], citation, variants + [matched], style_hint)
+        if _valid_claim_candidate(claim):
             return claim, "style_aware_parenthetical_left_context"
 
-        # If the left side is too short, use the full sentence without the citation.
-        claim = _remove_citation_markers(sentence, citation, variants, style_hint)
-        if len(claim) >= 10:
+        claim = _clean_candidate_with_markers(sentence, citation, variants + [matched], style_hint)
+        if _valid_claim_candidate(claim):
             return claim, "style_aware_parenthetical_sentence_fallback"
 
     else:
-        after = text[end:right]
-        after = _remove_citation_markers(after, citation, variants, style_hint)
-        if len(after) >= 10:
+        after = _clean_candidate_with_markers(text[end:right], citation, variants + [matched], style_hint)
+        if _valid_claim_candidate(after):
             return after, "style_aware_narrative_right_context"
 
-        claim = _remove_citation_markers(sentence, citation, variants, style_hint)
-        if len(claim) >= 10:
+        claim = _clean_candidate_with_markers(sentence, citation, variants + [matched], style_hint)
+        if _valid_claim_candidate(claim):
             return claim, "style_aware_narrative_sentence_fallback"
 
-    return "", ""
+    return _fuzzy_author_year_sentence_claim(text, citation, style_hint=style_hint, window=max(window, 900))
 
 
 def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], window: int = 600, style_hint: str = "auto"):
     """
-    Always return a claim candidate once a citation exists.
+    Always try to return a real claim candidate once a citation exists.
 
-    Priority, without changing the existing architecture:
-    1. Use local style-aware extractor for parenthetical, narrative, numeric, and clusters.
-    2. Use context fields from the reconciliation row.
-    3. Use citation_suggester.extract_context() as compatibility fallback.
-    4. Use author-year fallback sentence search.
-    5. Return extraction_failed marker.
+    Priority:
+    1. Style-aware extraction from the full manuscript text.
+    2. Reconciliation-row context fields.
+    3. citation_suggester.extract_context() compatibility fallback.
+    4. Fuzzy author/year sentence extraction.
+    5. Extraction failure only when no real sentence/context is available.
     """
     citation = (citation or "").strip()
     row = row or {}
     style_hint = style_hint or row.get("selected_style") or row.get("style_family") or row.get("style") or "auto"
 
-    # 1. Style-aware extractor shared by Recovery/Validation logic in this module.
     claim, claim_source = _extract_claim_style_aware(
         full_text=full_text,
         citation=citation,
@@ -437,49 +675,33 @@ def force_claim_candidate(full_text: str, citation: str, row: Dict[str, Any], wi
         style_hint=style_hint,
         window=window,
     )
-    claim = (claim or "").strip()
-    if len(claim) >= 10:
+    claim = clean_extracted_claim_text(claim)
+    if _valid_claim_candidate(claim):
         return claim, claim_source
 
-    # 2. Reconciliation row fallback.
-    for key in ["context", "sentence", "citation_context", "nearby_text", "left_context", "right_context"]:
-        val = (row.get(key, "") or "").strip()
-        if len(val) >= 10:
-            return val, f"row_{key}"
+    claim, claim_source = _claim_from_row_context(row, citation=citation, style_hint=style_hint)
+    claim = clean_extracted_claim_text(claim)
+    if _valid_claim_candidate(claim):
+        return claim, claim_source
 
-    # 3. Existing citation_suggester fallback retained for compatibility.
     try:
-        claim = extract_context(full_text, citation, window=window)
-        claim = (claim or "").strip()
-        if len(claim) >= 10:
+        claim = extract_context(full_text, citation, window=max(window, 600))
+        claim = clean_extracted_claim_text(claim)
+        if _valid_claim_candidate(claim):
             return claim, "extract_context_fallback"
     except Exception:
         pass
 
-    # 4. Last manuscript-text fallback using author-year pieces.
-    years = re.findall(rf"{_YEAR_RE_CLAIM}", citation)
-    year = years[0] if years else ""
+    claim, claim_source = _fuzzy_author_year_sentence_claim(
+        full_text=full_text,
+        citation=citation,
+        style_hint=style_hint,
+        window=max(window, 900),
+    )
+    claim = clean_extracted_claim_text(claim)
+    if _valid_claim_candidate(claim):
+        return claim, claim_source
 
-    tokens = re.findall(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,}", citation)
-    stop = {"And", "Et", "Al"}
-    authors = [t for t in tokens if t not in stop]
-    author = authors[0] if authors else ""
-
-    if full_text and author and year:
-        pattern = rf"{re.escape(author)}[^.?!;]{{0,180}}(?:\(\s*)?{re.escape(year[:4])}[a-z]?(?:\s*\))?"
-        m = re.search(pattern, full_text, flags=re.I)
-
-        if m:
-            pos = m.start()
-            left, right = _sentence_span_around(full_text, pos, window=window)
-            candidate = full_text[left:right]
-            candidate = _normalise_claim_text(candidate).strip(" ,;:-")
-
-            if len(candidate) >= 10:
-                return candidate, "fallback_sentence_window"
-
-    # 5. Final output. Do not return a placeholder sentence as a claim.
-    # Placeholder text must never be scored as if it were a manuscript claim.
     return "", "extraction_failed"
 
 def suggest_alternative_sources_for_claim(
