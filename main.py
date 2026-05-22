@@ -2609,6 +2609,287 @@ async def verify(
         "autofix_enabled": autofix_enabled,  # Include for debugging
         "selected_style": _main_style_token(style)
     }
+
+
+# ============================================================
+# MANUAL VERIFICATION ENDPOINTS
+# ============================================================
+
+def _manual_safe_json_loads(value):
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _manual_load_result(job_id: str) -> Dict[str, Any]:
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job.get("result") or {}
+
+
+def _manual_save_result(job_id: str, result: Dict[str, Any]):
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+                (json.dumps(result), job_id)
+            )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[MANUAL VERIFY] Redis refresh failed: {e}")
+
+
+def _manual_norm(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s or "")).strip()
+
+
+def _manual_reference_key(text: str) -> str:
+    text = _manual_norm(text).lower()
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:260]
+
+
+def _manual_candidate_url(source: str, item: Dict[str, Any], doi: str = "") -> str:
+    if doi:
+        return f"https://doi.org/{doi.replace('https://doi.org/', '').strip()}"
+    if source == "openalex":
+        loc = item.get("primary_location") or {}
+        return loc.get("landing_page_url") or item.get("id") or ""
+    if source == "crossref":
+        return item.get("URL") or ""
+    if source == "datacite":
+        attrs = item.get("attributes") or {}
+        return attrs.get("url") or ""
+    if source == "semantic_scholar":
+        return item.get("url") or ""
+    return ""
+
+
+def _manual_candidate_from_source(source: str, item: Dict[str, Any], query: str) -> Optional[Dict[str, Any]]:
+    title = ""
+    year = ""
+    authors = []
+    doi = ""
+    score = 0
+
+    if source == "crossref":
+        title_val = item.get("title") or []
+        title = title_val[0] if isinstance(title_val, list) and title_val else str(title_val or "")
+        for key in ("published-print", "published-online", "issued", "created"):
+            parts = ((item.get(key) or {}).get("date-parts") or [])
+            if parts and parts[0]:
+                year = str(parts[0][0])
+                break
+        for au in item.get("author") or []:
+            name = " ".join(x for x in [au.get("given"), au.get("family")] if x).strip()
+            if name:
+                authors.append(name)
+        doi = str(item.get("DOI") or "").strip()
+        score = item.get("score") or 0
+
+    elif source == "openalex":
+        title = item.get("title") or item.get("display_name") or ""
+        year = str(item.get("publication_year") or "")
+        for auth in item.get("authorships") or []:
+            au = auth.get("author") or {}
+            if au.get("display_name"):
+                authors.append(au.get("display_name"))
+        doi = str(item.get("doi") or "").replace("https://doi.org/", "").strip()
+        score = item.get("relevance_score") or 0
+
+    elif source == "datacite":
+        attrs = item.get("attributes") or {}
+        titles = attrs.get("titles") or []
+        title = (titles[0] or {}).get("title", "") if titles else ""
+        year = str(attrs.get("publicationYear") or "")
+        for cr in attrs.get("creators") or []:
+            if cr.get("name"):
+                authors.append(cr.get("name"))
+        doi = str(attrs.get("doi") or item.get("id") or "").strip()
+        score = item.get("score") or 0
+
+    elif source == "semantic_scholar":
+        title = item.get("title") or ""
+        year = str(item.get("year") or "")
+        authors = [a.get("name") for a in (item.get("authors") or []) if a.get("name")]
+        doi = str(((item.get("externalIds") or {}).get("DOI")) or "").strip()
+        score = item.get("citationCount") or 0
+
+    title = _manual_norm(title)
+    if not title:
+        return None
+    return {
+        "title": title,
+        "year": year,
+        "authors": authors[:8],
+        "doi": doi,
+        "url": _manual_candidate_url(source, item, doi),
+        "source": source,
+        "match_score": score,
+        "query_used": query,
+        "review_required": True,
+    }
+
+
+def _manual_get_json(url: str, timeout: int = 12) -> Dict[str, Any]:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "CiteIntegrity/1.0 manual-verification", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+@app.post("/api/manual-search")
+async def api_manual_search(request: Request):
+    payload = await request.json()
+    job_id = str(payload.get("job_id") or "").strip()
+    query = _manual_norm(payload.get("query") or "")
+    sources = payload.get("sources") or ["openalex", "crossref", "semantic_scholar", "datacite"]
+    rows_per_source = int(payload.get("rows_per_source") or 5)
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    if len(query) < 3:
+        raise HTTPException(status_code=400, detail="Manual search query is too short")
+
+    # Confirms the job exists before running external searches.
+    _manual_load_result(job_id)
+
+    import urllib.parse
+    candidates = []
+    errors = []
+
+    for source in sources:
+        try:
+            if source == "openalex":
+                url = "https://api.openalex.org/works?" + urllib.parse.urlencode({"search": query, "per-page": str(rows_per_source)})
+                data = _manual_get_json(url)
+                items = data.get("results") or []
+            elif source == "crossref":
+                url = "https://api.crossref.org/works?" + urllib.parse.urlencode({"query.bibliographic": query, "rows": str(rows_per_source)})
+                data = _manual_get_json(url)
+                items = ((data.get("message") or {}).get("items") or [])
+            elif source == "datacite":
+                url = "https://api.datacite.org/dois?" + urllib.parse.urlencode({"query": query, "page[size]": str(rows_per_source)})
+                data = _manual_get_json(url)
+                items = data.get("data") or []
+            elif source == "semantic_scholar":
+                url = "https://api.semanticscholar.org/graph/v1/paper/search?" + urllib.parse.urlencode({"query": query, "limit": str(rows_per_source), "fields": "title,year,authors,externalIds,url,citationCount"})
+                data = _manual_get_json(url)
+                items = data.get("data") or []
+            else:
+                continue
+
+            for item in items:
+                cand = _manual_candidate_from_source(source, item, query)
+                if cand:
+                    candidates.append(cand)
+        except Exception as e:
+            errors.append({"source": source, "error": str(e)})
+
+    seen = set()
+    clean = []
+    for c in candidates:
+        key = _manual_reference_key((c.get("doi") or "") + " " + (c.get("title") or "") + " " + str(c.get("year") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(c)
+        if len(clean) >= rows_per_source * max(1, len(sources)):
+            break
+
+    return {"ok": True, "query": query, "candidates": clean, "errors": errors}
+
+
+@app.post("/api/manual-verify/decision")
+async def api_manual_verify_decision(request: Request):
+    payload = await request.json()
+    job_id = str(payload.get("job_id") or "").strip()
+    reference = _manual_norm(payload.get("reference") or "")
+    decision = str(payload.get("decision") or "").strip().lower()
+    candidate = payload.get("candidate") or {}
+    note = _manual_norm(payload.get("note") or "")
+
+    allowed = {"manual_verified", "manual_not_verified", "not_indexed_but_plausible", "keep_needs_review"}
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    if decision not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid manual verification decision")
+    if not reference and not candidate:
+        raise HTTPException(status_code=400, detail="Reference or candidate is required")
+
+    result = _manual_load_result(job_id)
+    ref_key = _manual_reference_key(reference or candidate.get("title") or candidate.get("doi") or "")
+    stamp = datetime.utcnow().isoformat()
+    label_map = {
+        "manual_verified": "Verified",
+        "manual_not_verified": "Not verified",
+        "not_indexed_but_plausible": "Plausible",
+        "keep_needs_review": "Needs review",
+    }
+
+    decision_payload = {
+        "manual_decision": decision,
+        "manual_decision_label": label_map.get(decision, decision.replace("_", " ").title()),
+        "manual_verified_at": stamp,
+        "manual_verification_note": note,
+        "manual_candidate": candidate,
+        "manual_reference_key": ref_key,
+    }
+
+    def maybe_apply(row):
+        if not isinstance(row, dict):
+            return False
+        candidates = [
+            row.get("reference"), row.get("original_reference"), row.get("matched_reference"),
+            row.get("matched_title"), row.get("title"), row.get("source_title")
+        ]
+        row_key = _manual_reference_key(" ".join(str(x or "") for x in candidates))
+        if ref_key and (ref_key in row_key or row_key in ref_key):
+            row.update(decision_payload)
+            row["review_required"] = decision != "manual_verified"
+            return True
+        return False
+
+    touched = 0
+    for row in ((result.get("online_verification") or {}).get("rows") or []):
+        if maybe_apply(row):
+            touched += 1
+
+    recovery = result.get("recovery") or {}
+    for section in ("verification_recovery", "missing_recovery"):
+        for row in recovery.get(section) or []:
+            if maybe_apply(row):
+                touched += 1
+
+    manual = result.setdefault("manual_verification", {})
+    manual.setdefault("decisions", [])
+    manual["decisions"].append({
+        "reference": reference,
+        "decision": decision,
+        "candidate": candidate,
+        "note": note,
+        "recorded_at": stamp,
+    })
+    manual["last_updated"] = stamp
+    manual["decision_count"] = len(manual.get("decisions") or [])
+
+    _manual_save_result(job_id, result)
+    return {"ok": True, "message": f"Manual decision recorded: {decision_payload['manual_decision_label']}", "updated_rows": touched, "result": result}
+
 # ============================================================
 # RESULT CHECK ENDPOINT
 # ============================================================
