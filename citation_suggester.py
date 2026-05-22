@@ -11,8 +11,8 @@ from verify import (
     _extract_fields_by_style,
 )
 
-CITATION_SUGGESTER_VERSION = "1.5.36"
-CITATION_SUGGESTER_BUILD = "commercial-2026-05-21-cluster-aware-context-query-FINAL"
+CITATION_SUGGESTER_VERSION = "1.5.37"
+CITATION_SUGGESTER_BUILD = "commercial-2026-05-22-context-cleanup-for-claim-extraction-FINAL"
 
 # ============================================================
 # HELPER FUNCTIONS FOR ROBUST CONTEXT EXTRACTION
@@ -184,7 +184,26 @@ def split_citation_cluster(citation_text: str) -> List[str]:
             parts = [p.strip() for p in re.split(r"\s*;\s*", inner) if p.strip()]
             return [f"({p})" for p in parts]
 
+
     return [c]
+
+
+def _clean_context_candidate_for_claim(claim: str) -> str:
+    """Clean claim candidates returned by extract_context()."""
+    claim = re.sub(r"\s+", " ", str(claim or "")).strip()
+    if not claim:
+        return ""
+    claim = re.sub(r"\([^()]{0,260}\b(?:19|20)\d{2}[a-z]?[^()]{0,260}\)", " ", claim, flags=re.I)
+    claim = re.sub(r"\[[0-9,;\-–—\s]+\]", " ", claim)
+    claim = re.sub(r"\s*\([^)]*\b(?:19|20)\d{2}[a-z]?[^)]*$", "", claim, flags=re.I)
+    claim = re.sub(r"\s*[\(\[\{]+\s*$", "", claim)
+    claim = re.sub(r"^[\s\)\]\.,;:]+", "", claim)
+    claim = re.sub(r"\s+([.,;:!?])", r"\1", claim)
+    claim = re.sub(r"\s+", " ", claim).strip(" ,;:-.")
+    # Reject near-pure citation fragments.
+    if re.fullmatch(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+(?:\s+et\s+al\.?)?(?:\s*(?:&|and)\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\-]+)?\s*,?\s*(?:19|20)\d{2}[a-z]?\)?", claim, flags=re.I):
+        return ""
+    return claim
 
 # ============================================================
 # CORE FUNCTIONS
@@ -399,7 +418,7 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
         
         claim = raw_text[sent_start:cit_start].strip()
         if claim:
-            return re.sub(r"\s+", " ", claim).strip(" ,;:-")
+            return _clean_context_candidate_for_claim(claim)
     
     # NARRATIVE: claim is AFTER (take up to window characters or until sentence ends)
     if is_narrative:
@@ -421,7 +440,7 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
         claim = re.sub(r'\s+', ' ', claim)
         
         if claim and len(claim) > 10:
-            return claim
+            return _clean_context_candidate_for_claim(claim)
     
     # ============================================================
     # FALLBACK: Try right side first (academic writing prefers claim after citation)
@@ -432,14 +451,14 @@ def extract_context(text: str, citation: str, window: int = 400) -> str:
     right_claim = re.sub(r'^[\s,;:]+', '', right_claim)
     
     if right_claim and len(right_claim) > 15:
-        return re.sub(r"\s+", " ", right_claim)
+        return _clean_context_candidate_for_claim(right_claim)
     
     # Last resort: left side
     left_start = max(0, cit_start - window)
     left_claim = raw_text[left_start:cit_start].strip()
     
     if left_claim:
-        return re.sub(r"\s+", " ", left_claim)
+        return _clean_context_candidate_for_claim(left_claim)
     
     return ""
 
