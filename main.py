@@ -1,4 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
+# MAIN_BUILD = "commercial-2026-05-22-manual-decision-upsert-v1.5.32"
 
 import io
 import os
@@ -2876,16 +2877,35 @@ async def api_manual_verify_decision(request: Request):
                 touched += 1
 
     manual = result.setdefault("manual_verification", {})
-    manual.setdefault("decisions", [])
-    manual["decisions"].append({
+    decisions = manual.setdefault("decisions", [])
+
+    # Upsert by normalised reference key so repeated manual actions do not create
+    # duplicate records for the same unresolved reference in the Manual Verification panel.
+    decision_record = {
         "reference": reference,
         "decision": decision,
         "candidate": candidate,
         "note": note,
         "recorded_at": stamp,
-    })
+        "manual_reference_key": ref_key,
+    }
+
+    replaced = False
+    for i, existing in enumerate(list(decisions)):
+        existing_key = existing.get("manual_reference_key") or _manual_reference_key(
+            existing.get("reference") or (existing.get("candidate") or {}).get("title") or ""
+        )
+        if ref_key and existing_key == ref_key:
+            decisions[i] = decision_record
+            replaced = True
+            break
+
+    if not replaced:
+        decisions.append(decision_record)
+
+    decisions.sort(key=lambda d: _manual_reference_key(d.get("reference") or (d.get("candidate") or {}).get("title") or ""))
     manual["last_updated"] = stamp
-    manual["decision_count"] = len(manual.get("decisions") or [])
+    manual["decision_count"] = len(decisions)
 
     _manual_save_result(job_id, result)
     return {"ok": True, "message": f"Manual decision recorded: {decision_payload['manual_decision_label']}", "updated_rows": touched, "result": result}
