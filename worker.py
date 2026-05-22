@@ -24,10 +24,15 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from verify import verify_references_batch
 from acii import compute_acii
-from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
+from claim_checker import (
+    build_claim_support_rows,
+    suggest_alternative_sources_for_claim,
+    force_claim_candidate,
+    clean_extracted_claim_text,
+)
 
-__version__ = "1.5.28"
-WORKER_BUILD = "commercial-2026-05-22-aggressive-claim-extraction-sourcewise-FINAL"
+__version__ = "1.5.29"
+WORKER_BUILD = "commercial-2026-05-22-use-canonical-claim-extractor-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -1812,6 +1817,44 @@ def _find_sentence_for_citation(sentences, citation):
 
     return ""
 
+
+
+def _claim_from_canonical_extractor(result, row, citation, main_text=""):
+    """
+    Use claim_checker.force_claim_candidate as the worker's canonical extractor.
+
+    This removes the old worker-only extraction path that often returned
+    citation residues such as 'Schneider & Preckel, 2017)' and then scored
+    placeholders as if they were manuscript claims.
+    """
+    result = result or {}
+    row = row or {}
+    citation = str(citation or "").strip()
+    main_text = main_text or result.get("main_text", "") or result.get("full_text", "") or ""
+    style_hint = _selected_style_for_suggestions(result)
+
+    try:
+        claim, claim_source = force_claim_candidate(
+            full_text=main_text,
+            citation=citation,
+            row=row,
+            window=900,
+            style_hint=style_hint,
+        )
+    except Exception as e:
+        print(f"[CLAIM FALLBACK] canonical extractor failed for {citation}: {e}")
+        return "", "extraction_failed"
+
+    try:
+        claim = clean_extracted_claim_text(claim)
+    except Exception:
+        claim = str(claim or "").strip()
+
+    if _is_claim_extraction_failure(claim, claim_source):
+        return "", "extraction_failed"
+
+    return claim, claim_source or "canonical_claim_checker"
+
 def _has_existing_citation_marker(sentence):
     """
     Detect common in-text citation markers so the citation-needed tab only
@@ -2454,165 +2497,97 @@ def _apply_verification_gate_to_claim_rows(rows, verification_rows=None):
 
 def _fallback_claim_support_rows(result, verification_rows):
     """
-    Claim-support fallback with real claim extraction from main_text.
+    Safe claim-support fallback using the canonical claim_checker extractor.
 
-    It extracts the claim sentence around the citation, scores title-level
-    relatedness, then applies a verification gate so untrusted sources cannot
-    appear as strong claim support.
+    Earlier worker versions had their own weak extractor and inserted the
+    placeholder 'Claim could not be extracted automatically...' before scoring.
+    This version never scores a placeholder and uses the same extraction logic
+    as claim_checker.py.
     """
     rows = []
-
-    main_text = result.get("main_text", "") or ""
-    sentences = _split_sentences(main_text)
-
+    result = result or {}
+    main_text = result.get("main_text", "") or result.get("full_text", "") or ""
     c2r_rows = result.get("reconciliation_intext_to_reference", []) or []
-
     citation_lookup, reference_lookup = _build_verification_claim_lookups(verification_rows)
 
+    def _row_from_claim(citation, claim, claim_source, source_title, matched_reference, lookup, verification_status):
+        extraction_failed = _is_claim_extraction_failure(claim, claim_source)
+
+        if extraction_failed:
+            support = _claim_not_extracted_support()
+            alt_sources = []
+            note = "Claim could not be extracted from manuscript context. Human review is required."
+            claim_display = "Claim could not be extracted from the citation-bearing sentence or stored row context."
+        else:
+            support = _score_claim_support_for_worker(claim, source_title or matched_reference)
+            alt_sources = _safe_alternative_sources(
+                claim=claim,
+                citation=citation,
+                current_source_title=source_title or matched_reference,
+                top_k=3,
+            )
+            note = "Claim extracted from manuscript context. Human review is still required to confirm source support."
+            claim_display = claim
+
+        claim_row = {
+            "citation": citation,
+            "claim": claim_display,
+            "claim_source": claim_source or ("extraction_failed" if extraction_failed else "canonical_claim_checker"),
+            "source_title": (source_title or matched_reference or "Matched source not available")[:250],
+            "matched_source": matched_reference,
+            "reference": matched_reference,
+            "support_status": support.get("status", "manual_review_required"),
+            "support_score": support.get("score", 0),
+            "evidence_used": support.get("evidence_used", "none"),
+            "title_overlap": support.get("title_overlap", 0),
+            "abstract_overlap": support.get("abstract_overlap", 0),
+            "keyword_overlap": support.get("keyword_overlap", 0),
+            "direction_overlap": support.get("direction_overlap", 0),
+            "relation_overlap": support.get("relation_overlap", 0),
+            "partial_support": support.get("partial_support", False),
+            "concept_matches": support.get("concept_matches", []),
+            "score_explanation": support.get("score_explanation", "Claim-support fallback scoring."),
+            "doi": (lookup or {}).get("doi", ""),
+            "note": note,
+            "citation_match_status": verification_status,
+            "verification_status": verification_status,
+            "source_verification_status": verification_status,
+            "alternative_sources": alt_sources,
+            "review_required": True,
+        }
+        return _apply_verification_gate_to_claim_row(claim_row)
+
     for row in c2r_rows:
-        citation = (
-            row.get("in_text")
-            or row.get("citation")
-            or row.get("citation_in_text")
-            or ""
-        )
+        citation = str(row.get("in_text") or row.get("citation") or row.get("citation_in_text") or "").strip()
+        if not citation:
+            continue
 
-        citation = str(citation or "").strip()
-
-        matched_reference = (
-            row.get("matched_reference")
-            or row.get("reference")
-            or row.get("matched_title")
-            or ""
-        )
-
+        matched_reference = str(row.get("matched_reference") or row.get("reference") or row.get("matched_title") or "").strip()
         lookup = (
             citation_lookup.get(citation.lower())
             or reference_lookup.get(_norm_claim_lookup_key(matched_reference))
             or {}
         )
-
         if not matched_reference:
-            matched_reference = lookup.get("reference", "")
+            matched_reference = lookup.get("reference", "") or lookup.get("original_reference", "") or ""
 
-        sentence = _find_sentence_for_citation(sentences, citation)
-        claim = _extract_claim_from_sentence(sentence, citation)
-
-        if not claim:
-            claim = "Claim could not be extracted automatically. Review the cited sentence manually."
-
-        alt_sources = _safe_alternative_sources(
-            claim=claim,
-            citation=citation,
-            current_source_title=matched_reference,
-            top_k=3
-        )
-
-        support = _score_claim_support_for_worker(claim, matched_reference)
-
+        source_title = lookup.get("matched_title") or lookup.get("title") or lookup.get("source_title") or matched_reference
         verification_status = str(lookup.get("status") or "unknown").strip().lower()
 
-        claim_row = {
-            "citation": citation,
-            "claim": claim,
-            "source_title": matched_reference[:250] if matched_reference else "Matched source not available",
-            "matched_source": matched_reference,
-            "support_status": support.get(
-                "status",
-                "claim_extracted_review_required"
-                if claim.startswith("Claim could not") is False
-                else "manual_review_required"
-            ),
-            "support_score": support.get("score", 0),
-            "evidence_used": support.get("evidence_used", "title_only"),
-            "title_overlap": support.get("title_overlap", 0),
-            "abstract_overlap": support.get("abstract_overlap", 0),
-            "keyword_overlap": support.get("keyword_overlap", 0),
-            "direction_overlap": support.get("direction_overlap", 0),
-            "relation_overlap": support.get("relation_overlap", 0),
-            "partial_support": support.get("partial_support", False),
-            "concept_matches": support.get("concept_matches", []),
-            "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
-            "doi": lookup.get("doi", ""),
-            "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": verification_status,
-            "verification_status": verification_status,
-            "source_verification_status": verification_status,
-            "alternative_sources": alt_sources
-        }
+        claim, claim_source = _claim_from_canonical_extractor(result, row, citation, main_text=main_text)
+        rows.append(_row_from_claim(citation, claim, claim_source, source_title, matched_reference, lookup, verification_status))
 
-        rows.append(_apply_verification_gate_to_claim_row(claim_row))
-
-    # If c2r rows are available, return gated rows immediately.
     if rows:
         return rows
 
-    # If c2r rows are unavailable, fall back to verification rows.
+    # Last fallback when c2r rows are unavailable: use verification rows.
     for row in verification_rows or []:
-        citation = (
-            row.get("citation")
-            or row.get("in_text")
-            or row.get("citation_in_text")
-            or ""
-        )
-
-        reference = (
-            row.get("reference")
-            or row.get("original_reference")
-            or row.get("matched_title")
-            or row.get("title")
-            or row.get("source_title")
-            or ""
-        )
-
-        sentence = _find_sentence_for_citation(sentences, citation)
-        claim = _extract_claim_from_sentence(sentence, citation)
-
-        if not claim:
-            claim = "Claim could not be extracted automatically. Review the cited sentence manually."
-
-        source_title = row.get("matched_title") or reference or "Source title not available"
-
-        alt_sources = _safe_alternative_sources(
-            claim=claim,
-            citation=citation,
-            current_source_title=source_title,
-            top_k=3
-        )
-
-        support = _score_claim_support_for_worker(claim, source_title)
+        citation = str(row.get("citation") or row.get("in_text") or row.get("citation_in_text") or "").strip()
+        reference = str(row.get("reference") or row.get("original_reference") or row.get("matched_title") or row.get("title") or row.get("source_title") or "").strip()
+        source_title = row.get("matched_title") or row.get("title") or reference or "Source title not available"
         verification_status = str(row.get("status") or "unknown").strip().lower()
-
-        claim_row = {
-            "citation": citation,
-            "claim": claim,
-            "source_title": source_title[:250],
-            "matched_source": reference,
-            "support_status": support.get(
-                "status",
-                "claim_extracted_review_required"
-                if claim.startswith("Claim could not") is False
-                else "manual_review_required"
-            ),
-            "support_score": support.get("score", 0),
-            "evidence_used": support.get("evidence_used", "title_only"),
-            "title_overlap": support.get("title_overlap", 0),
-            "abstract_overlap": support.get("abstract_overlap", 0),
-            "keyword_overlap": support.get("keyword_overlap", 0),
-            "direction_overlap": support.get("direction_overlap", 0),
-            "relation_overlap": support.get("relation_overlap", 0),
-            "partial_support": support.get("partial_support", False),
-            "concept_matches": support.get("concept_matches", []),
-            "score_explanation": support.get("score_explanation", "Title-only worker fallback scoring."),
-            "doi": row.get("doi", ""),
-            "note": "Claim extracted from manuscript context. Human review is still required to confirm source support.",
-            "citation_match_status": verification_status,
-            "verification_status": verification_status,
-            "source_verification_status": verification_status,
-            "alternative_sources": alt_sources
-        }
-
-        rows.append(_apply_verification_gate_to_claim_row(claim_row))
+        claim, claim_source = _claim_from_canonical_extractor(result, row, citation, main_text=main_text)
+        rows.append(_row_from_claim(citation, claim, claim_source, source_title, reference, row, verification_status))
 
     return rows
 
@@ -2687,66 +2662,32 @@ def _is_real_claim_row(row):
 def _build_claim_support_safe(result, verification_rows):
     """
     Claim Support Lite for the main verification job.
-    By default, this returns fast fallback rows with title-only scoring.
-    The slower full claim checker should run in deep_enrichment, not here.
+
+    Uses claim_checker.build_claim_support_rows first because it contains the
+    stronger style-aware/cluster-aware extractor. The older worker fallback is
+    now only a safety net. This keeps the architecture intact while avoiding
+    weak placeholder claims in the visible result.
     """
-    fallback_rows = _fallback_claim_support_rows(result, verification_rows)
-
-    if not RUN_REAL_CLAIM_CHECK_IN_VERIFY:
-        return _apply_verification_gate_to_claim_rows(
-            _enhance_claim_support_scores(fallback_rows),
-            verification_rows
-        )
-
-    executor = None
-
     try:
-        executor = ThreadPoolExecutor(max_workers=1)
-
-        future = executor.submit(build_claim_support_rows, result)
-        claim_rows = future.result(timeout=CLAIM_SUPPORT_TIMEOUT)
-
+        claim_rows = build_claim_support_rows(result)
         if isinstance(claim_rows, list) and claim_rows:
             real_count = sum(1 for row in claim_rows if _is_real_claim_row(row))
-
-            if real_count > 0:
-                print(f"[VERIFY WORKER] Real claim-support rows generated: {real_count}/{len(claim_rows)}")
-
-                for row in claim_rows:
-                    row.setdefault("fallback", False)
-
-                return _apply_verification_gate_to_claim_rows(
-                    _enhance_claim_support_scores(claim_rows),
-                    verification_rows
-                )
-
-        print("[VERIFY WORKER] Claim-support checker returned no real extracted claims. Using fallback rows.")
-        return _apply_verification_gate_to_claim_rows(
-            _enhance_claim_support_scores(fallback_rows),
-            verification_rows
-        )
-
-    except FutureTimeoutError:
-        print(f"[VERIFY WORKER] Claim-support timed out after {CLAIM_SUPPORT_TIMEOUT}s. Using fallback rows.")
-        try:
-            future.cancel()
-        except Exception:
-            pass
-        return _apply_verification_gate_to_claim_rows(
-            _enhance_claim_support_scores(fallback_rows),
-            verification_rows
-        )
-
+            print(f"[VERIFY WORKER] Canonical claim-support rows generated: {real_count}/{len(claim_rows)}")
+            for row in claim_rows:
+                row.setdefault("fallback", False)
+            return _apply_verification_gate_to_claim_rows(
+                _enhance_claim_support_scores(claim_rows),
+                verification_rows
+            )
     except Exception as e:
-        print(f"[VERIFY WORKER] Claim-support failed: {e}. Using fallback rows.")
-        return _apply_verification_gate_to_claim_rows(
-            _enhance_claim_support_scores(fallback_rows),
-            verification_rows
-        )
+        print(f"[VERIFY WORKER] Canonical claim-support failed: {e}. Using safe fallback rows.")
 
-    finally:
-        if executor:
-            executor.shutdown(wait=False, cancel_futures=True)
+    fallback_rows = _fallback_claim_support_rows(result, verification_rows)
+    return _apply_verification_gate_to_claim_rows(
+        _enhance_claim_support_scores(fallback_rows),
+        verification_rows
+    )
+
 
 # ============================================================
 # HELPER FUNCTIONS
