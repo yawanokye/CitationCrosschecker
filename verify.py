@@ -7101,3 +7101,196 @@ try:
                 __all__.append(name)
 except Exception:
     pass
+
+# ============================================================
+# NUMERIC SUPERSCRIPT / IEEE RECOVERY v1.5.31
+# Build: 2026-05-22-numeric-superscript-ieee-recovery
+# Purpose:
+# - Numeric superscript reference lists often begin with Unicode digits (¹,²,³),
+#   which older numeric detection did not treat as numbered references.
+# - Numeric square/superscript verification must not fall back to author-year
+#   merely because the UI or PDF extraction loses the selected style.
+# - Strip leading superscript markers before numeric field extraction so the
+#   first author is not lost and title/journal queries remain usable.
+# ============================================================
+try:
+    import json  # ensure json exists for older helper fallbacks
+except Exception:
+    pass
+
+__version__ = "1.5.31"
+VERIFY_BUILD = "commercial-2026-05-22-numeric-superscript-ieee-recovery-FINAL"
+
+_SUP_DIGITS_VERIFY_V1531 = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_SUP_TO_NORMAL_VERIFY_V1531 = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻−–—", "0123456789----")
+
+
+def _v1531_ref_starts_superscript(ref: str) -> bool:
+    s = _safe_strip(ref or "")
+    return bool(re.match(rf"^\s*[{_SUP_DIGITS_VERIFY_V1531}]+(?:\s*[,;\-–—]\s*[{_SUP_DIGITS_VERIFY_V1531}]+)*\s+[A-Z0-9]", s))
+
+
+_V1531_PREVIOUS_STRIP_LEADING_NUMBERING = globals().get("_strip_leading_numbering")
+
+
+def _strip_leading_numbering(text: str) -> str:
+    """Final numbering stripper: handles square, round, plain, and Unicode superscript markers."""
+    t = _safe_strip(text or "")
+    t = t.replace("\xa0", " ").replace("\t", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # Unicode superscript reference-number prefix: ¹ Author... or ¹,² Author...
+    t = re.sub(rf"^\s*[{_SUP_DIGITS_VERIFY_V1531}]+(?:\s*[,;\-–—]\s*[{_SUP_DIGITS_VERIFY_V1531}]+)*\s*", "", t)
+
+    # Existing numeric forms: [1], [1]., (1), 1., 1)
+    if _V1531_PREVIOUS_STRIP_LEADING_NUMBERING:
+        try:
+            t = _V1531_PREVIOUS_STRIP_LEADING_NUMBERING(t)
+        except Exception:
+            t = re.sub(r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\[\s*\d{1,4}\s*\)\s*|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}\s*[\.)])\s*", "", t)
+    else:
+        t = re.sub(r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\[\s*\d{1,4}\s*\)\s*|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}\s*[\.)])\s*", "", t)
+
+    return t.strip()
+
+
+_V1531_PREVIOUS_REF_LOOKS_NUMBERED = globals().get("_v1526_ref_looks_numbered")
+
+
+def _v1526_ref_looks_numbered(ref: str) -> bool:
+    s = _safe_strip(ref or "")
+    s = s.replace("\xa0", " ").replace("\t", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    if _v1531_ref_starts_superscript(s):
+        return True
+    if _V1531_PREVIOUS_REF_LOOKS_NUMBERED:
+        try:
+            return bool(_V1531_PREVIOUS_REF_LOOKS_NUMBERED(s))
+        except Exception:
+            pass
+    return bool(re.match(
+        r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\[\s*\d{1,4}\s*\)\s*|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}[\.)]?)\s+[A-Z0-9]",
+        s,
+    ))
+
+
+_V1531_PREVIOUS_CANONICAL_FOR_BATCH = globals().get("_v1526_canonical_for_batch")
+
+
+def _v1526_canonical_for_batch(style: str, refs: List[str]) -> str:
+    canonical = _canonical_verify_style(style)
+    refs = [r for r in (refs or []) if _safe_strip(r)]
+    if canonical not in {"numeric_square", "numeric_superscript", "numeric_round"}:
+        superscript_count = sum(1 for r in refs[: min(25, len(refs))] if _v1531_ref_starts_superscript(r))
+        numbered_count = sum(1 for r in refs[: min(25, len(refs))] if _v1526_ref_looks_numbered(r))
+        sample_n = min(25, len(refs)) or 1
+        if superscript_count >= 2 or numbered_count >= max(3, int(sample_n * 0.55)):
+            return "numeric_superscript" if superscript_count >= 2 else "numeric_square"
+    if _V1531_PREVIOUS_CANONICAL_FOR_BATCH:
+        try:
+            return _V1531_PREVIOUS_CANONICAL_FOR_BATCH(style, refs)
+        except Exception:
+            return canonical
+    return canonical
+
+
+_V1531_PREVIOUS_NORMALISE_REF = globals().get("_v1529_normalise_reference_for_verification")
+
+
+def _v1529_normalise_reference_for_verification(ref: str) -> str:
+    """Normalise numeric reference starts while preserving enough numbering for style auto-detection."""
+    s = _safe_str(ref)
+    s = s.replace("\xa0", " ").replace("\t", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Standardise square bracket starts.
+    s = re.sub(r"^\s*\[(\d{1,4})\]\s*\.\s*", r"[\1] ", s)
+
+    # Convert leading Unicode superscript number to a plain numeric marker so
+    # downstream numeric parsing sees the first author correctly.
+    m = re.match(rf"^\s*([{_SUP_DIGITS_VERIFY_V1531}]+)\s+(?=[A-Z0-9])", s)
+    if m:
+        n = m.group(1).translate(_SUP_TO_NORMAL_VERIFY_V1531)
+        s = re.sub(rf"^\s*[{_SUP_DIGITS_VERIFY_V1531}]+\s+", f"{n}. ", s, count=1)
+
+    if _V1531_PREVIOUS_NORMALISE_REF:
+        try:
+            s = _V1531_PREVIOUS_NORMALISE_REF(s)
+        except Exception:
+            pass
+    return s.strip()
+
+
+_V1531_PREVIOUS_NUMERIC_VERIFY_SINGLE = globals().get("_v1523_numeric_verify_single")
+
+
+def _v1523_numeric_verify_single(ref: str, style: str, use_crossref: bool, use_openalex: bool, enrich_metadata: bool = False) -> Dict[str, Any]:
+    row = _V1531_PREVIOUS_NUMERIC_VERIFY_SINGLE(ref, style, use_crossref, use_openalex, enrich_metadata)
+    try:
+        fields = _extract_fields_by_style(ref, _canonical_verify_style(style))
+        query_plan = row.setdefault("query_plan", {})
+        query_plan.setdefault("parsed_title", fields.get("title") or fields.get("article_title") or "")
+        query_plan.setdefault("parsed_journal", fields.get("journal") or fields.get("container_title") or "")
+        query_plan.setdefault("parsed_year", fields.get("year", ""))
+        query_plan.setdefault("parsed_authors", fields.get("authors", []))
+        row.setdefault("numeric_diagnostic", {})
+        row["numeric_diagnostic"].update({
+            "style_used": _canonical_verify_style(style),
+            "starts_with_superscript": _v1531_ref_starts_superscript(ref),
+            "looks_numbered": _v1526_ref_looks_numbered(ref),
+            "has_parsed_title": bool(fields.get("title") or fields.get("article_title")),
+            "has_parsed_journal_tuple": bool(fields.get("structured_key")),
+        })
+        if row.get("status") in {"needs_review", "not_found", "offline"}:
+            row.setdefault(
+                "manual_search_query",
+                " ".join(str(x or "") for x in [fields.get("title") or fields.get("article_title"), fields.get("journal"), fields.get("year")]).strip() or ref[:240]
+            )
+    except Exception:
+        pass
+    return row
+
+
+_V1531_PREVIOUS_VERIFY_BATCH = globals().get("verify_references_batch")
+
+
+def verify_references_batch(
+    references: List[str],
+    style: str = "apa",
+    throttle_s: float = 0.0,
+    use_crossref: bool = True,
+    use_openalex: bool = False,
+    job_id: str = None,
+    enrich_metadata: bool = False,
+) -> List[Dict[str, Any]]:
+    refs = [
+        _v1529_normalise_reference_for_verification(r)
+        for r in (references or [])
+        if _safe_strip(r)
+    ]
+    canonical = _v1526_canonical_for_batch(style, refs)
+    rows = _V1531_PREVIOUS_VERIFY_BATCH(
+        refs,
+        style=canonical,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=True if _v1526_is_numeric_family(canonical) else use_openalex,
+        job_id=job_id,
+        enrich_metadata=enrich_metadata,
+    )
+    for row in rows or []:
+        if isinstance(row, dict):
+            row.setdefault("selected_style", canonical)
+            row.setdefault("style", canonical)
+            if _v1526_is_numeric_family(canonical):
+                row.setdefault("verification_profile", "numeric_superscript_ieee_recovery_v1531")
+    return rows
+
+try:
+    if "__all__" in globals():
+        for name in ["VERIFY_BUILD", "verify_references_batch", "_v1526_canonical_for_batch", "_v1526_ref_looks_numbered", "_strip_leading_numbering"]:
+            if name not in __all__:
+                __all__.append(name)
+except Exception:
+    pass
+
