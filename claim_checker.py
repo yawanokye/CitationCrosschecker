@@ -5,8 +5,8 @@ import re
 from citation_suggester import extract_context, split_citation_cluster, suggest_from_context, build_claim_validation_queries
 from claim_support_scorer import score_claim_support, fetch_openalex_metadata_by_doi
 
-CLAIM_CHECKER_VERSION = "1.5.37"
-CLAIM_CHECKER_BUILD = "commercial-2026-05-22-aggressive-claim-extraction-context-cleanup-FINAL"
+CLAIM_CHECKER_VERSION = "1.5.38"
+CLAIM_CHECKER_BUILD = "commercial-2026-05-22-aggressive-claim-extraction-duplicate-row-fix-FINAL"
 
 def clean_extracted_claim_text(claim: str) -> str:
     """
