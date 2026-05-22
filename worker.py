@@ -26,8 +26,8 @@ from verify import verify_references_batch
 from acii import compute_acii
 from claim_checker import build_claim_support_rows, suggest_alternative_sources_for_claim
 
-__version__ = "1.5.26"
-WORKER_BUILD = "commercial-2026-05-21-strict-recovery-reference-filter-FINAL"
+__version__ = "1.5.27"
+WORKER_BUILD = "commercial-2026-05-21-claim-extraction-gate-sourcewise-FINAL"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -2006,6 +2006,41 @@ def _build_citation_needed_claims(result, limit=None):
     return rows
 
 
+def _is_claim_extraction_failure(claim, claim_source=""):
+    """Return True when a claim value is only an extraction-failure placeholder."""
+    claim_l = str(claim or "").strip().lower()
+    source_l = str(claim_source or "").strip().lower()
+    if not claim_l:
+        return True
+    if source_l in {"extraction_failed", "claim_extraction_failed", "claim_not_extracted"}:
+        return True
+    failure_phrases = [
+        "claim could not be extracted",
+        "claim not extracted",
+        "review the cited sentence manually",
+        "no manuscript claim was extracted",
+        "citation searched:",
+        "mapping was incomplete",
+    ]
+    return any(p in claim_l for p in failure_phrases)
+
+
+def _claim_not_extracted_support(reason="Claim support was not scored because no manuscript claim was extracted."):
+    return {
+        "score": 0,
+        "status": "claim_not_extracted",
+        "title_overlap": 0,
+        "abstract_overlap": 0,
+        "keyword_overlap": 0,
+        "direction_overlap": 0,
+        "relation_overlap": 0,
+        "partial_support": False,
+        "concept_matches": [],
+        "score_explanation": reason,
+        "evidence_used": "none",
+    }
+
+
 def _safe_alternative_sources(claim, citation="", current_source_title="", top_k=3, allow_external=False):
     """
     Alternative-source lookup is expensive. In the main verification job it is
@@ -2020,7 +2055,7 @@ def _safe_alternative_sources(claim, citation="", current_source_title="", top_k
     if not claim or len(claim) < 20:
         return []
 
-    if claim.lower().startswith("claim could not be extracted"):
+    if _is_claim_extraction_failure(claim):
         return []
 
     try:
@@ -2061,6 +2096,9 @@ def _score_claim_support_for_worker(claim, source_title):
     """
     claim = str(claim or "").strip()
     source_title = str(source_title or "").strip()
+
+    if _is_claim_extraction_failure(claim):
+        return _claim_not_extracted_support()
 
     empty = {
         "score": 0,
@@ -2129,6 +2167,21 @@ def _enhance_claim_support_scores(rows):
 
     for row in rows or []:
         if not isinstance(row, dict):
+            continue
+
+        if _is_claim_extraction_failure(row.get("claim", ""), row.get("claim_source", "")):
+            row["support_score"] = 0
+            row["support_status"] = "claim_not_extracted"
+            row["evidence_used"] = "none"
+            row["title_overlap"] = 0
+            row["abstract_overlap"] = 0
+            row["keyword_overlap"] = 0
+            row["direction_overlap"] = 0
+            row["relation_overlap"] = 0
+            row["partial_support"] = False
+            row["concept_matches"] = []
+            row["score_explanation"] = "Claim support was not scored because no manuscript claim was extracted."
+            enhanced.append(row)
             continue
 
         current_score = int(row.get("support_score", 0) or 0)
@@ -2331,6 +2384,14 @@ def _apply_verification_gate_to_claim_row(row):
     row["verification_status"] = verification_status or "unknown"
     row["source_verification_status"] = verification_status or "unknown"
     row["citation_match_status"] = verification_status or "unknown"
+
+    if _is_claim_extraction_failure(row.get("claim", ""), row.get("claim_source", "")):
+        row["support_status"] = "claim_not_extracted"
+        row["support_score"] = 0
+        row["evidence_used"] = "none"
+        row["partial_support"] = False
+        row["score_explanation"] = "Claim support was not scored because no manuscript claim was extracted."
+        return row
 
     if verification_status in trusted_statuses:
         return row
