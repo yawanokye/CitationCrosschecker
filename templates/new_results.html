@@ -803,7 +803,7 @@
             }
         }
 
-        /* Payment / access gate */
+        /* Demo mode: payment and access-gate details are hidden */
         .paywall-panel {
             display: none;
             margin: 18px 0 22px;
@@ -1374,6 +1374,12 @@
             }
         }
 
+        /* Demo-safe display: hide payment and pricing surfaces */
+        #paywallPanel,
+        .paywall-panel {
+            display: none !important;
+        }
+
     </style>
 </head>
 
@@ -1508,8 +1514,8 @@
                         <span class="count-pill" id="countSuggestions">0</span>
                     </button>
                     <button class="tab-btn" data-tab="certificatePane">
-                        <span class="tab-title">Certificate <span class="tab-help" title="Paid Full Review certificate summarising citation integrity, verification, and correction status." aria-label="Paid Full Review certificate summarising citation integrity, verification, and correction status.">?</span></span>
-                        <span class="count-pill" id="countCertificate">Paid</span>
+                        <span class="tab-title">Certificate <span class="tab-help" title="Citation integrity certificate summary for the completed review." aria-label="Citation integrity certificate summary for the completed review.">?</span></span>
+                        <span class="count-pill" id="countCertificate">Optional</span>
                     </button>
                 </div>
             </div>
@@ -1763,7 +1769,7 @@
                         <button class="btn btn-green" id="btnDownloadCertificate">Download Certificate</button>
                     </div>
                     <div id="certificateContent">
-                        <div class="empty">Certificate will be generated after Full Review payment.</div>
+                        <div class="empty">Certificate preview is hidden for this demonstration.</div>
                     </div>
                 </div>
                 </div>
@@ -1800,11 +1806,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
     const JOB_ID = "{{ job_id }}";
     const AUTO_VERIFY = "{{ auto_verify | default('false') }}" === "true";
+    const DEMO_HIDE_PAYMENT_DETAILS = true;
 
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "manual-verification-stable-decision-v1.5.42";
+    const RESULTS_UI_BUILD = "demo-hide-payment-details-v1.5.43";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -1936,6 +1943,15 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function lockHtml(featureName, message) {
+        if (DEMO_HIDE_PAYMENT_DETAILS) {
+            return `
+                <div class="locked-card">
+                    <strong>🔒 ${esc(featureName)} is not shown in this demonstration.</strong><br>
+                    ${esc(message || "This section is hidden in the demonstration view.")}
+                </div>
+            `;
+        }
+
         return `
             <div class="locked-card">
                 <strong>🔒 ${esc(featureName)} is locked in Free Preview.</strong><br>
@@ -1953,6 +1969,13 @@ document.addEventListener("DOMContentLoaded", function () {
         ["btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment", "btnDownloadCertificate"].forEach(id => {
             const btn = $(id);
             if (!btn) return;
+
+            if (DEMO_HIDE_PAYMENT_DETAILS) {
+                btn.disabled = false;
+                btn.title = "";
+                return;
+            }
+
             btn.disabled = !isPaid;
             btn.title = isPaid ? "" : "Unlock Full Review to use this feature.";
         });
@@ -1969,6 +1992,13 @@ document.addEventListener("DOMContentLoaded", function () {
     function renderPaywall(data) {
         const panel = $("paywallPanel");
         if (!panel) return;
+
+        if (DEMO_HIDE_PAYMENT_DETAILS) {
+            panel.style.display = "none";
+            panel.innerHTML = "";
+            setPaidOnlyButtons(true);
+            return;
+        }
 
         const paid = hasPaidAccess(data);
         const pkg = getAccessPackage(data);
@@ -2022,6 +2052,8 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     async function loadPlanRecommendation(currency = "GHS") {
+        if (DEMO_HIDE_PAYMENT_DETAILS) return;
+
         const box = $("planBox");
         if (!box) return;
         try {
@@ -2045,6 +2077,11 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     async function startPaystackCheckout() {
+        if (DEMO_HIDE_PAYMENT_DETAILS) {
+            setStatus("Payment screen is hidden for this demonstration.", "info");
+            return;
+        }
+
         const email = ($("payEmail")?.value || "").trim();
         const currency = ($("payCurrency")?.value || "GHS").trim().toUpperCase();
         const plan = window.recommendedPlan;
