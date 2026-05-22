@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "commercial-2026-05-22-manual-decision-upsert-v1.5.32"
+# MAIN_BUILD = "commercial-2026-05-22-large-file-page-routing-v1.5.33"
 
 import io
 import os
@@ -15,6 +15,21 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Optional lightweight preflight readers used only for queue routing.
+# If a reader is unavailable or fails, the file is routed safely to the large queue.
+try:
+    from pypdf import PdfReader
+except Exception:
+    try:
+        from PyPDF2 import PdfReader
+    except Exception:
+        PdfReader = None
+
+try:
+    from docx import Document as DocxDocument
+except Exception:
+    DocxDocument = None
 
 # Database libraries
 import psycopg2
@@ -855,6 +870,147 @@ def format_time(seconds):
     if seconds < 3600:
         return f"{int(seconds // 60)}m {int(seconds % 60)}s"
     return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
+
+
+# --------------------------------------------------
+# Large-document preflight routing
+# --------------------------------------------------
+
+NORMAL_DOCUMENT_QUEUE = "document_processing"
+LARGE_DOCUMENT_QUEUE = "large_document_processing"
+
+NORMAL_PDF_PAGE_LIMIT = int(os.environ.get("NORMAL_PDF_PAGE_LIMIT", "200"))
+NORMAL_DOCX_WORD_LIMIT = int(os.environ.get("NORMAL_DOCX_WORD_LIMIT", "80000"))
+
+NORMAL_FILE_REDIS_TTL = int(os.environ.get("NORMAL_FILE_REDIS_TTL", "3600"))
+LARGE_FILE_REDIS_TTL = int(os.environ.get("LARGE_FILE_REDIS_TTL", "21600"))
+
+NORMAL_DOCUMENT_JOB_TIMEOUT = int(os.environ.get("NORMAL_DOCUMENT_JOB_TIMEOUT", "3600"))
+LARGE_DOCUMENT_JOB_TIMEOUT = int(os.environ.get("LARGE_DOCUMENT_JOB_TIMEOUT", "14400"))
+
+
+def estimate_document_load(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+    """
+    Lightweight preflight check before queueing.
+
+    File size alone is not reliable. A 366-page PDF can be small in MB but still
+    heavy to parse. This function routes based on page count for PDFs and word
+    count for DOCX files.
+    """
+    filename_lower = (filename or "").lower().strip()
+    file_size_mb = round(len(file_bytes or b"") / (1024 * 1024), 2)
+
+    info: Dict[str, Any] = {
+        "filename": filename,
+        "file_size_mb": file_size_mb,
+        "file_type": "unknown",
+        "page_count": None,
+        "word_count": None,
+        "large_file": False,
+        "queue_name": NORMAL_DOCUMENT_QUEUE,
+        "route_reason": "Normal document route.",
+    }
+
+    # PDF: route mainly by page count.
+    if filename_lower.endswith(".pdf"):
+        info["file_type"] = "pdf"
+
+        if PdfReader is None:
+            info.update({
+                "large_file": True,
+                "queue_name": LARGE_DOCUMENT_QUEUE,
+                "route_reason": "PDF page-count reader is unavailable, routed safely to the large-file queue.",
+            })
+            return info
+
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+            page_count = len(reader.pages)
+            info["page_count"] = page_count
+
+            if page_count > NORMAL_PDF_PAGE_LIMIT:
+                info.update({
+                    "large_file": True,
+                    "queue_name": LARGE_DOCUMENT_QUEUE,
+                    "route_reason": (
+                        f"PDF has {page_count} pages, above the normal limit of "
+                        f"{NORMAL_PDF_PAGE_LIMIT} pages."
+                    ),
+                })
+            else:
+                info["route_reason"] = (
+                    f"PDF has {page_count} pages, within the normal limit of "
+                    f"{NORMAL_PDF_PAGE_LIMIT} pages."
+                )
+
+            return info
+
+        except Exception as e:
+            info.update({
+                "large_file": True,
+                "queue_name": LARGE_DOCUMENT_QUEUE,
+                "route_reason": f"PDF page-count check failed, routed safely to the large-file queue: {str(e)[:160]}",
+            })
+            return info
+
+    # DOCX: route mainly by estimated word count.
+    if filename_lower.endswith(".docx"):
+        info["file_type"] = "docx"
+
+        if DocxDocument is None:
+            info.update({
+                "large_file": True,
+                "queue_name": LARGE_DOCUMENT_QUEUE,
+                "route_reason": "DOCX reader is unavailable, routed safely to the large-file queue.",
+            })
+            return info
+
+        try:
+            doc = DocxDocument(io.BytesIO(file_bytes))
+            text_parts: List[str] = []
+
+            for paragraph in doc.paragraphs:
+                if paragraph.text:
+                    text_parts.append(paragraph.text)
+
+            # Include tables because theses and dissertations often contain
+            # important text, citations, or references inside tables.
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text:
+                            text_parts.append(cell.text)
+
+            joined_text = "\n".join(text_parts)
+            word_count = len(re.findall(r"\b\w+\b", joined_text))
+            info["word_count"] = word_count
+
+            if word_count > NORMAL_DOCX_WORD_LIMIT:
+                info.update({
+                    "large_file": True,
+                    "queue_name": LARGE_DOCUMENT_QUEUE,
+                    "route_reason": (
+                        f"DOCX has about {word_count:,} words, above the normal "
+                        f"limit of {NORMAL_DOCX_WORD_LIMIT:,} words."
+                    ),
+                })
+            else:
+                info["route_reason"] = (
+                    f"DOCX has about {word_count:,} words, within the normal "
+                    f"limit of {NORMAL_DOCX_WORD_LIMIT:,} words."
+                )
+
+            return info
+
+        except Exception as e:
+            info.update({
+                "large_file": True,
+                "queue_name": LARGE_DOCUMENT_QUEUE,
+                "route_reason": f"DOCX preflight check failed, routed safely to the large-file queue: {str(e)[:160]}",
+            })
+            return info
+
+    return info
 
 def _norm_text_citation(s: str) -> str:
     if not s:
@@ -2268,9 +2424,22 @@ async def queue_status():
     status = get_queue_status()
     status["server_busy"] = is_server_busy()
     status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
-    # Add queue length from Redis if available
-    if task_queue:
-        status["redis_queue_length"] = len(task_queue)
+    # Add queue lengths from Redis if available
+    if redis_conn:
+        try:
+            normal_queue = Queue(NORMAL_DOCUMENT_QUEUE, connection=redis_conn)
+            large_queue = Queue(LARGE_DOCUMENT_QUEUE, connection=redis_conn)
+            verify_queue = Queue("verification", connection=redis_conn)
+            deep_queue = Queue("deep_enrichment", connection=redis_conn)
+
+            status["redis_queue_length"] = len(normal_queue)
+            status["document_processing_queue_length"] = len(normal_queue)
+            status["large_document_processing_queue_length"] = len(large_queue)
+            status["verification_queue_length"] = len(verify_queue)
+            status["deep_enrichment_queue_length"] = len(deep_queue)
+        except Exception as e:
+            status["redis_queue_length"] = 0
+            status["queue_error"] = str(e)
     else:
         status["redis_queue_length"] = 0
     return status
@@ -2510,6 +2679,18 @@ async def verify(
     file_size = len(data)
     file_size_mb = round(file_size / (1024 * 1024), 2)
 
+    # Preflight routing: use page count/word count, not only file size.
+    load_info = estimate_document_load(data, file.filename)
+    queue_name = load_info.get("queue_name", NORMAL_DOCUMENT_QUEUE)
+    is_large_file = bool(load_info.get("large_file", False))
+    file_ttl = LARGE_FILE_REDIS_TTL if is_large_file else NORMAL_FILE_REDIS_TTL
+    job_timeout = LARGE_DOCUMENT_JOB_TIMEOUT if is_large_file else NORMAL_DOCUMENT_JOB_TIMEOUT
+
+    print(
+        f"[PREFLIGHT] {file.filename} -> queue={queue_name}, "
+        f"large_file={is_large_file}, reason={load_info.get('route_reason')}"
+    )
+
     # =========================
     # 3. GENERATE JOB ID
     # =========================
@@ -2524,8 +2705,8 @@ async def verify(
             content={"error": "Queue system unavailable", "message": "Redis not connected"}
         )
 
-    redis_conn.setex(f"file:{job_id}", 3600, data)
-    print(f"✅ File stored in Redis for job {job_id}")
+    redis_conn.setex(f"file:{job_id}", file_ttl, data)
+    print(f"✅ File stored in Redis for job {job_id} with ttl={file_ttl}s")
 
     # =========================
     # 5. STORE JOB IN DATABASE
@@ -2535,10 +2716,16 @@ async def verify(
             conn = psycopg2.connect(DATABASE_URL)
             cursor = conn.cursor()
 
+            preflight_payload = {
+                "preflight": load_info,
+                "queue_name": queue_name,
+                "large_file": is_large_file
+            }
+
             cursor.execute("""
-                INSERT INTO jobs (job_id, status, file_name, file_size_mb, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-            """, (job_id, "queued", file.filename, file_size_mb))
+                INSERT INTO jobs (job_id, status, file_name, file_size_mb, result, created_at)
+                VALUES (%s, %s, %s, %s, %s::jsonb, NOW())
+            """, (job_id, "queued", file.filename, file_size_mb, json.dumps(preflight_payload)))
 
             conn.commit()
             cursor.close()
@@ -2552,24 +2739,31 @@ async def verify(
     # =========================
     # 6. ENQUEUE JOB
     # =========================
-    if not task_queue:
+    if not redis_conn:
         return JSONResponse(
             status_code=500,
             content={"error": "Queue not initialized"}
         )
 
     try:
+        target_queue = Queue(queue_name, connection=redis_conn)
+
         # 🔥 FIX: Use the autofix_enabled variable instead of hardcoded True
-        task_queue.enqueue(
+        target_queue.enqueue(
             "worker.process_document",
             job_id,
             file.filename,
             style,
             autofix_enabled,  # CHANGE: Use the variable, not hardcoded True
-            job_timeout=3600
+            job_timeout=job_timeout,
+            result_ttl=86400,
+            failure_ttl=86400
         )
 
-        print(f"🔥 Job {job_id} queued successfully with autofix={autofix_enabled}")
+        print(
+            f"🔥 Job {job_id} queued successfully on {queue_name} "
+            f"with autofix={autofix_enabled}, timeout={job_timeout}s"
+        )
 
     except Exception as q_error:
         print(f"❌ Queue error: {q_error}")
@@ -2599,10 +2793,19 @@ async def verify(
     return {
         "job_id": job_id,
         "status": "queued",
-        "message": "Document queued. Poll /job/{job_id} for status.",
+        "message": (
+            "Large document detected and queued for temporary large-file processing."
+            if is_large_file else
+            "Document queued. Poll /job/{job_id} for status."
+        ),
         "file_name": file.filename,
         "file_type": "pdf" if is_pdf else "docx",
         "file_size_mb": file_size_mb,
+        "queue": queue_name,
+        "large_file": is_large_file,
+        "route_reason": load_info.get("route_reason"),
+        "page_count": load_info.get("page_count"),
+        "word_count": load_info.get("word_count"),
         "pdf_caution": (
             "PDF accepted for cautious analysis. Text-based PDFs work best. DOCX remains recommended for the most accurate citation analysis."
             if is_pdf else ""
