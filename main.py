@@ -818,18 +818,14 @@ async def add_security_headers(request: Request, call_next):
     # 🛡️ Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     
-    # 🛡️ Content Security Policy
-    # Allows CiteIntegrity to embed the official YouTube demo while keeping
-    # the site protected from being framed by other websites.
+    # 🛡️ Content Security Policy (safe default)
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "img-src 'self' data: https:; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.youtube.com https://www.youtube-nocookie.com; "
+        "img-src 'self' data:; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
-        "font-src 'self' data: https:; "
-        "connect-src 'self' https:; "
-        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
-        "child-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
         "frame-ancestors 'none';"
     )
     
@@ -3754,9 +3750,472 @@ async def export_fixed_document(job_id: str, format: str = "txt"):
 def stats_page(request: Request):
     return templates.TemplateResponse("stats.html", {"request": request})
 
+
 # ============================================================
 # PRIVATE STATS ENDPOINTS
 # ============================================================
+
+def _dt_to_iso(value):
+    if not value:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _as_dict(row):
+    """Convert psycopg2/SQLite rows to plain dictionaries."""
+    if row is None:
+        return {}
+    if isinstance(row, dict):
+        return dict(row)
+    try:
+        return dict(row)
+    except Exception:
+        return {}
+
+
+def _safe_json(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    return {}
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _first_existing(result: Dict[str, Any], keys: List[str], default=None):
+    for key in keys:
+        if key in result and result.get(key) is not None:
+            return result.get(key)
+    return default
+
+
+def _count_list(value) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        # Some engines return dict rows keyed by citation/reference.
+        return len(value)
+    return 0
+
+
+def _extract_acii_score(result: Dict[str, Any]):
+    acii = result.get("acii")
+    if isinstance(acii, (int, float)):
+        return round(float(acii), 2)
+    if isinstance(acii, dict):
+        for key in ["score", "acii_score", "overall_score", "total_score", "value"]:
+            if key in acii:
+                return round(_safe_float(acii.get(key)), 2)
+    return None
+
+
+def _extract_job_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract dashboard-safe metrics from a job result.
+
+    This deliberately returns counts and status summaries only. It does not expose
+    manuscript text, full references, student names or private thesis content.
+    """
+    result = result or {}
+
+    refs = _first_existing(result, [
+        "references_raw", "references", "reference_entries", "all_references"
+    ], [])
+    c2r = _first_existing(result, [
+        "reconciliation_intext_to_reference", "citations_to_references", "c2r"
+    ], [])
+    r2c = _first_existing(result, [
+        "reconciliation_reference_to_intext", "references_to_citations", "r2c"
+    ], [])
+    citations = _first_existing(result, [
+        "citations_raw", "in_text_citations", "intext_citations", "citation_occurrences"
+    ], [])
+    missing = _first_existing(result, [
+        "missing_in_references", "missing_citations", "missing_references"
+    ], [])
+    uncited = _first_existing(result, [
+        "uncited_references", "uncited_reference_rows", "references_not_cited"
+    ], [])
+    claims = _first_existing(result, ["claim_support", "claim_support_rows"], [])
+    suggestions = _first_existing(result, ["suggestions"], [])
+
+    online = result.get("online_verification") or {}
+    verification_rows = online.get("rows") or []
+    verification_summary = online.get("summary") or {}
+
+    verified = _safe_int(verification_summary.get("verified"))
+    likely = _safe_int(verification_summary.get("likely"))
+    needs_review = _safe_int(verification_summary.get("needs_review"))
+    not_found = _safe_int(verification_summary.get("not_found"))
+    offline = _safe_int(verification_summary.get("offline"))
+
+    # If no summary exists, count statuses directly from verification rows.
+    if verification_rows and not any([verified, likely, needs_review, not_found, offline]):
+        for row in verification_rows:
+            if not isinstance(row, dict):
+                continue
+            status = (row.get("status") or "offline").lower()
+            if status == "verified":
+                verified += 1
+            elif status == "likely":
+                likely += 1
+            elif status == "needs_review":
+                needs_review += 1
+            elif status == "not_found":
+                not_found += 1
+            else:
+                offline += 1
+
+    references_count = _count_list(refs)
+    citations_count = _count_list(citations)
+    if citations_count == 0:
+        citations_count = _count_list(c2r)
+
+    recovery = result.get("recovery") or {}
+    recovery_count = 0
+    if isinstance(recovery, dict):
+        recovery_count = _count_list(recovery.get("missing_recovery")) + _count_list(recovery.get("verification_recovery"))
+
+    return {
+        "references_count": references_count,
+        "citations_count": citations_count,
+        "missing_citations_count": _count_list(missing),
+        "uncited_references_count": _count_list(uncited),
+        "c2r_rows": _count_list(c2r),
+        "r2c_rows": _count_list(r2c),
+        "claim_rows": _count_list(claims),
+        "suggestions_count": _count_list(suggestions),
+        "recovery_rows": recovery_count,
+        "verification_rows": _count_list(verification_rows),
+        "verified": verified,
+        "likely": likely,
+        "needs_review": needs_review,
+        "not_found": not_found,
+        "offline": offline,
+        "acii_score": _extract_acii_score(result),
+    }
+
+
+def _empty_dashboard_payload(days: int, message: str = "No data available yet.") -> Dict[str, Any]:
+    return {
+        "total_stats": {
+            "total_uploads": 0,
+            "total_processed": 0,
+            "total_failed": 0,
+            "success_rate": 0,
+            "total_references_checked": 0,
+            "total_intext_citations": 0,
+            "total_missing_citations": 0,
+            "total_uncited_references": 0,
+            "total_verifications": 0,
+            "average_processing_time": 0,
+            "average_acii_score": None,
+            "start_date": datetime.now().isoformat(),
+            "last_updated": datetime.now().isoformat(),
+            "storage_backend": stats_tracker.db_type,
+            "persistent_storage": stats_tracker.db_type == "postgresql",
+            "storage_message": message,
+        },
+        "dashboard_metrics": {},
+        "daily_stats": {},
+        "recent_uploads": [],
+        "system_info": {
+            "current_time": datetime.now().isoformat(),
+            "storage_backend": stats_tracker.db_type,
+            "persistent_storage": stats_tracker.db_type == "postgresql",
+            "active_jobs": 0,
+            "total_jobs": 0,
+            "queue_status": {},
+            "server_busy": False,
+        }
+    }
+
+
+def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
+    cutoff = datetime.now() - timedelta(days=max(days, 1))
+
+    with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT job_id, status, file_name, file_size_mb, result, error,
+                       processing_time, created_at, started_at, completed_at
+                FROM jobs
+                ORDER BY created_at DESC
+                LIMIT 5000
+            """)
+            job_rows = cursor.fetchall() or []
+
+            cursor.execute("""
+                SELECT timestamp, filename, file_size, references_count,
+                       processing_time, success, error
+                FROM uploads
+                ORDER BY timestamp DESC
+                LIMIT 5000
+            """)
+            upload_rows = cursor.fetchall() or []
+
+    total_jobs = len(job_rows)
+    total_uploads = max(total_jobs, len(upload_rows))
+
+    completed_statuses = {"completed", "complete", "done", "success", "finished"}
+    failed_statuses = {"failed", "error", "cancelled", "canceled"}
+    running_statuses = {"queued", "started", "running", "processing", "deferred", "scheduled"}
+
+    completed = failed = running = queued = 0
+    total_refs = total_citations = total_missing = total_uncited = 0
+    total_claims = total_recovery = total_suggestions = 0
+    verified = likely = needs_review = not_found = offline = 0
+    acii_scores = []
+    processing_times = []
+    recent_uploads = []
+    daily_stats: Dict[str, Dict[str, Any]] = {}
+    first_date = None
+    last_updated = None
+
+    for raw in job_rows:
+        row = _as_dict(raw)
+        created_at = row.get("created_at")
+        completed_at = row.get("completed_at")
+        if created_at and (first_date is None or created_at < first_date):
+            first_date = created_at
+        if completed_at and (last_updated is None or completed_at > last_updated):
+            last_updated = completed_at
+        elif created_at and last_updated is None:
+            last_updated = created_at
+
+        status = (row.get("status") or "unknown").lower()
+        has_error = bool(row.get("error"))
+
+        if status in completed_statuses and not has_error:
+            completed += 1
+        elif status in failed_statuses or has_error:
+            failed += 1
+        elif status == "queued":
+            queued += 1
+            running += 1
+        elif status in running_statuses:
+            running += 1
+
+        result = _safe_json(row.get("result"))
+        metrics = _extract_job_metrics(result)
+
+        total_refs += metrics["references_count"]
+        total_citations += metrics["citations_count"]
+        total_missing += metrics["missing_citations_count"]
+        total_uncited += metrics["uncited_references_count"]
+        total_claims += metrics["claim_rows"]
+        total_recovery += metrics["recovery_rows"]
+        total_suggestions += metrics["suggestions_count"]
+        verified += metrics["verified"]
+        likely += metrics["likely"]
+        needs_review += metrics["needs_review"]
+        not_found += metrics["not_found"]
+        offline += metrics["offline"]
+
+        if metrics.get("acii_score") is not None:
+            acii_scores.append(metrics["acii_score"])
+
+        ptime = _safe_float(row.get("processing_time"))
+        if ptime > 0:
+            processing_times.append(ptime)
+
+        if created_at and created_at >= cutoff:
+            date_key = created_at.strftime("%Y-%m-%d") if hasattr(created_at, "strftime") else str(created_at)[:10]
+            if date_key not in daily_stats:
+                daily_stats[date_key] = {
+                    "uploads": 0,
+                    "processed": 0,
+                    "failed": 0,
+                    "references": 0,
+                    "citations": 0,
+                    "missing_citations": 0,
+                    "uncited_references": 0,
+                    "verification_rows": 0,
+                    "acii_total": 0,
+                    "acii_count": 0,
+                    "total_processing_time": 0,
+                    "processing_count": 0,
+                }
+            d = daily_stats[date_key]
+            d["uploads"] += 1
+            d["processed"] += 1 if status in completed_statuses and not has_error else 0
+            d["failed"] += 1 if status in failed_statuses or has_error else 0
+            d["references"] += metrics["references_count"]
+            d["citations"] += metrics["citations_count"]
+            d["missing_citations"] += metrics["missing_citations_count"]
+            d["uncited_references"] += metrics["uncited_references_count"]
+            d["verification_rows"] += metrics["verification_rows"]
+            if metrics.get("acii_score") is not None:
+                d["acii_total"] += metrics["acii_score"]
+                d["acii_count"] += 1
+            if ptime > 0:
+                d["total_processing_time"] += ptime
+                d["processing_count"] += 1
+
+        if len(recent_uploads) < 50:
+            recent_uploads.append({
+                "timestamp": _dt_to_iso(created_at),
+                "filename": row.get("file_name") or "Untitled document",
+                "file_size_mb": _safe_float(row.get("file_size_mb")),
+                "references_count": metrics["references_count"],
+                "citations_count": metrics["citations_count"],
+                "missing_citations_count": metrics["missing_citations_count"],
+                "uncited_references_count": metrics["uncited_references_count"],
+                "verification_rows": metrics["verification_rows"],
+                "acii_score": metrics.get("acii_score"),
+                "processing_time": ptime,
+                "status": status,
+                "success": status in completed_statuses and not has_error,
+                "error": row.get("error"),
+            })
+
+    # Fallback to uploads table for old records that do not have job JSON metrics.
+    if total_refs == 0 and upload_rows:
+        total_refs = sum(_safe_int(_as_dict(r).get("references_count")) for r in upload_rows)
+        processing_times = [
+            _safe_float(_as_dict(r).get("processing_time"))
+            for r in upload_rows
+            if _safe_float(_as_dict(r).get("processing_time")) > 0
+        ]
+        if completed == 0:
+            completed = sum(1 for r in upload_rows if _as_dict(r).get("success"))
+        if failed == 0:
+            failed = sum(1 for r in upload_rows if not _as_dict(r).get("success"))
+
+    for d in daily_stats.values():
+        d["avg_processing_time"] = round(d["total_processing_time"] / d["processing_count"], 2) if d["processing_count"] else 0
+        d["average_acii_score"] = round(d["acii_total"] / d["acii_count"], 2) if d["acii_count"] else None
+
+    if first_date is None:
+        first_date = datetime.now()
+    if last_updated is None:
+        last_updated = datetime.now()
+
+    success_rate = round((completed / max(completed + failed, 1)) * 100, 2)
+    average_processing_time = round(sum(processing_times) / len(processing_times), 2) if processing_times else 0
+    average_acii = round(sum(acii_scores) / len(acii_scores), 2) if acii_scores else None
+    total_verification_rows = verified + likely + needs_review + not_found + offline
+
+    payload = {
+        "total_stats": {
+            "total_uploads": total_uploads,
+            "total_processed": completed,
+            "total_failed": failed,
+            "success_rate": success_rate,
+            "total_references_checked": total_refs,
+            "total_intext_citations": total_citations,
+            "total_missing_citations": total_missing,
+            "total_uncited_references": total_uncited,
+            "total_verifications": total_verification_rows,
+            "average_processing_time": average_processing_time,
+            "average_acii_score": average_acii,
+            "start_date": _dt_to_iso(first_date),
+            "last_updated": _dt_to_iso(last_updated),
+            "storage_backend": "postgresql",
+            "persistent_storage": True,
+            "storage_message": "Persistent PostgreSQL storage is active. Dashboard data will survive deployments and service restarts.",
+        },
+        "dashboard_metrics": {
+            "completed_jobs": completed,
+            "failed_jobs": failed,
+            "running_jobs": running,
+            "queued_jobs": queued,
+            "total_jobs": total_jobs,
+            "verified": verified,
+            "likely": likely,
+            "needs_review": needs_review,
+            "not_found": not_found,
+            "offline": offline,
+            "claim_rows": total_claims,
+            "recovery_rows": total_recovery,
+            "suggestions_count": total_suggestions,
+        },
+        "daily_stats": daily_stats,
+        "recent_uploads": recent_uploads,
+        "system_info": {
+            "current_time": datetime.now().isoformat(),
+            "storage_backend": "postgresql",
+            "persistent_storage": True,
+            "active_jobs": running,
+            "total_jobs": total_jobs,
+            "queue_status": get_queue_status(),
+            "server_busy": is_server_busy(),
+        }
+    }
+    return payload
+
+
+def _build_sqlite_dashboard_stats(days: int = 30) -> Dict[str, Any]:
+    """Local fallback. This is useful for development, but not deployment-safe."""
+    stats = stats_tracker.get_stats(detailed=False, days=days)
+    payload = _empty_dashboard_payload(
+        days,
+        message="SQLite /tmp storage is active. This is not deployment-safe. Set DATABASE_URL to a Render PostgreSQL database for persistent dashboard data."
+    )
+    payload["total_stats"].update(stats.get("total_stats", {}))
+    payload["total_stats"].update({
+        "storage_backend": "sqlite",
+        "persistent_storage": False,
+        "storage_message": "SQLite /tmp storage is active. Data can disappear after redeploys, restarts, or instance changes. Use PostgreSQL for production.",
+    })
+    try:
+        import sqlite3
+        with sqlite3.connect(stats_tracker.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT timestamp, filename, file_size, references_count,
+                       processing_time, success, error
+                FROM uploads
+                ORDER BY timestamp DESC
+                LIMIT 50
+            """)
+            recent = []
+            for row in cursor.fetchall():
+                recent.append({
+                    "timestamp": row["timestamp"],
+                    "filename": row["filename"],
+                    "file_size_mb": round((_safe_float(row["file_size"]) / (1024 * 1024)), 2),
+                    "references_count": _safe_int(row["references_count"]),
+                    "citations_count": 0,
+                    "missing_citations_count": 0,
+                    "uncited_references_count": 0,
+                    "verification_rows": 0,
+                    "acii_score": None,
+                    "processing_time": _safe_float(row["processing_time"]),
+                    "status": "completed" if row["success"] else "failed",
+                    "success": bool(row["success"]),
+                    "error": row["error"],
+                })
+            payload["recent_uploads"] = recent
+    except Exception as e:
+        print(f"[STATS] SQLite detail fallback failed: {e}")
+    return payload
+
 
 @app.get("/private-stats")
 def get_private_stats(
@@ -3765,75 +4224,18 @@ def get_private_stats(
     days: int = 30
 ):
     authenticate(credentials)
-    
-    # Get basic stats
-    stats = stats_tracker.get_stats(detailed=detailed, days=days)
-    
-    # Get recent uploads
-    recent_uploads = []
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT timestamp, filename, references_count, processing_time, success
-                FROM uploads 
-                ORDER BY timestamp DESC 
-                LIMIT 50
-            """)
-            recent_uploads = cursor.fetchall()
-            cursor.close()
-            conn.close()
-        except Exception as e:
-            print(f"Error fetching recent uploads: {e}")
-    
-    # Get daily stats
-    daily_stats = {}
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT date, uploads, processed, failed, references_count, 
-                       total_processing_time, processing_count
-                FROM daily_stats 
-                WHERE date >= CURRENT_DATE - INTERVAL '%s days'
-                ORDER BY date DESC
-            """, (days,))
-            rows = cursor.fetchall()
-            
-            for row in rows:
-                date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
-                daily_stats[date_str] = {
-                    "uploads": row['uploads'],
-                    "processed": row['processed'],
-                    "failed": row['failed'],
-                    "references": row['references_count'],
-                    "total_processing_time": float(row['total_processing_time']) if row['total_processing_time'] else 0,
-                    "processing_count": row['processing_count'],
-                    "avg_processing_time": round(float(row['total_processing_time']) / row['processing_count'], 2) if row['processing_count'] > 0 else 0
-                }
-            
-            cursor.close()
-            conn.close()
-        except Exception as e:
-            print(f"Error fetching daily stats: {e}")
-    
-    stats["recent_uploads"] = recent_uploads
-    stats["daily_stats"] = daily_stats
-    
-    stats["system_info"] = {
-        "current_time": datetime.now().isoformat(),
-        "active_jobs": len([j for j in _store.values() if j.get("verification", {}).get("state") == "running"]),
-        "total_jobs": len(_store),
-        "queue_status": get_queue_status(),
-        "server_busy": is_server_busy()
-    }
-    
-    return stats
-@app.get("/stats", response_class=HTMLResponse)
-def stats_page(request: Request):
-    return templates.TemplateResponse("stats.html", {"request": request})
+    days = max(1, min(int(days or 30), 365))
+
+    try:
+        if DATABASE_URL:
+            return _build_postgres_dashboard_stats(days=days)
+        return _build_sqlite_dashboard_stats(days=days)
+    except Exception as e:
+        print(f"[STATS] Dashboard stats error: {e}")
+        fallback = _empty_dashboard_payload(days, message=f"Stats endpoint error: {str(e)[:180]}")
+        fallback["system_info"]["error"] = str(e)
+        return fallback
+
 @app.get("/private-stats/count")
 def get_simple_count(credentials: HTTPBasicCredentials = Depends(security)):
     authenticate(credentials)
