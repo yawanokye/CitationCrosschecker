@@ -807,6 +807,8 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     
     # 🛡️ Clickjacking protection
+    # This protects CiteIntegrity pages from being embedded on other sites.
+    # It does NOT block YouTube inside our own page, because YouTube is allowed below in CSP frame-src.
     response.headers["X-Frame-Options"] = "DENY"
     
     # 🛡️ MIME sniffing protection
@@ -818,14 +820,20 @@ async def add_security_headers(request: Request, call_next):
     # 🛡️ Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     
-    # 🛡️ Content Security Policy (safe default)
+    # 🛡️ Content Security Policy
+    # Allows the CiteIntegrity YouTube demo iframe while keeping the rest locked down.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "img-src 'self' data:; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "img-src 'self' data: https:; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.youtube.com https://www.youtube-nocookie.com https://s.ytimg.com; "
         "style-src 'self' 'unsafe-inline'; "
-        "font-src 'self' data:; "
-        "connect-src 'self'; "
+        "font-src 'self' data: https:; "
+        "connect-src 'self' https:; "
+        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
+        "child-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
+        "media-src 'self' https: blob:; "
         "frame-ancestors 'none';"
     )
     
