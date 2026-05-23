@@ -818,14 +818,18 @@ async def add_security_headers(request: Request, call_next):
     # 🛡️ Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     
-    # 🛡️ Content Security Policy (safe default)
+    # 🛡️ Content Security Policy
+    # Allows CiteIntegrity to embed the official YouTube demo while keeping
+    # the site protected from being framed by other websites.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "img-src 'self' data:; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+        "img-src 'self' data: https:; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.youtube.com https://www.youtube-nocookie.com; "
         "style-src 'self' 'unsafe-inline'; "
-        "font-src 'self' data:; "
-        "connect-src 'self'; "
+        "font-src 'self' data: https:; "
+        "connect-src 'self' https:; "
+        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
+        "child-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
         "frame-ancestors 'none';"
     )
     
