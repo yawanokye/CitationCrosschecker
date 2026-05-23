@@ -2092,6 +2092,23 @@
             }
         }
 
+    
+        .demo-video-fallback-note {
+            padding: 12px 24px 0;
+            color: var(--slate-dark);
+            font-size: 13px;
+        }
+
+        .demo-video-fallback-note strong {
+            color: var(--navy);
+        }
+
+        @media (max-width: 680px) {
+            .demo-video-fallback-note {
+                padding: 10px 18px 0;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -2195,17 +2212,23 @@
 
                     <div class="demo-video-frame">
                         <iframe
-                            src="https://www.youtube.com/embed/xQCCTCM1hWg?rel=0&modestbranding=1"
+                            src="https://www.youtube-nocookie.com/embed/xQCCTCM1hWg?rel=0&modestbranding=1"
                             title="CiteIntegrity Demo Video"
                             loading="lazy"
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            referrerpolicy="strict-origin-when-cross-origin"
                             allowfullscreen>
                         </iframe>
+                    </div>
+
+                    <div class="demo-video-fallback-note">
+                        <strong>If the video does not play inside the page,</strong> open it directly on YouTube using the button below. Some browsers or security settings may block embedded frames.
                     </div>
 
                     <div class="demo-video-actions">
                         <a class="btn btn-primary" href="https://citeintegrity.org/new/analyse">Start checking</a>
                         <a class="btn btn-light" href="#workflow">View how it works</a>
+                        <a class="btn btn-ghost" href="https://www.youtube.com/watch?v=xQCCTCM1hWg" target="_blank" rel="noopener noreferrer">Open video on YouTube</a>
                     </div>
                 </div>
             </div>
