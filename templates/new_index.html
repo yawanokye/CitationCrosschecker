@@ -1394,7 +1394,6 @@
         #features,
         #demo-video,
         #workflow,
-        #pricing,
         #testimonials,
         #faq {
             scroll-margin-top: 82px;
@@ -2109,6 +2108,27 @@
             }
         }
 
+    
+        .presentation-mode-note {
+            max-width: 1120px;
+            margin: 14px auto 0;
+            padding: 0 22px 14px;
+        }
+
+        .presentation-mode-note .note-card {
+            border: 1px solid rgba(37, 99, 235, 0.16);
+            background: linear-gradient(135deg, #eff6ff, #ffffff);
+            border-radius: 18px;
+            padding: 12px 16px;
+            color: var(--slate-dark);
+            font-size: 13px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .presentation-mode-note strong {
+            color: var(--navy);
+        }
+
     </style>
 </head>
 <body>
@@ -2134,7 +2154,6 @@
                 <a href="/#home">Home</a>
                 <a href="#features">Features</a>
                 <a href="#workflow">How it works</a>
-                <a href="#pricing">Pricing</a>
                 <a href="#testimonials">Testimonials</a>
                 <a href="#faq">FAQ</a>
                 <a href="/contact">Contact</a>
@@ -2193,6 +2212,10 @@
             </div>
         </section>
 
+        <div class="presentation-mode-note" aria-label="Presentation mode notice">
+            <div class="note-card"><strong>Presentation mode:</strong> payment and pricing details are hidden on this version so the demonstration can focus on the CiteIntegrity workflow, features and academic value.</div>
+        </div>
+
         <section class="demo-video-section" id="demo-video">
             <div class="section demo-video-wrap">
                 <div class="section-title">
@@ -2238,8 +2261,8 @@
         <section class="section feature-section" id="features">
             <div class="section-title">
                 <div class="small-title">Full Review Features</div>
-                <h2>All paid plans unlock the same complete citation integrity workflow.</h2>
-                <p>Choose a paid plan based on document size only. Every paid plan includes the full review toolkit for checking, verifying, recovering, explaining and exporting citation integrity evidence.</p>
+                <h2>Explore the complete citation integrity workflow.</h2>
+                <p>This presentation version shows the full review toolkit for checking, verifying, recovering, explaining and exporting citation integrity evidence, without displaying payment or pricing details.</p>
             </div>
 
             <div class="feature-suite-grid">
@@ -2285,13 +2308,13 @@
                 <article class="feature-suite-card">
                     <div class="feature-suite-head">
                         <div class="feature-suite-icon">📄</div>
-                        <h3>Commercial outputs</h3>
+                        <h3>Report-ready outputs</h3>
                     </div>
                     <ul class="compact-feature-list">
                         <li>Citation Integrity Certificate</li>
                         <li>Export Report</li>
                         <li>Verified References Export</li>
-                        <li>Two Full Review Runs</li>
+                        <li>Review Evidence Summary</li>
                     </ul>
                 </article>
             </div>
@@ -2641,91 +2664,6 @@
                 </div>
             </div>
         </section>
-
-        <section class="section" id="pricing">
-            <div class="section-title">
-                <div class="small-title">Pricing</div>
-                <h2>One complete Full Review. Fair pricing by document size.</h2>
-                <p>Every paid CiteIntegrity plan includes the same Full Review features. You only pay more when your document has more references and in-text citations to process.</p>
-            </div>
-
-            <div class="paid-includes-card">
-                <div>
-                    <h3>All paid plans include the complete Full Review</h3>
-                    <p>Online verification, recovery suggestions, claim support, citation-needed detection, advanced enrichment, ACII score, manual verification support, certificate and export tools are included in every paid package.</p>
-                </div>
-                <span class="paid-badge">Full Review included</span>
-            </div>
-
-            <div class="pricing-grid compact-pricing">
-                <article class="price-card">
-                    <h3>Free Preview</h3>
-                    <p class="price-desc">For testing CiteIntegrity before buying a Full Review package.</p>
-                    <div class="price">Free <span>/ preview</span></div>
-                    <a class="btn btn-ghost" href="https://citeintegrity.org/new/analyse">Start free</a>
-                    <div class="plan-meta">
-                        <span><strong>References</strong> Up to 10</span>
-                        <span><strong>Citations</strong> Up to 20</span>
-                        <span><strong>Access</strong> Limited preview</span>
-                    </div>
-                    <div class="plan-includes">Upgrade to unlock the complete Full Review.</div>
-                </article>
-
-                <article class="price-card">
-                    <h3>Article Full Review</h3>
-                    <p class="price-desc">For articles, essays, assignments and short academic manuscripts.</p>
-                    <div class="price">US$2.99 <span>/ package</span></div>
-                    <a class="btn btn-ghost" href="https://citeintegrity.org/new/analyse">Buy now</a>
-                    <div class="plan-meta">
-                        <span><strong>References</strong> Up to 50</span>
-                        <span><strong>Citations</strong> Up to 120</span>
-                        <span><strong>Runs</strong> 2 full reviews</span>
-                    </div>
-                    <div class="plan-includes">Includes all paid Full Review features.</div>
-                </article>
-
-                <article class="price-card">
-                    <h3>Research Paper Full Review</h3>
-                    <p class="price-desc">For long papers, proposals, chapters and standard manuscripts.</p>
-                    <div class="price">US$5.99 <span>/ package</span></div>
-                    <a class="btn btn-primary" href="https://citeintegrity.org/new/analyse">Buy now</a>
-                    <div class="plan-meta">
-                        <span><strong>References</strong> Up to 120</span>
-                        <span><strong>Citations</strong> Up to 300</span>
-                        <span><strong>Runs</strong> 2 full reviews</span>
-                    </div>
-                    <div class="plan-includes">Includes all paid Full Review features.</div>
-                </article>
-
-                <article class="price-card featured">
-                    <span class="popular">Best for theses</span>
-                    <h3>Thesis Full Review</h3>
-                    <p class="price-desc">For master’s theses, dissertations and professional submissions.</p>
-                    <div class="price">US$12.99 <span>/ package</span></div>
-                    <a class="btn btn-primary" href="https://citeintegrity.org/new/analyse">Buy now</a>
-                    <div class="plan-meta">
-                        <span><strong>References</strong> Up to 300</span>
-                        <span><strong>Citations</strong> Up to 800</span>
-                        <span><strong>Runs</strong> 2 full reviews</span>
-                    </div>
-                    <div class="plan-includes">Includes all paid Full Review features.</div>
-                </article>
-
-                <article class="price-card">
-                    <h3>PhD / Large Document Full Review</h3>
-                    <p class="price-desc">For PhD theses, books, large dissertations and long reports.</p>
-                    <div class="price">US$24.99 <span>/ package</span></div>
-                    <a class="btn btn-green" href="https://citeintegrity.org/new/analyse">Buy now</a>
-                    <div class="plan-meta">
-                        <span><strong>References</strong> Up to 700</span>
-                        <span><strong>Citations</strong> Up to 1,800</span>
-                        <span><strong>Runs</strong> 2 full reviews</span>
-                    </div>
-                    <div class="plan-includes">Includes all paid Full Review features.</div>
-                </article>
-            </div>
-        </section>
-
         <section class="faq" id="faq">
             <div class="section">
                 <div class="section-title">
@@ -2859,7 +2797,7 @@
                 <ul class="footer-links">
                     <li><a href="#features">Features</a></li>
                     <li><a href="#workflow">How it works</a></li>
-                    <li><a href="#pricing">Pricing</a></li>
+                    <li></li>
                     <li><a href="https://citeintegrity.org/new/analyse">New analysis</a></li>
                 </ul>
             </div>
