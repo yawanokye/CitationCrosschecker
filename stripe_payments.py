@@ -6,6 +6,10 @@ Payment model:
 - Checkout uses one-time payment mode, matching CiteIntegrity's package model.
 - The Stripe webhook marks the same purchase table as paid and attaches the
   preview job as the first paid analysis run.
+
+This build improves production diagnostics by returning and printing the exact
+Stripe error type, code, parameter, request id, and HTTP status when Checkout
+creation fails.
 """
 
 from __future__ import annotations
@@ -19,8 +23,8 @@ import stripe
 from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
 from entitlements import get_price, validate_paid_package_for_document
 
-STRIPE_PAYMENTS_VERSION = "1.0.0"
-STRIPE_PAYMENTS_BUILD = "commercial-2026-05-27-africa-paystack-global-stripe"
+STRIPE_PAYMENTS_VERSION = "1.0.1"
+STRIPE_PAYMENTS_BUILD = "commercial-2026-05-27-africa-paystack-global-stripe-diagnostics"
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -50,6 +54,53 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value or default)
     except Exception:
         return default
+
+
+def _stripe_error_payload(error: Exception) -> Dict[str, Any]:
+    """
+    Convert Stripe and non-Stripe exceptions into a safe JSON payload.
+
+    This is intentionally verbose because Render logs and browser Network
+    responses are the quickest way to diagnose live Checkout failures.
+    """
+    payload: Dict[str, Any] = {
+        "type": type(error).__name__,
+        "message": str(error),
+    }
+
+    for attr in ("user_message", "code", "param", "request_id", "http_status"):
+        value = getattr(error, attr, None)
+        if value:
+            payload[attr] = value
+
+    json_body = getattr(error, "json_body", None)
+    if isinstance(json_body, dict):
+        stripe_error = json_body.get("error") or {}
+        if isinstance(stripe_error, dict):
+            payload["stripe_error"] = {
+                key: stripe_error.get(key)
+                for key in ("type", "code", "decline_code", "param", "message")
+                if stripe_error.get(key)
+            }
+
+    return payload
+
+
+def _stringify_gateway_error(payload: Dict[str, Any]) -> str:
+    pieces = []
+    if payload.get("type"):
+        pieces.append(str(payload["type"]))
+    if payload.get("message"):
+        pieces.append(str(payload["message"]))
+    if payload.get("code"):
+        pieces.append(f"code={payload['code']}")
+    if payload.get("param"):
+        pieces.append(f"param={payload['param']}")
+    if payload.get("request_id"):
+        pieces.append(f"request_id={payload['request_id']}")
+    if payload.get("http_status"):
+        pieces.append(f"http_status={payload['http_status']}")
+    return " | ".join(pieces) or "Unknown Stripe error"
 
 
 def _attach_preview_job_to_purchase(database_url: str, purchase: Dict[str, Any], source: str = "stripe") -> Dict[str, Any]:
@@ -82,10 +133,10 @@ def _attach_preview_job_to_purchase(database_url: str, purchase: Dict[str, Any],
         }
 
     except Exception as e:
-        print(f"[STRIPE] Could not attach preview job to purchase from {source}: {e}")
+        print(f"[STRIPE] Could not attach preview job to purchase from {source}: {type(e).__name__}: {e}")
         return {
             "attached": False,
-            "reason": str(e),
+            "reason": f"{type(e).__name__}: {str(e)}",
             "source": source,
         }
 
@@ -106,7 +157,12 @@ def initialize_citeintegrity_stripe_payment(
     try:
         _require_stripe_key()
     except StripePaymentError as e:
-        return {"ok": False, "error": str(e)}
+        print(f"[STRIPE_CONFIG_ERROR] {type(e).__name__}: {e}")
+        return {
+            "ok": False,
+            "error": str(e),
+            "gateway_error": f"{type(e).__name__}: {str(e)}",
+        }
 
     selected_currency = str(selected_currency or "USD").strip().upper()
 
@@ -128,9 +184,17 @@ def initialize_citeintegrity_stripe_payment(
             "tier_check": tier_check,
         }
 
-    price = get_price(tier_key, selected_currency)
-    amount = float(price["amount"])
-    amount_minor = amount_to_minor_units(amount)
+    try:
+        price = get_price(tier_key, selected_currency)
+        amount = float(price["amount"])
+        amount_minor = amount_to_minor_units(amount)
+    except Exception as e:
+        print(f"[STRIPE_PRICE_ERROR] {type(e).__name__}: {e}")
+        return {
+            "ok": False,
+            "error": "Could not determine Stripe price for the selected package.",
+            "gateway_error": f"{type(e).__name__}: {str(e)}",
+        }
 
     provider_reference = f"CI-STRIPE-{secrets.token_urlsafe(16).replace('_', '').replace('-', '')}"
 
@@ -148,10 +212,11 @@ def initialize_citeintegrity_stripe_payment(
             preview_citation_count=citation_count,
         )
     except Exception as e:
+        print(f"[STRIPE_PENDING_PURCHASE_ERROR] {type(e).__name__}: {e}")
         return {
             "ok": False,
             "error": "Could not create a pending Stripe purchase.",
-            "gateway_error": str(e),
+            "gateway_error": f"{type(e).__name__}: {str(e)}",
         }
 
     try:
@@ -187,10 +252,21 @@ def initialize_citeintegrity_stripe_payment(
             },
         )
     except Exception as e:
+        error_payload = _stripe_error_payload(e)
+        gateway_error = _stringify_gateway_error(error_payload)
+        print(f"[STRIPE_CHECKOUT_ERROR] {gateway_error}")
         return {
             "ok": False,
             "error": "Stripe Checkout could not start.",
-            "gateway_error": str(e),
+            "gateway_error": gateway_error,
+            "gateway_error_details": error_payload,
+            "stripe_mode_hint": "Use sk_test_ for test mode and sk_live_ only after live account capabilities are active.",
+            "provider_reference": provider_reference,
+            "purchase_id": purchase.get("id"),
+            "amount": amount,
+            "amount_minor": amount_minor,
+            "currency": selected_currency,
+            "display_amount": price.get("display"),
         }
 
     return {
@@ -210,6 +286,7 @@ def initialize_citeintegrity_stripe_payment(
 
 def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str) -> Dict[str, Any]:
     if not STRIPE_WEBHOOK_SECRET:
+        print("[STRIPE_WEBHOOK_ERROR] STRIPE_WEBHOOK_SECRET is not configured.")
         return {
             "ok": False,
             "status_code": 500,
@@ -222,13 +299,15 @@ def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str)
             signature,
             STRIPE_WEBHOOK_SECRET,
         )
-    except ValueError:
+    except ValueError as e:
+        print(f"[STRIPE_WEBHOOK_ERROR] Invalid payload: {e}")
         return {
             "ok": False,
             "status_code": 400,
             "message": "Invalid Stripe webhook payload.",
         }
-    except stripe.error.SignatureVerificationError:
+    except stripe.error.SignatureVerificationError as e:
+        print(f"[STRIPE_WEBHOOK_ERROR] Invalid signature: {e}")
         return {
             "ok": False,
             "status_code": 400,
@@ -251,6 +330,7 @@ def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str)
         currency = str(data.get("currency") or "USD").upper()
 
         if payment_status not in {"paid", "no_payment_required"}:
+            print(f"[STRIPE_WEBHOOK_INFO] Checkout completed but payment_status={payment_status}, reference={provider_reference}")
             return {
                 "ok": True,
                 "status_code": 200,
@@ -277,6 +357,7 @@ def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str)
 
         activated_purchase = attached.get("purchase") or purchase
 
+        print(f"[STRIPE_WEBHOOK_SUCCESS] reference={provider_reference}, purchase_activated={bool(purchase)}")
         return {
             "ok": True,
             "status_code": 200,
