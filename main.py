@@ -4114,31 +4114,52 @@ async def paystack_webhook(request: Request):
 
 
 @app.get("/payment/stripe/success")
-async def stripe_payment_success(session_id: str = ""):
+async def stripe_payment_success(session_id: str = "", job_id: str = ""):
+    """
+    Stripe success page.
+
+    Important fix:
+    - Stripe now returns job_id in the success URL as a fallback.
+    - The success page redirects to /new/results/{job_id}, not /results/{job_id}.
+    - If the Stripe helper can verify the session, it also activates the purchase.
+    """
+    requested_job_id = (job_id or "").strip()
+
     activation = {
         "ok": False,
         "activated": False,
         "message": "Payment received. Unlock is being processed.",
-        "job_id": "",
+        "job_id": requested_job_id,
     }
 
     if session_id and verify_and_activate_stripe_session:
         activation = verify_and_activate_stripe_session(
             database_url=DATABASE_URL,
             session_id=session_id,
-        )
+        ) or activation
     elif not verify_and_activate_stripe_session:
         print("[STRIPE_SUCCESS_PAGE] verify_and_activate_stripe_session helper is unavailable.")
 
-    job_id = activation.get("job_id") or ""
-    results_url = f"/results/{job_id}?verify=1&paid=1" if job_id else "/new/analyse"
+    final_job_id = (
+        (activation.get("job_id") or "").strip()
+        or requested_job_id
+    )
+
+    # The new dashboard route is /new/results/{job_id}.
+    results_url = f"/new/results/{final_job_id}?verify=1&paid=1" if final_job_id else "/new/analyse"
+
+    print(
+        f"[STRIPE_SUCCESS_PAGE] session_id={session_id}, "
+        f"query_job_id={requested_job_id}, activation_job_id={activation.get('job_id')}, "
+        f"activated={activation.get('activated')}, redirect={results_url}"
+    )
 
     activated = bool(activation.get("activated"))
     heading = "✅ Full Review unlocked" if activated else "✅ Payment received"
     message = (
         "Your CiteIntegrity Full Review has been unlocked. You will be redirected to your results page."
         if activated
-        else "Your payment was received. The unlock is still being processed. You will be redirected shortly."
+        else "Your payment was received. The unlock is still being processed. You will be redirected to your results page."
     )
 
     return HTMLResponse(f"""
@@ -4199,6 +4220,7 @@ async def stripe_payment_success(session_id: str = ""):
             <p>If the results page does not update immediately, refresh it after a few seconds.</p>
             <a href="{results_url}">Return to results</a>
             <p class="small">Session: {session_id}</p>
+            <p class="small">Job: {final_job_id or 'not found'}</p>
             <p class="small">{activation.get("message", "")}</p>
         </div>
 
