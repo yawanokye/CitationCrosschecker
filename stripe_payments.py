@@ -23,8 +23,8 @@ import stripe
 from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
 from entitlements import get_price, validate_paid_package_for_document
 
-STRIPE_PAYMENTS_VERSION = "1.0.1"
-STRIPE_PAYMENTS_BUILD = "commercial-2026-05-27-africa-paystack-global-stripe-diagnostics"
+STRIPE_PAYMENTS_VERSION = "1.0.2"
+STRIPE_PAYMENTS_BUILD = "commercial-2026-05-28-stripe-success-fallback-activation"
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -282,6 +282,94 @@ def initialize_citeintegrity_stripe_payment(
         "display_amount": price["display"],
         "access_token": purchase.get("access_token"),
     }
+
+
+
+def verify_and_activate_stripe_session(
+    *,
+    database_url: str,
+    session_id: str,
+) -> Dict[str, Any]:
+    """
+    Fallback activation from the Stripe success page.
+
+    The webhook remains the main trusted route, but this safely verifies the
+    session directly with Stripe and unlocks the purchase when the webhook is
+    delayed or failing during test setup.
+    """
+    if not session_id:
+        return {
+            "ok": False,
+            "activated": False,
+            "message": "Stripe session ID is missing.",
+            "job_id": "",
+        }
+
+    try:
+        _require_stripe_key()
+
+        session = stripe.checkout.Session.retrieve(session_id)
+        metadata = session.get("metadata") or {}
+
+        provider_reference = (
+            session.get("client_reference_id")
+            or metadata.get("provider_reference")
+            or ""
+        )
+
+        job_id = metadata.get("job_id", "") or ""
+        payment_status = str(session.get("payment_status") or "").lower()
+
+        if payment_status not in {"paid", "no_payment_required"}:
+            return {
+                "ok": False,
+                "activated": False,
+                "message": f"Stripe session payment status is {payment_status}.",
+                "job_id": job_id,
+                "provider_reference": provider_reference,
+            }
+
+        if not provider_reference:
+            return {
+                "ok": False,
+                "activated": False,
+                "message": "Stripe provider reference was not found in the session.",
+                "job_id": job_id,
+            }
+
+        purchase = mark_purchase_paid(
+            database_url,
+            provider_reference=provider_reference,
+        )
+
+        attached: Dict[str, Any] = {}
+        if purchase:
+            attached = _attach_preview_job_to_purchase(
+                database_url,
+                purchase,
+                source="stripe_success_page",
+            )
+
+        activated_purchase = attached.get("purchase") or purchase or {}
+
+        return {
+            "ok": True,
+            "activated": bool(purchase),
+            "message": "Stripe payment verified and purchase activated.",
+            "job_id": job_id or activated_purchase.get("preview_job_id", ""),
+            "provider_reference": provider_reference,
+            "purchase": activated_purchase,
+            "preview_job_attached": attached,
+        }
+
+    except Exception as e:
+        print(f"[STRIPE_SUCCESS_VERIFY_ERROR] {type(e).__name__}: {e}")
+        return {
+            "ok": False,
+            "activated": False,
+            "message": f"{type(e).__name__}: {str(e)}",
+            "job_id": "",
+        }
 
 
 def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str) -> Dict[str, Any]:
