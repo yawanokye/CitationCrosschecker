@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "commercial-2026-05-28-stripe-paystack-style-unlock-v1.6.1"
+# MAIN_BUILD = "commercial-2026-05-28-stripe-final-unlock-prelink-v1.6.2"
 
 import io
 import os
@@ -1395,6 +1395,47 @@ async def payment_repair_access(job_id: str, _auth: Any = Depends(authenticate))
     return {
         "ok": True,
         "job_id": job_id,
+        "repaired": repaired,
+        "access_after": access,
+        "paid_after": bool(access.get("paid")),
+    }
+
+@app.post("/api/payment/repair-stripe-session/{job_id}")
+async def payment_repair_stripe_session(
+    job_id: str,
+    payload: dict = Body(default={}),
+    session_id: str = "",
+    _auth: Any = Depends(authenticate),
+):
+    """
+    Admin-only repair endpoint for a completed Stripe Checkout Session.
+
+    Use this for a paid Stripe test/live session that redirected correctly but
+    did not unlock the result. It verifies the session directly with Stripe,
+    marks the linked purchase as paid, force-links purchase_runs to the job,
+    then returns the access state.
+    """
+    sid = (session_id or (payload or {}).get("session_id") or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id is required.")
+
+    if not (STRIPE_PAYMENT_FEATURES_AVAILABLE and verify_and_activate_stripe_session):
+        raise HTTPException(status_code=503, detail="Stripe repair helper is not available.")
+
+    activation = verify_and_activate_stripe_session(
+        database_url=DATABASE_URL,
+        session_id=sid,
+        fallback_job_id=job_id,
+    )
+
+    repaired = repair_paid_purchase_link_for_job(job_id)
+    access = build_access_response(job_id)
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "session_id": sid,
+        "activation": activation,
         "repaired": repaired,
         "access_after": access,
         "paid_after": bool(access.get("paid")),
