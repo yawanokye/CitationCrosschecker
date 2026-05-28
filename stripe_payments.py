@@ -23,8 +23,8 @@ import stripe
 from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
 from entitlements import get_price, validate_paid_package_for_document
 
-STRIPE_PAYMENTS_VERSION = "1.0.2"
-STRIPE_PAYMENTS_BUILD = "commercial-2026-05-28-stripe-success-fallback-activation"
+STRIPE_PAYMENTS_VERSION = "1.0.1"
+STRIPE_PAYMENTS_BUILD = "commercial-2026-05-27-africa-paystack-global-stripe-diagnostics"
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -291,17 +291,19 @@ def verify_and_activate_stripe_session(
     session_id: str,
 ) -> Dict[str, Any]:
     """
-    Fallback activation from the Stripe success page.
+    Paystack-style fallback activation for Stripe Checkout.
 
-    The webhook remains the main trusted route, but this safely verifies the
-    session directly with Stripe and unlocks the purchase when the webhook is
-    delayed or failing during test setup.
+    Stripe webhooks remain the primary production confirmation path. However,
+    this helper safely verifies the Checkout Session directly with Stripe on the
+    success page and then activates the same purchase record. This prevents the
+    user from paying successfully but remaining locked when webhook delivery is
+    delayed or misconfigured during testing.
     """
     if not session_id:
         return {
             "ok": False,
             "activated": False,
-            "message": "Stripe session ID is missing.",
+            "message": "Stripe session_id is missing.",
             "job_id": "",
         }
 
@@ -321,20 +323,27 @@ def verify_and_activate_stripe_session(
         payment_status = str(session.get("payment_status") or "").lower()
 
         if payment_status not in {"paid", "no_payment_required"}:
+            print(
+                f"[STRIPE_SUCCESS_VERIFY] Session not paid: "
+                f"session_id={session_id}, status={payment_status}, reference={provider_reference}"
+            )
             return {
                 "ok": False,
                 "activated": False,
                 "message": f"Stripe session payment status is {payment_status}.",
                 "job_id": job_id,
                 "provider_reference": provider_reference,
+                "payment_status": payment_status,
             }
 
         if not provider_reference:
+            print(f"[STRIPE_SUCCESS_VERIFY] Missing provider_reference for session_id={session_id}")
             return {
                 "ok": False,
                 "activated": False,
                 "message": "Stripe provider reference was not found in the session.",
                 "job_id": job_id,
+                "payment_status": payment_status,
             }
 
         purchase = mark_purchase_paid(
@@ -342,32 +351,55 @@ def verify_and_activate_stripe_session(
             provider_reference=provider_reference,
         )
 
-        attached: Dict[str, Any] = {}
-        if purchase:
-            attached = _attach_preview_job_to_purchase(
-                database_url,
-                purchase,
-                source="stripe_success_page",
+        if not purchase:
+            print(
+                f"[STRIPE_SUCCESS_VERIFY] Payment verified but no pending purchase found: "
+                f"session_id={session_id}, reference={provider_reference}, job_id={job_id}"
             )
+            return {
+                "ok": False,
+                "activated": False,
+                "message": "Payment verified, but no matching purchase was found.",
+                "job_id": job_id,
+                "provider_reference": provider_reference,
+                "payment_status": payment_status,
+            }
 
-        activated_purchase = attached.get("purchase") or purchase or {}
+        attached = _attach_preview_job_to_purchase(
+            database_url,
+            purchase,
+            source="stripe_success_page",
+        )
+
+        activated_purchase = attached.get("purchase") or purchase
+        final_job_id = job_id or activated_purchase.get("preview_job_id", "") or ""
+
+        print(
+            f"[STRIPE_SUCCESS_VERIFY] activated=True, reference={provider_reference}, "
+            f"job_id={final_job_id}, attached={attached.get('attached')}"
+        )
 
         return {
             "ok": True,
-            "activated": bool(purchase),
+            "activated": True,
             "message": "Stripe payment verified and purchase activated.",
-            "job_id": job_id or activated_purchase.get("preview_job_id", ""),
+            "job_id": final_job_id,
             "provider_reference": provider_reference,
+            "payment_status": payment_status,
             "purchase": activated_purchase,
             "preview_job_attached": attached,
         }
 
     except Exception as e:
-        print(f"[STRIPE_SUCCESS_VERIFY_ERROR] {type(e).__name__}: {e}")
+        error_payload = _stripe_error_payload(e)
+        gateway_error = _stringify_gateway_error(error_payload)
+        print(f"[STRIPE_SUCCESS_VERIFY_ERROR] {gateway_error}")
         return {
             "ok": False,
             "activated": False,
-            "message": f"{type(e).__name__}: {str(e)}",
+            "message": gateway_error,
+            "gateway_error": gateway_error,
+            "gateway_error_details": error_payload,
             "job_id": "",
         }
 
