@@ -1038,8 +1038,226 @@ def get_document_counts_from_result(result: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _normalise_purchase_access(purchase: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a paid purchase row into the access payload expected by the results page."""
+    purchase = purchase or {}
+    return {
+        "paid": True,
+        "tier_key": purchase.get("document_tier") or purchase.get("tier_key") or purchase.get("package_key") or "",
+        "currency": purchase.get("currency") or "USD",
+        "purchase": purchase,
+    }
+
+
+def _column_exists(cursor, table_name: str, column_name: str) -> bool:
+    try:
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = %s AND column_name = %s
+            )
+            """,
+            (table_name, column_name),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            return bool(row.get("exists"))
+        return bool(row[0]) if row else False
+    except Exception:
+        return False
+
+
+def _mark_job_result_paid(job_id: str, purchase: Dict[str, Any]) -> None:
+    """
+    Persist a server-side paid marker inside jobs.result and refresh Redis.
+    This marker is written only after a paid purchase has been found server-side.
+    """
+    if not (DATABASE_URL and job_id and purchase):
+        return
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+        cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return
+
+        result = row.get("result") or {}
+        if isinstance(result, str):
+            result = json.loads(result)
+
+        result.setdefault("access", {})
+        result["access"].update({
+            "paid": True,
+            "tier_key": purchase.get("document_tier") or purchase.get("tier_key") or purchase.get("package_key") or "",
+            "currency": purchase.get("currency") or "USD",
+            "payment_provider": purchase.get("payment_provider") or "stripe",
+            "provider_reference": purchase.get("provider_reference") or "",
+        })
+
+        cursor.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if redis_conn:
+            try:
+                redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+            except Exception as redis_e:
+                print(f"[ACCESS_REPAIR] Redis refresh failed for {job_id}: {redis_e}")
+
+    except Exception as e:
+        print(f"[ACCESS_REPAIR] Could not write paid marker for {job_id}: {type(e).__name__}: {e}")
+
+
+def repair_paid_purchase_link_for_job(job_id: str) -> Dict[str, Any]:
+    """
+    Recover paid access when Stripe has marked a purchase as paid but purchase_runs
+    was not linked to the analysed job.
+
+    This is intentionally server-side: it does not trust ?paid=1 in the URL.
+    It only repairs when the database already contains a paid/active purchase
+    for the same preview_job_id, or when a paid marker was previously written
+    by the Stripe success callback.
+    """
+    default = {"paid": False, "tier_key": "", "currency": "GHS", "purchase": None}
+
+    if not (DATABASE_URL and job_id):
+        return default
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+
+        # First: if purchase_runs already links this job to a paid purchase, return it.
+        cursor.execute(
+            """
+            SELECT p.*
+            FROM purchases p
+            JOIN purchase_runs pr ON pr.purchase_id = p.id
+            WHERE pr.job_id = %s
+              AND LOWER(COALESCE(p.status, '')) IN ('paid', 'active')
+            ORDER BY p.created_at DESC
+            LIMIT 1
+            """,
+            (job_id,),
+        )
+        purchase = cursor.fetchone()
+        if purchase:
+            purchase = dict(purchase)
+            cursor.close()
+            conn.close()
+            _mark_job_result_paid(job_id, purchase)
+            print(f"[ACCESS_REPAIR] Existing paid purchase_runs link found for job_id={job_id}")
+            return _normalise_purchase_access(purchase)
+
+        # Second: if purchases has preview_job_id, find the latest paid Stripe purchase for this job.
+        has_preview_job_id = _column_exists(cursor, "purchases", "preview_job_id")
+        purchase = None
+        if has_preview_job_id:
+            cursor.execute(
+                """
+                SELECT *
+                FROM purchases
+                WHERE preview_job_id = %s
+                  AND LOWER(COALESCE(status, '')) IN ('paid', 'active')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (job_id,),
+            )
+            purchase = cursor.fetchone()
+
+        if purchase:
+            purchase = dict(purchase)
+            purchase_id = purchase.get("id")
+            cursor.execute(
+                "SELECT * FROM purchase_runs WHERE job_id = %s FOR UPDATE",
+                (job_id,),
+            )
+            existing_run = cursor.fetchone()
+            if existing_run:
+                cursor.execute(
+                    """
+                    UPDATE purchase_runs
+                    SET purchase_id = %s,
+                        file_name = COALESCE(NULLIF(%s, ''), file_name),
+                        reference_count = CASE WHEN %s > 0 THEN %s ELSE reference_count END,
+                        citation_count = CASE WHEN %s > 0 THEN %s ELSE citation_count END
+                    WHERE job_id = %s
+                    """,
+                    (
+                        purchase_id,
+                        purchase.get("preview_file_name") or "",
+                        int(purchase.get("preview_reference_count") or 0),
+                        int(purchase.get("preview_reference_count") or 0),
+                        int(purchase.get("preview_citation_count") or 0),
+                        int(purchase.get("preview_citation_count") or 0),
+                        job_id,
+                    ),
+                )
+                action = "relinked"
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO purchase_runs
+                        (purchase_id, job_id, file_name, reference_count, citation_count)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        purchase_id,
+                        job_id,
+                        purchase.get("preview_file_name") or "",
+                        int(purchase.get("preview_reference_count") or 0),
+                        int(purchase.get("preview_citation_count") or 0),
+                    ),
+                )
+                action = "inserted"
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+            _mark_job_result_paid(job_id, purchase)
+            print(f"[ACCESS_REPAIR] Paid purchase {action} for job_id={job_id}, purchase_id={purchase_id}")
+            return _normalise_purchase_access(purchase)
+
+        # Third: server-side marker fallback. This only works if the Stripe success
+        # callback already wrote jobs.result.access.paid=true after verifying Stripe.
+        cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        result = (row or {}).get("result") if row else {}
+        if isinstance(result, str):
+            result = json.loads(result)
+        marker = (result or {}).get("access") or {}
+        if marker.get("paid") is True and marker.get("payment_provider") == "stripe":
+            print(f"[ACCESS_REPAIR] Using verified Stripe paid marker for job_id={job_id}")
+            return {
+                "paid": True,
+                "tier_key": marker.get("tier_key", "") or "",
+                "currency": marker.get("currency", "USD") or "USD",
+                "purchase": marker,
+            }
+
+        return default
+
+    except Exception as e:
+        print(f"[ACCESS_REPAIR_ERROR] job_id={job_id}: {type(e).__name__}: {e}")
+        return default
+
+
 def get_access_for_job(job_id: str) -> Dict[str, Any]:
-    """Return paid/free access metadata for a job."""
+    """Return paid/free access metadata for a job, with Stripe repair fallback."""
     default = {
         "paid": False,
         "tier_key": "",
@@ -1047,20 +1265,30 @@ def get_access_for_job(job_id: str) -> Dict[str, Any]:
         "purchase": None,
     }
 
-    if not (DATABASE_URL and COMMERCIAL_FEATURES_AVAILABLE and purchase_is_paid_for_job):
+    if not DATABASE_URL:
         return default
 
-    try:
-        access = purchase_is_paid_for_job(DATABASE_URL, job_id=job_id) or default
-        return {
-            "paid": bool(access.get("paid")),
-            "tier_key": access.get("tier_key", "") or "",
-            "currency": access.get("currency", "GHS") or "GHS",
-            "purchase": access.get("purchase"),
-        }
-    except Exception as e:
-        print(f"[ACCESS] Could not determine payment access for {job_id}: {e}")
-        return default
+    # Normal Paystack/Stripe paid-access path.
+    if COMMERCIAL_FEATURES_AVAILABLE and purchase_is_paid_for_job:
+        try:
+            access = purchase_is_paid_for_job(DATABASE_URL, job_id=job_id) or default
+            if access.get("paid"):
+                return {
+                    "paid": True,
+                    "tier_key": access.get("tier_key", "") or "",
+                    "currency": access.get("currency", "GHS") or "GHS",
+                    "purchase": access.get("purchase"),
+                }
+        except Exception as e:
+            print(f"[ACCESS] Primary purchase lookup failed for {job_id}: {type(e).__name__}: {e}")
+
+    # Stripe-specific recovery path for cases where Checkout succeeded but the
+    # paid purchase was not attached to purchase_runs.
+    repaired = repair_paid_purchase_link_for_job(job_id)
+    if repaired.get("paid"):
+        return repaired
+
+    return default
 
 
 def shape_result_for_access(job_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -1157,6 +1385,20 @@ async def payment_access_check(job_id: str, _auth: Any = Depends(authenticate)):
             payload["db_error"] = f"{type(e).__name__}: {str(e)}"
 
     return payload
+
+
+@app.post("/api/payment/repair-access/{job_id}")
+async def payment_repair_access(job_id: str, _auth: Any = Depends(authenticate)):
+    """Admin-only endpoint to repair a paid Stripe purchase link for a job."""
+    repaired = repair_paid_purchase_link_for_job(job_id)
+    access = build_access_response(job_id)
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "repaired": repaired,
+        "access_after": access,
+        "paid_after": bool(access.get("paid")),
+    }
 
 # --------------------------------------------------
 # Large-document preflight routing
