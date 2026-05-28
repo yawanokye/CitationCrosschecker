@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "commercial-2026-05-28-stripe-success-fallback-v1.6.1"
+# MAIN_BUILD = "commercial-2026-05-28-stripe-paystack-style-unlock-v1.6.1"
 
 import io
 import os
@@ -4116,12 +4116,11 @@ async def paystack_webhook(request: Request):
 @app.get("/payment/stripe/success")
 async def stripe_payment_success(session_id: str = "", job_id: str = ""):
     """
-    Stripe success page.
+    Stripe success callback.
 
-    Important fix:
-    - Stripe now returns job_id in the success URL as a fallback.
-    - The success page redirects to /new/results/{job_id}, not /results/{job_id}.
-    - If the Stripe helper can verify the session, it also activates the purchase.
+    Paystack unlocks through its callback by verifying the transaction and then
+    marking the purchase as paid. Stripe should do the same here as a safe
+    fallback, while the webhook remains the primary production confirmation.
     """
     requested_job_id = (job_id or "").strip()
 
@@ -4132,34 +4131,78 @@ async def stripe_payment_success(session_id: str = "", job_id: str = ""):
         "job_id": requested_job_id,
     }
 
-    if session_id and verify_and_activate_stripe_session:
+    if not DATABASE_URL:
+        print("[STRIPE_SUCCESS_PAGE] DATABASE_URL is not configured.")
+    elif session_id and verify_and_activate_stripe_session:
         activation = verify_and_activate_stripe_session(
             database_url=DATABASE_URL,
             session_id=session_id,
         ) or activation
-    elif not verify_and_activate_stripe_session:
+    elif not session_id:
+        print("[STRIPE_SUCCESS_PAGE] Missing session_id from Stripe success redirect.")
+    else:
         print("[STRIPE_SUCCESS_PAGE] verify_and_activate_stripe_session helper is unavailable.")
 
+    purchase = activation.get("purchase") or {}
     final_job_id = (
         (activation.get("job_id") or "").strip()
         or requested_job_id
+        or (purchase.get("preview_job_id") or "").strip()
+        or (purchase.get("job_id") or "").strip()
     )
 
-    # The new dashboard route is /new/results/{job_id}.
-    results_url = f"/new/results/{final_job_id}?verify=1&paid=1" if final_job_id else "/new/analyse"
+    access_after = {}
+    if final_job_id:
+        try:
+            access_after = build_access_response(final_job_id)
+            print(f"[STRIPE_SUCCESS_ACCESS] job_id={final_job_id}, access={access_after}")
+        except Exception as e:
+            print(f"[STRIPE_SUCCESS_ACCESS_ERROR] {type(e).__name__}: {e}")
+            access_after = {}
+
+    activated = bool(activation.get("activated") or access_after.get("paid"))
+
+    # Keep route consistent with the current dashboard route.
+    results_url = f"/new/results/{final_job_id}?verify=1&paid=1&fresh=1" if final_job_id else "/new/analyse"
+
+    try:
+        if activated and final_job_id:
+            amount_minor = (
+                purchase.get("amount_minor")
+                or purchase.get("amount")
+                or 0
+            )
+            try:
+                amount_minor = int(float(amount_minor or 0))
+            except Exception:
+                amount_minor = 0
+
+            record_dashboard(
+                final_job_id,
+                email=purchase.get("user_email") or purchase.get("email"),
+                file_name=purchase.get("preview_file_name") or purchase.get("file_name"),
+                plan_key=purchase.get("tier_key") or purchase.get("document_tier") or purchase.get("package_key"),
+                plan_name=purchase.get("plan_name") or purchase.get("tier_name") or purchase.get("tier_key") or purchase.get("document_tier"),
+                currency=purchase.get("currency") or "USD",
+                amount=(amount_minor / 100) if amount_minor else None,
+                amount_minor=amount_minor,
+                payment_reference=activation.get("provider_reference") or purchase.get("provider_reference"),
+                payment_status="paid",
+                paid=True,
+            )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after Stripe success activation: {e}")
 
     print(
-        f"[STRIPE_SUCCESS_PAGE] session_id={session_id}, "
-        f"query_job_id={requested_job_id}, activation_job_id={activation.get('job_id')}, "
-        f"activated={activation.get('activated')}, redirect={results_url}"
+        f"[STRIPE_SUCCESS_PAGE] session_id={session_id}, query_job_id={requested_job_id}, "
+        f"activation_job_id={activation.get('job_id')}, activated={activated}, redirect={results_url}"
     )
 
-    activated = bool(activation.get("activated"))
     heading = "✅ Full Review unlocked" if activated else "✅ Payment received"
     message = (
         "Your CiteIntegrity Full Review has been unlocked. You will be redirected to your results page."
         if activated
-        else "Your payment was received. The unlock is still being processed. You will be redirected to your results page."
+        else "Your payment was received, but the unlock has not yet been confirmed. You will be redirected to your results page; refresh after a few seconds."
     )
 
     return HTMLResponse(f"""
@@ -4183,18 +4226,12 @@ async def stripe_payment_success(session_id: str = "", job_id: str = ""):
                 border: 1px solid #e2e8f0;
                 border-radius: 22px;
                 padding: 34px;
-                max-width: 640px;
+                max-width: 660px;
                 text-align: center;
                 box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
             }}
-            h1 {{
-                margin: 0 0 12px;
-                color: #13855a;
-            }}
-            p {{
-                color: #64748b;
-                line-height: 1.6;
-            }}
+            h1 {{ margin: 0 0 12px; color: #13855a; }}
+            p {{ color: #64748b; line-height: 1.6; }}
             a {{
                 display: inline-block;
                 margin-top: 18px;
@@ -4205,29 +4242,20 @@ async def stripe_payment_success(session_id: str = "", job_id: str = ""):
                 text-decoration: none;
                 font-weight: 800;
             }}
-            .small {{
-                font-size: 12px;
-                color: #94a3b8;
-                margin-top: 16px;
-                word-break: break-all;
-            }}
+            .small {{ font-size: 12px; color: #94a3b8; margin-top: 16px; word-break: break-all; }}
         </style>
     </head>
     <body>
         <div class="card">
             <h1>{heading}</h1>
             <p>{message}</p>
-            <p>If the results page does not update immediately, refresh it after a few seconds.</p>
+            <p>If the results page does not update immediately, click the button below and refresh once.</p>
             <a href="{results_url}">Return to results</a>
             <p class="small">Session: {session_id}</p>
-            <p class="small">Job: {final_job_id or 'not found'}</p>
-            <p class="small">{activation.get("message", "")}</p>
+            <p class="small">Job: {final_job_id or 'not recovered'}</p>
         </div>
-
         <script>
-            setTimeout(function () {{
-                window.location.href = "{results_url}";
-            }}, 2000);
+            setTimeout(function () {{ window.location.href = "{results_url}"; }}, 2000);
         </script>
     </body>
     </html>
