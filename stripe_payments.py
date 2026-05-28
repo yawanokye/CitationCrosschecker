@@ -237,7 +237,7 @@ def initialize_citeintegrity_stripe_payment(
                     "quantity": 1,
                 }
             ],
-            success_url=f"{APP_BASE_URL}{success_path}?session_id={{CHECKOUT_SESSION_ID}}",
+            success_url=f"{APP_BASE_URL}{success_path}?session_id={{CHECKOUT_SESSION_ID}}&job_id={job_id}",
             cancel_url=f"{APP_BASE_URL}{cancel_path}?cancelled=1",
             metadata={
                 "product": "CiteIntegrity",
