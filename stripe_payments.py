@@ -19,6 +19,8 @@ import secrets
 from typing import Any, Dict
 
 import stripe
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
 from entitlements import get_price, validate_paid_package_for_document
@@ -103,42 +105,174 @@ def _stringify_gateway_error(payload: Dict[str, Any]) -> str:
     return " | ".join(pieces) or "Unknown Stripe error"
 
 
-def _attach_preview_job_to_purchase(database_url: str, purchase: Dict[str, Any], source: str = "stripe") -> Dict[str, Any]:
+def _attach_preview_job_to_purchase(
+    database_url: str,
+    purchase: Dict[str, Any],
+    source: str = "stripe",
+    fallback_job_id: str = "",
+    fallback_file_name: str = "",
+    fallback_reference_count: int = 0,
+    fallback_citation_count: int = 0,
+) -> Dict[str, Any]:
     """
-    Attach the paid preview job to purchase_runs and consume one analysis run.
-    Safe to call repeatedly because record_purchase_run should enforce job-level uniqueness.
+    Force-link the paid purchase to the preview job.
+
+    Why this is stronger than record_purchase_run() alone:
+    - purchase_runs.job_id is UNIQUE.
+    - If an earlier pending/failed payment already inserted the same job_id,
+      ON CONFLICT DO NOTHING can leave the current paid Stripe purchase detached.
+    - The results page unlocks only when purchase_is_paid_for_job(job_id) can
+      join purchase_runs -> purchases and find a paid purchase.
+
+    This helper therefore inserts the run when missing, or re-points an existing
+    run for the same job_id to the newly paid Stripe purchase.
     """
-    if not purchase or not purchase.get("preview_job_id"):
-        return {
-            "attached": False,
-            "reason": "no_preview_job_id",
-            "source": source,
-        }
+    if not purchase:
+        return {"attached": False, "reason": "no_purchase", "source": source}
+
+    purchase_id = purchase.get("id")
+    job_id = (
+        str(purchase.get("preview_job_id") or "").strip()
+        or str(fallback_job_id or "").strip()
+    )
+
+    if not purchase_id:
+        return {"attached": False, "reason": "no_purchase_id", "source": source}
+
+    if not job_id:
+        return {"attached": False, "reason": "no_preview_job_id", "source": source}
+
+    file_name = (
+        str(purchase.get("preview_file_name") or "").strip()
+        or str(fallback_file_name or "").strip()
+    )
+
+    reference_count = _safe_int(
+        purchase.get("preview_reference_count"),
+        _safe_int(fallback_reference_count, 0),
+    )
+    citation_count = _safe_int(
+        purchase.get("preview_citation_count"),
+        _safe_int(fallback_citation_count, 0),
+    )
 
     try:
-        attached = record_purchase_run(
-            database_url,
-            purchase_id=purchase["id"],
-            job_id=purchase.get("preview_job_id", ""),
-            file_name=purchase.get("preview_file_name", ""),
-            reference_count=purchase.get("preview_reference_count", 0),
-            citation_count=purchase.get("preview_citation_count", 0),
+        with psycopg2.connect(database_url, cursor_factory=RealDictCursor) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT * FROM purchase_runs WHERE job_id = %s FOR UPDATE",
+                    (job_id,),
+                )
+                existing_run = cursor.fetchone()
+
+                linked_or_relinked = False
+
+                if existing_run:
+                    existing_purchase_id = existing_run.get("purchase_id")
+
+                    if str(existing_purchase_id) != str(purchase_id):
+                        cursor.execute(
+                            """
+                            UPDATE purchase_runs
+                            SET purchase_id = %s,
+                                file_name = COALESCE(NULLIF(%s, ''), file_name),
+                                reference_count = CASE WHEN %s > 0 THEN %s ELSE reference_count END,
+                                citation_count = CASE WHEN %s > 0 THEN %s ELSE citation_count END
+                            WHERE job_id = %s
+                            RETURNING *
+                            """,
+                            (
+                                purchase_id,
+                                file_name,
+                                reference_count,
+                                reference_count,
+                                citation_count,
+                                citation_count,
+                                job_id,
+                            ),
+                        )
+                        run_row = cursor.fetchone()
+                        linked_or_relinked = True
+                    else:
+                        run_row = existing_run
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO purchase_runs
+                            (purchase_id, job_id, file_name, reference_count, citation_count)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING *
+                        """,
+                        (purchase_id, job_id, file_name, reference_count, citation_count),
+                    )
+                    run_row = cursor.fetchone()
+                    linked_or_relinked = True
+
+                if linked_or_relinked:
+                    cursor.execute(
+                        """
+                        UPDATE purchases
+                        SET analyses_used = LEAST(
+                            COALESCE(analyses_used, 0) + 1,
+                            COALESCE(analyses_total, 2)
+                        )
+                        WHERE id = %s
+                        RETURNING *
+                        """,
+                        (purchase_id,),
+                    )
+                    purchase_row = cursor.fetchone()
+                else:
+                    cursor.execute("SELECT * FROM purchases WHERE id = %s", (purchase_id,))
+                    purchase_row = cursor.fetchone()
+
+            conn.commit()
+
+        print(
+            f"[STRIPE_FORCE_ATTACH] source={source}, job_id={job_id}, "
+            f"purchase_id={purchase_id}, attached=True, relinked={linked_or_relinked}"
         )
 
         return {
-            "attached": bool(attached.get("run")),
+            "attached": True,
             "source": source,
-            "run": attached.get("run"),
-            "purchase": attached.get("purchase"),
+            "job_id": job_id,
+            "run": dict(run_row) if run_row else None,
+            "purchase": dict(purchase_row) if purchase_row else purchase,
+            "relinked_or_inserted": linked_or_relinked,
         }
 
     except Exception as e:
-        print(f"[STRIPE] Could not attach preview job to purchase from {source}: {type(e).__name__}: {e}")
-        return {
-            "attached": False,
-            "reason": f"{type(e).__name__}: {str(e)}",
-            "source": source,
-        }
+        print(f"[STRIPE_FORCE_ATTACH_ERROR] source={source}, job_id={job_id}: {type(e).__name__}: {e}")
+
+        # Last resort: use existing access_control helper. This preserves the
+        # original behaviour if direct SQL fails for any environment-specific reason.
+        try:
+            attached = record_purchase_run(
+                database_url,
+                purchase_id=purchase_id,
+                job_id=job_id,
+                file_name=file_name,
+                reference_count=reference_count,
+                citation_count=citation_count,
+            )
+            return {
+                "attached": bool(attached.get("run") or attached.get("purchase")),
+                "source": f"{source}_fallback_record_purchase_run",
+                "job_id": job_id,
+                "run": attached.get("run"),
+                "purchase": attached.get("purchase") or purchase,
+                "fallback": True,
+            }
+        except Exception as inner:
+            print(f"[STRIPE_FORCE_ATTACH_FALLBACK_ERROR] {type(inner).__name__}: {inner}")
+            return {
+                "attached": False,
+                "reason": f"{type(e).__name__}: {str(e)}",
+                "fallback_reason": f"{type(inner).__name__}: {str(inner)}",
+                "source": source,
+                "job_id": job_id,
+            }
 
 
 def initialize_citeintegrity_stripe_payment(
@@ -289,6 +423,7 @@ def verify_and_activate_stripe_session(
     *,
     database_url: str,
     session_id: str,
+    fallback_job_id: str = "",
 ) -> Dict[str, Any]:
     """
     Paystack-style fallback activation for Stripe Checkout.
@@ -319,7 +454,7 @@ def verify_and_activate_stripe_session(
             or ""
         )
 
-        job_id = metadata.get("job_id", "") or ""
+        job_id = (metadata.get("job_id", "") or str(fallback_job_id or "")).strip()
         payment_status = str(session.get("payment_status") or "").lower()
 
         if payment_status not in {"paid", "no_payment_required"}:
@@ -365,10 +500,23 @@ def verify_and_activate_stripe_session(
                 "payment_status": payment_status,
             }
 
+        # If the deployed access_control table does not carry preview_job_id,
+        # use the verified Stripe session metadata or query-string job_id.
+        try:
+            if job_id and not purchase.get("preview_job_id"):
+                purchase = dict(purchase)
+                purchase["preview_job_id"] = job_id
+        except Exception:
+            pass
+
         attached = _attach_preview_job_to_purchase(
             database_url,
             purchase,
             source="stripe_success_page",
+            fallback_job_id=job_id,
+            fallback_file_name=metadata.get("file_name", "") or "",
+            fallback_reference_count=_safe_int(metadata.get("reference_count"), 0),
+            fallback_citation_count=_safe_int(metadata.get("citation_count"), 0),
         )
 
         activated_purchase = attached.get("purchase") or purchase
@@ -467,12 +615,24 @@ def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str)
             provider_reference=provider_reference,
         )
 
+        metadata = data.get("metadata", {}) or {}
         attached = {}
         if purchase:
+            try:
+                if metadata.get("job_id") and not purchase.get("preview_job_id"):
+                    purchase = dict(purchase)
+                    purchase["preview_job_id"] = metadata.get("job_id")
+            except Exception:
+                pass
+
             attached = _attach_preview_job_to_purchase(
                 database_url,
                 purchase,
                 source="stripe_webhook",
+                fallback_job_id=metadata.get("job_id", "") or "",
+                fallback_file_name=metadata.get("file_name", "") or "",
+                fallback_reference_count=_safe_int(metadata.get("reference_count"), 0),
+                fallback_citation_count=_safe_int(metadata.get("citation_count"), 0),
             )
 
         activated_purchase = attached.get("purchase") or purchase
