@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "commercial-2026-05-27-africa-paystack-global-stripe-v1.6.0"
+# MAIN_BUILD = "commercial-2026-05-28-stripe-success-fallback-v1.6.1"
 
 import io
 import os
@@ -142,6 +142,7 @@ try:
     from stripe_payments import (
         initialize_citeintegrity_stripe_payment,
         handle_stripe_webhook,
+        verify_and_activate_stripe_session,
     )
     STRIPE_PAYMENT_FEATURES_AVAILABLE = True
 except Exception as e:
@@ -150,6 +151,7 @@ except Exception as e:
     choose_payment_provider = None
     initialize_citeintegrity_stripe_payment = None
     handle_stripe_webhook = None
+    verify_and_activate_stripe_session = None
 
 
 # ===============================
@@ -4113,16 +4115,101 @@ async def paystack_webhook(request: Request):
 
 @app.get("/payment/stripe/success")
 async def stripe_payment_success(session_id: str = ""):
-    # The success page is only for user experience. The trusted unlock still
-    # happens through /webhooks/stripe after Stripe confirms payment.
-    return HTMLResponse(
-        f"""
-        <h2>Payment received</h2>
-        <p>Your CiteIntegrity Full Review is being unlocked.</p>
-        <p>If your results page does not update immediately, please return to the results page and refresh.</p>
-        <p>Session: {session_id}</p>
-        """
+    activation = {
+        "ok": False,
+        "activated": False,
+        "message": "Payment received. Unlock is being processed.",
+        "job_id": "",
+    }
+
+    if session_id and verify_and_activate_stripe_session:
+        activation = verify_and_activate_stripe_session(
+            database_url=DATABASE_URL,
+            session_id=session_id,
+        )
+    elif not verify_and_activate_stripe_session:
+        print("[STRIPE_SUCCESS_PAGE] verify_and_activate_stripe_session helper is unavailable.")
+
+    job_id = activation.get("job_id") or ""
+    results_url = f"/results/{job_id}?verify=1&paid=1" if job_id else "/new/analyse"
+
+    activated = bool(activation.get("activated"))
+    heading = "✅ Full Review unlocked" if activated else "✅ Payment received"
+    message = (
+        "Your CiteIntegrity Full Review has been unlocked. You will be redirected to your results page."
+        if activated
+        else "Your payment was received. The unlock is still being processed. You will be redirected shortly."
     )
+
+    return HTMLResponse(f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Payment Received | CiteIntegrity</title>
+        <meta http-equiv="refresh" content="2;url={results_url}">
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f8fafc;
+                color: #0f172a;
+                display: grid;
+                place-items: center;
+                min-height: 100vh;
+                margin: 0;
+            }}
+            .card {{
+                background: white;
+                border: 1px solid #e2e8f0;
+                border-radius: 22px;
+                padding: 34px;
+                max-width: 640px;
+                text-align: center;
+                box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+            }}
+            h1 {{
+                margin: 0 0 12px;
+                color: #13855a;
+            }}
+            p {{
+                color: #64748b;
+                line-height: 1.6;
+            }}
+            a {{
+                display: inline-block;
+                margin-top: 18px;
+                background: #0f172a;
+                color: white;
+                padding: 12px 18px;
+                border-radius: 999px;
+                text-decoration: none;
+                font-weight: 800;
+            }}
+            .small {{
+                font-size: 12px;
+                color: #94a3b8;
+                margin-top: 16px;
+                word-break: break-all;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>{heading}</h1>
+            <p>{message}</p>
+            <p>If the results page does not update immediately, refresh it after a few seconds.</p>
+            <a href="{results_url}">Return to results</a>
+            <p class="small">Session: {session_id}</p>
+            <p class="small">{activation.get("message", "")}</p>
+        </div>
+
+        <script>
+            setTimeout(function () {{
+                window.location.href = "{results_url}";
+            }}, 2000);
+        </script>
+    </body>
+    </html>
+    """)
 
 
 @app.post("/webhooks/stripe")
