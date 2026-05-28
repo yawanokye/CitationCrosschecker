@@ -1856,7 +1856,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "payment-routing-paystack-stripe-v1.5.44";
+    const RESULTS_UI_BUILD = "payment-routing-paystack-stripe-v1.5.45-final-unlock";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2278,7 +2278,12 @@ document.addEventListener("DOMContentLoaded", function () {
             const checkoutUrl = js.checkout_url || js.authorization_url || js.url;
 
             if (!res.ok || js.ok === false || !checkoutUrl) {
-                throw new Error(js.detail || js.error || "Payment could not be initialized.");
+                throw new Error(
+                    js.gateway_error ||
+                    js.detail ||
+                    js.error ||
+                    "Payment could not be initialized."
+                );
             }
 
             setStatus(`Redirecting to ${js.provider || route.provider} checkout...`, "good");
