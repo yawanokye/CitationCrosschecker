@@ -1112,6 +1112,52 @@ def build_access_response(job_id: str) -> Dict[str, Any]:
         ),
     }
 
+
+@app.get("/api/payment/access-check/{job_id}")
+async def payment_access_check(job_id: str, _auth: Any = Depends(authenticate)):
+    """Admin-only access diagnostic for Stripe/Paystack unlock issues."""
+    access = build_access_response(job_id)
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "job_id": job_id,
+        "access": access,
+    }
+
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, user_email, document_tier, currency, status,
+                       payment_provider, provider_reference, analyses_total, analyses_used, created_at
+                FROM purchases
+                WHERE id IN (SELECT purchase_id FROM purchase_runs WHERE job_id = %s)
+                ORDER BY created_at DESC
+                LIMIT 5
+                """,
+                (job_id,),
+            )
+            payload["linked_purchases"] = [dict(r) for r in (cursor.fetchall() or [])]
+
+            cursor.execute(
+                """
+                SELECT id, purchase_id, job_id, file_name, reference_count, citation_count, created_at
+                FROM purchase_runs
+                WHERE job_id = %s
+                ORDER BY created_at DESC
+                LIMIT 5
+                """,
+                (job_id,),
+            )
+            payload["purchase_runs"] = [dict(r) for r in (cursor.fetchall() or [])]
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            payload["db_error"] = f"{type(e).__name__}: {str(e)}"
+
+    return payload
+
 # --------------------------------------------------
 # Large-document preflight routing
 # --------------------------------------------------
@@ -4137,6 +4183,7 @@ async def stripe_payment_success(session_id: str = "", job_id: str = ""):
         activation = verify_and_activate_stripe_session(
             database_url=DATABASE_URL,
             session_id=session_id,
+            fallback_job_id=requested_job_id,
         ) or activation
     elif not session_id:
         print("[STRIPE_SUCCESS_PAGE] Missing session_id from Stripe success redirect.")
@@ -4161,6 +4208,41 @@ async def stripe_payment_success(session_id: str = "", job_id: str = ""):
             access_after = {}
 
     activated = bool(activation.get("activated") or access_after.get("paid"))
+
+    # Server-side fallback marker for the results payload. This does not replace
+    # the purchase/purchase_runs access check; it helps the frontend reflect the
+    # paid state immediately after a verified Stripe success redirect.
+    if activated and final_job_id and DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (final_job_id,))
+            row = cursor.fetchone()
+            if row:
+                stored_result = row.get("result") or {}
+                if isinstance(stored_result, str):
+                    stored_result = json.loads(stored_result)
+                stored_result.setdefault("access", {})
+                stored_result["access"].update({
+                    "paid": True,
+                    "tier_key": access_after.get("tier_key") or (purchase.get("tier_key") or purchase.get("document_tier") or ""),
+                    "currency": access_after.get("currency") or purchase.get("currency") or "USD",
+                    "payment_provider": "stripe",
+                })
+                cursor.execute(
+                    "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+                    (json.dumps(stored_result), final_job_id),
+                )
+                conn.commit()
+                if redis_conn:
+                    try:
+                        redis_conn.setex(f"result:{final_job_id}", 3600, json.dumps(stored_result))
+                    except Exception as redis_e:
+                        print(f"[STRIPE_SUCCESS_CACHE] Redis paid marker refresh failed: {redis_e}")
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"[STRIPE_SUCCESS_MARKER_ERROR] {type(e).__name__}: {e}")
 
     # Keep route consistent with the current dashboard route.
     results_url = f"/new/results/{final_job_id}?verify=1&paid=1&fresh=1" if final_job_id else "/new/analyse"
