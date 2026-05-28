@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "commercial-2026-05-22-large-file-page-routing-v1.5.33"
+# MAIN_BUILD = "commercial-2026-05-28-dashboard-jsonb-population-only-v1.5.34"
 
 import io
 import os
@@ -463,12 +463,16 @@ class StatsTracker:
                         success_rate = round((total_processed / max(total_uploads, 1)) * 100, 2)
                         
                         cursor.execute("""
-                            SELECT AVG(processing_time) 
-                            FROM uploads 
+                            SELECT AVG(processing_time) AS avg_processing_time
+                            FROM uploads
                             WHERE success = 1 AND processing_time IS NOT NULL
                         """)
                         avg_row = cursor.fetchone()
-                        avg_processing_time = round(avg_row[0], 2) if avg_row and avg_row[0] else 0
+                        if isinstance(avg_row, dict):
+                            avg_value = avg_row.get("avg_processing_time")
+                        else:
+                            avg_value = avg_row[0] if avg_row else None
+                        avg_processing_time = round(float(avg_value), 2) if avg_value else 0
                         
                         return {
                             "total_stats": {
@@ -3835,7 +3839,9 @@ def _extract_acii_score(result: Dict[str, Any]):
     if isinstance(acii, (int, float)):
         return round(float(acii), 2)
     if isinstance(acii, dict):
-        for key in ["score", "acii_score", "overall_score", "total_score", "value"]:
+        # ACII is stored as {"ACII": 77.69, ...} in recent results.
+        # Keep older aliases too for backward compatibility.
+        for key in ["ACII", "score", "acii_score", "overall_score", "total_score", "value"]:
             if key in acii:
                 return round(_safe_float(acii.get(key)), 2)
     return None
@@ -3965,23 +3971,21 @@ def _empty_dashboard_payload(days: int, message: str = "No data available yet.")
 
 def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
     """
-    Deployment-safe dashboard builder.
+    Dashboard builder populated from persistent PostgreSQL data.
 
-    IMPORTANT FIX:
-    The earlier dashboard loaded jobs.result for thousands of jobs. Some result
-    JSON objects contain full extracted manuscript text, references and tables,
-    which can make /private-stats heavy enough to return HTTP 502 on Render.
-
-    This version reads persistent PostgreSQL tables first and uses SQL-level JSONB
-    counts only when possible. It never returns or transfers full manuscript text.
-    Dashboard data remains persistent because it is read from PostgreSQL, not
-    from in-memory variables or /tmp SQLite storage.
+    Dashboard-only update:
+    - Keeps payment routes and payment logic untouched.
+    - Uses jobs.result JSONB to populate citation, verification, ACII and claim metrics.
+    - Uses SQL-level JSONB expressions, not full manuscript JSON transfer, to avoid
+      exposing or loading full document text into the dashboard response.
+    - Falls back gracefully to relational upload totals when optional JSONB metrics
+      are unavailable.
     """
     days = max(1, min(int(days or 30), 365))
-    cutoff_date = (datetime.now() - timedelta(days=days - 1)).date()
+    cutoff_dt = datetime.now() - timedelta(days=days - 1)
+    cutoff_date = cutoff_dt.date()
 
-    # Defaults keep the endpoint returning HTTP 200 even if optional metrics fail.
-    stats_row = {}
+    stats_row: Dict[str, Any] = {}
     job_summary = {
         "total_jobs": 0,
         "completed_jobs": 0,
@@ -3991,8 +3995,10 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
         "first_created_at": None,
         "last_updated_at": None,
     }
+
     daily_stats: Dict[str, Dict[str, Any]] = {}
     recent_uploads: List[Dict[str, Any]] = []
+
     advanced = {
         "references_count": 0,
         "citations_count": 0,
@@ -4012,33 +4018,146 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
         "error": None,
     }
 
+    completed_statuses = "('completed','complete','done','success','finished')"
+    failed_statuses = "('failed','error','cancelled','canceled')"
+    active_statuses = "('queued','started','running','processing','deferred','scheduled')"
+
+    # SQL snippets are repeated in aggregate, daily and recent queries. They use
+    # summary counts first, then fall back to JSON array lengths.
+    references_expr = """
+        CASE
+            WHEN COALESCE(result #>> '{summary,reference_entries_found}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{summary,reference_entries_found}')::int
+            WHEN jsonb_typeof(result->'references_raw') = 'array'
+                THEN jsonb_array_length(result->'references_raw')
+            WHEN jsonb_typeof(result->'references') = 'array'
+                THEN jsonb_array_length(result->'references')
+            ELSE 0
+        END
+    """
+
+    citations_expr = """
+        CASE
+            WHEN COALESCE(result #>> '{summary,in_text_citations_found}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{summary,in_text_citations_found}')::int
+            WHEN jsonb_typeof(result->'in_text_citations') = 'array'
+                THEN jsonb_array_length(result->'in_text_citations')
+            WHEN jsonb_typeof(result->'citations') = 'array'
+                THEN jsonb_array_length(result->'citations')
+            WHEN jsonb_typeof(result->'reconciliation_intext_to_reference') = 'array'
+                THEN jsonb_array_length(result->'reconciliation_intext_to_reference')
+            ELSE 0
+        END
+    """
+
+    missing_expr = """
+        CASE
+            WHEN COALESCE(result #>> '{summary,missing_in_references}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{summary,missing_in_references}')::int
+            WHEN jsonb_typeof(result->'missing_in_references') = 'array'
+                THEN jsonb_array_length(result->'missing_in_references')
+            WHEN jsonb_typeof(result->'missing_citations') = 'array'
+                THEN jsonb_array_length(result->'missing_citations')
+            ELSE 0
+        END
+    """
+
+    uncited_expr = """
+        CASE
+            WHEN jsonb_typeof(result->'uncited_references') = 'array'
+                THEN jsonb_array_length(result->'uncited_references')
+            WHEN jsonb_typeof(result->'uncited_reference_rows') = 'array'
+                THEN jsonb_array_length(result->'uncited_reference_rows')
+            ELSE 0
+        END
+    """
+
+    verification_rows_expr = """
+        CASE
+            WHEN COALESCE(result #>> '{online_verification,summary,total}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{online_verification,summary,total}')::int
+            WHEN COALESCE(result #>> '{verification,total}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{verification,total}')::int
+            WHEN jsonb_typeof(result->'online_verification'->'rows') = 'array'
+                THEN jsonb_array_length(result->'online_verification'->'rows')
+            ELSE 0
+        END
+    """
+
+    verified_expr = """
+        CASE WHEN COALESCE(result #>> '{online_verification,summary,verified}', '') ~ '^[0-9]+$'
+            THEN (result #>> '{online_verification,summary,verified}')::int ELSE 0 END
+    """
+    likely_expr = """
+        CASE WHEN COALESCE(result #>> '{online_verification,summary,likely}', '') ~ '^[0-9]+$'
+            THEN (result #>> '{online_verification,summary,likely}')::int ELSE 0 END
+    """
+    needs_review_expr = """
+        CASE WHEN COALESCE(result #>> '{online_verification,summary,needs_review}', '') ~ '^[0-9]+$'
+            THEN (result #>> '{online_verification,summary,needs_review}')::int ELSE 0 END
+    """
+    not_found_expr = """
+        CASE WHEN COALESCE(result #>> '{online_verification,summary,not_found}', '') ~ '^[0-9]+$'
+            THEN (result #>> '{online_verification,summary,not_found}')::int ELSE 0 END
+    """
+    offline_expr = """
+        CASE WHEN COALESCE(result #>> '{online_verification,summary,offline}', '') ~ '^[0-9]+$'
+            THEN (result #>> '{online_verification,summary,offline}')::int ELSE 0 END
+    """
+
+    claim_expr = """
+        CASE WHEN jsonb_typeof(result->'claim_support') = 'array'
+            THEN jsonb_array_length(result->'claim_support') ELSE 0 END
+    """
+
+    recovery_expr = """
+        (
+            CASE WHEN jsonb_typeof(result->'recovery'->'missing_recovery') = 'array'
+                THEN jsonb_array_length(result->'recovery'->'missing_recovery') ELSE 0 END
+            +
+            CASE WHEN jsonb_typeof(result->'recovery'->'verification_recovery') = 'array'
+                THEN jsonb_array_length(result->'recovery'->'verification_recovery') ELSE 0 END
+        )
+    """
+
+    suggestions_expr = """
+        CASE
+            WHEN jsonb_typeof(result->'suggestions') = 'array'
+                THEN jsonb_array_length(result->'suggestions')
+            WHEN jsonb_typeof(result->'suggestions'->'citations') = 'array'
+                THEN jsonb_array_length(result->'suggestions'->'citations')
+            ELSE 0
+        END
+    """
+
+    acii_expr = """
+        CASE
+            WHEN jsonb_typeof(result->'acii') = 'number' THEN (result->>'acii')::numeric
+            WHEN COALESCE(result #>> '{acii,ACII}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,ACII}')::numeric
+            WHEN COALESCE(result #>> '{acii,score}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,score}')::numeric
+            WHEN COALESCE(result #>> '{acii,acii_score}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,acii_score}')::numeric
+            WHEN COALESCE(result #>> '{acii,overall_score}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,overall_score}')::numeric
+            ELSE NULL
+        END
+    """
+
     # ------------------------------------------------------------------
-    # 1) Fast persistent totals from normal relational tables.
+    # 1) Relational totals and basic recent uploads.
     # ------------------------------------------------------------------
     with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10) as conn:
         with conn.cursor() as cursor:
-            # Keep dashboard queries fast. If a query exceeds this, the endpoint
-            # will fall back instead of causing a platform 502.
-            cursor.execute("SET LOCAL statement_timeout = '8000ms'")
+            cursor.execute("SET LOCAL statement_timeout = '10000ms'")
 
             cursor.execute("SELECT * FROM stats WHERE id = 1")
             stats_row = _as_dict(cursor.fetchone() or {})
 
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT
                     COUNT(*) AS total_jobs,
-                    COUNT(*) FILTER (
-                        WHERE lower(coalesce(status, '')) IN ('completed','complete','done','success','finished')
-                    ) AS completed_jobs,
-                    COUNT(*) FILTER (
-                        WHERE lower(coalesce(status, '')) IN ('failed','error','cancelled','canceled') OR error IS NOT NULL
-                    ) AS failed_jobs,
-                    COUNT(*) FILTER (
-                        WHERE lower(coalesce(status, '')) IN ('queued','started','running','processing','deferred','scheduled')
-                    ) AS running_jobs,
-                    COUNT(*) FILTER (
-                        WHERE lower(coalesce(status, '')) = 'queued'
-                    ) AS queued_jobs,
+                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {completed_statuses}) AS completed_jobs,
+                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {failed_statuses} OR error IS NOT NULL) AS failed_jobs,
+                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {active_statuses}) AS running_jobs,
+                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) = 'queued') AS queued_jobs,
                     MIN(created_at) AS first_created_at,
                     MAX(COALESCE(completed_at, started_at, created_at)) AS last_updated_at
                 FROM jobs
@@ -4053,6 +4172,7 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
             avg_row = _as_dict(cursor.fetchone() or {})
             advanced["average_processing_time"] = round(_safe_float(avg_row.get("avg_processing_time")), 2)
 
+            # Seed daily data from daily_stats so upload/processed counts remain stable.
             cursor.execute("""
                 SELECT date, uploads, processed, failed, references_count,
                        total_processing_time, processing_count
@@ -4078,120 +4198,164 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
                     "avg_processing_time": round(ptime / pcount, 2) if pcount else 0,
                 }
 
-            cursor.execute("""
-                SELECT timestamp, filename, file_size, references_count,
-                       processing_time, success, error
-                FROM uploads
-                ORDER BY timestamp DESC
-                LIMIT 50
-            """)
-            for raw in cursor.fetchall() or []:
-                row = _as_dict(raw)
-                recent_uploads.append({
-                    "timestamp": _dt_to_iso(row.get("timestamp")),
-                    "filename": row.get("filename") or "Untitled document",
-                    "file_size_mb": round(_safe_float(row.get("file_size")) / (1024 * 1024), 2),
-                    "references_count": _safe_int(row.get("references_count")),
-                    "citations_count": 0,
-                    "missing_citations_count": 0,
-                    "uncited_references_count": 0,
-                    "verification_rows": 0,
-                    "acii_score": None,
-                    "processing_time": _safe_float(row.get("processing_time")),
-                    "status": "completed" if row.get("success") else "failed",
-                    "success": bool(row.get("success")),
-                    "error": row.get("error"),
-                })
-
-            # If the uploads table is empty but the jobs table exists, still show
-            # recent activity without touching the large jobs.result JSON.
-            if not recent_uploads:
-                cursor.execute("""
-                    SELECT job_id, status, file_name, file_size_mb,
-                           processing_time, error, created_at
-                    FROM jobs
-                    ORDER BY created_at DESC
-                    LIMIT 50
-                """)
-                for raw in cursor.fetchall() or []:
-                    row = _as_dict(raw)
-                    status = (row.get("status") or "unknown").lower()
-                    recent_uploads.append({
-                        "timestamp": _dt_to_iso(row.get("created_at")),
-                        "filename": row.get("file_name") or "Untitled document",
-                        "file_size_mb": _safe_float(row.get("file_size_mb")),
-                        "references_count": 0,
-                        "citations_count": 0,
-                        "missing_citations_count": 0,
-                        "uncited_references_count": 0,
-                        "verification_rows": 0,
-                        "acii_score": None,
-                        "processing_time": _safe_float(row.get("processing_time")),
-                        "status": status,
-                        "success": status in {'completed','complete','done','success','finished'} and not row.get("error"),
-                        "error": row.get("error"),
-                    })
-
     # ------------------------------------------------------------------
-    # 2) Optional SQL-level JSONB counts. This does NOT transfer jobs.result
-    #    into Python, so it avoids the 502 problem caused by huge JSON payloads.
+    # 2) Dashboard indicators from jobs.result JSONB for the selected window.
     # ------------------------------------------------------------------
     try:
         with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SET LOCAL statement_timeout = '6000ms'")
-                cursor.execute("""
+                cursor.execute("SET LOCAL statement_timeout = '20000ms'")
+
+                cursor.execute(f"""
                     SELECT
-                        COALESCE(SUM(CASE WHEN jsonb_typeof(result->'references_raw') = 'array'
-                            THEN jsonb_array_length(result->'references_raw') ELSE 0 END), 0) AS references_count,
-                        COALESCE(SUM(CASE WHEN jsonb_typeof(result->'reconciliation_intext_to_reference') = 'array'
-                            THEN jsonb_array_length(result->'reconciliation_intext_to_reference') ELSE 0 END), 0) AS citations_count,
-                        COALESCE(SUM(CASE WHEN jsonb_typeof(result->'missing_in_references') = 'array'
-                            THEN jsonb_array_length(result->'missing_in_references') ELSE 0 END), 0) AS missing_citations_count,
-                        COALESCE(SUM(CASE WHEN jsonb_typeof(result->'uncited_references') = 'array'
-                            THEN jsonb_array_length(result->'uncited_references') ELSE 0 END), 0) AS uncited_references_count,
-                        COALESCE(SUM(CASE WHEN jsonb_typeof(result->'claim_support') = 'array'
-                            THEN jsonb_array_length(result->'claim_support') ELSE 0 END), 0) AS claim_rows,
-                        COALESCE(SUM(CASE WHEN jsonb_typeof(result->'suggestions') = 'array'
-                            THEN jsonb_array_length(result->'suggestions') ELSE 0 END), 0) AS suggestions_count,
-                        COALESCE(SUM(CASE WHEN jsonb_typeof(result->'online_verification'->'rows') = 'array'
-                            THEN jsonb_array_length(result->'online_verification'->'rows') ELSE 0 END), 0) AS verification_rows,
-                        COALESCE(SUM(CASE WHEN (result #>> '{online_verification,summary,verified}') ~ '^[0-9]+$'
-                            THEN (result #>> '{online_verification,summary,verified}')::int ELSE 0 END), 0) AS verified,
-                        COALESCE(SUM(CASE WHEN (result #>> '{online_verification,summary,likely}') ~ '^[0-9]+$'
-                            THEN (result #>> '{online_verification,summary,likely}')::int ELSE 0 END), 0) AS likely,
-                        COALESCE(SUM(CASE WHEN (result #>> '{online_verification,summary,needs_review}') ~ '^[0-9]+$'
-                            THEN (result #>> '{online_verification,summary,needs_review}')::int ELSE 0 END), 0) AS needs_review,
-                        COALESCE(SUM(CASE WHEN (result #>> '{online_verification,summary,not_found}') ~ '^[0-9]+$'
-                            THEN (result #>> '{online_verification,summary,not_found}')::int ELSE 0 END), 0) AS not_found,
-                        COALESCE(SUM(CASE WHEN (result #>> '{online_verification,summary,offline}') ~ '^[0-9]+$'
-                            THEN (result #>> '{online_verification,summary,offline}')::int ELSE 0 END), 0) AS offline,
-                        AVG(
-                            CASE
-                                WHEN jsonb_typeof(result->'acii') = 'number' THEN (result->>'acii')::numeric
-                                WHEN jsonb_typeof(result->'acii') = 'object' AND COALESCE(result->'acii'->>'score', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result->'acii'->>'score')::numeric
-                                WHEN jsonb_typeof(result->'acii') = 'object' AND COALESCE(result->'acii'->>'acii_score', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result->'acii'->>'acii_score')::numeric
-                                WHEN jsonb_typeof(result->'acii') = 'object' AND COALESCE(result->'acii'->>'overall_score', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result->'acii'->>'overall_score')::numeric
-                                ELSE NULL
-                            END
-                        ) AS average_acii_score
+                        COALESCE(SUM({references_expr}), 0) AS references_count,
+                        COALESCE(SUM({citations_expr}), 0) AS citations_count,
+                        COALESCE(SUM({missing_expr}), 0) AS missing_citations_count,
+                        COALESCE(SUM({uncited_expr}), 0) AS uncited_references_count,
+                        COALESCE(SUM({claim_expr}), 0) AS claim_rows,
+                        COALESCE(SUM({recovery_expr}), 0) AS recovery_rows,
+                        COALESCE(SUM({suggestions_expr}), 0) AS suggestions_count,
+                        COALESCE(SUM({verification_rows_expr}), 0) AS verification_rows,
+                        COALESCE(SUM({verified_expr}), 0) AS verified,
+                        COALESCE(SUM({likely_expr}), 0) AS likely,
+                        COALESCE(SUM({needs_review_expr}), 0) AS needs_review,
+                        COALESCE(SUM({not_found_expr}), 0) AS not_found,
+                        COALESCE(SUM({offline_expr}), 0) AS offline,
+                        AVG({acii_expr}) AS average_acii_score
                     FROM jobs
                     WHERE result IS NOT NULL
-                """)
+                      AND created_at >= %s
+                """, (cutoff_dt,))
+
                 row = _as_dict(cursor.fetchone() or {})
                 for key in [
                     "references_count", "citations_count", "missing_citations_count",
-                    "uncited_references_count", "claim_rows", "suggestions_count",
+                    "uncited_references_count", "claim_rows", "recovery_rows", "suggestions_count",
                     "verification_rows", "verified", "likely", "needs_review", "not_found", "offline"
                 ]:
                     advanced[key] = _safe_int(row.get(key))
+
                 if row.get("average_acii_score") is not None:
                     advanced["average_acii_score"] = round(_safe_float(row.get("average_acii_score")), 2)
+
+                # Daily JSONB metrics. This overlays citation-integrity counts onto
+                # the existing daily upload table rather than replacing it.
+                cursor.execute(f"""
+                    SELECT
+                        created_at::date AS day,
+                        COUNT(*) AS uploads,
+                        COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {completed_statuses}) AS processed,
+                        COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {failed_statuses} OR error IS NOT NULL) AS failed,
+                        COALESCE(SUM({references_expr}), 0) AS references,
+                        COALESCE(SUM({citations_expr}), 0) AS citations,
+                        COALESCE(SUM({missing_expr}), 0) AS missing_citations,
+                        COALESCE(SUM({uncited_expr}), 0) AS uncited_references,
+                        COALESCE(SUM({verification_rows_expr}), 0) AS verification_rows,
+                        AVG({acii_expr}) AS average_acii_score,
+                        AVG(NULLIF(processing_time, 0)) AS avg_processing_time
+                    FROM jobs
+                    WHERE created_at >= %s
+                    GROUP BY created_at::date
+                    ORDER BY day DESC
+                """, (cutoff_dt,))
+
+                for raw in cursor.fetchall() or []:
+                    row = _as_dict(raw)
+                    date_key = str(row.get("day"))[:10]
+                    existing = daily_stats.get(date_key, {})
+                    avg_time = row.get("avg_processing_time")
+                    daily_stats[date_key] = {
+                        "uploads": max(_safe_int(existing.get("uploads")), _safe_int(row.get("uploads"))),
+                        "processed": max(_safe_int(existing.get("processed")), _safe_int(row.get("processed"))),
+                        "failed": max(_safe_int(existing.get("failed")), _safe_int(row.get("failed"))),
+                        "references": max(_safe_int(existing.get("references")), _safe_int(row.get("references"))),
+                        "citations": _safe_int(row.get("citations")),
+                        "missing_citations": _safe_int(row.get("missing_citations")),
+                        "uncited_references": _safe_int(row.get("uncited_references")),
+                        "verification_rows": _safe_int(row.get("verification_rows")),
+                        "average_acii_score": round(_safe_float(row.get("average_acii_score")), 2) if row.get("average_acii_score") is not None else None,
+                        "avg_processing_time": round(_safe_float(avg_time), 2) if avg_time is not None else _safe_float(existing.get("avg_processing_time")),
+                    }
+
+                # Recent documents enriched from jobs.result, not uploads, because
+                # the uploads table may contain only basic counts and many zeros.
+                cursor.execute(f"""
+                    SELECT
+                        job_id,
+                        created_at AS timestamp,
+                        file_name AS filename,
+                        file_size_mb,
+                        status,
+                        error,
+                        processing_time,
+                        {references_expr} AS references_count,
+                        {citations_expr} AS citations_count,
+                        {missing_expr} AS missing_citations_count,
+                        {uncited_expr} AS uncited_references_count,
+                        {verification_rows_expr} AS verification_rows,
+                        {acii_expr} AS acii_score
+                    FROM jobs
+                    WHERE created_at >= %s
+                    ORDER BY created_at DESC
+                    LIMIT 50
+                """, (cutoff_dt,))
+
+                recent_uploads = []
+                for raw in cursor.fetchall() or []:
+                    row = _as_dict(raw)
+                    status = (row.get("status") or "unknown").lower()
+                    recent_uploads.append({
+                        "job_id": row.get("job_id"),
+                        "timestamp": _dt_to_iso(row.get("timestamp")),
+                        "filename": row.get("filename") or "Untitled document",
+                        "file_size_mb": _safe_float(row.get("file_size_mb")),
+                        "references_count": _safe_int(row.get("references_count")),
+                        "citations_count": _safe_int(row.get("citations_count")),
+                        "missing_citations_count": _safe_int(row.get("missing_citations_count")),
+                        "uncited_references_count": _safe_int(row.get("uncited_references_count")),
+                        "verification_rows": _safe_int(row.get("verification_rows")),
+                        "acii_score": round(_safe_float(row.get("acii_score")), 2) if row.get("acii_score") is not None else None,
+                        "processing_time": _safe_float(row.get("processing_time")),
+                        "status": status,
+                        "success": status in {'completed', 'complete', 'done', 'success', 'finished'} and not row.get("error"),
+                        "error": row.get("error"),
+                    })
+
     except Exception as e:
-        # Keep endpoint alive. The dashboard should show relational totals even
-        # when optional advanced JSONB counts are temporarily too expensive.
         advanced["error"] = str(e)[:220]
-        print(f"[STATS] Optional JSONB metric aggregation skipped: {advanced['error']}")
+        print(f"[STATS] JSONB dashboard metric aggregation failed: {advanced['error']}")
+
+        # If enriched job rows fail, still show recent uploads from the uploads table.
+        try:
+            with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT timestamp, filename, file_size, references_count,
+                               processing_time, success, error
+                        FROM uploads
+                        ORDER BY timestamp DESC
+                        LIMIT 50
+                    """)
+                    recent_uploads = []
+                    for raw in cursor.fetchall() or []:
+                        row = _as_dict(raw)
+                        recent_uploads.append({
+                            "timestamp": _dt_to_iso(row.get("timestamp")),
+                            "filename": row.get("filename") or "Untitled document",
+                            "file_size_mb": round(_safe_float(row.get("file_size")) / (1024 * 1024), 2),
+                            "references_count": _safe_int(row.get("references_count")),
+                            "citations_count": 0,
+                            "missing_citations_count": 0,
+                            "uncited_references_count": 0,
+                            "verification_rows": 0,
+                            "acii_score": None,
+                            "processing_time": _safe_float(row.get("processing_time")),
+                            "status": "completed" if row.get("success") else "failed",
+                            "success": bool(row.get("success")),
+                            "error": row.get("error"),
+                        })
+        except Exception as inner:
+            print(f"[STATS] fallback recent uploads failed: {inner}")
 
     total_jobs = _safe_int(job_summary.get("total_jobs"))
     total_uploads = max(_safe_int(stats_row.get("total_uploads")), total_jobs, len(recent_uploads))
@@ -4207,9 +4371,12 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
     last_updated = job_summary.get("last_updated_at") or stats_row.get("updated_at") or datetime.now()
     success_rate = round((completed / max(completed + failed, 1)) * 100, 2)
 
-    storage_message = "Persistent PostgreSQL storage is active. Dashboard data will survive deployments and service restarts."
+    storage_message = (
+        "Persistent PostgreSQL storage is active. Dashboard indicators are populated from jobs.result JSONB. "
+        "Data will survive deployments and service restarts."
+    )
     if advanced.get("error"):
-        storage_message += " Advanced JSONB metrics were skipped on this refresh to keep the dashboard fast."
+        storage_message += f" Some optional JSONB metrics could not be refreshed: {advanced.get('error')}"
 
     try:
         queue_status = get_queue_status()
