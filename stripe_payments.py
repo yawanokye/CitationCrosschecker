@@ -25,8 +25,8 @@ from psycopg2.extras import RealDictCursor
 from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
 from entitlements import get_price, validate_paid_package_for_document
 
-STRIPE_PAYMENTS_VERSION = "1.0.1"
-STRIPE_PAYMENTS_BUILD = "commercial-2026-05-27-africa-paystack-global-stripe-diagnostics"
+STRIPE_PAYMENTS_VERSION = "1.0.2"
+STRIPE_PAYMENTS_BUILD = "commercial-2026-05-28-stripe-prelink-paid-unlock-final"
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -103,6 +103,226 @@ def _stringify_gateway_error(payload: Dict[str, Any]) -> str:
     if payload.get("http_status"):
         pieces.append(f"http_status={payload['http_status']}")
     return " | ".join(pieces) or "Unknown Stripe error"
+
+
+
+def _row_to_dict(row: Any) -> Dict[str, Any]:
+    """Return a plain dict for psycopg2 RealDictRow or mapping rows."""
+    try:
+        return dict(row) if row else {}
+    except Exception:
+        return row or {}
+
+
+def _prelink_pending_purchase_to_job(
+    database_url: str,
+    *,
+    purchase: Dict[str, Any],
+    job_id: str,
+    file_name: str = "",
+    reference_count: int = 0,
+    citation_count: int = 0,
+) -> Dict[str, Any]:
+    """
+    Link the preview job to the pending Stripe purchase before redirecting to Stripe.
+
+    This is the key Stripe unlock fix. Paystack returns through a callback with the
+    original provider reference, but Stripe success/webhook delivery may be delayed
+    or may not be able to recover preview_job_id from the database schema. By
+    pre-linking purchase_runs while the purchase is still pending, the result
+    unlocks immediately once the same purchase row is marked paid.
+
+    Safety: a pending purchase link does not unlock anything because access checks
+    still require purchases.status IN ('paid', 'active').
+    """
+    purchase_id = (purchase or {}).get("id")
+    job_id = str(job_id or "").strip()
+
+    if not (database_url and purchase_id and job_id):
+        return {
+            "ok": False,
+            "linked": False,
+            "reason": "missing_database_purchase_or_job_id",
+            "purchase_id": purchase_id,
+            "job_id": job_id,
+        }
+
+    try:
+        with psycopg2.connect(database_url, cursor_factory=RealDictCursor) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT pr.*, p.status AS linked_purchase_status
+                    FROM purchase_runs pr
+                    LEFT JOIN purchases p ON p.id = pr.purchase_id
+                    WHERE pr.job_id = %s
+                    FOR UPDATE
+                    """,
+                    (job_id,),
+                )
+                existing = cursor.fetchone()
+
+                if existing:
+                    existing_status = str(existing.get("linked_purchase_status") or "").lower()
+                    existing_purchase_id = existing.get("purchase_id")
+
+                    # Never overwrite an already paid/active link. That may belong to a
+                    # previously successful purchase for the same result.
+                    if existing_status in {"paid", "active"}:
+                        conn.commit()
+                        return {
+                            "ok": True,
+                            "linked": True,
+                            "action": "kept_existing_paid_link",
+                            "purchase_id": existing_purchase_id,
+                            "job_id": job_id,
+                        }
+
+                    cursor.execute(
+                        """
+                        UPDATE purchase_runs
+                        SET purchase_id = %s,
+                            file_name = COALESCE(NULLIF(%s, ''), file_name),
+                            reference_count = CASE WHEN %s > 0 THEN %s ELSE reference_count END,
+                            citation_count = CASE WHEN %s > 0 THEN %s ELSE citation_count END
+                        WHERE job_id = %s
+                        RETURNING *
+                        """,
+                        (
+                            purchase_id,
+                            file_name,
+                            _safe_int(reference_count, 0),
+                            _safe_int(reference_count, 0),
+                            _safe_int(citation_count, 0),
+                            _safe_int(citation_count, 0),
+                            job_id,
+                        ),
+                    )
+                    run = cursor.fetchone()
+                    action = "updated_existing_pending_link"
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO purchase_runs
+                            (purchase_id, job_id, file_name, reference_count, citation_count)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING *
+                        """,
+                        (
+                            purchase_id,
+                            job_id,
+                            file_name,
+                            _safe_int(reference_count, 0),
+                            _safe_int(citation_count, 0),
+                        ),
+                    )
+                    run = cursor.fetchone()
+                    action = "inserted_pending_link"
+
+            conn.commit()
+
+        print(f"[STRIPE_PRELINK] action={action}, job_id={job_id}, purchase_id={purchase_id}")
+        return {
+            "ok": True,
+            "linked": True,
+            "action": action,
+            "purchase_id": purchase_id,
+            "job_id": job_id,
+            "run": _row_to_dict(run),
+        }
+
+    except Exception as e:
+        print(f"[STRIPE_PRELINK_ERROR] job_id={job_id}, purchase_id={purchase_id}: {type(e).__name__}: {e}")
+        return {
+            "ok": False,
+            "linked": False,
+            "reason": f"{type(e).__name__}: {str(e)}",
+            "purchase_id": purchase_id,
+            "job_id": job_id,
+        }
+
+
+def _mark_stripe_purchase_paid(
+    database_url: str,
+    *,
+    provider_reference: str,
+    purchase_id: Any = None,
+) -> Dict[str, Any]:
+    """
+    Mark a Stripe purchase paid using both the normal access_control helper and
+    a direct SQL fallback.
+
+    The fallback matters because Stripe metadata contains purchase_id. If the
+    provider reference lookup fails for any reason, the verified paid Stripe
+    session can still activate the exact pending purchase created before Checkout.
+    """
+    provider_reference = str(provider_reference or "").strip()
+
+    try:
+        purchase = mark_purchase_paid(database_url, provider_reference=provider_reference)
+        if purchase:
+            return _row_to_dict(purchase)
+    except Exception as e:
+        print(f"[STRIPE_MARK_PAID_HELPER_ERROR] {type(e).__name__}: {e}")
+
+    if not database_url:
+        return {}
+
+    try:
+        with psycopg2.connect(database_url, cursor_factory=RealDictCursor) as conn:
+            with conn.cursor() as cursor:
+                row = None
+
+                if purchase_id:
+                    cursor.execute(
+                        """
+                        UPDATE purchases
+                        SET status = 'paid',
+                            payment_provider = COALESCE(NULLIF(payment_provider, ''), 'stripe'),
+                            provider_reference = COALESCE(NULLIF(provider_reference, ''), %s)
+                        WHERE id = %s
+                        RETURNING *
+                        """,
+                        (provider_reference, purchase_id),
+                    )
+                    row = cursor.fetchone()
+
+                if not row and provider_reference:
+                    cursor.execute(
+                        """
+                        UPDATE purchases
+                        SET status = 'paid',
+                            payment_provider = COALESCE(NULLIF(payment_provider, ''), 'stripe')
+                        WHERE provider_reference = %s
+                        RETURNING *
+                        """,
+                        (provider_reference,),
+                    )
+                    row = cursor.fetchone()
+
+                if not row and provider_reference:
+                    cursor.execute(
+                        "SELECT * FROM purchases WHERE provider_reference = %s LIMIT 1",
+                        (provider_reference,),
+                    )
+                    row = cursor.fetchone()
+
+            conn.commit()
+
+        if row:
+            purchase = _row_to_dict(row)
+            print(
+                f"[STRIPE_MARK_PAID_SQL] purchase_id={purchase.get('id')}, "
+                f"reference={provider_reference}, status={purchase.get('status')}"
+            )
+            return purchase
+
+        print(f"[STRIPE_MARK_PAID_SQL] No purchase found for reference={provider_reference}, purchase_id={purchase_id}")
+        return {}
+
+    except Exception as e:
+        print(f"[STRIPE_MARK_PAID_SQL_ERROR] reference={provider_reference}, purchase_id={purchase_id}: {type(e).__name__}: {e}")
+        return {}
 
 
 def _attach_preview_job_to_purchase(
@@ -208,23 +428,22 @@ def _attach_preview_job_to_purchase(
                     run_row = cursor.fetchone()
                     linked_or_relinked = True
 
-                if linked_or_relinked:
-                    cursor.execute(
-                        """
-                        UPDATE purchases
-                        SET analyses_used = LEAST(
-                            COALESCE(analyses_used, 0) + 1,
-                            COALESCE(analyses_total, 2)
-                        )
-                        WHERE id = %s
-                        RETURNING *
-                        """,
-                        (purchase_id,),
+                # The current job consumes one included full-analysis run. Use
+                # GREATEST rather than +1 so repeated webhook/success callbacks do
+                # not double-count the same preview job.
+                cursor.execute(
+                    """
+                    UPDATE purchases
+                    SET analyses_used = LEAST(
+                        GREATEST(COALESCE(analyses_used, 0), 1),
+                        COALESCE(analyses_total, 2)
                     )
-                    purchase_row = cursor.fetchone()
-                else:
-                    cursor.execute("SELECT * FROM purchases WHERE id = %s", (purchase_id,))
-                    purchase_row = cursor.fetchone()
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (purchase_id,),
+                )
+                purchase_row = cursor.fetchone()
 
             conn.commit()
 
@@ -353,6 +572,15 @@ def initialize_citeintegrity_stripe_payment(
             "gateway_error": f"{type(e).__name__}: {str(e)}",
         }
 
+    prelink = _prelink_pending_purchase_to_job(
+        database_url,
+        purchase=purchase,
+        job_id=job_id,
+        file_name=file_name,
+        reference_count=reference_count,
+        citation_count=citation_count,
+    )
+
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
@@ -415,6 +643,7 @@ def initialize_citeintegrity_stripe_payment(
         "currency": selected_currency,
         "display_amount": price["display"],
         "access_token": purchase.get("access_token"),
+        "prelinked": prelink,
     }
 
 
@@ -481,9 +710,10 @@ def verify_and_activate_stripe_session(
                 "payment_status": payment_status,
             }
 
-        purchase = mark_purchase_paid(
+        purchase = _mark_stripe_purchase_paid(
             database_url,
             provider_reference=provider_reference,
+            purchase_id=metadata.get("purchase_id"),
         )
 
         if not purchase:
@@ -610,12 +840,13 @@ def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str)
                 "currency": currency,
             }
 
-        purchase = mark_purchase_paid(
+        metadata = data.get("metadata", {}) or {}
+        purchase = _mark_stripe_purchase_paid(
             database_url,
             provider_reference=provider_reference,
+            purchase_id=metadata.get("purchase_id"),
         )
 
-        metadata = data.get("metadata", {}) or {}
         attached = {}
         if purchase:
             try:
