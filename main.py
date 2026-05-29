@@ -2634,12 +2634,71 @@ def _init_contact_messages_table():
         return False
 
 
+@app.get("/api/contact")
+async def contact_api_health():
+    """Health check for the CiteIntegrity contact endpoint.
+
+    Open https://citeintegrity.org/api/contact in a browser after deployment.
+    If this returns ok=true, the active main.py has the contact API route.
+    """
+    smtp_ready = bool(SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD)
+    return {
+        "ok": True,
+        "endpoint": "/api/contact",
+        "post_active": True,
+        "email_forwarding_configured": smtp_ready,
+        "support_email": CONTACT_SUPPORT_EMAIL,
+        "smtp_host_configured": bool(SMTP_HOST),
+        "smtp_username_configured": bool(SMTP_USERNAME),
+        "smtp_password_configured": bool(SMTP_PASSWORD),
+        "message": (
+            "Contact endpoint is active. Submit the contact form using POST. "
+            "Email forwarding will work when SMTP settings are configured."
+        ),
+    }
+
+
+@app.options("/api/contact")
+async def contact_api_options():
+    """Allow simple endpoint checks without triggering the contact form."""
+    return Response(status_code=204)
+
+
+async def _read_contact_payload(request: Request) -> Dict[str, Any]:
+    """Accept either JSON payloads or standard HTML form submissions."""
+    content_type = (request.headers.get("content-type") or "").lower()
+
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+
+    # Try normal form parsing first.
+    try:
+        form = await request.form()
+        if form:
+            return {key: form.get(key) for key in form.keys()}
+    except Exception:
+        pass
+
+    # Fallback for x-www-form-urlencoded payloads when multipart support is unavailable.
+    try:
+        from urllib.parse import parse_qs
+        body = (await request.body()).decode("utf-8", errors="ignore")
+        parsed = parse_qs(body)
+        if parsed:
+            return {key: values[-1] if values else "" for key, values in parsed.items()}
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=400, detail="Invalid contact form payload")
+
 @app.post("/api/contact")
 async def submit_contact_message(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid contact form payload")
+    payload = await _read_contact_payload(request)
 
     allowed_categories = {
         "General enquiry",
