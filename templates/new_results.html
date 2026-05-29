@@ -803,7 +803,7 @@
             }
         }
 
-        /* Demo mode: payment and access-gate details are hidden */
+        /* Commercial payment and access-gate panel */
         .paywall-panel {
             display: none;
             margin: 18px 0 22px;
@@ -878,6 +878,62 @@
             font: inherit;
             background: white;
         }
+
+        .payment-route-box {
+            margin-top: 12px;
+            border: 1px solid #dbeafe;
+            background: #f8fbff;
+            border-left: 4px solid var(--blue);
+            color: var(--navy-soft);
+            border-radius: 16px;
+            padding: 12px 14px;
+            font-size: 12.5px;
+            line-height: 1.5;
+        }
+
+        .payment-route-box strong {
+            color: var(--navy);
+        }
+
+        .payment-route-box.paystack {
+            border-color: #bbf7d0;
+            border-left-color: var(--green);
+            background: #f8fffb;
+        }
+
+        .payment-route-box.stripe {
+            border-color: #c7d2fe;
+            border-left-color: var(--blue);
+            background: #f8fbff;
+        }
+
+        .payment-meta-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(120px, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .payment-meta {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 14px;
+            padding: 10px;
+        }
+
+        .payment-meta span {
+            display: block;
+            color: var(--slate);
+            font-size: 11px;
+            font-weight: 800;
+            margin-bottom: 3px;
+        }
+
+        .payment-meta strong {
+            color: var(--navy);
+            font-size: 13px;
+        }
+
         .locked-card {
             border: 1px dashed #c4b5fd;
             background: #faf5ff;
@@ -1374,11 +1430,7 @@
             }
         }
 
-        /* Demo-safe display: hide payment and pricing surfaces */
-        #paywallPanel,
-        .paywall-panel {
-            display: none !important;
-        }
+        /* Commercial payment display is enabled. The panel remains hidden only until results load. */
 
     </style>
 </head>
@@ -1422,12 +1474,6 @@
             <button class="btn btn-secondary" id="btnRefresh">↻ Refresh</button>
             <button class="btn btn-outline" id="btnExportCsv">📊 CSV Report</button>
             <button class="btn btn-outline" id="btnExportWord">📄 Word Report</button>
-
-            <select id="exportStyleSelect" title="Reference style">
-                <option value="apa7">APA 7th Edition</option>
-                <option value="apa6">APA 6th Edition</option>
-                <option value="harvard">Harvard Style</option>
-            </select>
 
             <button class="btn btn-outline" id="btnExportRefsDocx">📄 Verified Refs DOCX</button>
             <button class="btn btn-outline" id="btnExportRefsHtml">🌐 Verified Refs HTML</button>
@@ -1794,7 +1840,6 @@
 <footer class="footer">
     <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
     <div class="footer-links">
-        <a href="/new">New Landing Page</a>
         <a href="/new/analyse">New Analysis</a>
         <a href="/privacy">Privacy Policy</a>
     </div>
@@ -1806,12 +1851,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
     const JOB_ID = "{{ job_id }}";
     const AUTO_VERIFY = "{{ auto_verify | default('false') }}" === "true";
-    const DEMO_HIDE_PAYMENT_DETAILS = true;
+    const DEMO_HIDE_PAYMENT_DETAILS = false;
+    const URL_PARAMS = new URLSearchParams(window.location.search);
+    const PAYMENT_RETURN = ["1", "true", "success"].includes(String(URL_PARAMS.get("paid") || URL_PARAMS.get("payment") || "").toLowerCase());
+    const STRIPE_SESSION_ID = URL_PARAMS.get("session_id") || URL_PARAMS.get("session") || "";
 
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "demo-hide-payment-details-v1.5.43";
+    const RESULTS_UI_BUILD = "payment-routing-paystack-stripe-v1.5.45-final-unlock";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -1827,6 +1875,8 @@ document.addEventListener("DOMContentLoaded", function () {
     let manualVerifyRows = [];
     let manualSearchCandidates = {};
     let pollingTimer = null;
+    let paymentUnlockPollTimer = null;
+    let paymentUnlockAttempts = 0;
     let verificationInProgress = false;
     let finalisingCount = 0;
 
@@ -2015,6 +2065,12 @@ document.addEventListener("DOMContentLoaded", function () {
                         </div>
                         <span class="paywall-badge unlocked">✅ ${esc(pkg.document_tier_name || pkg.name || "Paid access")}</span>
                     </div>
+                    <div class="payment-route-box paystack">
+                        <strong>Payment confirmed.</strong><br>
+                        Provider: ${esc(data?.access?.payment_provider || data?.access?.provider || "Recorded payment")}.
+                        Currency: ${esc(data?.access?.currency || pkg.currency || "")}.
+                        Remaining analyses: ${esc(data?.access?.remaining_analyses ?? "Available")}.
+                    </div>
                 </div>
             `;
             return;
@@ -2027,28 +2083,120 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="paywall-head">
                     <div>
                         <h2 class="paywall-title">Free Preview shown <span class="locked-inline">🔒 Full Review locked</span></h2>
-                        <p class="paywall-subtitle">You are seeing a limited preview. Unlock Full Review to view all rows, Recovery, Claim Support, Citation Needed, Advanced Enrichment, certificate, and exports. Each payment includes two full analyses.</p>
+                        <p class="paywall-subtitle">Unlock Full Review to view all rows, Recovery, Claim Support, Citation Needed, Advanced Enrichment, certificate, and exports. Each payment includes two full analyses.</p>
                     </div>
                     <span class="paywall-badge">🔒 Payment required</span>
                 </div>
+
                 <div class="paywall-grid">
                     <div class="paywall-mini"><strong>References detected</strong><br>${esc(counts.reference_count)}</div>
                     <div class="paywall-mini"><strong>In-text citations detected</strong><br>${esc(counts.citation_count)}</div>
                     <div class="paywall-mini"><strong>Paid access</strong><br>2 full analyses</div>
                 </div>
+
+                <div id="paymentRouteBox" class="payment-route-box">
+                    Select a billing country to see the payment provider.
+                </div>
+
                 <div id="planBox" class="paywall-mini" style="margin-top:14px;">Loading recommended package...</div>
+
                 <div class="paywall-controls">
-                    <input id="payEmail" type="email" placeholder="Enter email for payment and access link">
-                    <select id="payCurrency"><option value="GHS">Pay in GHS</option><option value="USD">Pay in USD</option></select>
+                    <input id="payEmail" type="email" placeholder="Enter email for payment and access link" autocomplete="email">
+                    <select id="billingCountry" aria-label="Billing country"></select>
                     <button class="btn btn-green" id="btnPayUnlock">Unlock Full Review</button>
                 </div>
-                <div class="small-muted" style="margin-top:10px;">Your document is used for citation integrity analysis. Payment records store email, package, analysis count, payment reference, and job link.</div>
+
+                <div class="small-muted" style="margin-top:10px;">
+                    Payment routing is automatic. African billing countries use Paystack in GHS. Other billing countries use Stripe Checkout in USD.
+                    Payment records store email, package, analysis count, provider reference, job link, amount, currency, and billing country.
+                </div>
             </div>
         `;
 
-        loadPlanRecommendation("GHS");
-        $("payCurrency")?.addEventListener("change", (e) => loadPlanRecommendation(e.target.value));
-        $("btnPayUnlock")?.addEventListener("click", startPaystackCheckout);
+        populateBillingCountries("GH");
+        updatePaymentRoute();
+        $("billingCountry")?.addEventListener("change", updatePaymentRoute);
+        $("btnPayUnlock")?.addEventListener("click", startCheckoutPayment);
+    }
+
+    const AFRICAN_COUNTRY_CODES = new Set(["DZ", "AO", "BJ", "BW", "BF", "BI", "CV", "CM", "CF", "TD", "KM", "CG", "CD", "CI", "DJ", "EG", "GQ", "ER", "SZ", "ET", "GA", "GM", "GH", "GN", "GW", "KE", "LS", "LR", "LY", "MG", "MW", "ML", "MR", "MU", "MA", "MZ", "NA", "NE", "NG", "RW", "ST", "SN", "SC", "SL", "SO", "ZA", "SS", "SD", "TZ", "TG", "TN", "UG", "ZM", "ZW"]);
+    const PAYMENT_COUNTRIES = [{"code": "AF", "name": "Afghanistan"}, {"code": "AL", "name": "Albania"}, {"code": "DZ", "name": "Algeria"}, {"code": "AS", "name": "American Samoa"}, {"code": "AD", "name": "Andorra"}, {"code": "AO", "name": "Angola"}, {"code": "AI", "name": "Anguilla"}, {"code": "AQ", "name": "Antarctica"}, {"code": "AG", "name": "Antigua and Barbuda"}, {"code": "AR", "name": "Argentina"}, {"code": "AM", "name": "Armenia"}, {"code": "AW", "name": "Aruba"}, {"code": "AU", "name": "Australia"}, {"code": "AT", "name": "Austria"}, {"code": "AZ", "name": "Azerbaijan"}, {"code": "BS", "name": "Bahamas"}, {"code": "BH", "name": "Bahrain"}, {"code": "BD", "name": "Bangladesh"}, {"code": "BB", "name": "Barbados"}, {"code": "BY", "name": "Belarus"}, {"code": "BE", "name": "Belgium"}, {"code": "BZ", "name": "Belize"}, {"code": "BJ", "name": "Benin"}, {"code": "BM", "name": "Bermuda"}, {"code": "BT", "name": "Bhutan"}, {"code": "BO", "name": "Bolivia"}, {"code": "BQ", "name": "Bonaire, Sint Eustatius and Saba"}, {"code": "BA", "name": "Bosnia and Herzegovina"}, {"code": "BW", "name": "Botswana"}, {"code": "BV", "name": "Bouvet Island"}, {"code": "BR", "name": "Brazil"}, {"code": "IO", "name": "British Indian Ocean Territory"}, {"code": "BN", "name": "Brunei Darussalam"}, {"code": "BG", "name": "Bulgaria"}, {"code": "BF", "name": "Burkina Faso"}, {"code": "BI", "name": "Burundi"}, {"code": "CV", "name": "Cabo Verde"}, {"code": "KH", "name": "Cambodia"}, {"code": "CM", "name": "Cameroon"}, {"code": "CA", "name": "Canada"}, {"code": "KY", "name": "Cayman Islands"}, {"code": "CF", "name": "Central African Republic"}, {"code": "TD", "name": "Chad"}, {"code": "CL", "name": "Chile"}, {"code": "CN", "name": "China"}, {"code": "CX", "name": "Christmas Island"}, {"code": "CC", "name": "Cocos (Keeling) Islands"}, {"code": "CO", "name": "Colombia"}, {"code": "KM", "name": "Comoros"}, {"code": "CG", "name": "Congo"}, {"code": "CD", "name": "Congo, The Democratic Republic of the"}, {"code": "CK", "name": "Cook Islands"}, {"code": "CR", "name": "Costa Rica"}, {"code": "HR", "name": "Croatia"}, {"code": "CU", "name": "Cuba"}, {"code": "CW", "name": "Curaçao"}, {"code": "CY", "name": "Cyprus"}, {"code": "CZ", "name": "Czechia"}, {"code": "CI", "name": "Côte d'Ivoire"}, {"code": "DK", "name": "Denmark"}, {"code": "DJ", "name": "Djibouti"}, {"code": "DM", "name": "Dominica"}, {"code": "DO", "name": "Dominican Republic"}, {"code": "EC", "name": "Ecuador"}, {"code": "EG", "name": "Egypt"}, {"code": "SV", "name": "El Salvador"}, {"code": "GQ", "name": "Equatorial Guinea"}, {"code": "ER", "name": "Eritrea"}, {"code": "EE", "name": "Estonia"}, {"code": "SZ", "name": "Eswatini"}, {"code": "ET", "name": "Ethiopia"}, {"code": "FK", "name": "Falkland Islands (Malvinas)"}, {"code": "FO", "name": "Faroe Islands"}, {"code": "FJ", "name": "Fiji"}, {"code": "FI", "name": "Finland"}, {"code": "FR", "name": "France"}, {"code": "GF", "name": "French Guiana"}, {"code": "PF", "name": "French Polynesia"}, {"code": "TF", "name": "French Southern Territories"}, {"code": "GA", "name": "Gabon"}, {"code": "GM", "name": "Gambia"}, {"code": "GE", "name": "Georgia"}, {"code": "DE", "name": "Germany"}, {"code": "GH", "name": "Ghana"}, {"code": "GI", "name": "Gibraltar"}, {"code": "GR", "name": "Greece"}, {"code": "GL", "name": "Greenland"}, {"code": "GD", "name": "Grenada"}, {"code": "GP", "name": "Guadeloupe"}, {"code": "GU", "name": "Guam"}, {"code": "GT", "name": "Guatemala"}, {"code": "GG", "name": "Guernsey"}, {"code": "GN", "name": "Guinea"}, {"code": "GW", "name": "Guinea-Bissau"}, {"code": "GY", "name": "Guyana"}, {"code": "HT", "name": "Haiti"}, {"code": "HM", "name": "Heard Island and McDonald Islands"}, {"code": "VA", "name": "Holy See (Vatican City State)"}, {"code": "HN", "name": "Honduras"}, {"code": "HK", "name": "Hong Kong"}, {"code": "HU", "name": "Hungary"}, {"code": "IS", "name": "Iceland"}, {"code": "IN", "name": "India"}, {"code": "ID", "name": "Indonesia"}, {"code": "IR", "name": "Iran"}, {"code": "IQ", "name": "Iraq"}, {"code": "IE", "name": "Ireland"}, {"code": "IM", "name": "Isle of Man"}, {"code": "IL", "name": "Israel"}, {"code": "IT", "name": "Italy"}, {"code": "JM", "name": "Jamaica"}, {"code": "JP", "name": "Japan"}, {"code": "JE", "name": "Jersey"}, {"code": "JO", "name": "Jordan"}, {"code": "KZ", "name": "Kazakhstan"}, {"code": "KE", "name": "Kenya"}, {"code": "KI", "name": "Kiribati"}, {"code": "KW", "name": "Kuwait"}, {"code": "KG", "name": "Kyrgyzstan"}, {"code": "LA", "name": "Laos"}, {"code": "LV", "name": "Latvia"}, {"code": "LB", "name": "Lebanon"}, {"code": "LS", "name": "Lesotho"}, {"code": "LR", "name": "Liberia"}, {"code": "LY", "name": "Libya"}, {"code": "LI", "name": "Liechtenstein"}, {"code": "LT", "name": "Lithuania"}, {"code": "LU", "name": "Luxembourg"}, {"code": "MO", "name": "Macao"}, {"code": "MG", "name": "Madagascar"}, {"code": "MW", "name": "Malawi"}, {"code": "MY", "name": "Malaysia"}, {"code": "MV", "name": "Maldives"}, {"code": "ML", "name": "Mali"}, {"code": "MT", "name": "Malta"}, {"code": "MH", "name": "Marshall Islands"}, {"code": "MQ", "name": "Martinique"}, {"code": "MR", "name": "Mauritania"}, {"code": "MU", "name": "Mauritius"}, {"code": "YT", "name": "Mayotte"}, {"code": "MX", "name": "Mexico"}, {"code": "FM", "name": "Micronesia, Federated States of"}, {"code": "MD", "name": "Moldova"}, {"code": "MC", "name": "Monaco"}, {"code": "MN", "name": "Mongolia"}, {"code": "ME", "name": "Montenegro"}, {"code": "MS", "name": "Montserrat"}, {"code": "MA", "name": "Morocco"}, {"code": "MZ", "name": "Mozambique"}, {"code": "MM", "name": "Myanmar"}, {"code": "NA", "name": "Namibia"}, {"code": "NR", "name": "Nauru"}, {"code": "NP", "name": "Nepal"}, {"code": "NL", "name": "Netherlands"}, {"code": "NC", "name": "New Caledonia"}, {"code": "NZ", "name": "New Zealand"}, {"code": "NI", "name": "Nicaragua"}, {"code": "NE", "name": "Niger"}, {"code": "NG", "name": "Nigeria"}, {"code": "NU", "name": "Niue"}, {"code": "NF", "name": "Norfolk Island"}, {"code": "KP", "name": "North Korea"}, {"code": "MK", "name": "North Macedonia"}, {"code": "MP", "name": "Northern Mariana Islands"}, {"code": "NO", "name": "Norway"}, {"code": "OM", "name": "Oman"}, {"code": "PK", "name": "Pakistan"}, {"code": "PW", "name": "Palau"}, {"code": "PS", "name": "Palestine, State of"}, {"code": "PA", "name": "Panama"}, {"code": "PG", "name": "Papua New Guinea"}, {"code": "PY", "name": "Paraguay"}, {"code": "PE", "name": "Peru"}, {"code": "PH", "name": "Philippines"}, {"code": "PN", "name": "Pitcairn"}, {"code": "PL", "name": "Poland"}, {"code": "PT", "name": "Portugal"}, {"code": "PR", "name": "Puerto Rico"}, {"code": "QA", "name": "Qatar"}, {"code": "RO", "name": "Romania"}, {"code": "RU", "name": "Russian Federation"}, {"code": "RW", "name": "Rwanda"}, {"code": "RE", "name": "Réunion"}, {"code": "BL", "name": "Saint Barthélemy"}, {"code": "SH", "name": "Saint Helena, Ascension and Tristan da Cunha"}, {"code": "KN", "name": "Saint Kitts and Nevis"}, {"code": "LC", "name": "Saint Lucia"}, {"code": "MF", "name": "Saint Martin (French part)"}, {"code": "PM", "name": "Saint Pierre and Miquelon"}, {"code": "VC", "name": "Saint Vincent and the Grenadines"}, {"code": "WS", "name": "Samoa"}, {"code": "SM", "name": "San Marino"}, {"code": "ST", "name": "Sao Tome and Principe"}, {"code": "SA", "name": "Saudi Arabia"}, {"code": "SN", "name": "Senegal"}, {"code": "RS", "name": "Serbia"}, {"code": "SC", "name": "Seychelles"}, {"code": "SL", "name": "Sierra Leone"}, {"code": "SG", "name": "Singapore"}, {"code": "SX", "name": "Sint Maarten (Dutch part)"}, {"code": "SK", "name": "Slovakia"}, {"code": "SI", "name": "Slovenia"}, {"code": "SB", "name": "Solomon Islands"}, {"code": "SO", "name": "Somalia"}, {"code": "ZA", "name": "South Africa"}, {"code": "GS", "name": "South Georgia and the South Sandwich Islands"}, {"code": "KR", "name": "South Korea"}, {"code": "SS", "name": "South Sudan"}, {"code": "ES", "name": "Spain"}, {"code": "LK", "name": "Sri Lanka"}, {"code": "SD", "name": "Sudan"}, {"code": "SR", "name": "Suriname"}, {"code": "SJ", "name": "Svalbard and Jan Mayen"}, {"code": "SE", "name": "Sweden"}, {"code": "CH", "name": "Switzerland"}, {"code": "SY", "name": "Syria"}, {"code": "TW", "name": "Taiwan"}, {"code": "TJ", "name": "Tajikistan"}, {"code": "TZ", "name": "Tanzania"}, {"code": "TH", "name": "Thailand"}, {"code": "TL", "name": "Timor-Leste"}, {"code": "TG", "name": "Togo"}, {"code": "TK", "name": "Tokelau"}, {"code": "TO", "name": "Tonga"}, {"code": "TT", "name": "Trinidad and Tobago"}, {"code": "TN", "name": "Tunisia"}, {"code": "TM", "name": "Turkmenistan"}, {"code": "TC", "name": "Turks and Caicos Islands"}, {"code": "TV", "name": "Tuvalu"}, {"code": "TR", "name": "Türkiye"}, {"code": "UG", "name": "Uganda"}, {"code": "UA", "name": "Ukraine"}, {"code": "AE", "name": "United Arab Emirates"}, {"code": "GB", "name": "United Kingdom"}, {"code": "US", "name": "United States"}, {"code": "UM", "name": "United States Minor Outlying Islands"}, {"code": "UY", "name": "Uruguay"}, {"code": "UZ", "name": "Uzbekistan"}, {"code": "VU", "name": "Vanuatu"}, {"code": "VE", "name": "Venezuela"}, {"code": "VN", "name": "Vietnam"}, {"code": "VG", "name": "Virgin Islands, British"}, {"code": "VI", "name": "Virgin Islands, U.S."}, {"code": "WF", "name": "Wallis and Futuna"}, {"code": "EH", "name": "Western Sahara"}, {"code": "YE", "name": "Yemen"}, {"code": "ZM", "name": "Zambia"}, {"code": "ZW", "name": "Zimbabwe"}, {"code": "AX", "name": "Åland Islands"}, {"code": "ZZ", "name": "Other non-African country"}];
+
+    function populateBillingCountries(defaultCode = "GH") {
+        const select = $("billingCountry");
+        if (!select) return;
+
+        const existingValue = select.value;
+        select.innerHTML = `<option value="">Select billing country</option>` +
+            PAYMENT_COUNTRIES.map(country =>
+                `<option value="${esc(country.code)}">${esc(country.name)} (${esc(country.code)})</option>`
+            ).join("");
+
+        const preferred = existingValue || defaultCode;
+        if (preferred) select.value = preferred;
+    }
+
+    function getPaymentRoute(countryCode) {
+        const code = String(countryCode || "").trim().toUpperCase();
+
+        if (!code) {
+            return {
+                country_code: "",
+                provider: "Select country",
+                provider_key: "",
+                currency: "GHS",
+                gateway_label: "Select billing country",
+                route_class: "",
+                note: "Choose the customer's billing country before starting payment."
+            };
+        }
+
+        if (AFRICAN_COUNTRY_CODES.has(code)) {
+            return {
+                country_code: code,
+                provider: "Paystack",
+                provider_key: "paystack",
+                currency: "GHS",
+                gateway_label: "Paystack checkout",
+                route_class: "paystack",
+                note: "African billing country detected. This payment will be processed with Paystack in GHS."
+            };
+        }
+
+        return {
+            country_code: code,
+            provider: "Stripe",
+            provider_key: "stripe",
+            currency: "USD",
+            gateway_label: "Stripe Checkout",
+            route_class: "stripe",
+            note: "Non-African billing country detected. This payment will be processed with Stripe Checkout in USD."
+        };
+    }
+
+    function getSelectedPaymentRoute() {
+        return getPaymentRoute($("billingCountry")?.value || "");
+    }
+
+    function updatePaymentRoute() {
+        const route = getSelectedPaymentRoute();
+        const box = $("paymentRouteBox");
+
+        if (box) {
+            box.className = `payment-route-box ${route.route_class || ""}`;
+            box.innerHTML = `
+                <strong>Payment route: ${esc(route.provider)}</strong><br>
+                ${esc(route.note)}
+                <div class="payment-meta-grid">
+                    <div class="payment-meta"><span>Billing country</span><strong>${esc(route.country_code || "Not selected")}</strong></div>
+                    <div class="payment-meta"><span>Provider</span><strong>${esc(route.provider)}</strong></div>
+                    <div class="payment-meta"><span>Checkout</span><strong>${esc(route.gateway_label)}</strong></div>
+                    <div class="payment-meta"><span>Currency</span><strong>${esc(route.currency)}</strong></div>
+                </div>
+            `;
+        }
+
+        loadPlanRecommendation(route.currency);
     }
 
     async function loadPlanRecommendation(currency = "GHS") {
@@ -2056,17 +2204,25 @@ document.addEventListener("DOMContentLoaded", function () {
 
         const box = $("planBox");
         if (!box) return;
+
+        const route = getSelectedPaymentRoute();
+        const selectedCurrency = route.currency || currency || "GHS";
+
         try {
-            const js = await fetchJsonNoCache(`/api/plans/recommend/${encodeURIComponent(JOB_ID)}?currency=${encodeURIComponent(currency)}`);
+            const js = await fetchJsonNoCache(`/api/plans/recommend/${encodeURIComponent(JOB_ID)}?currency=${encodeURIComponent(selectedCurrency)}`);
             const recommended = (js.tiers || []).find(t => t.recommended) || (js.tiers || []).find(t => t.allowed_for_document) || (js.tiers || [])[0];
             window.recommendedPlan = recommended || null;
+
             if (!recommended) {
                 box.innerHTML = `<strong>Package recommendation unavailable.</strong><br>Please refresh and try again.`;
                 return;
             }
+
             box.innerHTML = `
                 <strong>Recommended package: ${esc(recommended.name)}</strong><br>
                 Price: <strong>${esc(recommended.selected_price_display || (recommended.selected_currency + " " + recommended.selected_amount))}</strong><br>
+                Payment provider: <strong>${esc(route.provider || "Select billing country")}</strong><br>
+                Payment currency: <strong>${esc(selectedCurrency)}</strong><br>
                 Limit: ${esc(recommended.max_references)} references / ${esc(recommended.max_citations)} in-text citations<br>
                 Runs included: ${esc(recommended.analysis_runs || 2)}
             `;
@@ -2076,14 +2232,15 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    async function startPaystackCheckout() {
+    async function startCheckoutPayment() {
         if (DEMO_HIDE_PAYMENT_DETAILS) {
             setStatus("Payment screen is hidden for this demonstration.", "info");
             return;
         }
 
         const email = ($("payEmail")?.value || "").trim();
-        const currency = ($("payCurrency")?.value || "GHS").trim().toUpperCase();
+        const countryCode = ($("billingCountry")?.value || "").trim().toUpperCase();
+        const route = getPaymentRoute(countryCode);
         const plan = window.recommendedPlan;
         const counts = getDocumentCounts(latestResults || {});
 
@@ -2091,6 +2248,12 @@ document.addEventListener("DOMContentLoaded", function () {
             alert("Please enter a valid email address.");
             return;
         }
+
+        if (!countryCode) {
+            alert("Please select the billing country.");
+            return;
+        }
+
         if (!plan?.tier_key) {
             alert("Package recommendation is not ready. Please wait a moment and try again.");
             return;
@@ -2098,27 +2261,38 @@ document.addEventListener("DOMContentLoaded", function () {
 
         const btn = $("btnPayUnlock");
         if (btn) btn.disabled = true;
-        setStatus("Opening Paystack checkout...", "info");
+        setStatus(`Opening ${route.provider} checkout...`, "info");
 
         try {
-            const res = await fetch("/api/paystack/initialize", {
+            const res = await fetch("/api/payment/initialize", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     email,
+                    country_code: countryCode,
                     tier_key: plan.tier_key,
-                    currency,
+                    currency: route.currency,
                     job_id: JOB_ID,
                     file_name: latestResults?.file_name || latestResults?.filename || "",
                     reference_count: counts.reference_count,
                     citation_count: counts.citation_count
                 })
             });
+
             const js = await res.json();
-            if (!res.ok || js.ok === false || !js.authorization_url) {
-                throw new Error(js.detail || js.error || "Payment could not be initialized.");
+            const checkoutUrl = js.checkout_url || js.authorization_url || js.url;
+
+            if (!res.ok || js.ok === false || !checkoutUrl) {
+                throw new Error(
+                    js.gateway_error ||
+                    js.detail ||
+                    js.error ||
+                    "Payment could not be initialized."
+                );
             }
-            window.location.href = js.authorization_url;
+
+            setStatus(`Redirecting to ${js.provider || route.provider} checkout...`, "good");
+            window.location.href = checkoutUrl;
         } catch (e) {
             console.error(e);
             setStatus("Payment could not start: " + e.message, "bad");
@@ -3796,6 +3970,52 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!keepProgressVisible) hideProgress();
     }
 
+    function stopPaymentUnlockPolling() {
+        if (paymentUnlockPollTimer) {
+            clearInterval(paymentUnlockPollTimer);
+            paymentUnlockPollTimer = null;
+        }
+    }
+
+    function startPaymentUnlockPolling() {
+        if (!PAYMENT_RETURN || paymentUnlockPollTimer || hasPaidAccess(latestResults)) return;
+
+        paymentUnlockAttempts = 0;
+        setStatus("Payment received. Confirming Full Review unlock...", "info");
+
+        paymentUnlockPollTimer = setInterval(async function () {
+            paymentUnlockAttempts += 1;
+
+            if (paymentUnlockAttempts > 12) {
+                stopPaymentUnlockPolling();
+                if (!hasPaidAccess(latestResults)) {
+                    setStatus("Payment was received, but unlock is still being confirmed. Refresh once or contact support with this job ID.", "warn");
+                }
+                return;
+            }
+
+            try {
+                const js = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}?fresh=1`);
+                if (js.status !== "completed") return;
+
+                const fresh = js.data || js.result;
+                if (!fresh) return;
+
+                renderAll(fresh);
+
+                if (hasPaidAccess(latestResults)) {
+                    stopPaymentUnlockPolling();
+                    setStatus("Full Review unlocked.", "good");
+                    return;
+                }
+
+                setStatus("Payment received. Waiting for server-side unlock confirmation...", "info");
+            } catch (e) {
+                console.warn("Payment unlock polling issue:", e);
+            }
+        }, 3000);
+    }
+
     async function loadExistingResult(showMessage = true) {
         if (!JOB_ID) { setStatus("No job ID found in URL.", "bad"); return null; }
         try {
@@ -3804,7 +4024,17 @@ document.addEventListener("DOMContentLoaded", function () {
             if (js.status === "completed") {
                 const result = js.data || js.result;
                 renderAll(result);
-                setStatus(hasPaidAccess(latestResults) ? "Full Review results loaded." : "Free Preview loaded. Unlock Full Review to see all results.", hasPaidAccess(latestResults) ? "good" : "warn");
+
+                if (hasPaidAccess(latestResults)) {
+                    stopPaymentUnlockPolling();
+                    setStatus("Full Review results loaded.", "good");
+                } else if (PAYMENT_RETURN) {
+                    setStatus("Payment received. Confirming Full Review unlock...", "info");
+                    startPaymentUnlockPolling();
+                } else {
+                    setStatus("Free Preview loaded. Unlock Full Review to see all results.", "warn");
+                }
+
                 return result;
             }
             if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
