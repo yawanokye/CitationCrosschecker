@@ -806,6 +806,7 @@ async def security_middleware(request: Request, call_next):
         "/stats",
         "/health",
         "/privacy",
+        "/terms",
         "/static",
         "/export-fixed-document",
         "/export-references",
@@ -3581,6 +3582,11 @@ def index(request: Request):
 def privacy(request: Request):
     return templates.TemplateResponse("privacy.html", {"request": request})
 
+@app.get("/terms", response_class=HTMLResponse)
+async def terms_page(request: Request):
+    return templates.TemplateResponse("terms.html", {
+        "request": request
+    })
 @app.get("/new", response_class=HTMLResponse)
 async def new_landing_page(request: Request):
     stats = stats_tracker.get_stats(detailed=False)
