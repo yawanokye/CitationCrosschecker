@@ -621,7 +621,7 @@
                         <span class="secure-badge">Private support request</span>
                     </div>
 
-                    <form id="contactForm" novalidate>
+                    <form id="contactForm" action="/api/contact" method="post" novalidate>
                         <input class="hidden-field" type="text" id="website" name="website" tabindex="-1" autocomplete="off">
 
                         <div class="form-grid">
@@ -798,17 +798,31 @@
                     body: JSON.stringify(payload)
                 });
 
-                if (response.ok) {
+                let data = {};
+                try {
+                    data = await response.json();
+                } catch (_) {
+                    data = {};
+                }
+
+                if (response.ok && data.ok !== false) {
                     form.reset();
                     refundNote.classList.remove('show');
-                    setStatus('success', 'Thank you. Your message has been received. CiteIntegrity support will respond through the email address provided.');
+
+                    if (data.email_sent === false) {
+                        setStatus('error', data.message || 'Your message reached CiteIntegrity, but email forwarding is not completing. Please check the SMTP settings in Render.');
+                    } else {
+                        setStatus('success', data.message || 'Thank you. Your message has been received. CiteIntegrity support will respond through the email address provided.');
+                    }
                     return;
                 }
 
-                throw new Error(`HTTP ${response.status}`);
+                const serverMessage = data.detail || data.message || `HTTP ${response.status}`;
+                throw new Error(serverMessage);
+
             } catch (error) {
-                setStatus('info', 'The contact endpoint is not active yet. Opening your email app so you can send the message directly.');
-                window.location.href = buildMailto(payload);
+                console.error('Contact form error:', error);
+                setStatus('error', `The website contact form could not complete: ${error.message}. The endpoint may be missing, blocked, or SMTP may not be configured. Please test https://citeintegrity.org/api/contact after redeploy.`);
             } finally {
                 submitBtn.disabled = false;
             }
