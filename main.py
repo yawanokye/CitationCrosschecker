@@ -3598,11 +3598,153 @@ async def about_page(request: Request):
         "request": request
     })
 
+CONTACT_SUPPORT_EMAIL = os.environ.get("CONTACT_SUPPORT_EMAIL", "support@citeintegrity.org")
+
+
 @app.get("/contact", response_class=HTMLResponse)
 async def contact_page(request: Request):
     return templates.TemplateResponse("contact.html", {
         "request": request
     })
+
+
+def _init_contact_messages_table():
+    if not DATABASE_URL:
+        return False
+
+    try:
+        with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS contact_messages (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        name TEXT NOT NULL,
+                        email TEXT NOT NULL,
+                        organisation TEXT,
+                        phone TEXT,
+                        category TEXT NOT NULL,
+                        reference TEXT,
+                        subject TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        source TEXT,
+                        ip_address TEXT,
+                        user_agent TEXT,
+                        status TEXT DEFAULT 'new'
+                    )
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_contact_messages_created_at 
+                    ON contact_messages(created_at)
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_contact_messages_category 
+                    ON contact_messages(category)
+                """)
+                conn.commit()
+
+        return True
+
+    except Exception as e:
+        print(f"⚠️ Could not initialise contact_messages table: {e}")
+        return False
+
+
+@app.post("/api/contact")
+async def submit_contact_message(request: Request, payload: Dict[str, Any] = Body(...)):
+    allowed_categories = {
+        "General enquiry",
+        "Technical support",
+        "Billing or payment issue",
+        "Request refund",
+        "Institutional or university access",
+        "Partnership enquiry",
+        "Data or privacy request",
+        "Report a problem",
+        "Other",
+    }
+
+    # Honeypot spam check
+    if str(payload.get("website") or "").strip():
+        return {"ok": True, "message": "Received"}
+
+    name = str(payload.get("name") or "").strip()[:180]
+    email = str(payload.get("email") or "").strip()[:220]
+    organisation = str(payload.get("organisation") or "").strip()[:220]
+    phone = str(payload.get("phone") or "").strip()[:80]
+    category = str(payload.get("category") or "").strip()[:120]
+    reference = str(payload.get("reference") or "").strip()[:180]
+    subject = str(payload.get("subject") or "").strip()[:240]
+    message = str(payload.get("message") or "").strip()[:8000]
+    source = str(payload.get("source") or "contact_page").strip()[:120]
+    consent = bool(payload.get("consent"))
+
+    if not name or not email or not category or not subject or not message or not consent:
+        raise HTTPException(status_code=400, detail="Missing required contact fields")
+
+    if category not in allowed_categories:
+        category = "Other"
+
+    if "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+
+    ip_address = request.client.host if request.client else ""
+    user_agent = request.headers.get("user-agent", "")[:500]
+
+    saved = False
+
+    if DATABASE_URL:
+        try:
+            _init_contact_messages_table()
+
+            with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO contact_messages
+                        (name, email, organisation, phone, category, reference, subject, message, source, ip_address, user_agent)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            name,
+                            email,
+                            organisation,
+                            phone,
+                            category,
+                            reference,
+                            subject,
+                            message,
+                            source,
+                            ip_address,
+                            user_agent,
+                        ),
+                    )
+
+                    row = cursor.fetchone()
+                    conn.commit()
+                    saved = True
+
+                    print(
+                        f"📩 Contact message saved: "
+                        f"#{row.get('id') if row else 'unknown'} - {category} - {email}"
+                    )
+
+        except Exception as e:
+            print(f"❌ Contact message save failed: {e}")
+
+    if not saved:
+        raise HTTPException(
+            status_code=503,
+            detail="Contact endpoint is active, but the message could not be saved."
+        )
+
+    return {
+        "ok": True,
+        "saved": saved,
+        "support_email": CONTACT_SUPPORT_EMAIL,
+        "message": "Your message has been received. CiteIntegrity support will respond by email."
+    }
 @app.get("/new", response_class=HTMLResponse)
 async def new_landing_page(request: Request):
     stats = stats_tracker.get_stats(detailed=False)
