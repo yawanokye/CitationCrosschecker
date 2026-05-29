@@ -382,14 +382,15 @@
             <div class="toolbar-left">
                 <label class="small-note" for="daysSelect">Reporting window</label>
                 <select class="select" id="daysSelect" onchange="refreshStats(true)">
-                    <option value="7">Last 7 days</option>
-                    <option value="30" selected>Last 30 days</option>
-                    <option value="90">Last 90 days</option>
-                    <option value="365">Last 365 days</option>
+                    <option value="1">Today</option>
+                    <option value="7" selected>Last 7 days</option>
+                    <option value="14">Last 14 days</option>
+                    <option value="30">Last 30 days</option>
                 </select>
             </div>
             <div class="toolbar-right">
                 <span class="small-note" id="lastUpdated">Waiting for data.</span>
+                <span class="small-note">Safe mode: max 30 days · 100 recent rows</span>
                 <button class="btn btn-light" onclick="downloadJson()">Download JSON</button>
             </div>
         </div>
@@ -409,6 +410,10 @@
         let password = '';
         let latestData = null;
         let isRefreshing = false;
+        let statsAbortController = null;
+        const SAFE_MAX_DAYS = 30;
+        const SAFE_RECENT_LIMIT = 100;
+        const SAFE_REFRESH_INTERVAL_MS = 300000;
 
         function fmtNumber(value) {
             const n = Number(value || 0);
@@ -455,11 +460,27 @@
             }
 
             try {
-                const days = document.getElementById('daysSelect').value || 30;
+                let days = Number(document.getElementById('daysSelect').value || 7);
+                if (!Number.isFinite(days)) days = 7;
+                days = Math.max(1, Math.min(days, SAFE_MAX_DAYS));
+
+                if (statsAbortController) {
+                    statsAbortController.abort();
+                }
+                statsAbortController = new AbortController();
+
                 const auth = btoa(`${username}:${password}`);
-                const response = await fetch(`/private-stats?detailed=true&days=${encodeURIComponent(days)}`, {
+                const params = new URLSearchParams({
+                    detailed: 'true',
+                    days: String(days),
+                    limit: String(SAFE_RECENT_LIMIT),
+                    safe: '1'
+                });
+
+                const response = await fetch(`/private-stats?${params.toString()}`, {
                     headers: { 'Authorization': `Basic ${auth}` },
-                    cache: 'no-store'
+                    cache: 'no-store',
+                    signal: statsAbortController.signal
                 });
 
                 if (response.status === 401) {
@@ -474,6 +495,7 @@
                 latestData = await response.json();
                 renderStats(latestData);
             } catch (error) {
+                if (error.name === 'AbortError') return;
                 contentDiv.innerHTML = `
                     <div class="error-message">
                         <h2>Failed to load dashboard</h2>
@@ -529,7 +551,7 @@
             const total = data.total_stats || {};
             const metrics = data.dashboard_metrics || {};
             const daily = data.daily_stats || {};
-            const recent = data.recent_uploads || [];
+            const recent = (data.recent_uploads || []).slice(0, SAFE_RECENT_LIMIT);
             const system = data.system_info || {};
 
             document.getElementById('lastUpdated').textContent = `Last updated: ${fmtDate(system.current_time || total.last_updated)}`;
@@ -603,7 +625,7 @@
                     <div class="table-head">
                         <div>
                             <h2>Recent documents</h2>
-                            <p>Latest uploaded or queued manuscripts. Only dashboard-safe counts are shown.</p>
+                            <p>Latest uploaded or queued manuscripts. Only dashboard-safe counts are shown, capped for memory safety.</p>
                         </div>
                     </div>
                     ${renderRecentTable(recent)}
@@ -740,8 +762,14 @@
             URL.revokeObjectURL(url);
         }
 
+        window.addEventListener('beforeunload', () => {
+            if (statsAbortController) statsAbortController.abort();
+        });
+
         refreshStats();
-        setInterval(() => refreshStats(false), 45000);
+        setInterval(() => {
+            if (!document.hidden) refreshStats(false);
+        }, SAFE_REFRESH_INTERVAL_MS);
     </script>
 </body>
 </html>
