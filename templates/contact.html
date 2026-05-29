@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contact CiteIntegrity | Anovlad Technologies</title>
+    <meta name="description" content="Contact CiteIntegrity for support, billing, refund requests, institutional access, partnerships and citation integrity enquiries.">
+    <meta name="keywords" content="CiteIntegrity contact, citation checker support, reference verifier support, refund request, Anovlad Technologies">
+
+    <style>
+        :root {
+            --navy: #0f172a;
+            --navy-2: #172554;
+            --blue: #2563eb;
+            --blue-2: #1d4ed8;
+            --green: #19b36b;
+            --green-dark: #128457;
+            --slate: #64748b;
+            --slate-dark: #334155;
+            --line: #e2e8f0;
+            --soft: #f8fafc;
+            --soft-blue: #eff6ff;
+            --soft-green: #ecfdf5;
+            --amber-soft: #fffbeb;
+            --red-soft: #fef2f2;
+            --white: #ffffff;
+            --shadow: 0 24px 70px rgba(15, 23, 42, 0.12);
+            --shadow-soft: 0 12px 30px rgba(15, 23, 42, 0.08);
+            --radius: 28px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            color: var(--navy);
+            background: var(--white);
+            line-height: 1.55;
+            overflow-x: hidden;
+        }
+
+        a { color: inherit; text-decoration: none; }
+        button, input, select, textarea { font: inherit; }
+
+        .top-notice {
+            background: linear-gradient(90deg, #0f172a, #172554, #0f172a);
+            color: rgba(255,255,255,0.92);
+            text-align: center;
+            font-size: 12px;
+            padding: 6px 14px;
+        }
+
+        .top-notice strong { color: white; }
+
+        .site-header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(255,255,255,0.94);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(226,232,240,0.85);
+        }
+
+        .header-inner {
+            max-width: 1240px;
+            margin: 0 auto;
+            padding: 10px 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            min-width: max-content;
+        }
+
+        .brand-mark { width: 42px; height: 30px; display: block; }
+        .brand-name { font-weight: 900; font-size: 20px; letter-spacing: -0.7px; }
+
+        .nav {
+            display: flex;
+            align-items: center;
+            gap: 22px;
+            color: var(--slate-dark);
+            font-weight: 750;
+            font-size: 14px;
+        }
+
+        .nav a:hover { color: var(--blue); }
+
+        .mobile-toggle {
+            display: none;
+            border: 1px solid var(--line);
+            background: white;
+            color: var(--navy);
+            border-radius: 13px;
+            padding: 8px 11px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            padding: 11px 18px;
+            font-weight: 850;
+            cursor: pointer;
+            transition: 0.22s ease;
+            white-space: nowrap;
+        }
+
+        .btn:hover { transform: translateY(-2px); }
+        .btn-primary { background: linear-gradient(135deg, var(--navy), var(--blue-2)); color: white; box-shadow: 0 16px 36px rgba(37, 99, 235, 0.24); }
+        .btn-green { background: linear-gradient(135deg, var(--green), var(--green-dark)); color: white; box-shadow: 0 16px 36px rgba(25, 179, 107, 0.24); }
+        .btn-light { background: white; color: var(--navy); border-color: var(--line); box-shadow: var(--shadow-soft); }
+        .btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
+        .hero-wrap {
+            position: relative;
+            background:
+                radial-gradient(circle at 15% 10%, rgba(37,99,235,0.12), transparent 30%),
+                radial-gradient(circle at 92% 16%, rgba(25,179,107,0.13), transparent 34%),
+                linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+            border-bottom: 1px solid #edf2f7;
+        }
+
+        .section {
+            max-width: 1240px;
+            margin: 0 auto;
+            padding: 64px 22px;
+        }
+
+        .hero {
+            display: grid;
+            grid-template-columns: minmax(0, 820px);
+            justify-content: center;
+            text-align: center;
+            gap: 14px;
+            min-height: 300px;
+            padding-top: 54px;
+            padding-bottom: 48px;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 11px;
+            border-radius: 999px;
+            background: white;
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow-soft);
+            color: var(--slate-dark);
+            font-size: 12px;
+            font-weight: 800;
+            margin-bottom: 12px;
+        }
+
+        .eyebrow .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 0 5px rgba(25,179,107,0.12);
+        }
+
+        h1 {
+            font-size: clamp(36px, 5vw, 58px);
+            line-height: 1;
+            letter-spacing: -2.4px;
+            font-weight: 950;
+            margin-bottom: 12px;
+        }
+
+        .text-gradient { color: var(--blue); }
+
+        .hero-copy {
+            font-size: 17px;
+            color: var(--slate-dark);
+            max-width: 780px;
+            margin: 0 auto 16px;
+        }
+
+        .hero-actions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .contact-grid {
+            display: grid;
+            grid-template-columns: 0.9fr 1.1fr;
+            gap: 22px;
+            align-items: start;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-soft);
+            padding: 24px;
+        }
+
+        .card h2 {
+            font-size: 25px;
+            line-height: 1.2;
+            letter-spacing: -0.6px;
+            margin-bottom: 8px;
+        }
+
+        .card p { color: var(--slate-dark); }
+
+        .contact-list {
+            display: grid;
+            gap: 14px;
+            margin-top: 18px;
+        }
+
+        .contact-item {
+            display: grid;
+            grid-template-columns: 46px 1fr;
+            gap: 13px;
+            align-items: start;
+            border: 1px solid #edf2f7;
+            border-radius: 20px;
+            background: #fbfdff;
+            padding: 14px;
+        }
+
+        .contact-icon {
+            width: 46px;
+            height: 46px;
+            display: grid;
+            place-items: center;
+            border-radius: 15px;
+            background: var(--soft-blue);
+            color: var(--blue-2);
+            font-size: 21px;
+        }
+
+        .contact-item:nth-child(2n) .contact-icon {
+            background: var(--soft-green);
+            color: var(--green-dark);
+        }
+
+        .contact-item strong {
+            display: block;
+            margin-bottom: 3px;
+            font-size: 15px;
+        }
+
+        .contact-item span, .contact-item a {
+            color: var(--slate-dark);
+            font-size: 14px;
+        }
+
+        .contact-item a:hover { color: var(--blue); }
+
+        .office-grid {
+            display: grid;
+            gap: 14px;
+            margin-top: 18px;
+        }
+
+        .office-card {
+            border: 1px solid #edf2f7;
+            border-radius: 22px;
+            padding: 18px;
+            background: linear-gradient(135deg, #f8fafc, #ffffff);
+        }
+
+        .office-card h3 {
+            font-size: 18px;
+            margin-bottom: 8px;
+            letter-spacing: -0.3px;
+        }
+
+        .office-meta {
+            display: grid;
+            gap: 8px;
+            color: var(--slate-dark);
+            font-size: 14px;
+        }
+
+        .office-meta a { color: var(--blue-2); font-weight: 800; }
+
+        .form-card {
+            background:
+                radial-gradient(circle at 12% 8%, rgba(37,99,235,0.08), transparent 30%),
+                radial-gradient(circle at 95% 20%, rgba(25,179,107,0.10), transparent 34%),
+                #ffffff;
+        }
+
+        .form-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: flex-start;
+            margin-bottom: 18px;
+        }
+
+        .secure-badge {
+            display: inline-flex;
+            padding: 7px 11px;
+            border-radius: 999px;
+            background: var(--soft-green);
+            color: var(--green-dark);
+            font-size: 12px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .field { display: grid; gap: 6px; }
+        .field.full { grid-column: 1 / -1; }
+
+        label {
+            font-size: 13px;
+            font-weight: 850;
+            color: var(--navy);
+        }
+
+        input, select, textarea {
+            width: 100%;
+            border: 1px solid #cbd5e1;
+            border-radius: 15px;
+            padding: 12px 14px;
+            background: white;
+            color: var(--navy);
+            outline: none;
+            transition: 0.18s ease;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--blue);
+            box-shadow: 0 0 0 4px rgba(37,99,235,0.10);
+        }
+
+        textarea { min-height: 150px; resize: vertical; }
+
+        .helper {
+            color: var(--slate);
+            font-size: 12px;
+        }
+
+        .hidden-field {
+            position: absolute;
+            left: -9999px;
+            opacity: 0;
+            height: 0;
+            width: 0;
+        }
+
+        .consent-row {
+            display: grid;
+            grid-template-columns: 20px 1fr;
+            gap: 10px;
+            align-items: start;
+            margin-top: 14px;
+            color: var(--slate-dark);
+            font-size: 13px;
+        }
+
+        .consent-row input { width: 18px; height: 18px; margin-top: 2px; }
+
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 18px;
+        }
+
+        .status-message {
+            display: none;
+            margin-top: 14px;
+            border-radius: 16px;
+            padding: 12px 14px;
+            font-size: 14px;
+            font-weight: 750;
+        }
+
+        .status-message.success {
+            display: block;
+            background: var(--soft-green);
+            color: var(--green-dark);
+            border: 1px solid rgba(25,179,107,0.22);
+        }
+
+        .status-message.error {
+            display: block;
+            background: var(--red-soft);
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+
+        .status-message.info {
+            display: block;
+            background: var(--soft-blue);
+            color: #1d4ed8;
+            border: 1px solid #bfdbfe;
+        }
+
+        .refund-note {
+            display: none;
+            grid-column: 1 / -1;
+            border: 1px solid rgba(245,158,11,0.28);
+            background: var(--amber-soft);
+            color: #92400e;
+            border-radius: 16px;
+            padding: 12px 14px;
+            font-size: 13px;
+        }
+
+        .refund-note.show { display: block; }
+
+        .support-strip {
+            background: #07111f;
+            color: white;
+        }
+
+        .support-panel {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 24px;
+            align-items: center;
+            background:
+                radial-gradient(circle at 5% 10%, rgba(25,179,107,0.18), transparent 28%),
+                radial-gradient(circle at 95% 60%, rgba(37,99,235,0.13), transparent 34%),
+                #07111f;
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 30px;
+            padding: 34px;
+        }
+
+        .support-panel h2 {
+            font-size: clamp(28px, 4vw, 42px);
+            line-height: 1.08;
+            letter-spacing: -1.4px;
+            margin-bottom: 10px;
+        }
+
+        .support-panel p {
+            color: rgba(255,255,255,0.78);
+            max-width: 760px;
+        }
+
+        .footer {
+            background: #07111f;
+            color: rgba(255,255,255,0.74);
+            padding: 40px 22px 28px;
+        }
+
+        .footer-inner {
+            max-width: 1240px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            flex-wrap: wrap;
+            border-top: 1px solid rgba(255,255,255,0.10);
+            padding-top: 20px;
+            font-size: 13px;
+        }
+
+        .footer a { color: rgba(255,255,255,0.86); font-weight: 800; }
+        .footer a:hover { color: white; }
+
+        @media (max-width: 980px) {
+            .nav { display: none; }
+            .mobile-toggle { display: inline-flex; }
+            .header-inner { flex-wrap: wrap; }
+            .nav.open {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                width: 100%;
+                padding-top: 12px;
+                gap: 13px;
+            }
+            .contact-grid, .support-panel { grid-template-columns: 1fr; }
+        }
+
+        @media (max-width: 680px) {
+            .section { padding: 46px 16px; }
+            .hero { padding-top: 42px; padding-bottom: 38px; }
+            h1 { letter-spacing: -2px; }
+            .hero-copy { font-size: 16px; }
+            .form-grid { grid-template-columns: 1fr; }
+            .form-head { flex-direction: column; }
+            .btn, .hero-actions .btn, .form-actions .btn, .support-panel .btn { width: 100%; }
+            .card { padding: 18px; border-radius: 22px; }
+            .support-panel { padding: 24px 18px; border-radius: 24px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="top-notice">
+        <strong>CiteIntegrity support:</strong> send general enquiries, technical support requests, institutional access enquiries and refund requests.
+    </div>
+
+    <header class="site-header">
+        <div class="header-inner">
+            <a class="brand" href="/#home" aria-label="CiteIntegrity home">
+                <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
+                    <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
+                    <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="brand-name">CiteIntegrity</span>
+            </a>
+
+            <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
+
+            <nav class="nav" id="mainNav">
+                <a href="/">Home</a>
+                <a href="/#features">Features</a>
+                <a href="/#workflow">How it works</a>
+                <a href="/new/analyse">Start checking</a>
+                <a href="/privacy">Privacy</a>
+                <a href="/terms">Terms</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero-wrap">
+            <div class="section hero">
+                <div>
+                    <div class="eyebrow"><span class="dot"></span> Contact Anovlad Technologies, owner of CiteIntegrity</div>
+                    <h1>Contact <span class="text-gradient">CiteIntegrity support.</span></h1>
+                    <p class="hero-copy">
+                        Reach us for product support, billing questions, refund requests, institutional access, partnerships, data requests and citation integrity enquiries.
+                    </p>
+                    <div class="hero-actions">
+                        <a class="btn btn-primary" href="#contact-form">Send a message</a>
+                        <a class="btn btn-light" href="mailto:support@citeintegrity.org">Email support</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section" id="contact-form">
+            <div class="contact-grid">
+                <aside class="card">
+                    <h2>Contact details</h2>
+                    <p>CiteIntegrity is owned by Anovlad Technologies. Use the support form for the fastest routing of your enquiry.</p>
+
+                    <div class="contact-list">
+                        <div class="contact-item">
+                            <div class="contact-icon">✉️</div>
+                            <div>
+                                <strong>Email support</strong>
+                                <a href="mailto:support@citeintegrity.org">support@citeintegrity.org</a>
+                            </div>
+                        </div>
+
+                        <div class="contact-item">
+                            <div class="contact-icon">📞</div>
+                            <div>
+                                <strong>Europe office phone</strong>
+                                <a href="tel:+442034322704">+44 203 432 2704</a>
+                            </div>
+                        </div>
+
+                        <div class="contact-item">
+                            <div class="contact-icon">📱</div>
+                            <div>
+                                <strong>Africa office phone</strong>
+                                <a href="tel:+233540890942">+233 540 890 942</a>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="office-grid" aria-label="Office locations">
+                        <div class="office-card">
+                            <h3>Europe office</h3>
+                            <div class="office-meta">
+                                <span>Office 1346, 60 Tottenham Court Road</span>
+                                <span>Fitzrovia, London, United Kingdom</span>
+                                <span>W1T 2EW</span>
+                                <a href="tel:+442034322704">+44 203 432 2704</a>
+                            </div>
+                        </div>
+
+                        <div class="office-card">
+                            <h3>Africa office</h3>
+                            <div class="office-meta">
+                                <span>CC-183-6610, Esuekyir</span>
+                                <span>Cape Coast, Ghana</span>
+                                <a href="tel:+233540890942">+233 540 890 942</a>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                <section class="card form-card">
+                    <div class="form-head">
+                        <div>
+                            <h2>Send us a message</h2>
+                            <p>Select the category that best describes your request. Refund requests should include payment details and the analysis/job reference where available.</p>
+                        </div>
+                        <span class="secure-badge">Private support request</span>
+                    </div>
+
+                    <form id="contactForm" novalidate>
+                        <input class="hidden-field" type="text" id="website" name="website" tabindex="-1" autocomplete="off">
+
+                        <div class="form-grid">
+                            <div class="field">
+                                <label for="name">Full name *</label>
+                                <input type="text" id="name" name="name" placeholder="Your full name" required>
+                            </div>
+
+                            <div class="field">
+                                <label for="email">Email address *</label>
+                                <input type="email" id="email" name="email" placeholder="you@example.com" required>
+                            </div>
+
+                            <div class="field">
+                                <label for="organisation">Organisation</label>
+                                <input type="text" id="organisation" name="organisation" placeholder="University, journal, company or institution">
+                            </div>
+
+                            <div class="field">
+                                <label for="phone">Phone number</label>
+                                <input type="tel" id="phone" name="phone" placeholder="Optional">
+                            </div>
+
+                            <div class="field">
+                                <label for="category">Request type *</label>
+                                <select id="category" name="category" required>
+                                    <option value="">Select request type</option>
+                                    <option value="General enquiry">General enquiry</option>
+                                    <option value="Technical support">Technical support</option>
+                                    <option value="Billing or payment issue">Billing or payment issue</option>
+                                    <option value="Request refund">Request refund</option>
+                                    <option value="Institutional or university access">Institutional or university access</option>
+                                    <option value="Partnership enquiry">Partnership enquiry</option>
+                                    <option value="Data or privacy request">Data or privacy request</option>
+                                    <option value="Report a problem">Report a problem</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                            </div>
+
+                            <div class="field">
+                                <label for="reference">Job ID or payment reference</label>
+                                <input type="text" id="reference" name="reference" placeholder="Optional but useful for support/refund requests">
+                            </div>
+
+                            <div class="refund-note" id="refundNote">
+                                For refund requests, include the email used for payment, payment provider, payment reference, date of payment, job ID if available, and the reason for the refund request.
+                            </div>
+
+                            <div class="field full">
+                                <label for="subject">Subject *</label>
+                                <input type="text" id="subject" name="subject" placeholder="Brief subject of your request" required>
+                            </div>
+
+                            <div class="field full">
+                                <label for="message">Message *</label>
+                                <textarea id="message" name="message" placeholder="Write your message here. Please do not include highly confidential manuscript content in this form." required></textarea>
+                                <div class="helper">For technical support, include the file type, job ID, browser and what happened. For refunds, include payment details and the reason for the request.</div>
+                            </div>
+                        </div>
+
+                        <label class="consent-row" for="consent">
+                            <input type="checkbox" id="consent" name="consent" required>
+                            <span>I consent to CiteIntegrity and Anovlad Technologies using this information to respond to my request.</span>
+                        </label>
+
+                        <div class="form-actions">
+                            <button class="btn btn-primary" id="submitBtn" type="submit">Send message</button>
+                            <a class="btn btn-light" href="mailto:support@citeintegrity.org">Use email instead</a>
+                        </div>
+
+                        <div class="status-message" id="formStatus" role="status" aria-live="polite"></div>
+                    </form>
+                </section>
+            </div>
+        </section>
+
+        <section class="support-strip">
+            <div class="section">
+                <div class="support-panel">
+                    <div>
+                        <h2>Need to check a manuscript?</h2>
+                        <p>Start a citation integrity analysis and use your job ID when contacting support about a specific report, payment or verification issue.</p>
+                    </div>
+                    <a class="btn btn-green" href="/new/analyse">Start checking</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <div class="footer-inner">
+            <div>© <span id="year"></span> CiteIntegrity. Owned by Anovlad Technologies.</div>
+            <div>
+                <a href="/privacy">Privacy Policy</a> ·
+                <a href="/terms">Terms of Use</a> ·
+                <a href="/contact">Contact</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        const SUPPORT_EMAIL = 'support@citeintegrity.org';
+        const form = document.getElementById('contactForm');
+        const statusBox = document.getElementById('formStatus');
+        const submitBtn = document.getElementById('submitBtn');
+        const category = document.getElementById('category');
+        const refundNote = document.getElementById('refundNote');
+        const mobileToggle = document.getElementById('mobileToggle');
+        const mainNav = document.getElementById('mainNav');
+
+        document.getElementById('year').textContent = new Date().getFullYear();
+
+        if (mobileToggle && mainNav) {
+            mobileToggle.addEventListener('click', () => mainNav.classList.toggle('open'));
+        }
+
+        category.addEventListener('change', () => {
+            refundNote.classList.toggle('show', category.value === 'Request refund');
+        });
+
+        function setStatus(type, message) {
+            statusBox.className = `status-message ${type}`;
+            statusBox.textContent = message;
+        }
+
+        function buildMailto(payload) {
+            const subject = encodeURIComponent(`[CiteIntegrity Contact] ${payload.category || 'Support'} - ${payload.subject || 'Message'}`);
+            const body = encodeURIComponent(
+                `Name: ${payload.name}\n` +
+                `Email: ${payload.email}\n` +
+                `Organisation: ${payload.organisation || 'N/A'}\n` +
+                `Phone: ${payload.phone || 'N/A'}\n` +
+                `Request type: ${payload.category}\n` +
+                `Job/payment reference: ${payload.reference || 'N/A'}\n\n` +
+                `Message:\n${payload.message}`
+            );
+            return `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+        }
+
+        function readPayload() {
+            return {
+                name: document.getElementById('name').value.trim(),
+                email: document.getElementById('email').value.trim(),
+                organisation: document.getElementById('organisation').value.trim(),
+                phone: document.getElementById('phone').value.trim(),
+                category: document.getElementById('category').value,
+                reference: document.getElementById('reference').value.trim(),
+                subject: document.getElementById('subject').value.trim(),
+                message: document.getElementById('message').value.trim(),
+                website: document.getElementById('website').value.trim(),
+                consent: document.getElementById('consent').checked,
+                source: 'contact_page'
+            };
+        }
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const payload = readPayload();
+
+            if (payload.website) return;
+
+            if (!payload.name || !payload.email || !payload.category || !payload.subject || !payload.message || !payload.consent) {
+                setStatus('error', 'Please complete the required fields and consent checkbox before sending.');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            setStatus('info', 'Sending your message...');
+
+            try {
+                const response = await fetch('/api/contact', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    form.reset();
+                    refundNote.classList.remove('show');
+                    setStatus('success', 'Thank you. Your message has been received. CiteIntegrity support will respond through the email address provided.');
+                    return;
+                }
+
+                throw new Error(`HTTP ${response.status}`);
+            } catch (error) {
+                setStatus('info', 'The contact endpoint is not active yet. Opening your email app so you can send the message directly.');
+                window.location.href = buildMailto(payload);
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
