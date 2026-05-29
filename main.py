@@ -831,6 +831,7 @@ async def security_middleware(request: Request, call_next):
         "/features",
         "/pricing",
         "/contact",
+        "/about",
         "/private-stats"
     ]
     
@@ -3587,6 +3588,18 @@ def privacy(request: Request):
 @app.get("/terms", response_class=HTMLResponse)
 async def terms_page(request: Request):
     return templates.TemplateResponse("terms.html", {
+        "request": request
+    })
+
+@app.get("/about", response_class=HTMLResponse)
+async def about_page(request: Request):
+    return templates.TemplateResponse("about.html", {
+        "request": request
+    })
+
+@app.get("/contact", response_class=HTMLResponse)
+async def contact_page(request: Request):
+    return templates.TemplateResponse("contact.html", {
         "request": request
     })
 @app.get("/new", response_class=HTMLResponse)
