@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "commercial-2026-05-28-dashboard-jsonb-population-only-v1.5.34"
+# MAIN_BUILD = "commercial-2026-05-29-stripe-server-unlock-repair-v1.6.2"
 
 import io
 import os
@@ -40,8 +40,8 @@ import redis
 from rq import Queue
 
 # FastAPI and web frameworks
-from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, Body
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -67,6 +67,91 @@ from reference_formatter import (
     export_references_to_html,
     DOCX_AVAILABLE
 )
+
+# Optional commercial dashboard, payment, access-control, manual-search, and certificate helpers.
+# These imports are wrapped so the core analysis service can still start if a commercial module is missing.
+try:
+    from manual_scholar_search import manual_scholar_search
+except Exception as e:
+    print(f"⚠️ Manual scholar search helper not loaded: {e}")
+    manual_scholar_search = None
+
+try:
+    from certificate_builder import build_citation_integrity_certificate, render_certificate_html
+except Exception as e:
+    print(f"⚠️ Certificate builder not loaded: {e}")
+    build_citation_integrity_certificate = None
+    render_certificate_html = None
+
+try:
+    from admin_dashboard import (
+        router as admin_dashboard_router,
+        init_commercial_dashboard_table,
+        record_dashboard,
+        record_dashboard_from_result,
+    )
+    ADMIN_DASHBOARD_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ Commercial dashboard helpers not loaded: {e}")
+    admin_dashboard_router = None
+    init_commercial_dashboard_table = None
+    ADMIN_DASHBOARD_AVAILABLE = False
+
+    def record_dashboard(*args, **kwargs):
+        return None
+
+    def record_dashboard_from_result(*args, **kwargs):
+        return None
+
+# Commercial access and Paystack payment helpers.
+try:
+    from entitlements import (
+        build_plan_selection_payload,
+        apply_entitlements_to_result,
+    )
+    from access_control import (
+        init_commercial_tables,
+        purchase_is_paid_for_job,
+        validate_purchase_for_new_run,
+        record_purchase_run,
+    )
+    from paystack_payments import (
+        initialize_citeintegrity_payment,
+        verify_and_activate_purchase,
+        handle_paystack_webhook,
+    )
+    COMMERCIAL_FEATURES_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ Commercial/payment helpers not loaded: {e}")
+    COMMERCIAL_FEATURES_AVAILABLE = False
+    build_plan_selection_payload = None
+    apply_entitlements_to_result = None
+    init_commercial_tables = None
+    purchase_is_paid_for_job = None
+    validate_purchase_for_new_run = None
+    record_purchase_run = None
+    initialize_citeintegrity_payment = None
+    verify_and_activate_purchase = None
+    handle_paystack_webhook = None
+
+# Optional Stripe and payment-routing helpers.
+# Kept separate from the Paystack/access-control import block so that a missing
+# Stripe package or key never disables existing Paystack payments.
+try:
+    from payment_router import choose_payment_provider
+    from stripe_payments import (
+        initialize_citeintegrity_stripe_payment,
+        handle_stripe_webhook,
+        verify_and_activate_stripe_session,
+    )
+    STRIPE_PAYMENT_FEATURES_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ Stripe/payment routing helpers not loaded: {e}")
+    STRIPE_PAYMENT_FEATURES_AVAILABLE = False
+    choose_payment_provider = None
+    initialize_citeintegrity_stripe_payment = None
+    handle_stripe_webhook = None
+    verify_and_activate_stripe_session = None
 
 
 # ===============================
@@ -463,16 +548,12 @@ class StatsTracker:
                         success_rate = round((total_processed / max(total_uploads, 1)) * 100, 2)
                         
                         cursor.execute("""
-                            SELECT AVG(processing_time) AS avg_processing_time
-                            FROM uploads
+                            SELECT AVG(processing_time) 
+                            FROM uploads 
                             WHERE success = 1 AND processing_time IS NOT NULL
                         """)
                         avg_row = cursor.fetchone()
-                        if isinstance(avg_row, dict):
-                            avg_value = avg_row.get("avg_processing_time")
-                        else:
-                            avg_value = avg_row[0] if avg_row else None
-                        avg_processing_time = round(float(avg_value), 2) if avg_value else 0
+                        avg_processing_time = round(avg_row[0], 2) if avg_row and avg_row[0] else 0
                         
                         return {
                             "total_stats": {
@@ -599,6 +680,22 @@ class StatsTracker:
 stats_tracker = StatsTracker()
 print(f"✅ Using {stats_tracker.db_type.upper()} database for persistent statistics")
 
+# Initialise commercial/payment and admin-dashboard tables when the optional helpers are available.
+if DATABASE_URL and COMMERCIAL_FEATURES_AVAILABLE and init_commercial_tables:
+    try:
+        init_commercial_tables(DATABASE_URL)
+        print("✅ Commercial payment tables checked")
+    except Exception as e:
+        print(f"⚠️ Could not initialise commercial payment tables: {e}")
+
+if DATABASE_URL and ADMIN_DASHBOARD_AVAILABLE and init_commercial_dashboard_table:
+    try:
+        init_commercial_dashboard_table()
+        print("✅ Commercial admin dashboard table checked")
+    except Exception as e:
+        print(f"⚠️ Could not initialise commercial admin dashboard table: {e}")
+
+
 
 # ===============================
 # COUNTER SETUP
@@ -656,6 +753,14 @@ app = FastAPI(
 )
 
 
+if admin_dashboard_router is not None:
+    try:
+        app.include_router(admin_dashboard_router)
+    except Exception as e:
+        print(f"⚠️ Could not include commercial admin dashboard router: {e}")
+
+
+
 # --- GLOBAL PROTECTION CONTROLS ---
 processing = False
 
@@ -683,6 +788,13 @@ BAD_AGENTS = [
 async def security_middleware(request: Request, call_next):
     path = request.url.path.lower()
     ua = request.headers.get("user-agent", "").lower()
+
+    if path.startswith("/api/certificate/"):
+        return await call_next(request)
+
+    if path.startswith("/admin/commercial-dashboard") or path.startswith("/admin/api/commercial-dashboard"):
+        return await call_next(request)
+
     
     # ✅ ALLOW LIST - Critical endpoints that must work
     ALLOWED_PATHS = [
@@ -702,6 +814,16 @@ async def security_middleware(request: Request, call_next):
         "/apply-autofix",
         "/queue/status",
         "/api/enrichment",
+        "/api/certificate",
+        "/webhooks/paystack",
+        "/payment/paystack",
+        "/api/paystack",
+        "/webhooks/stripe",
+        "/payment/stripe",
+        "/api/payment",
+        "/api/plans",
+        "/api/manual-verify",
+        "/api/manual-search",
         "/new",
         "/analyse",
         "/results",
@@ -786,8 +908,6 @@ async def redirect_with_message(request: Request, call_next):
     
     return await call_next(request)
 
-from fastapi import Request
-from fastapi.responses import RedirectResponse
 
 @app.middleware("http")
 async def force_single_domain(request: Request, call_next):
@@ -811,8 +931,6 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     
     # 🛡️ Clickjacking protection
-    # This protects CiteIntegrity pages from being embedded on other sites.
-    # It does NOT block YouTube inside our own page, because YouTube is allowed below in CSP frame-src.
     response.headers["X-Frame-Options"] = "DENY"
     
     # 🛡️ MIME sniffing protection
@@ -824,20 +942,14 @@ async def add_security_headers(request: Request, call_next):
     # 🛡️ Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     
-    # 🛡️ Content Security Policy
-    # Allows the CiteIntegrity YouTube demo iframe while keeping the rest locked down.
+    # 🛡️ Content Security Policy (safe default)
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "base-uri 'self'; "
-        "form-action 'self'; "
-        "img-src 'self' data: https:; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.youtube.com https://www.youtube-nocookie.com https://s.ytimg.com; "
+        "img-src 'self' data:; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
-        "font-src 'self' data: https:; "
-        "connect-src 'self' https:; "
-        "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
-        "child-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; "
-        "media-src 'self' https: blob:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
         "frame-ancestors 'none';"
     )
     
@@ -883,6 +995,994 @@ def format_time(seconds):
         return f"{int(seconds // 60)}m {int(seconds % 60)}s"
     return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"
 
+
+# ============================================================
+# PAYMENT ACCESS HELPERS
+# ============================================================
+
+def get_document_counts_from_result(result: Dict[str, Any]) -> Dict[str, int]:
+    """Return reference and in-text citation counts from a job result."""
+    result = result or {}
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+
+    reference_count = (
+        summary.get("reference_entries_found")
+        or summary.get("references_count")
+        or len(result.get("references_raw") or [])
+        or len(result.get("references") or [])
+        or 0
+    )
+
+    citation_count = (
+        summary.get("in_text_citations_found")
+        or summary.get("citations_count")
+        or len(result.get("in_text_citations") or [])
+        or len(result.get("citations") or [])
+        or len(result.get("reconciliation_intext_to_reference") or [])
+        or 0
+    )
+
+    try:
+        reference_count = int(reference_count or 0)
+    except Exception:
+        reference_count = 0
+
+    try:
+        citation_count = int(citation_count or 0)
+    except Exception:
+        citation_count = 0
+
+    return {
+        "reference_count": reference_count,
+        "citation_count": citation_count,
+    }
+
+
+def _purchase_tier_key(purchase: Dict[str, Any]) -> str:
+    """Return the best available package/tier key from any payment helper schema."""
+    purchase = purchase or {}
+    return (
+        purchase.get("document_tier")
+        or purchase.get("tier_key")
+        or purchase.get("package_key")
+        or purchase.get("plan_key")
+        or purchase.get("document_tier_key")
+        or purchase.get("package")
+        or "full_review"
+    )
+
+
+def _normalise_purchase_access(purchase: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a paid purchase row into the access payload expected by the results page."""
+    purchase = purchase or {}
+    return {
+        "paid": True,
+        "tier_key": _purchase_tier_key(purchase),
+        "currency": purchase.get("currency") or "USD",
+        "payment_provider": purchase.get("payment_provider") or purchase.get("provider") or "",
+        "provider_reference": (
+            purchase.get("provider_reference")
+            or purchase.get("payment_reference")
+            or purchase.get("reference")
+            or purchase.get("stripe_session_id")
+            or ""
+        ),
+        "purchase": purchase,
+    }
+
+
+def _column_exists(cursor, table_name: str, column_name: str) -> bool:
+    try:
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = %s AND column_name = %s
+            )
+            """,
+            (table_name, column_name),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            return bool(row.get("exists"))
+        return bool(row[0]) if row else False
+    except Exception:
+        return False
+
+
+def _table_columns(cursor, table_name: str) -> set:
+    """Return columns for a table. Used for backward-compatible payment repairs."""
+    try:
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = %s
+            """,
+            (table_name,),
+        )
+        return {
+            (row.get("column_name") if isinstance(row, dict) else row[0])
+            for row in (cursor.fetchall() or [])
+        }
+    except Exception:
+        return set()
+
+
+def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
+    """Read a key from dict-like Stripe objects and normal Python objects."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    try:
+        return getattr(obj, key)
+    except Exception:
+        return default
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Best-effort conversion of Stripe metadata/customer objects into a dict."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        return dict(value)
+    except Exception:
+        try:
+            return json.loads(json.dumps(value))
+        except Exception:
+            return {}
+
+
+def _session_payment_is_paid(session: Any) -> bool:
+    payment_status = str(_obj_get(session, "payment_status", "") or "").lower()
+    status = str(_obj_get(session, "status", "") or "").lower()
+    return payment_status in {"paid", "no_payment_required"} or status in {"complete", "completed"}
+
+
+def _lookup_purchase_by_reference(cursor, session_id: str, job_id: str = "") -> Optional[Dict[str, Any]]:
+    """Find a Stripe purchase by session/reference or by preview job id."""
+    purchase_cols = _table_columns(cursor, "purchases")
+    if not purchase_cols:
+        return None
+
+    reference_columns = [
+        "provider_reference",
+        "payment_reference",
+        "reference",
+        "stripe_session_id",
+        "checkout_session_id",
+    ]
+
+    clauses = []
+    values = []
+    for col in reference_columns:
+        if col in purchase_cols and session_id:
+            clauses.append(f"{col} = %s")
+            values.append(session_id)
+
+    if clauses:
+        cursor.execute(
+            f"""
+            SELECT *
+            FROM purchases
+            WHERE {" OR ".join(clauses)}
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 1
+            """,
+            tuple(values),
+        )
+        found = cursor.fetchone()
+        if found:
+            return dict(found)
+
+    if job_id and "preview_job_id" in purchase_cols:
+        cursor.execute(
+            """
+            SELECT *
+            FROM purchases
+            WHERE preview_job_id = %s
+              AND LOWER(COALESCE(payment_provider, '')) = 'stripe'
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 1
+            """,
+            (job_id,),
+        )
+        found = cursor.fetchone()
+        if found:
+            return dict(found)
+
+    if job_id and "job_id" in purchase_cols:
+        cursor.execute(
+            """
+            SELECT *
+            FROM purchases
+            WHERE job_id = %s
+              AND LOWER(COALESCE(payment_provider, '')) = 'stripe'
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 1
+            """,
+            (job_id,),
+        )
+        found = cursor.fetchone()
+        if found:
+            return dict(found)
+
+    return None
+
+
+def _safe_payment_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value or default))
+    except Exception:
+        return default
+
+
+def _stripe_session_payload(session: Any, fallback_job_id: str = "") -> Dict[str, Any]:
+    """Extract the fields CiteIntegrity needs from a verified Stripe Checkout Session."""
+    metadata = _as_dict(_obj_get(session, "metadata", {}))
+    customer_details = _as_dict(_obj_get(session, "customer_details", {}))
+
+    session_id = str(_obj_get(session, "id", "") or "").strip()
+    job_id = (
+        str(fallback_job_id or "").strip()
+        or str(metadata.get("preview_job_id") or "").strip()
+        or str(metadata.get("job_id") or "").strip()
+        or str(metadata.get("citeintegrity_job_id") or "").strip()
+        or str(_obj_get(session, "client_reference_id", "") or "").strip()
+    )
+
+    email = (
+        str(customer_details.get("email") or "").strip()
+        or str(_obj_get(session, "customer_email", "") or "").strip()
+        or str(metadata.get("email") or metadata.get("user_email") or "").strip()
+    )
+
+    tier_key = (
+        metadata.get("tier_key")
+        or metadata.get("document_tier")
+        or metadata.get("package_key")
+        or metadata.get("plan_key")
+        or "full_review"
+    )
+
+    amount_minor = _safe_payment_int(_obj_get(session, "amount_total", 0), 0)
+    currency = str(_obj_get(session, "currency", "") or metadata.get("currency") or "USD").upper()
+
+    return {
+        "session_id": session_id,
+        "job_id": job_id,
+        "user_email": email,
+        "email": email,
+        "document_tier": tier_key,
+        "tier_key": tier_key,
+        "package_key": tier_key,
+        "plan_key": tier_key,
+        "currency": currency,
+        "amount_minor": amount_minor,
+        "amount": amount_minor,
+        "payment_provider": "stripe",
+        "provider_reference": session_id,
+        "payment_reference": session_id,
+        "reference": session_id,
+        "status": "paid" if _session_payment_is_paid(session) else "pending",
+        "analyses_total": _safe_payment_int(metadata.get("analysis_runs") or metadata.get("analyses_total") or 2, 2),
+        "analyses_used": _safe_payment_int(metadata.get("analyses_used") or 0, 0),
+        "preview_job_id": job_id,
+        "job_id": job_id,
+        "preview_file_name": metadata.get("file_name") or metadata.get("preview_file_name") or "",
+        "file_name": metadata.get("file_name") or metadata.get("preview_file_name") or "",
+        "preview_reference_count": _safe_payment_int(metadata.get("reference_count") or metadata.get("preview_reference_count") or 0, 0),
+        "preview_citation_count": _safe_payment_int(metadata.get("citation_count") or metadata.get("preview_citation_count") or 0, 0),
+    }
+
+
+def _write_purchase_and_run_for_paid_stripe_session(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Mark a verified Stripe Checkout Session as paid in the commercial tables and
+    link it to the analysed preview job.
+
+    This is intentionally schema-tolerant because older deployments may have
+    slightly different payment columns.
+    """
+    if not (DATABASE_URL and payload.get("job_id")):
+        return None
+
+    job_id = payload["job_id"]
+    session_id = payload.get("session_id") or payload.get("provider_reference") or ""
+
+    conn = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+
+        # Prefer server-side counts from the completed job.
+        job = load_job_record_fresh(job_id)
+        if job and isinstance(job.get("result"), dict):
+            counts = get_document_counts_from_result(job.get("result") or {})
+            payload["preview_reference_count"] = counts["reference_count"] or payload.get("preview_reference_count") or 0
+            payload["preview_citation_count"] = counts["citation_count"] or payload.get("preview_citation_count") or 0
+            if not payload.get("preview_file_name"):
+                payload["preview_file_name"] = job.get("file_name") or ""
+
+        purchase_cols = _table_columns(cursor, "purchases")
+        purchase = _lookup_purchase_by_reference(cursor, session_id, job_id) if purchase_cols else None
+        purchase_id = (purchase or {}).get("id")
+
+        allowed_purchase_values = {
+            "status": "paid",
+            "payment_provider": "stripe",
+            "provider_reference": session_id,
+            "payment_reference": session_id,
+            "reference": session_id,
+            "stripe_session_id": session_id,
+            "checkout_session_id": session_id,
+            "user_email": payload.get("user_email") or payload.get("email") or "",
+            "email": payload.get("email") or payload.get("user_email") or "",
+            "document_tier": _purchase_tier_key(payload),
+            "tier_key": _purchase_tier_key(payload),
+            "package_key": _purchase_tier_key(payload),
+            "plan_key": _purchase_tier_key(payload),
+            "currency": payload.get("currency") or "USD",
+            "amount_minor": payload.get("amount_minor") or 0,
+            "amount": payload.get("amount_minor") or 0,
+            "analyses_total": payload.get("analyses_total") or 2,
+            "analyses_used": payload.get("analyses_used") or 0,
+            "preview_job_id": job_id,
+            "job_id": job_id,
+            "preview_file_name": payload.get("preview_file_name") or payload.get("file_name") or "",
+            "file_name": payload.get("file_name") or payload.get("preview_file_name") or "",
+            "preview_reference_count": payload.get("preview_reference_count") or 0,
+            "preview_citation_count": payload.get("preview_citation_count") or 0,
+        }
+
+        if purchase_cols:
+            if purchase_id:
+                set_parts = []
+                values = []
+                for col, value in allowed_purchase_values.items():
+                    if col in purchase_cols:
+                        if col in {"analyses_total"}:
+                            set_parts.append(f"{col} = COALESCE({col}, %s)")
+                        elif col in {"analyses_used"}:
+                            set_parts.append(f"{col} = COALESCE({col}, %s)")
+                        else:
+                            set_parts.append(f"{col} = %s")
+                        values.append(value)
+
+                if "updated_at" in purchase_cols:
+                    set_parts.append("updated_at = CURRENT_TIMESTAMP")
+
+                if set_parts:
+                    values.append(purchase_id)
+                    cursor.execute(
+                        f"UPDATE purchases SET {', '.join(set_parts)} WHERE id = %s RETURNING *",
+                        tuple(values),
+                    )
+                    purchase = dict(cursor.fetchone() or purchase)
+            else:
+                insert_cols = [col for col in allowed_purchase_values if col in purchase_cols]
+                insert_values = [allowed_purchase_values[col] for col in insert_cols]
+                if insert_cols:
+                    placeholders = ", ".join(["%s"] * len(insert_cols))
+                    returning = " RETURNING *" if "id" in purchase_cols else ""
+                    cursor.execute(
+                        f"""
+                        INSERT INTO purchases ({", ".join(insert_cols)})
+                        VALUES ({placeholders})
+                        {returning}
+                        """,
+                        tuple(insert_values),
+                    )
+                    inserted = cursor.fetchone() if "id" in purchase_cols else None
+                    purchase = dict(inserted or allowed_purchase_values)
+                    purchase_id = purchase.get("id")
+
+        purchase = dict(purchase or payload)
+        if purchase_id:
+            purchase["id"] = purchase_id
+
+        # Ensure purchase_runs links this paid purchase to the analysed job.
+        run_cols = _table_columns(cursor, "purchase_runs")
+        if run_cols and purchase_id and "job_id" in run_cols and "purchase_id" in run_cols:
+            cursor.execute(
+                "SELECT * FROM purchase_runs WHERE job_id = %s ORDER BY created_at DESC NULLS LAST LIMIT 1",
+                (job_id,),
+            )
+            existing_run = cursor.fetchone()
+
+            run_values = {
+                "purchase_id": purchase_id,
+                "job_id": job_id,
+                "file_name": payload.get("preview_file_name") or payload.get("file_name") or "",
+                "reference_count": payload.get("preview_reference_count") or 0,
+                "citation_count": payload.get("preview_citation_count") or 0,
+            }
+
+            if existing_run:
+                set_parts = []
+                values = []
+                for col, value in run_values.items():
+                    if col in run_cols and col != "job_id":
+                        set_parts.append(f"{col} = %s")
+                        values.append(value)
+                if set_parts:
+                    values.append(job_id)
+                    cursor.execute(
+                        f"UPDATE purchase_runs SET {', '.join(set_parts)} WHERE job_id = %s",
+                        tuple(values),
+                    )
+            else:
+                insert_cols = [col for col in run_values if col in run_cols]
+                insert_values = [run_values[col] for col in insert_cols]
+                placeholders = ", ".join(["%s"] * len(insert_cols))
+                cursor.execute(
+                    f"""
+                    INSERT INTO purchase_runs ({", ".join(insert_cols)})
+                    VALUES ({placeholders})
+                    """,
+                    tuple(insert_values),
+                )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        conn = None
+
+        _mark_job_result_paid(job_id, purchase)
+        print(f"[STRIPE_UNLOCK] Paid Stripe access linked for job_id={job_id}, session_id={session_id}")
+        return purchase
+
+    except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+                conn.close()
+            except Exception:
+                pass
+        print(f"[STRIPE_UNLOCK_ERROR] job_id={job_id}, session_id={session_id}: {type(e).__name__}: {e}")
+
+        # Even if the commercial tables fail, a verified Stripe session can still
+        # mark the job result as paid so the user is not left locked out.
+        fallback_purchase = dict(payload)
+        fallback_purchase["status"] = "paid"
+        _mark_job_result_paid(job_id, fallback_purchase)
+        return fallback_purchase
+
+
+def verify_stripe_session_and_unlock_job(session_id: str, fallback_job_id: str = "") -> Dict[str, Any]:
+    """
+    Direct Stripe verification fallback.
+
+    The Stripe webhook remains preferred, but this makes the success redirect
+    self-healing when the webhook is delayed or the Stripe helper does not attach
+    the purchase to purchase_runs.
+    """
+    session_id = (session_id or "").strip()
+    fallback_job_id = (fallback_job_id or "").strip()
+
+    if not session_id:
+        return {"ok": False, "activated": False, "message": "Missing Stripe session ID.", "job_id": fallback_job_id}
+
+    try:
+        import stripe  # type: ignore
+    except Exception as e:
+        return {
+            "ok": False,
+            "activated": False,
+            "message": f"Stripe package is unavailable: {type(e).__name__}",
+            "job_id": fallback_job_id,
+        }
+
+    stripe_secret_key = (
+        os.environ.get("STRIPE_SECRET_KEY")
+        or os.environ.get("STRIPE_API_KEY")
+        or os.environ.get("STRIPE_SECRET")
+        or ""
+    ).strip()
+
+    if not stripe_secret_key:
+        return {
+            "ok": False,
+            "activated": False,
+            "message": "Stripe secret key is not configured.",
+            "job_id": fallback_job_id,
+        }
+
+    try:
+        stripe.api_key = stripe_secret_key
+        session = stripe.checkout.Session.retrieve(session_id)
+        payload = _stripe_session_payload(session, fallback_job_id=fallback_job_id)
+
+        # If metadata did not contain the job id, try to recover it from the database
+        # using the session/reference created at initialization.
+        if not payload.get("job_id") and DATABASE_URL:
+            try:
+                conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+                cursor = conn.cursor()
+                existing = _lookup_purchase_by_reference(cursor, session_id, "")
+                cursor.close()
+                conn.close()
+                if existing:
+                    payload["job_id"] = (
+                        existing.get("preview_job_id")
+                        or existing.get("job_id")
+                        or fallback_job_id
+                        or ""
+                    )
+                    payload["preview_job_id"] = payload["job_id"]
+                    payload["document_tier"] = _purchase_tier_key(existing)
+                    payload["tier_key"] = _purchase_tier_key(existing)
+                    payload["currency"] = existing.get("currency") or payload.get("currency") or "USD"
+                    payload["user_email"] = existing.get("user_email") or existing.get("email") or payload.get("user_email") or ""
+                    payload["email"] = payload["user_email"]
+            except Exception as db_e:
+                print(f"[STRIPE_UNLOCK_LOOKUP_ERROR] {type(db_e).__name__}: {db_e}")
+
+        if not _session_payment_is_paid(session):
+            return {
+                "ok": True,
+                "activated": False,
+                "message": f"Stripe session is not paid yet: {_obj_get(session, 'payment_status', '')}",
+                "job_id": payload.get("job_id") or fallback_job_id,
+                "provider_reference": session_id,
+            }
+
+        if not payload.get("job_id"):
+            return {
+                "ok": True,
+                "activated": False,
+                "message": "Stripe payment is paid, but the preview job ID could not be recovered.",
+                "job_id": fallback_job_id,
+                "provider_reference": session_id,
+            }
+
+        purchase = _write_purchase_and_run_for_paid_stripe_session(payload) or payload
+        return {
+            "ok": True,
+            "activated": True,
+            "message": "Stripe payment verified and Full Review unlocked.",
+            "job_id": payload.get("job_id"),
+            "purchase": purchase,
+            "provider_reference": session_id,
+            "payment_provider": "stripe",
+        }
+
+    except Exception as e:
+        print(f"[STRIPE_UNLOCK_VERIFY_ERROR] session_id={session_id}: {type(e).__name__}: {e}")
+        return {
+            "ok": False,
+            "activated": False,
+            "message": f"Stripe verification failed: {type(e).__name__}",
+            "job_id": fallback_job_id,
+            "provider_reference": session_id,
+        }
+
+
+def activate_paid_access_for_purchase(job_id: str, purchase: Dict[str, Any]) -> None:
+    """Link an already-paid purchase to a job and refresh result access markers."""
+    if not (DATABASE_URL and job_id and purchase):
+        return
+
+    purchase = dict(purchase or {})
+    purchase.setdefault("preview_job_id", job_id)
+    purchase.setdefault("job_id", job_id)
+    purchase.setdefault("status", "paid")
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+        run_cols = _table_columns(cursor, "purchase_runs")
+        purchase_id = purchase.get("id")
+
+        if run_cols and purchase_id and "purchase_id" in run_cols and "job_id" in run_cols:
+            cursor.execute(
+                "SELECT * FROM purchase_runs WHERE job_id = %s ORDER BY created_at DESC NULLS LAST LIMIT 1",
+                (job_id,),
+            )
+            existing_run = cursor.fetchone()
+
+            counts = get_document_counts_from_result((load_job_record_fresh(job_id) or {}).get("result") or {})
+            file_name = purchase.get("preview_file_name") or purchase.get("file_name") or ""
+
+            if existing_run:
+                cursor.execute(
+                    """
+                    UPDATE purchase_runs
+                    SET purchase_id = %s,
+                        file_name = COALESCE(NULLIF(%s, ''), file_name),
+                        reference_count = CASE WHEN %s > 0 THEN %s ELSE reference_count END,
+                        citation_count = CASE WHEN %s > 0 THEN %s ELSE citation_count END
+                    WHERE job_id = %s
+                    """,
+                    (
+                        purchase_id,
+                        file_name,
+                        counts["reference_count"], counts["reference_count"],
+                        counts["citation_count"], counts["citation_count"],
+                        job_id,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO purchase_runs (purchase_id, job_id, file_name, reference_count, citation_count)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (purchase_id, job_id, file_name, counts["reference_count"], counts["citation_count"]),
+                )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"[ACCESS_ACTIVATE_PURCHASE_ERROR] job_id={job_id}: {type(e).__name__}: {e}")
+
+    _mark_job_result_paid(job_id, purchase)
+
+
+
+
+def _mark_job_result_paid(job_id: str, purchase: Dict[str, Any]) -> None:
+    """
+    Persist a server-side paid marker inside jobs.result and refresh Redis.
+    This marker is written only after a paid purchase has been found server-side.
+    """
+    if not (DATABASE_URL and job_id and purchase):
+        return
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+        cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return
+
+        result = row.get("result") or {}
+        if isinstance(result, str):
+            result = json.loads(result)
+
+        result.setdefault("access", {})
+        result["access"].update({
+            "paid": True,
+            "tier_key": _purchase_tier_key(purchase),
+            "currency": purchase.get("currency") or "USD",
+            "payment_provider": purchase.get("payment_provider") or purchase.get("provider") or "stripe",
+            "provider_reference": (
+                purchase.get("provider_reference")
+                or purchase.get("payment_reference")
+                or purchase.get("reference")
+                or purchase.get("stripe_session_id")
+                or ""
+            ),
+        })
+
+        cursor.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if redis_conn:
+            try:
+                redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+            except Exception as redis_e:
+                print(f"[ACCESS_REPAIR] Redis refresh failed for {job_id}: {redis_e}")
+
+    except Exception as e:
+        print(f"[ACCESS_REPAIR] Could not write paid marker for {job_id}: {type(e).__name__}: {e}")
+
+
+def repair_paid_purchase_link_for_job(job_id: str) -> Dict[str, Any]:
+    """
+    Recover paid access when Stripe has marked a purchase as paid but purchase_runs
+    was not linked to the analysed job.
+
+    This is intentionally server-side: it does not trust ?paid=1 in the URL.
+    It only repairs when the database already contains a paid/active purchase
+    for the same preview_job_id, or when a paid marker was previously written
+    by the Stripe success callback.
+    """
+    default = {"paid": False, "tier_key": "", "currency": "GHS", "purchase": None}
+
+    if not (DATABASE_URL and job_id):
+        return default
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+
+        # First: if purchase_runs already links this job to a paid purchase, return it.
+        cursor.execute(
+            """
+            SELECT p.*
+            FROM purchases p
+            JOIN purchase_runs pr ON pr.purchase_id = p.id
+            WHERE pr.job_id = %s
+              AND LOWER(COALESCE(p.status, '')) IN ('paid', 'active')
+            ORDER BY p.created_at DESC
+            LIMIT 1
+            """,
+            (job_id,),
+        )
+        purchase = cursor.fetchone()
+        if purchase:
+            purchase = dict(purchase)
+            cursor.close()
+            conn.close()
+            _mark_job_result_paid(job_id, purchase)
+            print(f"[ACCESS_REPAIR] Existing paid purchase_runs link found for job_id={job_id}")
+            return _normalise_purchase_access(purchase)
+
+        # Second: if purchases has preview_job_id, find the latest paid Stripe purchase for this job.
+        has_preview_job_id = _column_exists(cursor, "purchases", "preview_job_id")
+        purchase = None
+        if has_preview_job_id:
+            cursor.execute(
+                """
+                SELECT *
+                FROM purchases
+                WHERE preview_job_id = %s
+                  AND LOWER(COALESCE(status, '')) IN ('paid', 'active')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (job_id,),
+            )
+            purchase = cursor.fetchone()
+
+        if purchase:
+            purchase = dict(purchase)
+            purchase_id = purchase.get("id")
+            cursor.execute(
+                "SELECT * FROM purchase_runs WHERE job_id = %s FOR UPDATE",
+                (job_id,),
+            )
+            existing_run = cursor.fetchone()
+            if existing_run:
+                cursor.execute(
+                    """
+                    UPDATE purchase_runs
+                    SET purchase_id = %s,
+                        file_name = COALESCE(NULLIF(%s, ''), file_name),
+                        reference_count = CASE WHEN %s > 0 THEN %s ELSE reference_count END,
+                        citation_count = CASE WHEN %s > 0 THEN %s ELSE citation_count END
+                    WHERE job_id = %s
+                    """,
+                    (
+                        purchase_id,
+                        purchase.get("preview_file_name") or "",
+                        int(purchase.get("preview_reference_count") or 0),
+                        int(purchase.get("preview_reference_count") or 0),
+                        int(purchase.get("preview_citation_count") or 0),
+                        int(purchase.get("preview_citation_count") or 0),
+                        job_id,
+                    ),
+                )
+                action = "relinked"
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO purchase_runs
+                        (purchase_id, job_id, file_name, reference_count, citation_count)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        purchase_id,
+                        job_id,
+                        purchase.get("preview_file_name") or "",
+                        int(purchase.get("preview_reference_count") or 0),
+                        int(purchase.get("preview_citation_count") or 0),
+                    ),
+                )
+                action = "inserted"
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+            _mark_job_result_paid(job_id, purchase)
+            print(f"[ACCESS_REPAIR] Paid purchase {action} for job_id={job_id}, purchase_id={purchase_id}")
+            return _normalise_purchase_access(purchase)
+
+        # Third: server-side marker fallback. This only works if the Stripe success
+        # callback already wrote jobs.result.access.paid=true after verifying Stripe.
+        cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (job_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        result = (row or {}).get("result") if row else {}
+        if isinstance(result, str):
+            result = json.loads(result)
+        marker = (result or {}).get("access") or {}
+        if marker.get("paid") is True and marker.get("payment_provider") == "stripe":
+            print(f"[ACCESS_REPAIR] Using verified Stripe paid marker for job_id={job_id}")
+            return {
+                "paid": True,
+                "tier_key": marker.get("tier_key", "") or "full_review",
+                "currency": marker.get("currency", "USD") or "USD",
+                "payment_provider": marker.get("payment_provider") or "stripe",
+                "provider_reference": marker.get("provider_reference") or "",
+                "purchase": marker,
+            }
+
+        return default
+
+    except Exception as e:
+        print(f"[ACCESS_REPAIR_ERROR] job_id={job_id}: {type(e).__name__}: {e}")
+        return default
+
+
+def get_access_for_job(job_id: str) -> Dict[str, Any]:
+    """Return paid/free access metadata for a job, with Stripe repair fallback."""
+    default = {
+        "paid": False,
+        "tier_key": "",
+        "currency": "GHS",
+        "purchase": None,
+    }
+
+    if not DATABASE_URL:
+        return default
+
+    # Normal Paystack/Stripe paid-access path.
+    if COMMERCIAL_FEATURES_AVAILABLE and purchase_is_paid_for_job:
+        try:
+            access = purchase_is_paid_for_job(DATABASE_URL, job_id=job_id) or default
+            if access.get("paid"):
+                purchase = access.get("purchase") or {}
+                return {
+                    "paid": True,
+                    "tier_key": access.get("tier_key", "") or _purchase_tier_key(purchase),
+                    "currency": access.get("currency", "GHS") or "GHS",
+                    "payment_provider": (
+                        access.get("payment_provider")
+                        or purchase.get("payment_provider")
+                        or purchase.get("provider")
+                        or ""
+                    ),
+                    "provider_reference": (
+                        access.get("provider_reference")
+                        or purchase.get("provider_reference")
+                        or purchase.get("payment_reference")
+                        or purchase.get("reference")
+                        or ""
+                    ),
+                    "purchase": purchase,
+                }
+        except Exception as e:
+            print(f"[ACCESS] Primary purchase lookup failed for {job_id}: {type(e).__name__}: {e}")
+
+    # Stripe-specific recovery path for cases where Checkout succeeded but the
+    # paid purchase was not attached to purchase_runs.
+    repaired = repair_paid_purchase_link_for_job(job_id)
+    if repaired.get("paid"):
+        return repaired
+
+    return default
+
+
+def shape_result_for_access(job_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply Free Preview or paid Full Review entitlements before returning results."""
+    access = get_access_for_job(job_id)
+
+    if COMMERCIAL_FEATURES_AVAILABLE and apply_entitlements_to_result:
+        try:
+            shaped = apply_entitlements_to_result(
+                result or {},
+                tier_key=access.get("tier_key", ""),
+                paid=access.get("paid", False),
+                currency=access.get("currency", "GHS"),
+            )
+            shaped.setdefault("access", {})
+            purchase = access.get("purchase") or {}
+            shaped["access"].update({
+                "paid": access.get("paid", False),
+                "tier_key": access.get("tier_key", "") or _purchase_tier_key(purchase),
+                "currency": access.get("currency", "GHS"),
+                "payment_provider": access.get("payment_provider") or purchase.get("payment_provider") or purchase.get("provider") or "",
+                "provider_reference": access.get("provider_reference") or purchase.get("provider_reference") or purchase.get("payment_reference") or purchase.get("reference") or "",
+                "remaining_analyses": (
+                    max(
+                        int(purchase.get("analyses_total") or 0)
+                        - int(purchase.get("analyses_used") or 0),
+                        0,
+                    )
+                    if purchase else None
+                ),
+            })
+            return shaped
+        except Exception as e:
+            print(f"[ACCESS] Could not apply entitlements for {job_id}: {e}")
+
+    # Safe fallback: return raw result only if paid access is confirmed.
+    return result or {} if access.get("paid") else (result or {})
+
+
+def build_access_response(job_id: str) -> Dict[str, Any]:
+    access = get_access_for_job(job_id)
+    purchase = access.get("purchase") or {}
+    return {
+        "paid": access.get("paid", False),
+        "tier_key": access.get("tier_key", "") or _purchase_tier_key(purchase),
+        "currency": access.get("currency", "GHS"),
+        "payment_provider": access.get("payment_provider") or purchase.get("payment_provider") or purchase.get("provider") or "",
+        "provider_reference": access.get("provider_reference") or purchase.get("provider_reference") or purchase.get("payment_reference") or purchase.get("reference") or "",
+        "analyses_total": purchase.get("analyses_total"),
+        "analyses_used": purchase.get("analyses_used"),
+        "remaining_analyses": (
+            max(int(purchase.get("analyses_total") or 0) - int(purchase.get("analyses_used") or 0), 0)
+            if purchase else None
+        ),
+    }
+
+
+@app.get("/api/payment/access-check/{job_id}")
+async def payment_access_check(job_id: str, _auth: Any = Depends(authenticate)):
+    """Admin-only access diagnostic for Stripe/Paystack unlock issues."""
+    access = build_access_response(job_id)
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "job_id": job_id,
+        "access": access,
+    }
+
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, user_email, document_tier, currency, status,
+                       payment_provider, provider_reference, analyses_total, analyses_used, created_at
+                FROM purchases
+                WHERE id IN (SELECT purchase_id FROM purchase_runs WHERE job_id = %s)
+                ORDER BY created_at DESC
+                LIMIT 5
+                """,
+                (job_id,),
+            )
+            payload["linked_purchases"] = [dict(r) for r in (cursor.fetchall() or [])]
+
+            cursor.execute(
+                """
+                SELECT id, purchase_id, job_id, file_name, reference_count, citation_count, created_at
+                FROM purchase_runs
+                WHERE job_id = %s
+                ORDER BY created_at DESC
+                LIMIT 5
+                """,
+                (job_id,),
+            )
+            payload["purchase_runs"] = [dict(r) for r in (cursor.fetchall() or [])]
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            payload["db_error"] = f"{type(e).__name__}: {str(e)}"
+
+    return payload
+
+
+@app.post("/api/payment/repair-access/{job_id}")
+async def payment_repair_access(job_id: str, _auth: Any = Depends(authenticate)):
+    """Admin-only endpoint to repair a paid Stripe purchase link for a job."""
+    repaired = repair_paid_purchase_link_for_job(job_id)
+    access = build_access_response(job_id)
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "repaired": repaired,
+        "access_after": access,
+        "paid_after": bool(access.get("paid")),
+    }
 
 # --------------------------------------------------
 # Large-document preflight routing
@@ -1640,6 +2740,15 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                     cursor.close()
                                     conn.close()
                                     print(f"[DEBUG] Stored verification completion in PostgreSQL for job {job_id}")
+
+                                    try:
+                                        record_dashboard_from_result(
+                                            job_id,
+                                            final_result,
+                                            analysis_status="verification_completed",
+                                        )
+                                    except Exception as dash_error:
+                                        print(f"⚠️ Could not update commercial dashboard after verification completion: {dash_error}")
                                 except Exception as e:
                                     print(f"[DEBUG] Could not persist verification completion: {e}")
                         else:
@@ -2708,6 +3817,17 @@ async def verify(
     # =========================
     job_id = str(uuid.uuid4())
 
+    try:
+        record_dashboard(
+            job_id,
+            file_name=file.filename,
+            analysis_status="queued",
+            reference_count=0,
+            citation_count=0,
+        )
+    except Exception as e:
+        print(f"⚠️ Could not record queued job in commercial dashboard: {e}")
+
     # =========================
     # 4. STORE FILE IN REDIS
     # =========================
@@ -2981,6 +4101,13 @@ async def api_manual_search(request: Request):
     if len(query) < 3:
         raise HTTPException(status_code=400, detail="Manual search query is too short")
 
+    access = get_access_for_job(job_id)
+    if not access.get("paid"):
+        raise HTTPException(
+            status_code=402,
+            detail="Manual Search is available after Full Review payment."
+        )
+
     # Confirms the job exists before running external searches.
     _manual_load_result(job_id)
 
@@ -3047,6 +4174,16 @@ async def api_manual_verify_decision(request: Request):
     if not reference and not candidate:
         raise HTTPException(status_code=400, detail="Reference or candidate is required")
 
+    access = get_access_for_job(job_id)
+    if not access.get("paid"):
+        raise HTTPException(
+            status_code=402,
+            detail="Manual verification decisions require Full Review payment."
+        )
+
+    purchase = access.get("purchase") or {}
+    user_email = purchase.get("user_email") or purchase.get("email") or ""
+
     result = _manual_load_result(job_id)
     ref_key = _manual_reference_key(reference or candidate.get("title") or candidate.get("doi") or "")
     stamp = datetime.utcnow().isoformat()
@@ -3064,6 +4201,7 @@ async def api_manual_verify_decision(request: Request):
         "manual_verification_note": note,
         "manual_candidate": candidate,
         "manual_reference_key": ref_key,
+        "manual_verified_by": user_email,
     }
 
     def maybe_apply(row):
@@ -3123,7 +4261,25 @@ async def api_manual_verify_decision(request: Request):
     manual["decision_count"] = len(decisions)
 
     _manual_save_result(job_id, result)
-    return {"ok": True, "message": f"Manual decision recorded: {decision_payload['manual_decision_label']}", "updated_rows": touched, "result": result}
+
+    try:
+        record_dashboard_from_result(
+            job_id,
+            result,
+            analysis_status="manual_verification_updated",
+        )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after manual verification: {e}")
+
+    safe_result = shape_result_for_access(job_id, result)
+
+    return {
+        "ok": True,
+        "message": f"Manual decision recorded: {decision_payload['manual_decision_label']}",
+        "updated_rows": touched,
+        "manual_verification": result.get("manual_verification", {}),
+        "result": safe_result,
+    }
 
 # ============================================================
 # RESULT CHECK ENDPOINT
@@ -3131,21 +4287,32 @@ async def api_manual_verify_decision(request: Request):
 
 @app.get("/result/{job_id}")
 async def get_result(job_id: str, fresh: int = 0):
-    """Get job status and result.
+    """Get job status and result, shaped by Free Preview or paid Full Review access."""
 
-    Use fresh=1 when the browser is polling for enrichment updates, so
-    PostgreSQL is read directly instead of returning a possibly stale Redis value.
-    """
-    
-    # Check Redis cache first unless a fresh PostgreSQL read is requested
+    # Check Redis cache first unless a fresh PostgreSQL read is requested.
     if redis_conn and not fresh:
         cached = redis_conn.get(f"result:{job_id}")
         if cached:
             try:
-                return {"status": "completed", "data": json.loads(cached)}
-            except:
-                pass
-    
+                cached_result = json.loads(cached)
+                try:
+                    record_dashboard_from_result(
+                        job_id,
+                        cached_result,
+                        analysis_status="completed",
+                    )
+                except Exception as e:
+                    print(f"⚠️ Could not update commercial dashboard from Redis result: {e}")
+
+                safe_result = shape_result_for_access(job_id, cached_result)
+                return {
+                    "status": "completed",
+                    "data": safe_result,
+                    "access": build_access_response(job_id),
+                }
+            except Exception as e:
+                print(f"[RESULT] Redis result shaping failed for {job_id}: {e}")
+
     # Check PostgreSQL
     if DATABASE_URL:
         try:
@@ -3158,26 +4325,42 @@ async def get_result(job_id: str, fresh: int = 0):
             row = cursor.fetchone()
             cursor.close()
             conn.close()
-            
+
             if not row:
                 return {"status": "not_found", "error": "Job not found"}
-            
+
             if row["status"] == "completed":
                 result = row["result"]
                 if isinstance(result, str):
                     result = json.loads(result)
-                return {"status": "completed", "data": result}
+
+                try:
+                    record_dashboard_from_result(
+                        job_id,
+                        result,
+                        analysis_status="completed",
+                    )
+                except Exception as e:
+                    print(f"⚠️ Could not update commercial dashboard from PostgreSQL result: {e}")
+
+                safe_result = shape_result_for_access(job_id, result)
+                return {
+                    "status": "completed",
+                    "data": safe_result,
+                    "access": build_access_response(job_id),
+                }
+
             elif row["status"] == "processing":
                 return {"status": "processing", "message": "Processing in background"}
             elif row["status"] == "queued":
                 return {"status": "queued", "message": "Waiting in queue"}
             elif row["status"] == "failed":
                 return {"status": "failed", "error": row["error"]}
-            
+
         except Exception as e:
             print(f"Database error: {e}")
             return {"status": "error", "error": str(e)}
-    
+
     return {"status": "pending", "message": "Job not found"}
 
 @app.get("/job/{job_id}")
@@ -3186,11 +4369,914 @@ def get_job_endpoint(job_id: str):
     if not job:
         return {"status": "not_found"}
 
+    safe_result = shape_result_for_access(job_id, job.get("result") or {})
+
     return {
         "status": job.get("status", "unknown"),
-        "result": job.get("result"),
-        "verification": job.get("verification", {})
+        "result": safe_result,
+        "verification": job.get("verification", {}),
+        "access": build_access_response(job_id),
     }
+
+# ============================================================
+# PAYMENT AND PLAN ENDPOINTS
+# Paystack handles Africa. Stripe handles all other billing countries.
+# ============================================================
+
+@app.get("/api/plans/recommend/{job_id}")
+async def recommend_package_for_job(job_id: str, currency: str = "GHS"):
+    if not (COMMERCIAL_FEATURES_AVAILABLE and build_plan_selection_payload):
+        raise HTTPException(status_code=503, detail="Payment features are not available.")
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    result = job.get("result") or {}
+    counts = get_document_counts_from_result(result)
+
+    return build_plan_selection_payload(
+        counts["reference_count"],
+        counts["citation_count"],
+        selected_currency=currency,
+    )
+
+
+
+def _safe_int_payload(value, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except Exception:
+        return default
+
+
+def _normalise_init_dashboard_amount(init: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    """Return amount values suitable for commercial dashboard records."""
+    amount = init.get("amount") or init.get("charged_amount") or 0
+    amount_minor = init.get("amount_minor") or init.get("amount_subunit") or 0
+
+    try:
+        amount = float(amount or 0)
+    except Exception:
+        amount = 0.0
+
+    try:
+        amount_minor = int(float(amount_minor or 0))
+    except Exception:
+        amount_minor = 0
+
+    # Stripe returns amount in major units and amount_minor in minor units.
+    # Paystack helper returns amount in major units and amount_subunit in minor units.
+    if amount and not amount_minor:
+        amount_minor = int(round(amount * 100))
+
+    return {
+        "amount": amount if amount else ((amount_minor / 100) if amount_minor else None),
+        "amount_minor": amount_minor,
+    }
+
+
+@app.post("/api/payment/initialize")
+async def payment_initialize(payload: dict = Body(...)):
+    """
+    Unified CiteIntegrity payment initializer.
+
+    Frontend sends email, billing country, tier_key, and preview job_id.
+    Africa is routed to Paystack. All other billing countries are routed to Stripe.
+    """
+    if not COMMERCIAL_FEATURES_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Payment features are not available.")
+
+    if not choose_payment_provider:
+        raise HTTPException(status_code=503, detail="Payment routing is not available.")
+
+    user_email = (payload.get("email") or "").strip()
+    tier_key = (payload.get("tier_key") or "").strip()
+    country_code = (payload.get("country_code") or payload.get("billing_country") or "").strip().upper()
+    selected_currency = (payload.get("currency") or "").strip().upper()
+    job_id = (payload.get("job_id") or "").strip()
+    file_name = (payload.get("file_name") or "").strip()
+
+    reference_count = _safe_int_payload(payload.get("reference_count"), 0)
+    citation_count = _safe_int_payload(payload.get("citation_count"), 0)
+
+    if not user_email or "@" not in user_email:
+        raise HTTPException(status_code=400, detail="A valid email is required.")
+
+    if not tier_key:
+        raise HTTPException(status_code=400, detail="A document package is required.")
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="A preview job ID is required.")
+
+    if not country_code:
+        raise HTTPException(status_code=400, detail="Billing country is required.")
+
+    if not DATABASE_URL:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not configured.")
+
+    # Trust server-side document counts when the preview job is available.
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Preview job not found.")
+
+    server_counts = get_document_counts_from_result(job.get("result") or {})
+    reference_count = server_counts["reference_count"] or reference_count
+    citation_count = server_counts["citation_count"] or citation_count
+
+    provider = choose_payment_provider(country_code)
+
+    if provider == "paystack":
+        if not initialize_citeintegrity_payment:
+            raise HTTPException(status_code=503, detail="Paystack payment is not available.")
+
+        init = initialize_citeintegrity_payment(
+            database_url=DATABASE_URL,
+            user_email=user_email,
+            tier_key=tier_key,
+            reference_count=reference_count,
+            citation_count=citation_count,
+            selected_currency=selected_currency or "GHS",
+            job_id=job_id,
+            file_name=file_name,
+            callback_path="/payment/paystack/callback",
+        )
+
+        if not init.get("ok"):
+            return JSONResponse(init, status_code=402)
+
+        checkout_url = init.get("authorization_url")
+        payment_reference = init.get("reference") or init.get("payment_reference") or ""
+        amount_info = _normalise_init_dashboard_amount(init, provider="paystack")
+
+        try:
+            record_dashboard(
+                job_id,
+                email=user_email,
+                file_name=file_name,
+                plan_key=tier_key,
+                plan_name=tier_key,
+                currency=init.get("currency") or init.get("charged_currency") or selected_currency or "GHS",
+                amount=amount_info["amount"],
+                amount_minor=amount_info["amount_minor"],
+                payment_reference=payment_reference,
+                payment_status="initialized",
+                paid=False,
+                reference_count=reference_count,
+                citation_count=citation_count,
+            )
+        except Exception as e:
+            print(f"⚠️ Could not update commercial dashboard after Paystack initialization: {e}")
+
+        return {
+            "ok": True,
+            "provider": "paystack",
+            "checkout_url": checkout_url,
+            "authorization_url": checkout_url,
+            "reference": payment_reference,
+            "purchase_id": init.get("purchase_id"),
+            "amount": init.get("amount"),
+            "currency": init.get("currency"),
+            "display_amount": init.get("display_amount"),
+            "access_token": init.get("access_token"),
+            "raw": init,
+        }
+
+    if not (STRIPE_PAYMENT_FEATURES_AVAILABLE and initialize_citeintegrity_stripe_payment):
+        raise HTTPException(status_code=503, detail="Stripe payment is not available.")
+
+    init = initialize_citeintegrity_stripe_payment(
+        database_url=DATABASE_URL,
+        user_email=user_email,
+        tier_key=tier_key,
+        reference_count=reference_count,
+        citation_count=citation_count,
+        selected_currency="USD",
+        job_id=job_id,
+        file_name=file_name,
+    )
+
+    if not init.get("ok"):
+        return JSONResponse(init, status_code=402)
+
+    amount_info = _normalise_init_dashboard_amount(init, provider="stripe")
+
+    try:
+        record_dashboard(
+            job_id,
+            email=user_email,
+            file_name=file_name,
+            plan_key=tier_key,
+            plan_name=tier_key,
+            currency=init.get("currency") or "USD",
+            amount=amount_info["amount"],
+            amount_minor=amount_info["amount_minor"],
+            payment_reference=init.get("reference") or init.get("session_id"),
+            payment_status="initialized",
+            paid=False,
+            reference_count=reference_count,
+            citation_count=citation_count,
+        )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after Stripe initialization: {e}")
+
+    return init
+
+
+@app.post("/api/paystack/initialize")
+async def paystack_initialize(payload: dict = Body(...)):
+    if not (COMMERCIAL_FEATURES_AVAILABLE and initialize_citeintegrity_payment):
+        raise HTTPException(status_code=503, detail="Payment features are not available.")
+
+    user_email = (payload.get("email") or "").strip()
+    tier_key = (payload.get("tier_key") or "").strip()
+    selected_currency = (payload.get("currency") or "GHS").strip().upper()
+    job_id = (payload.get("job_id") or "").strip()
+    file_name = (payload.get("file_name") or "").strip()
+
+    reference_count = int(payload.get("reference_count") or 0)
+    citation_count = int(payload.get("citation_count") or 0)
+
+    if not user_email or "@" not in user_email:
+        raise HTTPException(status_code=400, detail="A valid email is required.")
+
+    if not tier_key:
+        raise HTTPException(status_code=400, detail="A document package is required.")
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="A preview job ID is required.")
+
+    if not DATABASE_URL:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not configured.")
+
+    # Trust server-side counts when the preview job is available.
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Preview job not found.")
+
+    server_counts = get_document_counts_from_result(job.get("result") or {})
+    reference_count = server_counts["reference_count"] or reference_count
+    citation_count = server_counts["citation_count"] or citation_count
+
+    init = initialize_citeintegrity_payment(
+        database_url=DATABASE_URL,
+        user_email=user_email,
+        tier_key=tier_key,
+        reference_count=reference_count,
+        citation_count=citation_count,
+        selected_currency=selected_currency,
+        job_id=job_id,
+        file_name=file_name,
+        callback_path="/payment/paystack/callback",
+    )
+
+    if not init.get("ok"):
+        raise HTTPException(
+            status_code=402,
+            detail=init.get("error", "Could not initialize payment."),
+        )
+
+    try:
+        init_data = init.get("data") if isinstance(init.get("data"), dict) else {}
+        payment_reference = (
+            init.get("payment_reference")
+            or init.get("reference")
+            or init_data.get("reference")
+            or ""
+        )
+        amount_minor = (
+            init.get("amount_minor")
+            or init.get("amount")
+            or init_data.get("amount")
+            or 0
+        )
+        try:
+            amount_minor = int(float(amount_minor or 0))
+        except Exception:
+            amount_minor = 0
+
+        plan_name = (
+            init.get("plan_name")
+            or init.get("tier_name")
+            or init.get("package_name")
+            or tier_key
+        )
+
+        record_dashboard(
+            job_id,
+            email=user_email,
+            file_name=file_name,
+            plan_key=tier_key,
+            plan_name=plan_name,
+            currency=selected_currency,
+            amount=(amount_minor / 100) if amount_minor else None,
+            amount_minor=amount_minor,
+            payment_reference=payment_reference,
+            payment_status="initialized",
+            paid=False,
+            reference_count=reference_count,
+            citation_count=citation_count,
+        )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after payment initialization: {e}")
+
+    return init
+# ============================================================
+# CITATION INTEGRITY CERTIFICATE ENDPOINTS
+# ============================================================
+
+def _certificate_access_for_job(job_id: str) -> Dict[str, Any]:
+    try:
+        if "get_access_for_job" in globals():
+            return get_access_for_job(job_id) or {}
+    except Exception as e:
+        print(f"[CERTIFICATE] get_access_for_job failed: {e}")
+
+    try:
+        return build_access_response(job_id) or {}
+    except Exception as e:
+        print(f"[CERTIFICATE] build_access_response failed: {e}")
+
+    return {}
+
+
+def _certificate_is_paid(access: Dict[str, Any]) -> bool:
+    if not isinstance(access, dict):
+        return False
+
+    if access.get("paid") is True:
+        return True
+
+    nested = access.get("access")
+    if isinstance(nested, dict) and nested.get("paid") is True:
+        return True
+
+    return False
+
+
+def _save_certificate_result_to_db_and_cache(job_id: str, result: dict):
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+            (json.dumps(result), job_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[CERTIFICATE] Redis refresh failed: {e}")
+
+
+@app.get("/api/certificate/{job_id}")
+async def get_citation_integrity_certificate(job_id: str):
+    if build_citation_integrity_certificate is None or render_certificate_html is None:
+        raise HTTPException(status_code=503, detail="Certificate features are not available.")
+
+    access = _certificate_access_for_job(job_id)
+
+    if not _certificate_is_paid(access):
+        return JSONResponse(
+            {
+                "ok": False,
+                "locked": True,
+                "error": "Citation Integrity Certificate is available after Full Review payment.",
+            },
+            status_code=402,
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+
+    certificate = build_citation_integrity_certificate(
+        result,
+        job_id=job_id,
+        access=access,
+    )
+
+    result["citation_integrity_certificate"] = certificate
+
+    try:
+        _save_certificate_result_to_db_and_cache(job_id, result)
+    except Exception as e:
+        print(f"[CERTIFICATE] Could not persist certificate: {e}")
+
+    try:
+        record_dashboard_from_result(
+            job_id,
+            result,
+            analysis_status="certificate_generated",
+            certificate_generated=True,
+        )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after certificate generation: {e}")
+
+    return {
+        "ok": True,
+        "certificate": certificate,
+    }
+
+
+@app.get("/api/certificate/{job_id}/download")
+async def download_citation_integrity_certificate(job_id: str):
+    if build_citation_integrity_certificate is None or render_certificate_html is None:
+        raise HTTPException(status_code=503, detail="Certificate features are not available.")
+
+    access = _certificate_access_for_job(job_id)
+
+    if not _certificate_is_paid(access):
+        return JSONResponse(
+            {
+                "ok": False,
+                "locked": True,
+                "error": "Citation Integrity Certificate is available after Full Review payment.",
+            },
+            status_code=402,
+        )
+
+    job = load_job_record_fresh(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+
+    certificate = result.get("citation_integrity_certificate") or build_citation_integrity_certificate(
+        result,
+        job_id=job_id,
+        access=access,
+    )
+
+    html_doc = render_certificate_html(certificate)
+    filename = f"CiteIntegrity_Certificate_{job_id[:8]}.doc"
+
+    return Response(
+        content=html_doc,
+        media_type="application/msword",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+@app.get("/payment/paystack/callback")
+async def paystack_callback(request: Request, reference: str = "", trxref: str = ""):
+    payment_reference = (reference or trxref or "").strip()
+
+    if not payment_reference:
+        return HTMLResponse(
+            """
+            <h2>Payment reference missing</h2>
+            <p>Paystack did not return a valid payment reference. Please contact support.</p>
+            """,
+            status_code=400,
+        )
+
+    if not DATABASE_URL:
+        return HTMLResponse(
+            """
+            <h2>Database unavailable</h2>
+            <p>Payment was received, but CiteIntegrity could not access the database.</p>
+            """,
+            status_code=500,
+        )
+
+    try:
+        result = verify_and_activate_purchase(
+            database_url=DATABASE_URL,
+            reference=payment_reference,
+        )
+
+        if not result.get("activated"):
+            message = (
+                result.get("message")
+                or "Payment could not be confirmed."
+            )
+
+            return HTMLResponse(
+                f"""
+                <h2>Payment could not be confirmed</h2>
+                <p>{message}</p>
+                <p>Reference: {payment_reference}</p>
+                """,
+                status_code=400,
+            )
+
+        purchase = result.get("purchase") or {}
+        preview_job_id = purchase.get("preview_job_id") or ""
+
+        if preview_job_id:
+            try:
+                activate_paid_access_for_purchase(preview_job_id, purchase)
+            except Exception as access_e:
+                print(f"[PAYSTACK_CALLBACK_ACCESS_LINK_ERROR] {type(access_e).__name__}: {access_e}")
+
+        try:
+            amount_minor = (
+                purchase.get("amount_minor")
+                or purchase.get("amount")
+                or result.get("amount")
+                or 0
+            )
+            try:
+                amount_minor = int(float(amount_minor or 0))
+            except Exception:
+                amount_minor = 0
+
+            record_dashboard(
+                preview_job_id or purchase.get("job_id") or purchase.get("preview_job_id"),
+                email=(
+                    purchase.get("user_email")
+                    or purchase.get("email")
+                    or result.get("email")
+                ),
+                file_name=purchase.get("file_name") or result.get("file_name"),
+                plan_key=purchase.get("tier_key") or result.get("tier_key"),
+                plan_name=(
+                    purchase.get("plan_name")
+                    or purchase.get("tier_name")
+                    or result.get("plan_name")
+                    or purchase.get("tier_key")
+                ),
+                currency=purchase.get("currency") or result.get("currency"),
+                amount=(amount_minor / 100) if amount_minor else None,
+                amount_minor=amount_minor,
+                payment_reference=payment_reference,
+                payment_status="paid",
+                paid=True,
+            )
+        except Exception as e:
+            print(f"⚠️ Could not update commercial dashboard after payment activation: {e}")
+
+        if preview_job_id:
+            return RedirectResponse(
+                url=f"/new/results/{preview_job_id}?verify=1&paid=1",
+                status_code=303,
+            )
+
+        return HTMLResponse(
+            """
+            <h2>Payment successful</h2>
+            <p>Your CiteIntegrity review has been unlocked.</p>
+            <p>Please return to your results page and refresh.</p>
+            """
+        )
+
+    except Exception as e:
+        print(f"[PAYSTACK CALLBACK ERROR] {type(e).__name__}: {e}")
+
+        return HTMLResponse(
+            f"""
+            <h2>Payment received, but activation failed</h2>
+            <p>Your payment may have been successful, but CiteIntegrity could not unlock the result automatically.</p>
+            <p>Please contact support with this reference:</p>
+            <p><strong>{payment_reference}</strong></p>
+            <p>Error: {type(e).__name__}</p>
+            """,
+            status_code=500,
+        )
+
+
+@app.post("/webhooks/paystack")
+async def paystack_webhook(request: Request):
+    if not (COMMERCIAL_FEATURES_AVAILABLE and handle_paystack_webhook):
+        return JSONResponse({"ok": False, "message": "Payment features are not available."}, status_code=503)
+
+    raw_body = await request.body()
+    signature = request.headers.get("x-paystack-signature", "")
+
+    result = handle_paystack_webhook(
+        database_url=DATABASE_URL,
+        raw_body=raw_body,
+        signature=signature,
+    )
+
+    try:
+        purchase = result.get("purchase") or {}
+        if result.get("activated") or result.get("ok"):
+            job_id = purchase.get("preview_job_id") or purchase.get("job_id")
+            if job_id:
+                try:
+                    activate_paid_access_for_purchase(job_id, purchase)
+                except Exception as access_e:
+                    print(f"[PAYSTACK_WEBHOOK_ACCESS_LINK_ERROR] {type(access_e).__name__}: {access_e}")
+
+                amount_minor = purchase.get("amount_minor") or purchase.get("amount") or 0
+                try:
+                    amount_minor = int(float(amount_minor or 0))
+                except Exception:
+                    amount_minor = 0
+
+                record_dashboard(
+                    job_id,
+                    email=purchase.get("user_email") or purchase.get("email"),
+                    file_name=purchase.get("file_name"),
+                    plan_key=purchase.get("tier_key"),
+                    plan_name=purchase.get("plan_name") or purchase.get("tier_name") or purchase.get("tier_key"),
+                    currency=purchase.get("currency"),
+                    amount=(amount_minor / 100) if amount_minor else None,
+                    amount_minor=amount_minor,
+                    payment_reference=purchase.get("payment_reference") or purchase.get("reference"),
+                    payment_status="paid",
+                    paid=True,
+                )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard from Paystack webhook: {e}")
+
+    return JSONResponse(result, status_code=result.get("status_code", 200))
+
+
+
+@app.post("/api/payment/stripe/confirm")
+async def stripe_confirm_payment(payload: dict = Body(...)):
+    """
+    Public, server-verified Stripe confirmation endpoint.
+
+    The browser may call this after returning from Stripe if the result page still
+    shows Free Preview. It does not trust the browser's paid flag; it verifies the
+    Stripe Checkout Session with the Stripe secret key before unlocking.
+    """
+    session_id = (payload.get("session_id") or payload.get("session") or "").strip()
+    job_id = (payload.get("job_id") or "").strip()
+
+    result = verify_stripe_session_and_unlock_job(
+        session_id=session_id,
+        fallback_job_id=job_id,
+    )
+
+    status_code = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+@app.get("/payment/stripe/success")
+async def stripe_payment_success(session_id: str = "", job_id: str = ""):
+    """
+    Stripe success callback.
+
+    Paystack unlocks through its callback by verifying the transaction and then
+    marking the purchase as paid. Stripe should do the same here as a safe
+    fallback, while the webhook remains the primary production confirmation.
+    """
+    requested_job_id = (job_id or "").strip()
+
+    activation = {
+        "ok": False,
+        "activated": False,
+        "message": "Payment received. Unlock is being processed.",
+        "job_id": requested_job_id,
+    }
+
+    if not DATABASE_URL:
+        print("[STRIPE_SUCCESS_PAGE] DATABASE_URL is not configured.")
+    elif session_id and verify_and_activate_stripe_session:
+        activation = verify_and_activate_stripe_session(
+            database_url=DATABASE_URL,
+            session_id=session_id,
+            fallback_job_id=requested_job_id,
+        ) or activation
+    elif not session_id:
+        print("[STRIPE_SUCCESS_PAGE] Missing session_id from Stripe success redirect.")
+    else:
+        print("[STRIPE_SUCCESS_PAGE] verify_and_activate_stripe_session helper is unavailable.")
+
+    # Fallback: directly verify the Stripe Checkout Session and unlock the job.
+    # This fixes the common case where Stripe payment succeeds but the helper or
+    # webhook does not attach the paid purchase to purchase_runs before redirect.
+    if session_id and not bool(activation.get("activated")):
+        fallback_activation = verify_stripe_session_and_unlock_job(
+            session_id=session_id,
+            fallback_job_id=requested_job_id,
+        )
+        if fallback_activation.get("activated"):
+            activation = fallback_activation
+
+    purchase = activation.get("purchase") or {}
+    final_job_id = (
+        (activation.get("job_id") or "").strip()
+        or requested_job_id
+        or (purchase.get("preview_job_id") or "").strip()
+        or (purchase.get("job_id") or "").strip()
+    )
+
+    access_after = {}
+    if final_job_id:
+        try:
+            access_after = build_access_response(final_job_id)
+            print(f"[STRIPE_SUCCESS_ACCESS] job_id={final_job_id}, access={access_after}")
+        except Exception as e:
+            print(f"[STRIPE_SUCCESS_ACCESS_ERROR] {type(e).__name__}: {e}")
+            access_after = {}
+
+    activated = bool(activation.get("activated") or access_after.get("paid"))
+
+    # Server-side fallback marker for the results payload. This does not replace
+    # the purchase/purchase_runs access check; it helps the frontend reflect the
+    # paid state immediately after a verified Stripe success redirect.
+    if activated and final_job_id and DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            cursor = conn.cursor()
+            cursor.execute("SELECT result FROM jobs WHERE job_id = %s", (final_job_id,))
+            row = cursor.fetchone()
+            if row:
+                stored_result = row.get("result") or {}
+                if isinstance(stored_result, str):
+                    stored_result = json.loads(stored_result)
+                stored_result.setdefault("access", {})
+                stored_result["access"].update({
+                    "paid": True,
+                    "tier_key": access_after.get("tier_key") or _purchase_tier_key(purchase),
+                    "currency": access_after.get("currency") or purchase.get("currency") or "USD",
+                    "payment_provider": "stripe",
+                })
+                cursor.execute(
+                    "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+                    (json.dumps(stored_result), final_job_id),
+                )
+                conn.commit()
+                if redis_conn:
+                    try:
+                        redis_conn.setex(f"result:{final_job_id}", 3600, json.dumps(stored_result))
+                    except Exception as redis_e:
+                        print(f"[STRIPE_SUCCESS_CACHE] Redis paid marker refresh failed: {redis_e}")
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"[STRIPE_SUCCESS_MARKER_ERROR] {type(e).__name__}: {e}")
+
+    # Keep route consistent with the current dashboard route.
+    results_url = f"/new/results/{final_job_id}?verify=1&paid=1&fresh=1" if final_job_id else "/new/analyse"
+
+    try:
+        if activated and final_job_id:
+            amount_minor = (
+                purchase.get("amount_minor")
+                or purchase.get("amount")
+                or 0
+            )
+            try:
+                amount_minor = int(float(amount_minor or 0))
+            except Exception:
+                amount_minor = 0
+
+            record_dashboard(
+                final_job_id,
+                email=purchase.get("user_email") or purchase.get("email"),
+                file_name=purchase.get("preview_file_name") or purchase.get("file_name"),
+                plan_key=purchase.get("tier_key") or purchase.get("document_tier") or purchase.get("package_key"),
+                plan_name=purchase.get("plan_name") or purchase.get("tier_name") or purchase.get("tier_key") or purchase.get("document_tier"),
+                currency=purchase.get("currency") or "USD",
+                amount=(amount_minor / 100) if amount_minor else None,
+                amount_minor=amount_minor,
+                payment_reference=activation.get("provider_reference") or purchase.get("provider_reference"),
+                payment_status="paid",
+                paid=True,
+            )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard after Stripe success activation: {e}")
+
+    print(
+        f"[STRIPE_SUCCESS_PAGE] session_id={session_id}, query_job_id={requested_job_id}, "
+        f"activation_job_id={activation.get('job_id')}, activated={activated}, redirect={results_url}"
+    )
+
+    heading = "✅ Full Review unlocked" if activated else "✅ Payment received"
+    message = (
+        "Your CiteIntegrity Full Review has been unlocked. You will be redirected to your results page."
+        if activated
+        else "Your payment was received, but the unlock has not yet been confirmed. You will be redirected to your results page; refresh after a few seconds."
+    )
+
+    return HTMLResponse(f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Payment Received | CiteIntegrity</title>
+        <meta http-equiv="refresh" content="2;url={results_url}">
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background: #f8fafc;
+                color: #0f172a;
+                display: grid;
+                place-items: center;
+                min-height: 100vh;
+                margin: 0;
+            }}
+            .card {{
+                background: white;
+                border: 1px solid #e2e8f0;
+                border-radius: 22px;
+                padding: 34px;
+                max-width: 660px;
+                text-align: center;
+                box-shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+            }}
+            h1 {{ margin: 0 0 12px; color: #13855a; }}
+            p {{ color: #64748b; line-height: 1.6; }}
+            a {{
+                display: inline-block;
+                margin-top: 18px;
+                background: #0f172a;
+                color: white;
+                padding: 12px 18px;
+                border-radius: 999px;
+                text-decoration: none;
+                font-weight: 800;
+            }}
+            .small {{ font-size: 12px; color: #94a3b8; margin-top: 16px; word-break: break-all; }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>{heading}</h1>
+            <p>{message}</p>
+            <p>If the results page does not update immediately, click the button below and refresh once.</p>
+            <a href="{results_url}">Return to results</a>
+            <p class="small">Session: {session_id}</p>
+            <p class="small">Job: {final_job_id or 'not recovered'}</p>
+        </div>
+        <script>
+            setTimeout(function () {{ window.location.href = "{results_url}"; }}, 2000);
+        </script>
+    </body>
+    </html>
+    """)
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    if not (STRIPE_PAYMENT_FEATURES_AVAILABLE and handle_stripe_webhook):
+        return JSONResponse({"ok": False, "message": "Stripe payment features are not available."}, status_code=503)
+
+    raw_body = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+
+    result = handle_stripe_webhook(
+        database_url=DATABASE_URL,
+        raw_body=raw_body,
+        signature=signature,
+    )
+
+    try:
+        purchase = result.get("purchase") or {}
+        if result.get("purchase_activated") or result.get("activated") or result.get("ok"):
+            job_id = purchase.get("preview_job_id") or purchase.get("job_id")
+            if job_id:
+                amount_minor = result.get("amount_minor") or purchase.get("amount_minor") or 0
+                amount = result.get("amount") or purchase.get("amount") or 0
+
+                try:
+                    amount_minor = int(float(amount_minor or 0))
+                except Exception:
+                    amount_minor = 0
+
+                try:
+                    amount = float(amount or 0)
+                except Exception:
+                    amount = 0.0
+
+                if amount and not amount_minor:
+                    amount_minor = int(round(amount * 100))
+
+                try:
+                    activate_paid_access_for_purchase(job_id, purchase)
+                except Exception as access_e:
+                    print(f"[STRIPE_WEBHOOK_ACCESS_LINK_ERROR] {type(access_e).__name__}: {access_e}")
+
+                record_dashboard(
+                    job_id,
+                    email=purchase.get("user_email") or purchase.get("email"),
+                    file_name=purchase.get("preview_file_name") or purchase.get("file_name"),
+                    plan_key=purchase.get("tier_key") or purchase.get("document_tier") or purchase.get("package_key"),
+                    plan_name=purchase.get("plan_name") or purchase.get("tier_name") or purchase.get("tier_key") or purchase.get("document_tier"),
+                    currency=(result.get("currency") or purchase.get("currency") or "USD"),
+                    amount=(amount_minor / 100) if amount_minor else (amount or None),
+                    amount_minor=amount_minor,
+                    payment_reference=(
+                        result.get("reference")
+                        or purchase.get("payment_reference")
+                        or purchase.get("provider_reference")
+                        or purchase.get("reference")
+                    ),
+                    payment_status="paid",
+                    paid=True,
+                )
+    except Exception as e:
+        print(f"⚠️ Could not update commercial dashboard from Stripe webhook: {e}")
+
+    return JSONResponse(result, status_code=result.get("status_code", 200))
+
+
 # ============================================================
 # AUTO-FIX ENDPOINTS
 # ============================================================
@@ -3762,45 +5848,16 @@ async def export_fixed_document(job_id: str, format: str = "txt"):
 def stats_page(request: Request):
     return templates.TemplateResponse("stats.html", {"request": request})
 
-
 # ============================================================
 # PRIVATE STATS ENDPOINTS
 # ============================================================
 
-def _dt_to_iso(value):
-    if not value:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
 
+# ============================================================
+# PRIVATE STATS: JSONB-AWARE DASHBOARD HELPERS
+# ============================================================
 
-def _as_dict(row):
-    """Convert psycopg2/SQLite rows to plain dictionaries."""
-    if row is None:
-        return {}
-    if isinstance(row, dict):
-        return dict(row)
-    try:
-        return dict(row)
-    except Exception:
-        return {}
-
-
-def _safe_json(value):
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except Exception:
-            return {}
-    return {}
-
-
-def _safe_int(value, default=0):
+def _dashboard_int(value: Any, default: int = 0) -> int:
     try:
         if value is None or value == "":
             return default
@@ -3809,7 +5866,7 @@ def _safe_int(value, default=0):
         return default
 
 
-def _safe_float(value, default=0.0):
+def _dashboard_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None or value == "":
             return default
@@ -3818,670 +5875,305 @@ def _safe_float(value, default=0.0):
         return default
 
 
-def _first_existing(result: Dict[str, Any], keys: List[str], default=None):
-    for key in keys:
-        if key in result and result.get(key) is not None:
-            return result.get(key)
-    return default
+def _normalise_job_result(result: Any) -> Dict[str, Any]:
+    """Return the actual analysis result from jobs.result, regardless of wrapper shape."""
+    if not result:
+        return {}
+
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except Exception:
+            return {}
+
+    if not isinstance(result, dict):
+        return {}
+
+    # Some API responses wrap the payload as {status: ..., data: {...}}.
+    data = result.get("data")
+    if isinstance(data, dict) and (
+        data.get("summary")
+        or data.get("online_verification")
+        or data.get("references_raw")
+        or data.get("acii")
+    ):
+        merged = dict(data)
+        # Keep top-level access/status fields as fallbacks without overwriting data.
+        for key in ("access", "status", "filename", "verification"):
+            if key in result and key not in merged:
+                merged[key] = result.get(key)
+        return merged
+
+    return result
 
 
-def _count_list(value) -> int:
-    if isinstance(value, list):
-        return len(value)
-    if isinstance(value, dict):
-        # Some engines return dict rows keyed by citation/reference.
-        return len(value)
-    return 0
+def _dashboard_list(value: Any) -> list:
+    return value if isinstance(value, list) else []
 
 
-def _extract_acii_score(result: Dict[str, Any]):
-    acii = result.get("acii")
-    if isinstance(acii, (int, float)):
-        return round(float(acii), 2)
-    if isinstance(acii, dict):
-        # ACII is stored as {"ACII": 77.69, ...} in recent results.
-        # Keep older aliases too for backward compatibility.
-        for key in ["ACII", "score", "acii_score", "overall_score", "total_score", "value"]:
-            if key in acii:
-                return round(_safe_float(acii.get(key)), 2)
-    return None
+def _extract_result_metrics(result: Any) -> Dict[str, Any]:
+    """Extract dashboard-safe counts from one completed analysis result."""
+    result = _normalise_job_result(result)
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
 
+    online = result.get("online_verification") if isinstance(result.get("online_verification"), dict) else {}
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    acii = result.get("acii") if isinstance(result.get("acii"), dict) else {}
 
-def _extract_job_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract dashboard-safe metrics from a job result.
+    references_raw = _dashboard_list(result.get("references_raw"))
+    references = _dashboard_list(result.get("references"))
+    citations = _dashboard_list(result.get("in_text_citations")) or _dashboard_list(result.get("citations"))
+    c2r = _dashboard_list(result.get("reconciliation_intext_to_reference"))
+    missing_items = _dashboard_list(result.get("missing_in_references"))
+    uncited_items = _dashboard_list(result.get("uncited_references"))
+    verification_rows = _dashboard_list(online.get("rows"))
+    claim_support = result.get("claim_support")
 
-    This deliberately returns counts and status summaries only. It does not expose
-    manuscript text, full references, student names or private thesis content.
-    """
-    result = result or {}
+    reference_count = (
+        _dashboard_int(summary.get("reference_entries_found"))
+        or _dashboard_int(summary.get("references_count"))
+        or len(references_raw)
+        or len(references)
+    )
 
-    refs = _first_existing(result, [
-        "references_raw", "references", "reference_entries", "all_references"
-    ], [])
-    c2r = _first_existing(result, [
-        "reconciliation_intext_to_reference", "citations_to_references", "c2r"
-    ], [])
-    r2c = _first_existing(result, [
-        "reconciliation_reference_to_intext", "references_to_citations", "r2c"
-    ], [])
-    citations = _first_existing(result, [
-        "citations_raw", "in_text_citations", "intext_citations", "citation_occurrences"
-    ], [])
-    missing = _first_existing(result, [
-        "missing_in_references", "missing_citations", "missing_references"
-    ], [])
-    uncited = _first_existing(result, [
-        "uncited_references", "uncited_reference_rows", "references_not_cited"
-    ], [])
-    claims = _first_existing(result, ["claim_support", "claim_support_rows"], [])
-    suggestions = _first_existing(result, ["suggestions"], [])
+    citation_count = (
+        _dashboard_int(summary.get("in_text_citations_found"))
+        or _dashboard_int(summary.get("citations_count"))
+        or len(citations)
+        or len(c2r)
+    )
 
-    online = result.get("online_verification") or {}
-    verification_rows = online.get("rows") or []
-    verification_summary = online.get("summary") or {}
+    missing_count = (
+        _dashboard_int(summary.get("missing_in_references"))
+        or _dashboard_int(summary.get("missing_references"))
+        or len(missing_items)
+    )
 
-    verified = _safe_int(verification_summary.get("verified"))
-    likely = _safe_int(verification_summary.get("likely"))
-    needs_review = _safe_int(verification_summary.get("needs_review"))
-    not_found = _safe_int(verification_summary.get("not_found"))
-    offline = _safe_int(verification_summary.get("offline"))
+    uncited_count = (
+        _dashboard_int(summary.get("uncited_references"))
+        or len(uncited_items)
+    )
 
-    # If no summary exists, count statuses directly from verification rows.
-    if verification_rows and not any([verified, likely, needs_review, not_found, offline]):
-        for row in verification_rows:
-            if not isinstance(row, dict):
-                continue
-            status = (row.get("status") or "offline").lower()
-            if status == "verified":
-                verified += 1
-            elif status == "likely":
-                likely += 1
-            elif status == "needs_review":
-                needs_review += 1
-            elif status == "not_found":
-                not_found += 1
-            else:
-                offline += 1
+    verification_count = (
+        len(verification_rows)
+        or _dashboard_int(verification.get("results_count"))
+        or _dashboard_int((online.get("summary") or {}).get("total") if isinstance(online.get("summary"), dict) else 0)
+    )
 
-    references_count = _count_list(refs)
-    citations_count = _count_list(citations)
-    if citations_count == 0:
-        citations_count = _count_list(c2r)
-
-    recovery = result.get("recovery") or {}
-    recovery_count = 0
-    if isinstance(recovery, dict):
-        recovery_count = _count_list(recovery.get("missing_recovery")) + _count_list(recovery.get("verification_recovery"))
-
-    return {
-        "references_count": references_count,
-        "citations_count": citations_count,
-        "missing_citations_count": _count_list(missing),
-        "uncited_references_count": _count_list(uncited),
-        "c2r_rows": _count_list(c2r),
-        "r2c_rows": _count_list(r2c),
-        "claim_rows": _count_list(claims),
-        "suggestions_count": _count_list(suggestions),
-        "recovery_rows": recovery_count,
-        "verification_rows": _count_list(verification_rows),
-        "verified": verified,
-        "likely": likely,
-        "needs_review": needs_review,
-        "not_found": not_found,
-        "offline": offline,
-        "acii_score": _extract_acii_score(result),
-    }
-
-
-def _empty_dashboard_payload(days: int, message: str = "No data available yet.") -> Dict[str, Any]:
-    return {
-        "total_stats": {
-            "total_uploads": 0,
-            "total_processed": 0,
-            "total_failed": 0,
-            "success_rate": 0,
-            "total_references_checked": 0,
-            "total_intext_citations": 0,
-            "total_missing_citations": 0,
-            "total_uncited_references": 0,
-            "total_verifications": 0,
-            "average_processing_time": 0,
-            "average_acii_score": None,
-            "start_date": datetime.now().isoformat(),
-            "last_updated": datetime.now().isoformat(),
-            "storage_backend": stats_tracker.db_type,
-            "persistent_storage": stats_tracker.db_type == "postgresql",
-            "storage_message": message,
-        },
-        "dashboard_metrics": {},
-        "daily_stats": {},
-        "recent_uploads": [],
-        "system_info": {
-            "current_time": datetime.now().isoformat(),
-            "storage_backend": stats_tracker.db_type,
-            "persistent_storage": stats_tracker.db_type == "postgresql",
-            "active_jobs": 0,
-            "total_jobs": 0,
-            "queue_status": {},
-            "server_busy": False,
-        }
-    }
-
-
-def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
-    """
-    Dashboard builder populated from persistent PostgreSQL data.
-
-    Dashboard-only update:
-    - Keeps payment routes and payment logic untouched.
-    - Uses jobs.result JSONB to populate citation, verification, ACII and claim metrics.
-    - Uses SQL-level JSONB expressions, not full manuscript JSON transfer, to avoid
-      exposing or loading full document text into the dashboard response.
-    - Falls back gracefully to relational upload totals when optional JSONB metrics
-      are unavailable.
-    """
-    days = max(1, min(int(days or 30), 365))
-    cutoff_dt = datetime.now() - timedelta(days=days - 1)
-    cutoff_date = cutoff_dt.date()
-
-    stats_row: Dict[str, Any] = {}
-    job_summary = {
-        "total_jobs": 0,
-        "completed_jobs": 0,
-        "failed_jobs": 0,
-        "running_jobs": 0,
-        "queued_jobs": 0,
-        "first_created_at": None,
-        "last_updated_at": None,
-    }
-
-    daily_stats: Dict[str, Dict[str, Any]] = {}
-    recent_uploads: List[Dict[str, Any]] = []
-
-    advanced = {
-        "references_count": 0,
-        "citations_count": 0,
-        "missing_citations_count": 0,
-        "uncited_references_count": 0,
-        "claim_rows": 0,
-        "recovery_rows": 0,
-        "suggestions_count": 0,
-        "verification_rows": 0,
+    status_counts = {
         "verified": 0,
         "likely": 0,
         "needs_review": 0,
         "not_found": 0,
         "offline": 0,
-        "average_acii_score": None,
-        "average_processing_time": 0,
-        "error": None,
     }
+    for row in verification_rows:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "offline").strip().lower()
+        status = status.replace("-", "_").replace(" ", "_")
+        if status in status_counts:
+            status_counts[status] += 1
+        else:
+            status_counts["offline"] += 1
 
-    completed_statuses = "('completed','complete','done','success','finished')"
-    failed_statuses = "('failed','error','cancelled','canceled')"
-    active_statuses = "('queued','started','running','processing','deferred','scheduled')"
+    # If only the summary is available, use it as a fallback.
+    online_summary = online.get("summary") if isinstance(online.get("summary"), dict) else {}
+    for key in status_counts:
+        if status_counts[key] == 0 and online_summary.get(key) is not None:
+            status_counts[key] = _dashboard_int(online_summary.get(key))
 
-    # SQL snippets are repeated in aggregate, daily and recent queries. They use
-    # summary counts first, then fall back to JSON array lengths.
-    references_expr = """
-        CASE
-            WHEN COALESCE(result #>> '{summary,reference_entries_found}', '') ~ '^[0-9]+$'
-                THEN (result #>> '{summary,reference_entries_found}')::int
-            WHEN jsonb_typeof(result->'references_raw') = 'array'
-                THEN jsonb_array_length(result->'references_raw')
-            WHEN jsonb_typeof(result->'references') = 'array'
-                THEN jsonb_array_length(result->'references')
-            ELSE 0
-        END
-    """
+    acii_score = None
+    for candidate in (acii.get("ACII"), acii.get("score"), result.get("acii_score")):
+        if candidate is not None and candidate != "":
+            acii_score = round(_dashboard_float(candidate), 2)
+            break
 
-    citations_expr = """
-        CASE
-            WHEN COALESCE(result #>> '{summary,in_text_citations_found}', '') ~ '^[0-9]+$'
-                THEN (result #>> '{summary,in_text_citations_found}')::int
-            WHEN jsonb_typeof(result->'in_text_citations') = 'array'
-                THEN jsonb_array_length(result->'in_text_citations')
-            WHEN jsonb_typeof(result->'citations') = 'array'
-                THEN jsonb_array_length(result->'citations')
-            WHEN jsonb_typeof(result->'reconciliation_intext_to_reference') = 'array'
-                THEN jsonb_array_length(result->'reconciliation_intext_to_reference')
-            ELSE 0
-        END
-    """
+    if isinstance(claim_support, list):
+        claim_rows = len(claim_support)
+    elif isinstance(claim_support, dict):
+        rows = claim_support.get("rows") or claim_support.get("items") or []
+        claim_rows = len(rows) if isinstance(rows, list) else 0
+    else:
+        claim_rows = 0
 
-    missing_expr = """
-        CASE
-            WHEN COALESCE(result #>> '{summary,missing_in_references}', '') ~ '^[0-9]+$'
-                THEN (result #>> '{summary,missing_in_references}')::int
-            WHEN jsonb_typeof(result->'missing_in_references') = 'array'
-                THEN jsonb_array_length(result->'missing_in_references')
-            WHEN jsonb_typeof(result->'missing_citations') = 'array'
-                THEN jsonb_array_length(result->'missing_citations')
-            ELSE 0
-        END
-    """
-
-    uncited_expr = """
-        CASE
-            WHEN jsonb_typeof(result->'uncited_references') = 'array'
-                THEN jsonb_array_length(result->'uncited_references')
-            WHEN jsonb_typeof(result->'uncited_reference_rows') = 'array'
-                THEN jsonb_array_length(result->'uncited_reference_rows')
-            ELSE 0
-        END
-    """
-
-    verification_rows_expr = """
-        CASE
-            WHEN COALESCE(result #>> '{online_verification,summary,total}', '') ~ '^[0-9]+$'
-                THEN (result #>> '{online_verification,summary,total}')::int
-            WHEN COALESCE(result #>> '{verification,total}', '') ~ '^[0-9]+$'
-                THEN (result #>> '{verification,total}')::int
-            WHEN jsonb_typeof(result->'online_verification'->'rows') = 'array'
-                THEN jsonb_array_length(result->'online_verification'->'rows')
-            ELSE 0
-        END
-    """
-
-    verified_expr = """
-        CASE WHEN COALESCE(result #>> '{online_verification,summary,verified}', '') ~ '^[0-9]+$'
-            THEN (result #>> '{online_verification,summary,verified}')::int ELSE 0 END
-    """
-    likely_expr = """
-        CASE WHEN COALESCE(result #>> '{online_verification,summary,likely}', '') ~ '^[0-9]+$'
-            THEN (result #>> '{online_verification,summary,likely}')::int ELSE 0 END
-    """
-    needs_review_expr = """
-        CASE WHEN COALESCE(result #>> '{online_verification,summary,needs_review}', '') ~ '^[0-9]+$'
-            THEN (result #>> '{online_verification,summary,needs_review}')::int ELSE 0 END
-    """
-    not_found_expr = """
-        CASE WHEN COALESCE(result #>> '{online_verification,summary,not_found}', '') ~ '^[0-9]+$'
-            THEN (result #>> '{online_verification,summary,not_found}')::int ELSE 0 END
-    """
-    offline_expr = """
-        CASE WHEN COALESCE(result #>> '{online_verification,summary,offline}', '') ~ '^[0-9]+$'
-            THEN (result #>> '{online_verification,summary,offline}')::int ELSE 0 END
-    """
-
-    claim_expr = """
-        CASE WHEN jsonb_typeof(result->'claim_support') = 'array'
-            THEN jsonb_array_length(result->'claim_support') ELSE 0 END
-    """
-
-    recovery_expr = """
-        (
-            CASE WHEN jsonb_typeof(result->'recovery'->'missing_recovery') = 'array'
-                THEN jsonb_array_length(result->'recovery'->'missing_recovery') ELSE 0 END
-            +
-            CASE WHEN jsonb_typeof(result->'recovery'->'verification_recovery') = 'array'
-                THEN jsonb_array_length(result->'recovery'->'verification_recovery') ELSE 0 END
-        )
-    """
-
-    suggestions_expr = """
-        CASE
-            WHEN jsonb_typeof(result->'suggestions') = 'array'
-                THEN jsonb_array_length(result->'suggestions')
-            WHEN jsonb_typeof(result->'suggestions'->'citations') = 'array'
-                THEN jsonb_array_length(result->'suggestions'->'citations')
-            ELSE 0
-        END
-    """
-
-    acii_expr = """
-        CASE
-            WHEN jsonb_typeof(result->'acii') = 'number' THEN (result->>'acii')::numeric
-            WHEN COALESCE(result #>> '{acii,ACII}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,ACII}')::numeric
-            WHEN COALESCE(result #>> '{acii,score}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,score}')::numeric
-            WHEN COALESCE(result #>> '{acii,acii_score}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,acii_score}')::numeric
-            WHEN COALESCE(result #>> '{acii,overall_score}', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (result #>> '{acii,overall_score}')::numeric
-            ELSE NULL
-        END
-    """
-
-    # ------------------------------------------------------------------
-    # 1) Relational totals and basic recent uploads.
-    # ------------------------------------------------------------------
-    with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SET LOCAL statement_timeout = '10000ms'")
-
-            cursor.execute("SELECT * FROM stats WHERE id = 1")
-            stats_row = _as_dict(cursor.fetchone() or {})
-
-            cursor.execute(f"""
-                SELECT
-                    COUNT(*) AS total_jobs,
-                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {completed_statuses}) AS completed_jobs,
-                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {failed_statuses} OR error IS NOT NULL) AS failed_jobs,
-                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {active_statuses}) AS running_jobs,
-                    COUNT(*) FILTER (WHERE lower(coalesce(status, '')) = 'queued') AS queued_jobs,
-                    MIN(created_at) AS first_created_at,
-                    MAX(COALESCE(completed_at, started_at, created_at)) AS last_updated_at
-                FROM jobs
-            """)
-            job_summary = _as_dict(cursor.fetchone() or job_summary)
-
-            cursor.execute("""
-                SELECT AVG(processing_time) AS avg_processing_time
-                FROM uploads
-                WHERE success = 1 AND processing_time IS NOT NULL AND processing_time > 0
-            """)
-            avg_row = _as_dict(cursor.fetchone() or {})
-            advanced["average_processing_time"] = round(_safe_float(avg_row.get("avg_processing_time")), 2)
-
-            # Seed daily data from daily_stats so upload/processed counts remain stable.
-            cursor.execute("""
-                SELECT date, uploads, processed, failed, references_count,
-                       total_processing_time, processing_count
-                FROM daily_stats
-                WHERE date >= %s
-                ORDER BY date DESC
-            """, (cutoff_date,))
-            for raw in cursor.fetchall() or []:
-                row = _as_dict(raw)
-                date_key = str(row.get("date"))[:10]
-                pcount = _safe_int(row.get("processing_count"))
-                ptime = _safe_float(row.get("total_processing_time"))
-                daily_stats[date_key] = {
-                    "uploads": _safe_int(row.get("uploads")),
-                    "processed": _safe_int(row.get("processed")),
-                    "failed": _safe_int(row.get("failed")),
-                    "references": _safe_int(row.get("references_count")),
-                    "citations": 0,
-                    "missing_citations": 0,
-                    "uncited_references": 0,
-                    "verification_rows": 0,
-                    "average_acii_score": None,
-                    "avg_processing_time": round(ptime / pcount, 2) if pcount else 0,
-                }
-
-    # ------------------------------------------------------------------
-    # 2) Dashboard indicators from jobs.result JSONB for the selected window.
-    # ------------------------------------------------------------------
-    try:
-        with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SET LOCAL statement_timeout = '20000ms'")
-
-                cursor.execute(f"""
-                    SELECT
-                        COALESCE(SUM({references_expr}), 0) AS references_count,
-                        COALESCE(SUM({citations_expr}), 0) AS citations_count,
-                        COALESCE(SUM({missing_expr}), 0) AS missing_citations_count,
-                        COALESCE(SUM({uncited_expr}), 0) AS uncited_references_count,
-                        COALESCE(SUM({claim_expr}), 0) AS claim_rows,
-                        COALESCE(SUM({recovery_expr}), 0) AS recovery_rows,
-                        COALESCE(SUM({suggestions_expr}), 0) AS suggestions_count,
-                        COALESCE(SUM({verification_rows_expr}), 0) AS verification_rows,
-                        COALESCE(SUM({verified_expr}), 0) AS verified,
-                        COALESCE(SUM({likely_expr}), 0) AS likely,
-                        COALESCE(SUM({needs_review_expr}), 0) AS needs_review,
-                        COALESCE(SUM({not_found_expr}), 0) AS not_found,
-                        COALESCE(SUM({offline_expr}), 0) AS offline,
-                        AVG({acii_expr}) AS average_acii_score
-                    FROM jobs
-                    WHERE result IS NOT NULL
-                      AND created_at >= %s
-                """, (cutoff_dt,))
-
-                row = _as_dict(cursor.fetchone() or {})
-                for key in [
-                    "references_count", "citations_count", "missing_citations_count",
-                    "uncited_references_count", "claim_rows", "recovery_rows", "suggestions_count",
-                    "verification_rows", "verified", "likely", "needs_review", "not_found", "offline"
-                ]:
-                    advanced[key] = _safe_int(row.get(key))
-
-                if row.get("average_acii_score") is not None:
-                    advanced["average_acii_score"] = round(_safe_float(row.get("average_acii_score")), 2)
-
-                # Daily JSONB metrics. This overlays citation-integrity counts onto
-                # the existing daily upload table rather than replacing it.
-                cursor.execute(f"""
-                    SELECT
-                        created_at::date AS day,
-                        COUNT(*) AS uploads,
-                        COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {completed_statuses}) AS processed,
-                        COUNT(*) FILTER (WHERE lower(coalesce(status, '')) IN {failed_statuses} OR error IS NOT NULL) AS failed,
-                        COALESCE(SUM({references_expr}), 0) AS references,
-                        COALESCE(SUM({citations_expr}), 0) AS citations,
-                        COALESCE(SUM({missing_expr}), 0) AS missing_citations,
-                        COALESCE(SUM({uncited_expr}), 0) AS uncited_references,
-                        COALESCE(SUM({verification_rows_expr}), 0) AS verification_rows,
-                        AVG({acii_expr}) AS average_acii_score,
-                        AVG(NULLIF(processing_time, 0)) AS avg_processing_time
-                    FROM jobs
-                    WHERE created_at >= %s
-                    GROUP BY created_at::date
-                    ORDER BY day DESC
-                """, (cutoff_dt,))
-
-                for raw in cursor.fetchall() or []:
-                    row = _as_dict(raw)
-                    date_key = str(row.get("day"))[:10]
-                    existing = daily_stats.get(date_key, {})
-                    avg_time = row.get("avg_processing_time")
-                    daily_stats[date_key] = {
-                        "uploads": max(_safe_int(existing.get("uploads")), _safe_int(row.get("uploads"))),
-                        "processed": max(_safe_int(existing.get("processed")), _safe_int(row.get("processed"))),
-                        "failed": max(_safe_int(existing.get("failed")), _safe_int(row.get("failed"))),
-                        "references": max(_safe_int(existing.get("references")), _safe_int(row.get("references"))),
-                        "citations": _safe_int(row.get("citations")),
-                        "missing_citations": _safe_int(row.get("missing_citations")),
-                        "uncited_references": _safe_int(row.get("uncited_references")),
-                        "verification_rows": _safe_int(row.get("verification_rows")),
-                        "average_acii_score": round(_safe_float(row.get("average_acii_score")), 2) if row.get("average_acii_score") is not None else None,
-                        "avg_processing_time": round(_safe_float(avg_time), 2) if avg_time is not None else _safe_float(existing.get("avg_processing_time")),
-                    }
-
-                # Recent documents enriched from jobs.result, not uploads, because
-                # the uploads table may contain only basic counts and many zeros.
-                cursor.execute(f"""
-                    SELECT
-                        job_id,
-                        created_at AS timestamp,
-                        file_name AS filename,
-                        file_size_mb,
-                        status,
-                        error,
-                        processing_time,
-                        {references_expr} AS references_count,
-                        {citations_expr} AS citations_count,
-                        {missing_expr} AS missing_citations_count,
-                        {uncited_expr} AS uncited_references_count,
-                        {verification_rows_expr} AS verification_rows,
-                        {acii_expr} AS acii_score
-                    FROM jobs
-                    WHERE created_at >= %s
-                    ORDER BY created_at DESC
-                    LIMIT 50
-                """, (cutoff_dt,))
-
-                recent_uploads = []
-                for raw in cursor.fetchall() or []:
-                    row = _as_dict(raw)
-                    status = (row.get("status") or "unknown").lower()
-                    recent_uploads.append({
-                        "job_id": row.get("job_id"),
-                        "timestamp": _dt_to_iso(row.get("timestamp")),
-                        "filename": row.get("filename") or "Untitled document",
-                        "file_size_mb": _safe_float(row.get("file_size_mb")),
-                        "references_count": _safe_int(row.get("references_count")),
-                        "citations_count": _safe_int(row.get("citations_count")),
-                        "missing_citations_count": _safe_int(row.get("missing_citations_count")),
-                        "uncited_references_count": _safe_int(row.get("uncited_references_count")),
-                        "verification_rows": _safe_int(row.get("verification_rows")),
-                        "acii_score": round(_safe_float(row.get("acii_score")), 2) if row.get("acii_score") is not None else None,
-                        "processing_time": _safe_float(row.get("processing_time")),
-                        "status": status,
-                        "success": status in {'completed', 'complete', 'done', 'success', 'finished'} and not row.get("error"),
-                        "error": row.get("error"),
-                    })
-
-    except Exception as e:
-        advanced["error"] = str(e)[:220]
-        print(f"[STATS] JSONB dashboard metric aggregation failed: {advanced['error']}")
-
-        # If enriched job rows fail, still show recent uploads from the uploads table.
-        try:
-            with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10) as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT timestamp, filename, file_size, references_count,
-                               processing_time, success, error
-                        FROM uploads
-                        ORDER BY timestamp DESC
-                        LIMIT 50
-                    """)
-                    recent_uploads = []
-                    for raw in cursor.fetchall() or []:
-                        row = _as_dict(raw)
-                        recent_uploads.append({
-                            "timestamp": _dt_to_iso(row.get("timestamp")),
-                            "filename": row.get("filename") or "Untitled document",
-                            "file_size_mb": round(_safe_float(row.get("file_size")) / (1024 * 1024), 2),
-                            "references_count": _safe_int(row.get("references_count")),
-                            "citations_count": 0,
-                            "missing_citations_count": 0,
-                            "uncited_references_count": 0,
-                            "verification_rows": 0,
-                            "acii_score": None,
-                            "processing_time": _safe_float(row.get("processing_time")),
-                            "status": "completed" if row.get("success") else "failed",
-                            "success": bool(row.get("success")),
-                            "error": row.get("error"),
-                        })
-        except Exception as inner:
-            print(f"[STATS] fallback recent uploads failed: {inner}")
-
-    total_jobs = _safe_int(job_summary.get("total_jobs"))
-    total_uploads = max(_safe_int(stats_row.get("total_uploads")), total_jobs, len(recent_uploads))
-    completed = max(_safe_int(stats_row.get("total_processed")), _safe_int(job_summary.get("completed_jobs")))
-    failed = max(_safe_int(stats_row.get("total_failed")), _safe_int(job_summary.get("failed_jobs")))
-    running = _safe_int(job_summary.get("running_jobs"))
-    queued = _safe_int(job_summary.get("queued_jobs"))
-
-    total_refs = max(_safe_int(stats_row.get("total_references_checked")), advanced["references_count"])
-    total_verification_rows = max(_safe_int(stats_row.get("total_verifications")), advanced["verification_rows"])
-
-    first_date = job_summary.get("first_created_at") or stats_row.get("updated_at") or datetime.now()
-    last_updated = job_summary.get("last_updated_at") or stats_row.get("updated_at") or datetime.now()
-    success_rate = round((completed / max(completed + failed, 1)) * 100, 2)
-
-    storage_message = (
-        "Persistent PostgreSQL storage is active. Dashboard indicators are populated from jobs.result JSONB. "
-        "Data will survive deployments and service restarts."
+    processing_time = (
+        _dashboard_float(result.get("processing_time"))
+        or _dashboard_float(result.get("processing_time_seconds"))
+        or _dashboard_float(verification.get("processing_time_seconds"))
     )
-    if advanced.get("error"):
-        storage_message += f" Some optional JSONB metrics could not be refreshed: {advanced.get('error')}"
-
-    try:
-        queue_status = get_queue_status()
-    except Exception as e:
-        queue_status = {"error": str(e)[:160]}
-
-    try:
-        server_busy = is_server_busy()
-    except Exception:
-        server_busy = False
 
     return {
-        "total_stats": {
-            "total_uploads": total_uploads,
-            "total_processed": completed,
-            "total_failed": failed,
-            "success_rate": success_rate,
-            "total_references_checked": total_refs,
-            "total_intext_citations": advanced["citations_count"],
-            "total_missing_citations": advanced["missing_citations_count"],
-            "total_uncited_references": advanced["uncited_references_count"],
-            "total_verifications": total_verification_rows,
-            "average_processing_time": advanced["average_processing_time"],
-            "average_acii_score": advanced["average_acii_score"],
-            "start_date": _dt_to_iso(first_date),
-            "last_updated": _dt_to_iso(last_updated),
-            "storage_backend": "postgresql",
-            "persistent_storage": True,
-            "storage_message": storage_message,
-            "advanced_metrics_error": advanced.get("error"),
-        },
-        "dashboard_metrics": {
-            "completed_jobs": completed,
-            "failed_jobs": failed,
-            "running_jobs": running,
-            "queued_jobs": queued,
-            "total_jobs": total_jobs,
-            "verified": advanced["verified"],
-            "likely": advanced["likely"],
-            "needs_review": advanced["needs_review"],
-            "not_found": advanced["not_found"],
-            "offline": advanced["offline"],
-            "claim_rows": advanced["claim_rows"],
-            "recovery_rows": advanced["recovery_rows"],
-            "suggestions_count": advanced["suggestions_count"],
-        },
-        "daily_stats": daily_stats,
-        "recent_uploads": recent_uploads,
-        "system_info": {
-            "current_time": datetime.now().isoformat(),
-            "storage_backend": "postgresql",
-            "persistent_storage": True,
-            "active_jobs": running,
-            "total_jobs": total_jobs,
-            "queue_status": queue_status,
-            "server_busy": server_busy,
-        }
+        "references_count": reference_count,
+        "citations_count": citation_count,
+        "missing_citations_count": missing_count,
+        "uncited_references_count": uncited_count,
+        "verification_rows": verification_count,
+        "acii_score": acii_score,
+        "claim_rows": claim_rows,
+        "processing_time": processing_time,
+        "verified": status_counts["verified"],
+        "likely": status_counts["likely"],
+        "needs_review": status_counts["needs_review"],
+        "not_found": status_counts["not_found"],
+        "offline": status_counts["offline"],
     }
 
-def _build_sqlite_dashboard_stats(days: int = 30) -> Dict[str, Any]:
-    """Local fallback. This is useful for development, but not deployment-safe."""
-    stats = stats_tracker.get_stats(detailed=False, days=days)
-    payload = _empty_dashboard_payload(
-        days,
-        message="SQLite /tmp storage is active. This is not deployment-safe. Set DATABASE_URL to a Render PostgreSQL database for persistent dashboard data."
+
+def _merge_total_stats_with_jsonb(stats: Dict[str, Any], rows: list, days: int) -> Dict[str, Any]:
+    """Populate dashboard totals from jobs.result JSONB while preserving legacy counters."""
+    total_stats = stats.setdefault("total_stats", {})
+    metrics = {
+        "verified": 0,
+        "likely": 0,
+        "needs_review": 0,
+        "not_found": 0,
+        "offline": 0,
+        "claim_rows": 0,
+    }
+
+    totals = {
+        "references": 0,
+        "citations": 0,
+        "missing": 0,
+        "uncited": 0,
+        "verification_rows": 0,
+    }
+    processing_times = []
+    acii_scores = []
+
+    processed = failed = uploads = 0
+    for row in rows:
+        uploads += 1
+        status = str(row.get("status") or "").lower()
+        if status in {"completed", "done", "success"}:
+            processed += 1
+        elif status in {"failed", "error"} or row.get("error"):
+            failed += 1
+
+        m = _extract_result_metrics(row.get("result"))
+        totals["references"] += m["references_count"]
+        totals["citations"] += m["citations_count"]
+        totals["missing"] += m["missing_citations_count"]
+        totals["uncited"] += m["uncited_references_count"]
+        totals["verification_rows"] += m["verification_rows"]
+        metrics["verified"] += m["verified"]
+        metrics["likely"] += m["likely"]
+        metrics["needs_review"] += m["needs_review"]
+        metrics["not_found"] += m["not_found"]
+        metrics["offline"] += m["offline"]
+        metrics["claim_rows"] += m["claim_rows"]
+        if m["processing_time"]:
+            processing_times.append(m["processing_time"])
+        if m["acii_score"] is not None:
+            acii_scores.append(m["acii_score"])
+
+    # Use JSONB rows for the selected reporting window, but fall back to legacy stats when rows are unavailable.
+    if rows:
+        total_stats["total_uploads"] = uploads
+        total_stats["total_processed"] = processed
+        total_stats["total_failed"] = failed
+        total_stats["success_rate"] = round((processed / max(processed + failed, 1)) * 100, 2)
+
+    total_stats["total_references_checked"] = totals["references"] or _dashboard_int(total_stats.get("total_references_checked"))
+    total_stats["total_intext_citations"] = totals["citations"]
+    total_stats["total_missing_citations"] = totals["missing"]
+    total_stats["total_uncited_references"] = totals["uncited"]
+    total_stats["total_verifications"] = totals["verification_rows"] or _dashboard_int(total_stats.get("total_verifications"))
+    total_stats["average_processing_time"] = round(sum(processing_times) / len(processing_times), 2) if processing_times else _dashboard_float(total_stats.get("average_processing_time"))
+    total_stats["average_acii_score"] = round(sum(acii_scores) / len(acii_scores), 2) if acii_scores else None
+    total_stats["persistent_storage"] = bool(DATABASE_URL)
+    total_stats["storage_backend"] = "postgresql" if DATABASE_URL else "sqlite"
+    total_stats["storage_message"] = (
+        f"Persistent PostgreSQL storage is active. Dashboard indicators are populated from jobs.result JSONB for the last {days} day(s)."
+        if DATABASE_URL else
+        "SQLite fallback is active. Set DATABASE_URL to preserve dashboard data across deployments."
     )
-    payload["total_stats"].update(stats.get("total_stats", {}))
-    payload["total_stats"].update({
-        "storage_backend": "sqlite",
-        "persistent_storage": False,
-        "storage_message": "SQLite /tmp storage is active. Data can disappear after redeploys, restarts, or instance changes. Use PostgreSQL for production.",
-    })
-    try:
-        import sqlite3
-        with sqlite3.connect(stats_tracker.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT timestamp, filename, file_size, references_count,
-                       processing_time, success, error
-                FROM uploads
-                ORDER BY timestamp DESC
-                LIMIT 50
-            """)
-            recent = []
-            for row in cursor.fetchall():
-                recent.append({
-                    "timestamp": row["timestamp"],
-                    "filename": row["filename"],
-                    "file_size_mb": round((_safe_float(row["file_size"]) / (1024 * 1024)), 2),
-                    "references_count": _safe_int(row["references_count"]),
-                    "citations_count": 0,
-                    "missing_citations_count": 0,
-                    "uncited_references_count": 0,
-                    "verification_rows": 0,
-                    "acii_score": None,
-                    "processing_time": _safe_float(row["processing_time"]),
-                    "status": "completed" if row["success"] else "failed",
-                    "success": bool(row["success"]),
-                    "error": row["error"],
-                })
-            payload["recent_uploads"] = recent
-    except Exception as e:
-        print(f"[STATS] SQLite detail fallback failed: {e}")
-    return payload
+    total_stats["jsonb_metrics_loaded"] = bool(rows)
+    total_stats["jsonb_jobs_scanned"] = len(rows)
+
+    stats["dashboard_metrics"] = metrics
+    return stats
+
+
+def _build_daily_stats_from_jobs(rows: list) -> Dict[str, Any]:
+    daily: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        ts = row.get("completed_at") or row.get("created_at") or row.get("started_at")
+        if hasattr(ts, "strftime"):
+            date_key = ts.strftime("%Y-%m-%d")
+        else:
+            date_key = str(ts or datetime.now().date())[:10]
+
+        entry = daily.setdefault(date_key, {
+            "uploads": 0,
+            "processed": 0,
+            "failed": 0,
+            "references": 0,
+            "citations": 0,
+            "missing_citations": 0,
+            "uncited_references": 0,
+            "verification_rows": 0,
+            "total_processing_time": 0.0,
+            "processing_count": 0,
+            "avg_processing_time": 0,
+            "_acii_scores": [],
+            "average_acii_score": None,
+        })
+
+        status = str(row.get("status") or "").lower()
+        entry["uploads"] += 1
+        if status in {"completed", "done", "success"}:
+            entry["processed"] += 1
+        elif status in {"failed", "error"} or row.get("error"):
+            entry["failed"] += 1
+
+        m = _extract_result_metrics(row.get("result"))
+        entry["references"] += m["references_count"]
+        entry["citations"] += m["citations_count"]
+        entry["missing_citations"] += m["missing_citations_count"]
+        entry["uncited_references"] += m["uncited_references_count"]
+        entry["verification_rows"] += m["verification_rows"]
+        if m["processing_time"]:
+            entry["total_processing_time"] += m["processing_time"]
+            entry["processing_count"] += 1
+        if m["acii_score"] is not None:
+            entry["_acii_scores"].append(m["acii_score"])
+
+    for entry in daily.values():
+        entry["avg_processing_time"] = round(entry["total_processing_time"] / entry["processing_count"], 2) if entry["processing_count"] else 0
+        scores = entry.pop("_acii_scores", [])
+        entry["average_acii_score"] = round(sum(scores) / len(scores), 2) if scores else None
+
+    return dict(sorted(daily.items(), reverse=True))
+
+
+def _build_recent_uploads_from_jobs(rows: list, limit: int = 50) -> list:
+    recent = []
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: str(r.get("created_at") or r.get("completed_at") or ""),
+        reverse=True,
+    )
+    for row in sorted_rows[:limit]:
+        result = _normalise_job_result(row.get("result"))
+        m = _extract_result_metrics(result)
+        status = str(row.get("status") or "").lower()
+        recent.append({
+            "timestamp": row.get("created_at") or row.get("completed_at"),
+            "filename": row.get("file_name") or result.get("filename") or "Untitled",
+            "status": row.get("status") or "unknown",
+            "success": status in {"completed", "done", "success"},
+            "error": row.get("error"),
+            "references_count": m["references_count"],
+            "citations_count": m["citations_count"],
+            "missing_citations_count": m["missing_citations_count"],
+            "uncited_references_count": m["uncited_references_count"],
+            "verification_rows": m["verification_rows"],
+            "acii_score": m["acii_score"],
+            "processing_time": row.get("processing_time") or m["processing_time"],
+        })
+    return recent
 
 
 @app.get("/private-stats")
@@ -4491,18 +6183,103 @@ def get_private_stats(
     days: int = 30
 ):
     authenticate(credentials)
-    days = max(1, min(int(days or 30), 365))
+    days = max(1, min(_dashboard_int(days, 30), 365))
 
-    try:
+    # Start with the existing legacy counters for backward compatibility.
+    stats = stats_tracker.get_stats(detailed=detailed, days=days)
+    job_rows = []
+
+    if DATABASE_URL:
+        try:
+            with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT job_id, status, file_name, result, error, processing_time,
+                               created_at, started_at, completed_at
+                        FROM jobs
+                        WHERE created_at >= NOW() - (%s::int * INTERVAL '1 day')
+                        ORDER BY created_at DESC
+                        LIMIT 5000
+                        """,
+                        (days,),
+                    )
+                    job_rows = list(cursor.fetchall() or [])
+        except Exception as e:
+            print(f"[PRIVATE_STATS] JSONB job metrics failed: {type(e).__name__}: {e}")
+            job_rows = []
+
+    if job_rows:
+        stats = _merge_total_stats_with_jsonb(stats, job_rows, days)
+        stats["daily_stats"] = _build_daily_stats_from_jobs(job_rows)
+        stats["recent_uploads"] = _build_recent_uploads_from_jobs(job_rows, limit=50)
+    else:
+        # Fallback to the older uploads/daily_stats tables when jobs.result is unavailable.
+        recent_uploads = []
+        daily_stats = {}
         if DATABASE_URL:
-            return _build_postgres_dashboard_stats(days=days)
-        return _build_sqlite_dashboard_stats(days=days)
-    except Exception as e:
-        print(f"[STATS] Dashboard stats error: {e}")
-        fallback = _empty_dashboard_payload(days, message=f"Stats endpoint error: {str(e)[:180]}")
-        fallback["system_info"]["error"] = str(e)
-        return fallback
+            try:
+                with psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor) as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            SELECT timestamp, filename, references_count, processing_time, success
+                            FROM uploads
+                            ORDER BY timestamp DESC
+                            LIMIT 50
+                            """
+                        )
+                        recent_uploads = list(cursor.fetchall() or [])
 
+                        cursor.execute(
+                            """
+                            SELECT date, uploads, processed, failed, references_count,
+                                   total_processing_time, processing_count
+                            FROM daily_stats
+                            WHERE date >= CURRENT_DATE - (%s::int * INTERVAL '1 day')
+                            ORDER BY date DESC
+                            """,
+                            (days,),
+                        )
+                        for row in cursor.fetchall() or []:
+                            date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
+                            daily_stats[date_str] = {
+                                "uploads": row['uploads'],
+                                "processed": row['processed'],
+                                "failed": row['failed'],
+                                "references": row['references_count'],
+                                "citations": 0,
+                                "missing_citations": 0,
+                                "uncited_references": 0,
+                                "verification_rows": 0,
+                                "total_processing_time": float(row['total_processing_time']) if row['total_processing_time'] else 0,
+                                "processing_count": row['processing_count'],
+                                "avg_processing_time": round(float(row['total_processing_time']) / row['processing_count'], 2) if row['processing_count'] > 0 else 0,
+                                "average_acii_score": None,
+                            }
+            except Exception as e:
+                print(f"[PRIVATE_STATS] legacy dashboard fallback failed: {type(e).__name__}: {e}")
+
+        stats.setdefault("total_stats", {})["persistent_storage"] = bool(DATABASE_URL)
+        stats["total_stats"]["storage_backend"] = "postgresql" if DATABASE_URL else "sqlite"
+        stats["total_stats"]["storage_message"] = "Persistent storage is active, but JSONB job metrics could not be loaded on this refresh."
+        stats["dashboard_metrics"] = {"verified": 0, "likely": 0, "needs_review": 0, "not_found": 0, "offline": 0, "claim_rows": 0}
+        stats["recent_uploads"] = recent_uploads
+        stats["daily_stats"] = daily_stats
+
+    stats["system_info"] = {
+        "current_time": datetime.now().isoformat(),
+        "active_jobs": len([j for j in _store.values() if j.get("verification", {}).get("state") == "running"]),
+        "total_jobs": len(_store),
+        "queue_status": get_queue_status(),
+        "server_busy": is_server_busy(),
+    }
+
+    return stats
+
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page(request: Request):
+    return templates.TemplateResponse("stats.html", {"request": request})
 @app.get("/private-stats/count")
 def get_simple_count(credentials: HTTPBasicCredentials = Depends(security)):
     authenticate(credentials)
