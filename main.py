@@ -831,6 +831,7 @@ async def security_middleware(request: Request, call_next):
         "/features",
         "/pricing",
         "/contact",
+        "/api/contact",
         "/about",
         "/private-stats"
     ]
