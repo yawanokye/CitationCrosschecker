@@ -32,6 +32,7 @@ import hashlib
 import html
 import io
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -827,6 +828,58 @@ def _summary_counts(result: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+
+def _manual_reference_key_for_certificate(text: Any) -> str:
+    text = _safe_str(text).lower()
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:260]
+
+
+def _manual_verification_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+    manual = _dict(result.get("manual_verification"))
+    decisions = _list(manual.get("decisions"))
+    evidence = _list(manual.get("evidence"))
+
+    def ev_key(ev: Dict[str, Any]) -> str:
+        return _safe_str(ev.get("manual_reference_key")) or _manual_reference_key_for_certificate(ev.get("reference"))
+
+    out = {
+        "manual_verified_with_evidence": 0,
+        "manual_verified_without_evidence": 0,
+        "manual_evidence_links_recorded": len(evidence),
+        "google_scholar_evidence_links_recorded": 0,
+        "manual_evidence_records": evidence,
+    }
+
+    for ev in evidence:
+        source = _norm(ev.get("evidence_source") or ev.get("source"))
+        url = _norm(ev.get("evidence_url") or ev.get("url"))
+        if "google scholar" in source or "scholar.google" in url:
+            out["google_scholar_evidence_links_recorded"] += 1
+
+    for d in decisions:
+        if _norm(d.get("decision")) != "manual_verified":
+            continue
+        key = _safe_str(d.get("manual_reference_key")) or _manual_reference_key_for_certificate(d.get("reference"))
+        attached = _list(d.get("evidence_records"))
+        matched = attached or [ev for ev in evidence if key and ev_key(ev) and (key == ev_key(ev) or key in ev_key(ev) or ev_key(ev) in key)]
+        if matched:
+            out["manual_verified_with_evidence"] += 1
+        else:
+            out["manual_verified_without_evidence"] += 1
+
+    # Prefer backend summary if it was already computed.
+    ms = _dict(result.get("manual_verification_summary"))
+    if ms:
+        out["manual_verified_with_evidence"] = _safe_int(ms.get("manual_verified_with_evidence"), out["manual_verified_with_evidence"])
+        out["manual_verified_without_evidence"] = _safe_int(ms.get("manual_verified_without_evidence"), out["manual_verified_without_evidence"])
+        out["manual_evidence_links_recorded"] = _safe_int(ms.get("manual_evidence_links_recorded"), out["manual_evidence_links_recorded"])
+        out["google_scholar_evidence_links_recorded"] = _safe_int(ms.get("google_scholar_evidence_links_recorded"), out["google_scholar_evidence_links_recorded"])
+
+    return out
+
+
 def _verification_counts(result: Dict[str, Any]) -> Dict[str, int]:
     ov = _dict(result.get("online_verification"))
     rows = _list(ov.get("rows"))
@@ -841,6 +894,10 @@ def _verification_counts(result: Dict[str, Any]) -> Dict[str, int]:
         "manual_not_verified_references": 0,
         "not_indexed_but_plausible_references": 0,
         "manual_keep_needs_review": 0,
+        "user_attested_manual_verification_with_evidence": 0,
+        "user_attested_manual_verification_without_evidence": 0,
+        "manual_evidence_links_recorded": 0,
+        "google_scholar_evidence_links_recorded": 0,
         "total_verification_rows": len(rows),
     }
 
@@ -894,6 +951,12 @@ def _verification_counts(result: Dict[str, Any]) -> Dict[str, int]:
             ms.get("unique_manual_decisions") or ms.get("total_manual_decisions")
         )
         out["total_manual_clicks"] = _safe_int(ms.get("total_manual_clicks"))
+
+    manual_payload = _manual_verification_payload(result)
+    out["user_attested_manual_verification_with_evidence"] = manual_payload.get("manual_verified_with_evidence", 0)
+    out["user_attested_manual_verification_without_evidence"] = manual_payload.get("manual_verified_without_evidence", 0)
+    out["manual_evidence_links_recorded"] = manual_payload.get("manual_evidence_links_recorded", 0)
+    out["google_scholar_evidence_links_recorded"] = manual_payload.get("google_scholar_evidence_links_recorded", 0)
 
     return out
 
@@ -1145,6 +1208,12 @@ def build_citation_integrity_certificate(
             "This certificate summarises automated and user-recorded manual citation integrity review in CiteIntegrity. "
             "It does not replace academic supervision, institutional examination, journal peer review, plagiarism screening, or independent source verification."
         ),
+        "manual_verification_integrity_note": (
+            "Manual verification entries are user-attested decisions. They show that a user reviewed or supplied evidence for a reference. "
+            "They do not constitute independent verification by CiteIntegrity unless the reference is also system-verified or institutionally verified. "
+            "Google Scholar evidence links may record a search-results page and should be reviewed with the underlying publisher, DOI, repository, or source page where available."
+        ),
+        "manual_evidence_records": _manual_verification_payload(result).get("manual_evidence_records", []),
     }
 
     return certificate
@@ -1168,8 +1237,11 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
         ("Total references", c.get("total_references", s.get("total_references", 0))),
         ("ACII score", c.get("acii_score", "Not available")),
         ("Clearance status", c.get("clearance_status", "")),
-        ("Automatically verified references", s.get("automatically_verified_references", 0)),
-        ("Manually verified references", s.get("manually_verified_references", 0)),
+        ("System-verified references", s.get("automatically_verified_references", 0)),
+        ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
+        ("User-attested manual verification without evidence", s.get("user_attested_manual_verification_without_evidence", 0)),
+        ("Manual evidence links recorded", s.get("manual_evidence_links_recorded", 0)),
+        ("Google Scholar evidence/search links recorded", s.get("google_scholar_evidence_links_recorded", 0)),
         ("Not indexed but plausible references", s.get("not_indexed_but_plausible_references", 0)),
         ("References still needing review", s.get("references_still_needing_review", 0)),
         ("Not found references", s.get("not_found_references", 0)),
@@ -1180,6 +1252,21 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
     ]
 
     metrics_html = "".join(row(k, v) for k, v in metrics)
+    manual_evidence = c.get("manual_evidence_records") or []
+    manual_evidence_html = ""
+    if manual_evidence:
+        evidence_rows = "".join(
+            f"<tr><td>{i+1}</td><td>{_html(ev.get('reference', ''))}</td><td>{_html(ev.get('evidence_source') or ev.get('source') or '')}</td><td>{_html(ev.get('evidence_type') or ev.get('type') or '')}</td><td>{_html(ev.get('evidence_url') or ev.get('url') or '')}</td></tr>"
+            for i, ev in enumerate(manual_evidence[:20])
+            if isinstance(ev, dict)
+        )
+        manual_evidence_html = f"""
+    <h3>Manual Evidence Recorded</h3>
+    <table>
+        <tr><th>#</th><th>Reference</th><th>Evidence source</th><th>Type</th><th>Evidence URL</th></tr>
+        {evidence_rows}
+    </table>
+        """
 
     return f"""<!DOCTYPE html>
 <html>
@@ -1258,9 +1345,12 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
         {metrics_html}
     </table>
 
+    {manual_evidence_html}
+
     <h3>Required Corrections</h3>
     <ol>{requirements_html}</ol>
 
+    <div class="note"><strong>Manual verification integrity note:</strong> {_html(c.get("manual_verification_integrity_note", ""))}</div>
     <div class="note"><strong>Coverage note:</strong> {_html(c.get("coverage_note", ""))}</div>
     <div class="note"><strong>Validity note:</strong> {_html(c.get("validity_note", ""))}</div>
 </div>
@@ -1457,8 +1547,11 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         ("Total references", c.get("total_references", s.get("total_references", 0))),
         ("ACII score", c.get("acii_score", "Not available")),
         ("Clearance status", c.get("clearance_status", "")),
-        ("Automatically verified references", s.get("automatically_verified_references", 0)),
-        ("Manually verified references", s.get("manually_verified_references", 0)),
+        ("System-verified references", s.get("automatically_verified_references", 0)),
+        ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
+        ("User-attested manual verification without evidence", s.get("user_attested_manual_verification_without_evidence", 0)),
+        ("Manual evidence links recorded", s.get("manual_evidence_links_recorded", 0)),
+        ("Google Scholar evidence/search links recorded", s.get("google_scholar_evidence_links_recorded", 0)),
         ("Not indexed but plausible references", s.get("not_indexed_but_plausible_references", 0)),
         ("References still needing review", s.get("references_still_needing_review", 0)),
         ("Not found references", s.get("not_found_references", 0)),
@@ -1485,10 +1578,41 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
     story.append(metric_table)
     story.append(Spacer(1, 8))
 
+    manual_evidence = c.get("manual_evidence_records") or []
+    if manual_evidence:
+        story.append(Paragraph("Manual Evidence Recorded", h3))
+        evidence_data = [[p("#"), p("Reference"), p("Evidence source"), p("Type"), p("Evidence URL")]]
+        for i, ev in enumerate(manual_evidence[:20]):
+            if not isinstance(ev, dict):
+                continue
+            evidence_data.append([
+                p(str(i + 1)),
+                p(_html(ev.get("reference", "")), small),
+                p(_html(ev.get("evidence_source") or ev.get("source") or ""), small),
+                p(_html(ev.get("evidence_type") or ev.get("type") or ""), small),
+                p(_html(ev.get("evidence_url") or ev.get("url") or ""), small),
+            ])
+        evidence_table = Table(evidence_data, colWidths=[0.35 * inch, 2.1 * inch, 1.25 * inch, 0.85 * inch, 2.35 * inch], hAlign="CENTER", repeatRows=1)
+        evidence_table.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#e2e8f0")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8fafc")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(evidence_table)
+        story.append(Spacer(1, 8))
+
     story.append(Paragraph("Required Corrections", h3))
     list_items = [ListItem(p(item), leftIndent=12) for item in (reqs or [])]
     story.append(ListFlowable(list_items, bulletType="1", leftIndent=18, bulletFontName="Helvetica"))
     story.append(Spacer(1, 8))
+    story.append(Paragraph(f"<b>Manual verification integrity note:</b> {_html(c.get('manual_verification_integrity_note', ''))}", small))
+    story.append(Spacer(1, 4))
     story.append(Paragraph(f"<b>Coverage note:</b> {_html(c.get('coverage_note', ''))}", small))
     story.append(Spacer(1, 4))
     story.append(Paragraph(f"<b>Validity note:</b> {_html(c.get('validity_note', ''))}", small))
