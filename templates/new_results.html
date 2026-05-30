@@ -904,6 +904,46 @@
         }
 
 
+
+        .citation-needed-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 7px;
+        }
+
+        .citation-needed-actions a {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #bfdbfe;
+            background: #ffffff;
+            color: #1d4ed8;
+            border-radius: 999px;
+            padding: 6px 9px;
+            font-size: 11px;
+            font-weight: 850;
+        }
+
+        .citation-needed-actions a:hover {
+            background: #eff6ff;
+        }
+
+        .badge.high {
+            background: var(--red-soft);
+            color: #b91c1c;
+        }
+
+        .badge.medium {
+            background: var(--amber-soft);
+            color: #b45309;
+        }
+
+        .badge.low {
+            background: var(--green-soft);
+            color: var(--green-dark);
+        }
+
+
         /* Manual verification inside Advanced Enrichment */
         .manual-verification-panel {
             margin-top: 18px;
@@ -1394,7 +1434,7 @@
                 <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span class="brand-name">CiteIntegrity</span>
-            <span class="brand-badge">Results Dashboard</span>
+            <span class="brand-badge">DEMO TRAINING RESULTS</span>
         </a>
 
         <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
@@ -1504,6 +1544,10 @@
                     <button class="tab-btn" data-tab="claimPane">
                         <span class="tab-title">Claim Support <span class="tab-help" title="Checks whether the cited source appears to support the claim around each citation." aria-label="Checks whether the cited source appears to support the claim around each citation.">?</span></span>
                         <span class="count-pill" id="countClaim">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="citationNeededPane">
+                        <span class="tab-title">Citation Needed <span class="tab-help" title="Potential factual, empirical, statistical or interpretive claims that may need a supporting citation." aria-label="Potential factual, empirical, statistical or interpretive claims that may need a supporting citation.">?</span></span>
+                        <span class="count-pill" id="countCitationNeeded">0</span>
                     </button>
                     <button class="tab-btn" data-tab="enrichmentPane">
                         <span class="tab-title">Advanced Enrichment <span class="tab-help" title="Deeper source suggestions for weak claim-support, citation-needed, and recovery cases." aria-label="Deeper source suggestions for weak claim-support, citation-needed, and recovery cases.">?</span></span>
@@ -1730,6 +1774,54 @@
                 </div>
             </div>
 
+            <div class="tab-pane" id="citationNeededPane">
+                <div class="card">
+                    <div class="section-title">
+                        <div>
+                            <h2>Citation Needed Claims</h2>
+                            <p>Potential factual, empirical, statistical or interpretive claims that may require citation support.</p>
+                        </div>
+                        <button class="btn btn-primary" id="btnStartCitationNeeded">Detect Citation-Needed Claims</button>
+                    </div>
+
+                    <div class="filters">
+                        <input class="search-input" id="citationNeededSearch" placeholder="Search citation-needed claims...">
+                        <select id="citationNeededPriority">
+                            <option value="">All priorities</option>
+                            <option value="high">High priority</option>
+                            <option value="medium">Medium priority</option>
+                            <option value="low">Low priority</option>
+                        </select>
+                        <select id="citationNeededSort">
+                            <option value="priority">Sort: priority first</option>
+                            <option value="claim_az">Sort: claim A-Z</option>
+                            <option value="claim_za">Sort: claim Z-A</option>
+                            <option value="source">Sort: detector/source</option>
+                        </select>
+                    </div>
+
+                    <div class="empty" id="citationNeededNote" style="margin-bottom:14px;">
+                        Use this section to identify claims that may need a supporting citation. The detector is conservative and intended for human review.
+                    </div>
+
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>No.</th>
+                                    <th>Priority</th>
+                                    <th>Claim needing citation</th>
+                                    <th>Why flagged</th>
+                                    <th>Recommended action</th>
+                                    <th>Search suggestions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="citationNeededBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
                         <div class="tab-pane" id="enrichmentPane">
                         <div class="card">
                             <div class="section-title">
@@ -1766,10 +1858,11 @@
                             <h2>Citation Integrity Certificate</h2>
                             <p>Formal summary of citation integrity review, manual verification, ACII score, timestamp, and required corrections.</p>
                         </div>
-                        <button class="btn btn-green" id="btnDownloadCertificate">Download Certificate</button>
+                        <button class="btn btn-green" id="btnDownloadCertificate">Generate Certificate</button>
                     </div>
+                    <div id="certificateRefreshNotice" class="empty" style="display:none; border-left:4px solid #f59e0b; background:#fffbeb; color:#92400e; margin-bottom:14px;"></div>
                     <div id="certificateContent">
-                        <div class="empty">Certificate preview is hidden for this demonstration.</div>
+                        <div class="empty">Certificate has not been generated yet. Click <strong>Generate Certificate</strong> after online and manual verification are complete.</div>
                     </div>
                 </div>
                 </div>
@@ -1811,7 +1904,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "demo-hide-payment-details-v1.5.43";
+    const RESULTS_UI_BUILD = "DEMO_RESULTS-citation-needed-tab-manual-sort-certificate-flow-v1.5.45";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -1824,6 +1917,7 @@ document.addEventListener("DOMContentLoaded", function () {
     };
 
     let latestResults = null;
+    let certificateGeneratedForCurrentState = false;
     let manualVerifyRows = [];
     let manualSearchCandidates = {};
     let pollingTimer = null;
@@ -2467,6 +2561,89 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     
 
+
+    function manualEvidenceCount(row) {
+        if (!row) return 0;
+        const direct = row.evidence_records || row.manual_evidence_records || row.manual_evidence || [];
+        if (Array.isArray(direct) && direct.length) return direct.length;
+        const key = normaliseManualReferenceKey(row);
+        const evidence = (latestResults?.manual_verification?.evidence || []);
+        return evidence.filter(ev => {
+            const evKey = ev.manual_reference_key || String(ev.reference || "")
+                .toLowerCase()
+                .replace(/https?:\/\/\S+/g, " ")
+                .replace(/[^a-z0-9]+/g, " ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 260);
+            return key && evKey && (key === evKey || key.includes(evKey) || evKey.includes(key));
+        }).length;
+    }
+
+    function filterAndSortManualRows(rows) {
+        const searchEl = $("manualVerifySearch");
+        const sortEl = $("manualVerifySort");
+        const statusEl = $("manualVerifyStatus");
+        const q = String(searchEl?.value || "").trim().toLowerCase();
+        const sort = String(sortEl?.value || "priority");
+        const statusFilter = String(statusEl?.value || "").toLowerCase();
+
+        let out = rows.map((row, index) => ({ row, index }));
+
+        if (q) {
+            out = out.filter(item => {
+                const row = item.row;
+                const hay = [
+                    manualQueryFromRow(row),
+                    manualRowStatus(row),
+                    row.manual_decision_label,
+                    row.manual_decision,
+                    row.matched_title,
+                    row.doi,
+                    row.source,
+                    row.matched_authors,
+                    row.authors,
+                ].join(" ").toLowerCase();
+                return hay.includes(q);
+            });
+        }
+
+        if (statusFilter) {
+            out = out.filter(item => {
+                const row = item.row;
+                const status = manualRowStatus(row);
+                const decision = String(row.manual_decision || "").toLowerCase();
+                if (statusFilter === "undecided") return !decision;
+                if (statusFilter === "with_evidence") return manualEvidenceCount(row) > 0;
+                if (statusFilter === "without_evidence") return decision === "manual_verified" && manualEvidenceCount(row) === 0;
+                return status === statusFilter || decision === statusFilter;
+            });
+        }
+
+        out.sort((a, b) => {
+            const ra = a.row;
+            const rb = b.row;
+            if (sort === "reference_az") return manualQueryFromRow(ra).localeCompare(manualQueryFromRow(rb));
+            if (sort === "reference_za") return manualQueryFromRow(rb).localeCompare(manualQueryFromRow(ra));
+            if (sort === "status") return manualRowStatus(ra).localeCompare(manualRowStatus(rb));
+            if (sort === "evidence_first") return manualEvidenceCount(rb) - manualEvidenceCount(ra) || manualStatusPriority(ra) - manualStatusPriority(rb);
+            if (sort === "no_evidence_first") return manualEvidenceCount(ra) - manualEvidenceCount(rb) || manualStatusPriority(ra) - manualStatusPriority(rb);
+            if (sort === "manual_verified_first") return String(rb.manual_decision === "manual_verified").localeCompare(String(ra.manual_decision === "manual_verified"));
+            if (sort === "unresolved_first") {
+                const da = ra.manual_decision ? 1 : 0;
+                const db = rb.manual_decision ? 1 : 0;
+                return da - db || manualStatusPriority(ra) - manualStatusPriority(rb);
+            }
+            return manualStatusPriority(ra) - manualStatusPriority(rb) || manualQueryFromRow(ra).localeCompare(manualQueryFromRow(rb));
+        });
+
+        return out;
+    }
+
+    function rerenderManualVerificationList() {
+        renderManualVerification(latestResults || {});
+    }
+
     function manualDecisionLabel(decision) {
         const clean = String(decision || "").toLowerCase();
         if (clean === "manual_verified") return "Verified";
@@ -2536,7 +2713,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!box) return;
     
         manualVerifyRows = getManualVerificationRows(data);
-        manualSearchCandidates = {};
+        manualSearchCandidates = manualSearchCandidates || {};
     
         if (!manualVerifyRows.length) {
             box.innerHTML = `
@@ -2547,31 +2724,38 @@ document.addEventListener("DOMContentLoaded", function () {
             `;
             return;
         }
+
+        const viewRows = filterAndSortManualRows(manualVerifyRows);
     
-        const cards = manualVerifyRows.map((row, i) => {
+        const cards = viewRows.map((item, viewIndex) => {
+            const row = item.row;
+            const i = item.index;
             const query = manualQueryFromRow(row);
             const status = manualRowStatus(row);
             const manualDecisionRaw = row.manual_decision || "";
             const manualDecision = row.manual_decision_label || manualDecisionLabel(manualDecisionRaw);
+            const evCount = manualEvidenceCount(row);
+            const evidenceBadge = evCount ? `<span class="badge verified">Evidence recorded: ${esc(evCount)}</span>` : `<span class="badge offline">No evidence recorded</span>`;
     
             return `
                 <div class="manual-card" data-manual-index="${i}" style="border:1px solid #dbeafe; border-left:4px solid #4f46e5; border-radius:20px; padding:18px; margin:14px 0; background:#f8fbff;">
                     <h3 style="font-size:16px; margin-bottom:8px;">
-                        ${i + 1}. ${esc(query || "Reference not available")}
+                        ${viewIndex + 1}. ${esc(query || "Reference not available")}
                     </h3>
     
-                    <div class="small-muted manual-status-line" style="margin-bottom:10px;">
-                        Automated status: ${formatBadge(status)}
-                        ${manualDecision ? `<span class="badge verified manual-decision-badge">${esc(manualDecision)}</span>` : ""}
+                    <div class="small-muted manual-status-line" style="margin-bottom:10px; display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                        <span>Automated status: ${formatBadge(status)}</span>
+                        ${manualDecision ? `<span class="badge verified manual-decision-badge">${esc(manualDecision)}</span>` : `<span class="badge needs_review">No manual decision</span>`}
+                        ${evidenceBadge}
                     </div>
     
-                    <div class="small-muted" style="margin-bottom:10px;">Manual search:</div>
+                    <div class="small-muted" style="margin-bottom:10px;">Manual search evidence links:</div>
     
                     <div class="filters" style="margin-bottom:12px;">
-                        <a class="btn btn-outline" href="${googleScholarUrl(query)}" target="_blank" rel="noopener">Search Google Scholar</a>
-                        <a class="btn btn-outline" href="${googleSearchUrl(query)}" target="_blank" rel="noopener">Search Google</a>
-                        <a class="btn btn-outline" href="${doiSearchUrl(row)}" target="_blank" rel="noopener">Search DOI</a>
-                        <a class="btn btn-outline" href="${titleSearchUrl(row)}" target="_blank" rel="noopener">Search title</a>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Google Scholar" data-type="search_result" href="${googleScholarUrl(query)}" target="_blank" rel="noopener">Search Google Scholar</a>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Google Search" data-type="search_result" href="${googleSearchUrl(query)}" target="_blank" rel="noopener">Search Google</a>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="DOI" data-type="source_lookup" href="${doiSearchUrl(row)}" target="_blank" rel="noopener">Search DOI</a>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Title search" data-type="source_lookup" href="${titleSearchUrl(row)}" target="_blank" rel="noopener">Search title</a>
                     </div>
     
                     <div class="filters" style="margin-bottom:12px;">
@@ -2605,11 +2789,41 @@ document.addEventListener("DOMContentLoaded", function () {
             <div style="margin-bottom:10px;">
                 <strong>Manual Verification</strong><br>
                 <span class="small-muted">
-                    These references were not confidently verified automatically. Use the search links, review the source, then record one manual decision.
+                    These references were not confidently verified automatically. Use the search links, review the source, then record one manual decision. Evidence links clicked here are recorded for the certificate.
                 </span>
             </div>
-            ${cards}
+            <div class="filters" style="margin-bottom:14px;">
+                <input class="search-input" id="manualVerifySearch" placeholder="Search manual verification rows..." value="${esc((document.getElementById('manualVerifySearch') || {}).value || '')}">
+                <select id="manualVerifyStatus">
+                    <option value="">All manual rows</option>
+                    <option value="undecided">No manual decision</option>
+                    <option value="manual_verified">Manually verified</option>
+                    <option value="with_evidence">With evidence recorded</option>
+                    <option value="without_evidence">Verified without evidence</option>
+                    <option value="not_found">Not found</option>
+                    <option value="needs_review">Needs review</option>
+                    <option value="offline">Offline</option>
+                </select>
+                <select id="manualVerifySort">
+                    <option value="priority">Sort: unresolved priority</option>
+                    <option value="unresolved_first">Sort: no decision first</option>
+                    <option value="evidence_first">Sort: evidence recorded first</option>
+                    <option value="no_evidence_first">Sort: no evidence first</option>
+                    <option value="status">Sort: automated status</option>
+                    <option value="reference_az">Sort: reference A-Z</option>
+                    <option value="reference_za">Sort: reference Z-A</option>
+                </select>
+            </div>
+            <div class="small-muted" style="margin-bottom:12px;">Showing <strong>${viewRows.length}</strong> of <strong>${manualVerifyRows.length}</strong> manual verification rows.</div>
+            ${cards || `<div class="empty">No manual verification rows match the selected filter.</div>`}
         `;
+
+        const searchEl = $("manualVerifySearch");
+        const statusEl = $("manualVerifyStatus");
+        const sortEl = $("manualVerifySort");
+        if (searchEl) searchEl.addEventListener("input", () => setTimeout(rerenderManualVerificationList, 120));
+        if (statusEl) statusEl.addEventListener("change", rerenderManualVerificationList);
+        if (sortEl) sortEl.addEventListener("change", rerenderManualVerificationList);
 
         manualVerifyRows.forEach((row, idx) => {
             const decision = row.manual_decision || "";
@@ -2722,7 +2936,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 throw new Error(js.detail || js.error || "Could not record manual decision.");
             }
     
-            setStatus(js.message || "Manual verification decision recorded.", "good");
+            setStatus(js.message || "Manual verification decision recorded. Generate an updated certificate to include it.", "good");
     
             if (js.result) {
                 latestResults = hydrateFinalDefaults(normalizeData(js.result));
@@ -2734,7 +2948,8 @@ document.addEventListener("DOMContentLoaded", function () {
                 // appear to drop/disappear after the decision is recorded.
                 // The current card has already been updated by applyManualDecisionUI().
                 renderVerification(latestResults);
-                renderCertificate(latestResults);
+                renderManualVerification(latestResults);
+                markCertificateNeedsGeneration("Manual verification has been saved. Generate an updated certificate so the PDF includes the latest user-attested manual verification evidence.");
                 updateCounts(latestResults);
             } else {
                 // Keep the visible card stable even if the backend response has no result.
@@ -2748,6 +2963,40 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
     
+
+
+    async function recordManualEvidence(index, evidenceSource, evidenceType, evidenceUrl) {
+        const row = manualVerifyRows[index];
+        if (!row || !evidenceUrl) return;
+        const reference = manualQueryFromRow(row);
+        if (!reference) return;
+
+        try {
+            const response = await fetch("/api/manual-verify/evidence", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                keepalive: true,
+                body: JSON.stringify({
+                    job_id: JOB_ID,
+                    reference,
+                    evidence_url: evidenceUrl,
+                    evidence_source: evidenceSource || "Manual search",
+                    evidence_type: evidenceType || "search_result",
+                    source: "results_manual_verification_panel"
+                })
+            });
+            const js = await response.json().catch(() => ({}));
+            if (response.ok && js.ok !== false) {
+                if (!latestResults.manual_verification) latestResults.manual_verification = {};
+                if (!Array.isArray(latestResults.manual_verification.evidence)) latestResults.manual_verification.evidence = [];
+                if (js.evidence) latestResults.manual_verification.evidence.push(js.evidence);
+                if (js.certificate_state) latestResults.certificate_state = js.certificate_state;
+                markCertificateNeedsGeneration("Manual evidence has been recorded. Generate an updated certificate after completing manual verification.");
+            }
+        } catch (error) {
+            console.warn("Manual evidence could not be recorded:", error);
+        }
+    }
 
     function scrollToManualVerification(index) {
         const section = $("manualVerificationBox");
@@ -2768,6 +3017,14 @@ document.addEventListener("DOMContentLoaded", function () {
         event.preventDefault();
         const index = Number(jump.dataset.manualIndex);
         scrollToManualVerification(Number.isInteger(index) ? index : -1);
+    });
+
+    document.addEventListener("click", function (event) {
+        const link = event.target.closest(".manual-evidence-link");
+        if (!link) return;
+        const index = Number(link.dataset.index);
+        if (!Number.isInteger(index)) return;
+        recordManualEvidence(index, link.dataset.source || "Manual search", link.dataset.type || "search_result", link.href);
     });
 
     document.addEventListener("click", function (event) {
@@ -2828,10 +3085,115 @@ document.addEventListener("DOMContentLoaded", function () {
     
     
 
-    async function renderCertificate(data) {
+    function certificateNeedsGeneration(data) {
+        data = data || {};
+        const state = data.certificate_state || {};
+        if (state.requires_regeneration || state.manual_verification_updated_after_certificate) return true;
+        return !data.citation_integrity_certificate;
+    }
+
+    function markCertificateNeedsGeneration(message) {
+        if (!latestResults) latestResults = {};
+        latestResults.certificate_state = {
+            ...(latestResults.certificate_state || {}),
+            requires_regeneration: true,
+            manual_verification_updated_after_certificate: true,
+            last_manual_verification_at: new Date().toISOString(),
+            reason: message || "The evidentiary record changed. Generate an updated certificate."
+        };
+        certificateGeneratedForCurrentState = false;
+        renderCertificate(latestResults);
+        setCount("countCertificate", "Generate");
+    }
+
+    function renderCertificatePreview(c) {
+        const s = c.summary || {};
+        const r = c.risk_counts || {};
+        const logo = c.logo_svg || "";
+        const manualEvidenceRows = c.manual_evidence_records || c.manual_verification_evidence || [];
+        const evidencePreview = manualEvidenceRows.length ? `
+            <div class="table-wrap" style="margin-top:16px;">
+                <table>
+                    <thead><tr><th>No.</th><th>Reference</th><th>Evidence source</th><th>Type</th><th>Evidence URL</th></tr></thead>
+                    <tbody>
+                        ${manualEvidenceRows.slice(0, 8).map((ev, i) => `
+                            <tr>
+                                <td>${i + 1}</td>
+                                <td>${esc(ev.reference || "")}</td>
+                                <td>${esc(ev.evidence_source || ev.source || "")}</td>
+                                <td>${esc(ev.evidence_type || ev.type || "")}</td>
+                                <td>${ev.evidence_url ? `<a class="doi-link" href="${esc(ev.evidence_url)}" target="_blank" rel="noopener">Open evidence</a>` : ""}</td>
+                            </tr>`).join("")}
+                    </tbody>
+                </table>
+            </div>` : "";
+
+        return `
+            <div class="paywall-card">
+                <div class="paywall-head">
+                    <div>
+                        <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+                            <span style="width:70px; height:44px; display:inline-flex;">${logo}</span>
+                            <div>
+                                <h2 class="paywall-title" style="margin:0;">CiteIntegrity</h2>
+                                <div class="small-muted">Demo Citation Integrity Certificate</div>
+                            </div>
+                        </div>
+                        <p class="paywall-subtitle">
+                            Document reviewed: <strong>${esc(c.document_title || "Not available")}</strong><br>
+                            Certificate ID: <strong>${esc(c.certificate_id)}</strong><br>
+                            Generated: <strong>${esc(c.generated_at_display || c.generated_at || "")}</strong><br>
+                            ACII Score: <strong>${esc(c.acii_score ?? "Not available")}</strong>
+                            (${esc(c.acii_rating || "")})<br>
+                            Clearance Status: <strong>${esc(c.clearance_status || "")}</strong>
+                        </p>
+                    </div>
+                    <span class="paywall-badge unlocked">✅ Generated</span>
+                </div>
+
+                <div class="paywall-grid">
+                    <div class="paywall-mini"><strong>System-verified references</strong><br>${esc(s.automatically_verified_references || s.system_verified_references || 0)}</div>
+                    <div class="paywall-mini"><strong>Manual verified with evidence</strong><br>${esc(s.user_attested_manual_verification_with_evidence || s.manual_verified_with_evidence || 0)}</div>
+                    <div class="paywall-mini"><strong>Evidence links recorded</strong><br>${esc(s.manual_evidence_links_recorded || 0)}</div>
+                </div>
+
+                <div class="table-wrap" style="margin-top:16px;">
+                    <table>
+                        <thead><tr><th>Certificate metric</th><th>Value</th></tr></thead>
+                        <tbody>
+                            <tr><td>Total in-text citations</td><td>${esc(c.total_in_text_citations ?? s.total_in_text_citations ?? 0)}</td></tr>
+                            <tr><td>Total references</td><td>${esc(c.total_references ?? s.total_references ?? 0)}</td></tr>
+                            <tr><td>ACII score</td><td>${esc(c.acii_score ?? "Not available")}</td></tr>
+                            <tr><td>Clearance status</td><td>${esc(c.clearance_status || "")}</td></tr>
+                            <tr><td>System-verified references</td><td>${esc(s.automatically_verified_references || 0)}</td></tr>
+                            <tr><td>User-attested manual verification with evidence</td><td>${esc(s.user_attested_manual_verification_with_evidence || s.manual_verified_with_evidence || 0)}</td></tr>
+                            <tr><td>User-attested manual verification without evidence</td><td>${esc(s.user_attested_manual_verification_without_evidence || s.manual_verified_without_evidence || 0)}</td></tr>
+                            <tr><td>Manual evidence links recorded</td><td>${esc(s.manual_evidence_links_recorded || 0)}</td></tr>
+                            <tr><td>Google Scholar evidence/search links recorded</td><td>${esc(s.google_scholar_evidence_links_recorded || 0)}</td></tr>
+                            <tr><td>Not indexed but plausible references</td><td>${esc(s.not_indexed_but_plausible_references || 0)}</td></tr>
+                            <tr><td>References still needing review</td><td>${esc(s.references_still_needing_review || 0)}</td></tr>
+                            <tr><td>Not found references</td><td>${esc(s.not_found_references || 0)}</td></tr>
+                            <tr><td>Missing references</td><td>${esc(s.missing_references || 0)}</td></tr>
+                            <tr><td>Uncited references</td><td>${esc(s.uncited_references || 0)}</td></tr>
+                            <tr><td>Claim-support issues</td><td>${esc(s.claim_support_issues || 0)}</td></tr>
+                            <tr><td>Citation-needed claims</td><td>${esc(s.citation_needed_claims || 0)}</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                ${evidencePreview}
+
+                <div class="small-muted" style="margin-top:14px;">
+                    <strong>Manual verification integrity note:</strong> ${esc(c.manual_verification_integrity_note || "Manual verification entries are user-attested decisions. They do not constitute independent verification by CiteIntegrity unless also system-verified or institutionally verified.")}
+                </div>
+            </div>
+        `;
+    }
+
+    function renderCertificate(data) {
         const box = $("certificateContent");
         const btn = $("btnDownloadCertificate");
-
+        const notice = $("certificateRefreshNotice");
         if (!box) return;
 
         if (!hasPaidAccess(data)) {
@@ -2845,96 +3207,61 @@ document.addEventListener("DOMContentLoaded", function () {
         }
 
         if (btn) btn.disabled = false;
+        const needsGeneration = certificateNeedsGeneration(data);
+        const cert = data?.citation_integrity_certificate;
+        const state = data?.certificate_state || {};
 
-        try {
-            const js = await fetchJsonNoCache(`/api/certificate/${encodeURIComponent(JOB_ID)}`);
-
-            if (!js.ok || !js.certificate) {
-                throw new Error(js.error || "Certificate could not be generated.");
+        if (notice) {
+            if (state.requires_regeneration) {
+                notice.style.display = "block";
+                notice.innerHTML = `<strong>Certificate update required.</strong><br>${esc(state.reason || "Manual verification or manual evidence changed. Generate an updated certificate before downloading.")}`;
+            } else {
+                notice.style.display = "none";
+                notice.innerHTML = "";
             }
+        }
 
-            const c = js.certificate;
-            const s = c.summary || {};
-            const r = c.risk_counts || {};
-            const logo = c.logo_svg || "";
-
+        if (needsGeneration) {
+            certificateGeneratedForCurrentState = false;
+            if (btn) btn.textContent = state.requires_regeneration ? "Generate Updated Certificate" : "Generate Certificate";
+            setCount("countCertificate", state.requires_regeneration ? "Update" : "Generate");
             box.innerHTML = `
-                <div class="paywall-card">
-                    <div class="paywall-head">
-                        <div>
-                            <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
-                                <span style="width:70px; height:44px; display:inline-flex;">${logo}</span>
-                                <div>
-                                    <h2 class="paywall-title" style="margin:0;">CiteIntegrity</h2>
-                                    <div class="small-muted">Citation Integrity Certificate</div>
-                                </div>
-                            </div>
-                            <p class="paywall-subtitle">
-                                Certificate ID: <strong>${esc(c.certificate_id)}</strong><br>
-                                Timestamp: <strong>${esc(c.generated_at_display || c.generated_at || "")}</strong><br>
-                                ACII Score: <strong>${esc(c.acii_score ?? "Not available")}</strong>
-                                (${esc(c.acii_rating || "")})<br>
-                                Clearance Status: <strong>${esc(c.clearance_status || "")}</strong>
-                            </p>
-                        </div>
-                        <span class="paywall-badge unlocked">✅ Generated</span>
-                    </div>
-
-                    <div class="paywall-grid">
-                        <div class="paywall-mini"><strong>Total in-text citations</strong><br>${esc(c.total_in_text_citations ?? s.total_in_text_citations ?? 0)}</div>
-                        <div class="paywall-mini"><strong>Total references</strong><br>${esc(c.total_references ?? s.total_references ?? 0)}</div>
-                        <div class="paywall-mini"><strong>Clearance status</strong><br>${esc(c.clearance_status || "")}</div>
-                    </div>
-
-                    <div class="paywall-grid" style="margin-top:12px;">
-                        <div class="paywall-mini"><strong>Critical risks</strong><br>${esc(r.critical || 0)}</div>
-                        <div class="paywall-mini"><strong>Moderate risks</strong><br>${esc(r.moderate || 0)}</div>
-                        <div class="paywall-mini"><strong>Minor risks</strong><br>${esc(r.minor || 0)}</div>
-                    </div>
-
-                    <div class="table-wrap" style="margin-top:16px;">
-                        <table>
-                            <thead><tr><th>Required certificate item</th><th>Value</th></tr></thead>
-                            <tbody>
-                                <tr><td>Total in-text citations</td><td>${esc(c.total_in_text_citations ?? s.total_in_text_citations ?? 0)}</td></tr>
-                                <tr><td>Total references</td><td>${esc(c.total_references ?? s.total_references ?? 0)}</td></tr>
-                                <tr><td>ACII score</td><td>${esc(c.acii_score ?? "Not available")}</td></tr>
-                                <tr><td>Clearance status</td><td>${esc(c.clearance_status || "")}</td></tr>
-                                <tr><td>Automatically verified references</td><td>${esc(s.automatically_verified_references || 0)}</td></tr>
-                                <tr><td>Manually verified references</td><td>${esc(s.manually_verified_references || 0)}</td></tr>
-                                <tr><td>Not indexed but plausible references</td><td>${esc(s.not_indexed_but_plausible_references || 0)}</td></tr>
-                                <tr><td>References still needing review</td><td>${esc(s.references_still_needing_review || 0)}</td></tr>
-                                <tr><td>Not found references</td><td>${esc(s.not_found_references || 0)}</td></tr>
-                                <tr><td>Missing references</td><td>${esc(s.missing_references || 0)}</td></tr>
-                                <tr><td>Uncited references</td><td>${esc(s.uncited_references || 0)}</td></tr>
-                                <tr><td>Claim-support issues</td><td>${esc(s.claim_support_issues || 0)}</td></tr>
-                                <tr><td>Citation-needed claims</td><td>${esc(s.citation_needed_claims || 0)}</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <div style="margin-top:16px;">
-                        <h3>Required corrections</h3>
-                        <ol>
-                            ${(c.clearance_requirements || []).map(x => `<li>${esc(x)}</li>`).join("")}
-                        </ol>
-                    </div>
-
-                    <div class="small-muted" style="margin-top:14px;">
-                        <strong>Coverage note:</strong> ${esc(c.coverage_note || "")}
-                    </div>
-                    <div class="small-muted" style="margin-top:8px;">
-                        <strong>Validity note:</strong> ${esc(c.validity_note || "")}
-                    </div>
+                <div class="empty">
+                    <strong>${state.requires_regeneration ? "The certificate must be updated." : "Certificate has not been generated yet."}</strong><br>
+                    ${state.requires_regeneration ? "Manual verification evidence or decisions have changed. Click <strong>Generate Updated Certificate</strong> to rebuild the certificate with the latest user-attested evidence." : "Click <strong>Generate Certificate</strong> after online/manual verification. The certificate preview and download option will appear after generation."}
                 </div>
             `;
+            return;
+        }
 
-            setCount("countCertificate", "Ready");
+        certificateGeneratedForCurrentState = true;
+        if (btn) btn.textContent = "Download Generated Certificate";
+        setCount("countCertificate", "Ready");
+        box.innerHTML = renderCertificatePreview(cert);
+    }
 
+    async function generateCertificate() {
+        const btn = $("btnDownloadCertificate");
+        const box = $("certificateContent");
+        if (btn) btn.disabled = true;
+        if (box) box.innerHTML = `<div class="empty">Generating certificate from the latest online and manual verification evidence...</div>`;
+        setStatus("Generating certificate...", "info");
+        try {
+            const js = await fetchJsonNoCache(`/api/certificate/${encodeURIComponent(JOB_ID)}?fresh=${Date.now()}`);
+            if (!js.ok || !js.certificate) throw new Error(js.error || "Certificate could not be generated.");
+            if (!latestResults) latestResults = {};
+            latestResults.citation_integrity_certificate = js.certificate;
+            latestResults.certificate_state = js.certificate_state || {requires_regeneration: false};
+            certificateGeneratedForCurrentState = true;
+            renderCertificate(latestResults);
+            setStatus("Certificate generated. You can now download the generated certificate.", "good");
         } catch (error) {
             console.error(error);
-            box.innerHTML = `<div class="empty">Certificate could not be generated: ${esc(error.message)}</div>`;
+            if (box) box.innerHTML = `<div class="empty">Certificate could not be generated: ${esc(error.message)}</div>`;
+            setStatus("Certificate generation failed: " + error.message, "bad");
             setCount("countCertificate", "Error");
+        } finally {
+            if (btn) btn.disabled = false;
         }
     }
 
@@ -2956,6 +3283,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderVerification(data);
         renderRecovery(data);
         renderClaimSupport(data);
+        renderCitationNeeded(data);
         renderSuggestions(data);
         renderManualVerification(data);
         renderCertificate(data);
@@ -3265,6 +3593,255 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+
+    function getCitationNeededRows(data) {
+        data = data || {};
+        if (isLockedPayload(data.citation_needed_claims)) return data.citation_needed_claims;
+
+        const rows =
+            data.citation_needed_claims ||
+            data.citation_needed ||
+            data.claims_needing_citation ||
+            [];
+
+        return Array.isArray(rows) ? rows : [];
+    }
+
+    function citationNeededPriority(row) {
+        return String(row?.priority || row?.risk || row?.severity || "medium").toLowerCase();
+    }
+
+    function citationNeededClaimText(row) {
+        return String(
+            row?.claim ||
+            row?.text ||
+            row?.sentence ||
+            row?.statement ||
+            row?.context ||
+            ""
+        );
+    }
+
+    function citationNeededReason(row) {
+        return String(
+            row?.reason ||
+            row?.why_flagged ||
+            row?.explanation ||
+            "Potential claim appears to need citation support."
+        );
+    }
+
+    function citationNeededRecommendation(row) {
+        return String(
+            row?.recommendation ||
+            row?.suggestion ||
+            row?.recommended_action ||
+            "Add a supporting citation or revise the wording if the claim is interpretive."
+        );
+    }
+
+    function citationNeededSource(row) {
+        return String(row?.source || row?.detector || "citation_needed_detector");
+    }
+
+    function citationNeededPriorityRank(priority) {
+        const p = String(priority || "").toLowerCase();
+        if (p === "high" || p === "critical") return 1;
+        if (p === "medium" || p === "moderate") return 2;
+        if (p === "low" || p === "minor") return 3;
+        return 2;
+    }
+
+    function filterAndSortCitationNeededRows(rows) {
+        const q = String($("citationNeededSearch")?.value || "").trim().toLowerCase();
+        const priority = String($("citationNeededPriority")?.value || "").trim().toLowerCase();
+        const sort = String($("citationNeededSort")?.value || "priority");
+
+        let out = (rows || []).map((row, index) => ({ row, index }));
+
+        if (q) {
+            out = out.filter(item => {
+                const row = item.row;
+                const hay = [
+                    citationNeededClaimText(row),
+                    citationNeededReason(row),
+                    citationNeededRecommendation(row),
+                    citationNeededSource(row),
+                    citationNeededPriority(row)
+                ].join(" ").toLowerCase();
+                return hay.includes(q);
+            });
+        }
+
+        if (priority) {
+            out = out.filter(item => citationNeededPriority(item.row) === priority);
+        }
+
+        out.sort((a, b) => {
+            const ca = citationNeededClaimText(a.row);
+            const cb = citationNeededClaimText(b.row);
+            if (sort === "claim_az") return ca.localeCompare(cb);
+            if (sort === "claim_za") return cb.localeCompare(ca);
+            if (sort === "source") return citationNeededSource(a.row).localeCompare(citationNeededSource(b.row)) || ca.localeCompare(cb);
+            return citationNeededPriorityRank(citationNeededPriority(a.row)) - citationNeededPriorityRank(citationNeededPriority(b.row)) || ca.localeCompare(cb);
+        });
+
+        return out;
+    }
+
+    function citationNeededSearchLinks(claim) {
+        const q = String(claim || "").replace(/\s+/g, " ").trim();
+        const shortQ = q.length > 180 ? q.slice(0, 180) : q;
+        const scholar = "https://scholar.google.com/scholar?q=" + encodeURIComponent(shortQ);
+        const google = "https://www.google.com/search?q=" + encodeURIComponent(shortQ);
+        const crossref = "https://search.crossref.org/?q=" + encodeURIComponent(shortQ);
+
+        return `
+            <div class="citation-needed-actions">
+                <a href="${scholar}" target="_blank" rel="noopener">Google Scholar</a>
+                <a href="${google}" target="_blank" rel="noopener">Google</a>
+                <a href="${crossref}" target="_blank" rel="noopener">Crossref</a>
+            </div>
+        `;
+    }
+
+    function renderCitationNeeded(data) {
+        const body = $("citationNeededBody");
+        const note = $("citationNeededNote");
+        if (!body) return;
+
+        const rawRows = getCitationNeededRows(data);
+
+        if (isLockedPayload(rawRows)) {
+            body.innerHTML = lockRow(6, rawRows.feature || "Citation Needed", rawRows.message || "Citation-needed claims require Full Review access.");
+            return;
+        }
+
+        const rows = Array.isArray(rawRows) ? rawRows : [];
+
+        if (!rows.length) {
+            body.innerHTML = `
+                <tr>
+                    <td colspan="6">
+                        <div class="empty">
+                            <strong>No citation-needed claims are currently recorded.</strong><br>
+                            Click <strong>Detect Citation-Needed Claims</strong> to scan for factual, statistical or empirical statements that may need citation support.
+                        </div>
+                    </td>
+                </tr>
+            `;
+            if (note) {
+                note.innerHTML = "No citation-needed rows are currently saved for this job.";
+            }
+            return;
+        }
+
+        const viewRows = filterAndSortCitationNeededRows(rows);
+        if (note) {
+            const high = rows.filter(r => citationNeededPriority(r) === "high").length;
+            const medium = rows.filter(r => citationNeededPriority(r) === "medium").length;
+            const low = rows.filter(r => citationNeededPriority(r) === "low").length;
+            note.innerHTML = `
+                Showing <strong>${viewRows.length}</strong> of <strong>${rows.length}</strong> citation-needed claim(s).
+                High: <strong>${high}</strong>, Medium: <strong>${medium}</strong>, Low: <strong>${low}</strong>.
+            `;
+        }
+
+        if (!viewRows.length) {
+            body.innerHTML = `<tr><td colspan="6"><div class="empty">No citation-needed claims match the selected filter.</div></td></tr>`;
+            return;
+        }
+
+        body.innerHTML = viewRows.slice(0, CONFIG.MAX_CLAIM_DISPLAY).map((item, i) => {
+            const row = item.row;
+            const claim = citationNeededClaimText(row);
+            const priority = citationNeededPriority(row);
+            const reason = citationNeededReason(row);
+            const recommendation = citationNeededRecommendation(row);
+            const source = citationNeededSource(row);
+            return `
+                <tr data-priority="${esc(priority)}">
+                    <td>${i + 1}</td>
+                    <td>${formatBadge(priority)}</td>
+                    <td>
+                        ${esc(claim)}
+                        <div class="small-muted" style="margin-top:6px;">Detector/source: ${esc(source)}</div>
+                    </td>
+                    <td>${esc(reason)}</td>
+                    <td>${esc(recommendation)}</td>
+                    <td>${citationNeededSearchLinks(claim)}</td>
+                </tr>
+            `;
+        }).join("");
+
+        if (viewRows.length > CONFIG.MAX_CLAIM_DISPLAY) {
+            body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${viewRows.length} citation-needed rows.</div></td></tr>`;
+        }
+
+        const searchEl = $("citationNeededSearch");
+        const priorityEl = $("citationNeededPriority");
+        const sortEl = $("citationNeededSort");
+
+        if (searchEl && !searchEl.dataset.bound) {
+            searchEl.dataset.bound = "1";
+            searchEl.addEventListener("input", () => setTimeout(() => renderCitationNeeded(latestResults || {}), 120));
+        }
+        if (priorityEl && !priorityEl.dataset.bound) {
+            priorityEl.dataset.bound = "1";
+            priorityEl.addEventListener("change", () => renderCitationNeeded(latestResults || {}));
+        }
+        if (sortEl && !sortEl.dataset.bound) {
+            sortEl.dataset.bound = "1";
+            sortEl.addEventListener("change", () => renderCitationNeeded(latestResults || {}));
+        }
+    }
+
+    async function startCitationNeededClaims() {
+        if (!JOB_ID) {
+            setStatus("No job ID found.", "bad");
+            return;
+        }
+
+        const btn = $("btnStartCitationNeeded");
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = "Detecting citation-needed claims...";
+        }
+
+        try {
+            const response = await fetch(`/api/citation-needed/start/${encodeURIComponent(JOB_ID)}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"}
+            });
+
+            const js = await response.json().catch(() => ({}));
+            if (!response.ok || js.ok === false) {
+                throw new Error(js.error || js.detail || `HTTP ${response.status}`);
+            }
+
+            const claims = js.claims || js.citation_needed_claims || [];
+            if (!latestResults) latestResults = {};
+            latestResults.citation_needed_claims = claims;
+            latestResults.summary = latestResults.summary || {};
+            latestResults.summary.citation_needed_claims = claims.length;
+
+            renderCitationNeeded(latestResults);
+            updateCounts(latestResults);
+            markCertificateNeedsGeneration("Citation-needed claims were updated. Generate an updated certificate so the PDF reflects the latest citation-needed count.");
+            setStatus(`Citation-needed scan completed: ${claims.length} claim(s) recorded.`, "good");
+
+        } catch (error) {
+            console.error(error);
+            setStatus("Citation-needed scan failed: " + error.message, "bad");
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = "Detect Citation-Needed Claims";
+            }
+        }
+    }
+
+
     function renderClaimSupport(data) {
         const body = $("claimBody");
         if (!body) return;
@@ -3333,6 +3910,8 @@ document.addEventListener("DOMContentLoaded", function () {
         setCount("countVerify", data.online_verification?.rows?.length || 0);
         setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
         setCount("countClaim", getSafeRows(data.claim_support).length || (isLockedPayload(data.claim_support) ? "🔒" : 0));
+        const citationNeededRows = getCitationNeededRows(data);
+        setCount("countCitationNeeded", Array.isArray(citationNeededRows) ? citationNeededRows.length : (isLockedPayload(citationNeededRows) ? "🔒" : 0));
 
         const enrichment = data.enrichment || {};
         const enrichmentState = String(enrichment.state || "optional").replaceAll("_", " ");
@@ -4055,6 +4634,7 @@ ${claimTable}
         $("btnVerify")?.addEventListener("click", startVerification);
         $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
         $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
+        $("btnStartCitationNeeded")?.addEventListener("click", startCitationNeededClaims);
         $("btnExportCsv")?.addEventListener("click", exportCSV);
         $("btnExportWord")?.addEventListener("click", exportWord);
         $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
@@ -4065,7 +4645,11 @@ ${claimTable}
                 setStatus("Certificate download requires Full Review payment.", "warn");
                 return;
             }
-            window.location.href = `/api/certificate/${encodeURIComponent(JOB_ID)}/download`;
+            if (!certificateGeneratedForCurrentState || certificateNeedsGeneration(latestResults || {})) {
+                generateCertificate();
+                return;
+            }
+            window.location.href = `/api/certificate/${encodeURIComponent(JOB_ID)}/download?fresh=${Date.now()}`;
         });
         const mobileToggle = $("mobileToggle");
         const mainNav = $("mainNav");
