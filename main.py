@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "demo-training-unlocked-all-features-2026-05-30-v1.5.35"
+# MAIN_BUILD = "DEMO_MAIN-citation-needed-tab-manual-sort-certificate-flow-2026-05-30-v1.5.37"
 
 import io
 import os
@@ -3405,6 +3405,143 @@ async def api_manual_search(request: Request):
     return {"ok": True, "query": query, "candidates": clean, "errors": errors}
 
 
+
+def _manual_evidence_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    manual = result.setdefault("manual_verification", {})
+    records = manual.setdefault("evidence", [])
+    return records if isinstance(records, list) else []
+
+
+def _manual_evidence_matches_key(record: Dict[str, Any], ref_key: str) -> bool:
+    if not isinstance(record, dict) or not ref_key:
+        return False
+    record_key = record.get("manual_reference_key") or _manual_reference_key(record.get("reference") or "")
+    return bool(record_key and (record_key == ref_key or record_key in ref_key or ref_key in record_key))
+
+
+def _manual_evidence_for_key(result: Dict[str, Any], ref_key: str) -> List[Dict[str, Any]]:
+    return [r for r in _manual_evidence_records(result) if _manual_evidence_matches_key(r, ref_key)]
+
+
+def _manual_add_evidence_record(result: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
+    records = _manual_evidence_records(result)
+    key = record.get("manual_reference_key") or _manual_reference_key(record.get("reference") or "")
+    url = str(record.get("evidence_url") or "").strip()
+    source = str(record.get("evidence_source") or "").strip()
+    evidence_type = str(record.get("evidence_type") or "").strip()
+
+    # Upsert by reference key + source + URL so repeated clicks do not inflate evidence counts.
+    for existing in records:
+        if (
+            existing.get("manual_reference_key") == key
+            and str(existing.get("evidence_url") or "").strip() == url
+            and str(existing.get("evidence_source") or "").strip().lower() == source.lower()
+            and str(existing.get("evidence_type") or "").strip().lower() == evidence_type.lower()
+        ):
+            existing.update({k: v for k, v in record.items() if v not in (None, "")})
+            return existing
+
+    records.append(record)
+    return record
+
+
+def _manual_build_summary(result: Dict[str, Any]) -> Dict[str, int]:
+    manual = result.setdefault("manual_verification", {})
+    decisions = manual.get("decisions") or []
+    evidence = manual.get("evidence") or []
+
+    out = {
+        "manual_verified": 0,
+        "manual_verified_with_evidence": 0,
+        "manual_verified_without_evidence": 0,
+        "manual_not_verified": 0,
+        "not_indexed_but_plausible": 0,
+        "keep_needs_review": 0,
+        "manual_evidence_links_recorded": len(evidence),
+        "google_scholar_evidence_links_recorded": 0,
+        "unique_manual_decisions": len(decisions),
+        "total_manual_decisions": len(decisions),
+    }
+
+    for ev in evidence:
+        source = str((ev or {}).get("evidence_source") or "").lower()
+        url = str((ev or {}).get("evidence_url") or "").lower()
+        if "google scholar" in source or "scholar.google" in url:
+            out["google_scholar_evidence_links_recorded"] += 1
+
+    for d in decisions:
+        decision = str((d or {}).get("decision") or "").lower()
+        ref_key = (d or {}).get("manual_reference_key") or _manual_reference_key((d or {}).get("reference") or "")
+        has_ev = bool((d or {}).get("evidence_records") or _manual_evidence_for_key(result, ref_key))
+
+        if decision == "manual_verified":
+            out["manual_verified"] += 1
+            if has_ev:
+                out["manual_verified_with_evidence"] += 1
+            else:
+                out["manual_verified_without_evidence"] += 1
+        elif decision == "manual_not_verified":
+            out["manual_not_verified"] += 1
+        elif decision == "not_indexed_but_plausible":
+            out["not_indexed_but_plausible"] += 1
+        elif decision == "keep_needs_review":
+            out["keep_needs_review"] += 1
+
+    return out
+
+
+@app.post("/api/manual-verify/evidence")
+async def api_manual_verify_evidence(request: Request):
+    payload = await request.json()
+    job_id = str(payload.get("job_id") or "").strip()
+    reference = _manual_norm(payload.get("reference") or "")
+    evidence_url = str(payload.get("evidence_url") or "").strip()
+    evidence_source = _manual_norm(payload.get("evidence_source") or payload.get("source") or "Manual search")
+    evidence_type = _manual_norm(payload.get("evidence_type") or "search_result")
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    if not reference:
+        raise HTTPException(status_code=400, detail="reference is required")
+    if not evidence_url:
+        raise HTTPException(status_code=400, detail="evidence_url is required")
+
+    result = _manual_load_result(job_id)
+    ref_key = _manual_reference_key(reference)
+    stamp = datetime.utcnow().isoformat()
+
+    record = _manual_add_evidence_record(result, {
+        "reference": reference,
+        "manual_reference_key": ref_key,
+        "evidence_source": evidence_source,
+        "evidence_type": evidence_type,
+        "evidence_url": evidence_url,
+        "opened_at": stamp,
+        "recorded_at": stamp,
+        "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
+    })
+
+    result["manual_verification_summary"] = _manual_build_summary(result)
+    result["certificate_state"] = {
+        "requires_regeneration": True,
+        "manual_verification_updated_after_certificate": True,
+        "last_manual_verification_at": stamp,
+        "last_certificate_generated_at": ((result.get("citation_integrity_certificate") or {}).get("generated_at") or ""),
+        "reason": "Manual verification evidence was recorded. Generate an updated certificate to include it.",
+    }
+    result.pop("citation_integrity_certificate", None)
+    _manual_save_result(job_id, result)
+
+    return {
+        "ok": True,
+        "message": "Manual verification evidence recorded.",
+        "evidence": record,
+        "manual_verification_summary": result.get("manual_verification_summary"),
+        "certificate_update_required": True,
+        "certificate_state": result.get("certificate_state"),
+    }
+
+
 @app.post("/api/manual-verify/decision")
 async def api_manual_verify_decision(request: Request):
     payload = await request.json()
@@ -3493,12 +3630,66 @@ async def api_manual_verify_decision(request: Request):
     if not replaced:
         decisions.append(decision_record)
 
+    # If the user selected a candidate with a DOI/source URL, store that as evidence too.
+    candidate_url = str(candidate.get("url") or candidate.get("source_url") or "").strip() if isinstance(candidate, dict) else ""
+    candidate_doi = str(candidate.get("doi") or "").strip() if isinstance(candidate, dict) else ""
+    candidate_source = str(candidate.get("source") or "Manual search candidate").strip() if isinstance(candidate, dict) else "Manual search candidate"
+    if candidate_doi or candidate_url:
+        evidence_url = candidate_url or f"https://doi.org/{candidate_doi.replace('https://doi.org/', '').strip()}"
+        _manual_add_evidence_record(result, {
+            "reference": reference,
+            "manual_reference_key": ref_key,
+            "evidence_source": candidate_source,
+            "evidence_type": "source_record" if candidate_doi else "candidate_record",
+            "evidence_url": evidence_url,
+            "opened_at": stamp,
+            "recorded_at": stamp,
+            "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
+        })
+
+    # Attach any recorded evidence to the decision itself so the certificate can show
+    # whether the manual decision was user-attested with evidence or without evidence.
+    matching_evidence = _manual_evidence_for_key(result, ref_key)
+    decision_record["evidence_records"] = matching_evidence
+    decision_record["manual_evidence_recorded"] = bool(matching_evidence)
+
+    # Re-upsert the enriched decision record after evidence was attached.
+    replaced = False
+    for i, existing in enumerate(list(decisions)):
+        existing_key = existing.get("manual_reference_key") or _manual_reference_key(
+            existing.get("reference") or (existing.get("candidate") or {}).get("title") or ""
+        )
+        if ref_key and existing_key == ref_key:
+            decisions[i] = decision_record
+            replaced = True
+            break
+    if not replaced:
+        decisions.append(decision_record)
+
     decisions.sort(key=lambda d: _manual_reference_key(d.get("reference") or (d.get("candidate") or {}).get("title") or ""))
     manual["last_updated"] = stamp
     manual["decision_count"] = len(decisions)
 
+    result["manual_verification_summary"] = _manual_build_summary(result)
+    result["certificate_state"] = {
+        "requires_regeneration": True,
+        "manual_verification_updated_after_certificate": True,
+        "last_manual_verification_at": stamp,
+        "last_certificate_generated_at": ((result.get("citation_integrity_certificate") or {}).get("generated_at") or ""),
+        "reason": "Manual verification changed after the last certificate. Generate an updated certificate.",
+    }
+    result.pop("citation_integrity_certificate", None)
+
     _manual_save_result(job_id, result)
-    return {"ok": True, "message": f"Manual decision recorded: {decision_payload['manual_decision_label']}", "updated_rows": touched, "result": result}
+    return {
+        "ok": True,
+        "message": f"Manual decision recorded: {decision_payload['manual_decision_label']}. Certificate update required.",
+        "updated_rows": touched,
+        "manual_verification_summary": result.get("manual_verification_summary"),
+        "certificate_update_required": True,
+        "certificate_state": result.get("certificate_state"),
+        "result": result,
+    }
 
 
 # ============================================================
@@ -3626,6 +3817,13 @@ def _demo_generate_citation_needed_claims(result: Dict[str, Any], limit: int = 6
             "priority": priority,
             "reason": "Potential factual or empirical claim without an immediately detected citation.",
             "recommendation": "Add a supporting citation or revise the wording if the claim is interpretive.",
+            "suggested_search_query": clean[:220],
+            "suggested_sources": [
+                {"label": "Google Scholar", "type": "search", "query": clean[:220]},
+                {"label": "Google", "type": "search", "query": clean[:220]},
+                {"label": "Crossref", "type": "metadata_search", "query": clean[:220]},
+            ],
+            "status": "unresolved",
             "source": "training_demo_detector",
             "sentence_index": idx,
         })
@@ -3794,20 +3992,32 @@ def _demo_certificate_fallback(result: Dict[str, Any], job_id: str = "") -> Dict
 def _demo_build_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[str, Any]:
     result = _demo_prepare_full_review_result(job_id, result, persist=False)
     access = _demo_full_access_payload(job_id)
+    document_title = result.get("document_title") or _demo_extract_document_title(result)
     if build_citation_integrity_certificate is not None:
-        cert = build_citation_integrity_certificate(
-            result,
-            job_id=job_id,
-            access=access,
-            package_label="Training Demonstration Full Review",
-        )
+        try:
+            cert = build_citation_integrity_certificate(
+                result,
+                job_id=job_id,
+                access=access,
+                package_label="Training Demonstration Full Review",
+                document_title=document_title,
+            )
+        except TypeError:
+            cert = build_citation_integrity_certificate(
+                result,
+                job_id=job_id,
+                access=access,
+                package_label="Training Demonstration Full Review",
+            )
     else:
         cert = _demo_certificate_fallback(result, job_id)
 
-    cert["document_title"] = result.get("document_title") or _demo_extract_document_title(result)
+    cert["document_title"] = document_title
     cert["demo_unlocked"] = True
     cert["package"] = "Training Demonstration Full Review"
-    cert["analysis_run"] = "Training demonstration"
+    cert["review_type"] = "Full Review"
+    # Do not show package/run usage on the demo certificate. It is not a payment record.
+    cert.pop("analysis_run", None)
     return cert
 
 # ============================================================
@@ -4445,19 +4655,29 @@ async def start_citation_needed_claims(job_id: str):
 
 @app.get("/api/certificate/{job_id}")
 async def get_citation_integrity_certificate(job_id: str):
+    """Generate or regenerate a demo certificate only when the user asks for it."""
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     result = _demo_prepare_full_review_result(job_id, job.get("result") or {}, persist=False)
+    result["manual_verification_summary"] = _manual_build_summary(result)
     certificate = _demo_build_certificate(result, job_id=job_id)
     result["citation_integrity_certificate"] = certificate
+    result["certificate_state"] = {
+        "requires_regeneration": False,
+        "manual_verification_updated_after_certificate": False,
+        "last_manual_verification_at": (result.get("manual_verification") or {}).get("last_updated", ""),
+        "last_certificate_generated_at": certificate.get("generated_at") or certificate.get("timestamp") or "",
+        "reason": "",
+    }
     _demo_save_result(job_id, result)
 
     return {
         "ok": True,
         "demo_unlocked": DEMO_UNLOCK_ALL_FEATURES,
         "certificate": certificate,
+        "certificate_state": result.get("certificate_state"),
     }
 
 
@@ -4468,11 +4688,26 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
         raise HTTPException(status_code=404, detail="Job not found.")
 
     result = _demo_prepare_full_review_result(job_id, job.get("result") or {}, persist=False)
-    certificate = result.get("citation_integrity_certificate") or _demo_build_certificate(result, job_id=job_id)
-    result["citation_integrity_certificate"] = certificate
-    _demo_save_result(job_id, result)
+    result["manual_verification_summary"] = _manual_build_summary(result)
+    # Download the generated certificate if it is current; otherwise rebuild so the
+    # PDF always includes the latest manual verification evidence.
+    state = result.get("certificate_state") or {}
+    if result.get("citation_integrity_certificate") and not state.get("requires_regeneration"):
+        certificate = result.get("citation_integrity_certificate")
+    else:
+        certificate = _demo_build_certificate(result, job_id=job_id)
+        result["citation_integrity_certificate"] = certificate
+        result["certificate_state"] = {
+            "requires_regeneration": False,
+            "manual_verification_updated_after_certificate": False,
+            "last_manual_verification_at": (result.get("manual_verification") or {}).get("last_updated", ""),
+            "last_certificate_generated_at": certificate.get("generated_at") or certificate.get("timestamp") or "",
+            "reason": "",
+        }
+        _demo_save_result(job_id, result)
 
     safe_job = re.sub(r"[^A-Za-z0-9_-]+", "", job_id[:12] or "certificate")
+    generated_stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
 
     if str(format or "pdf").lower() == "html":
         if render_certificate_html is not None:
@@ -4482,7 +4717,7 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
         return Response(
             content=html_doc,
             media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}.html"'},
+            headers={"Content-Disposition": f'attachment; filename="Demo_CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.html"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
         )
 
     if render_certificate_pdf_bytes is None:
@@ -4494,7 +4729,7 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
         return Response(
             content=html_doc,
             media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}.html"'},
+            headers={"Content-Disposition": f'attachment; filename="Demo_CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.html"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
         )
 
     try:
@@ -4505,7 +4740,7 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="Demo_CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.pdf"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
     )
 
 # ============================================================
