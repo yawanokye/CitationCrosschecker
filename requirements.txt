@@ -26,3 +26,4 @@ redis==5.0.1
 rq==1.15.1
 
 stripe
+reportlab>=4.0
