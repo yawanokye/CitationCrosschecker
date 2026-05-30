@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "commercial-2026-05-28-dashboard-jsonb-population-only-v1.5.34"
+# MAIN_BUILD = "demo-training-unlocked-all-features-2026-05-30-v1.5.35"
 
 import io
 import os
@@ -8,6 +8,7 @@ import uuid
 import threading
 import time
 import json
+import html
 import secrets
 import sqlite3
 import smtplib
@@ -72,6 +73,23 @@ from reference_formatter import (
 )
 
 
+# Optional certificate helpers for training/demo mode. These are wrapped so the
+# demonstration service can still start even if the certificate module is not yet deployed.
+try:
+    from certificate_builder import (
+        build_citation_integrity_certificate,
+        render_certificate_html,
+        render_certificate_pdf_bytes,
+    )
+    CERTIFICATE_FEATURES_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ Certificate builder not loaded: {e}")
+    build_citation_integrity_certificate = None
+    render_certificate_html = None
+    render_certificate_pdf_bytes = None
+    CERTIFICATE_FEATURES_AVAILABLE = False
+
+
 # ===============================
 # DATABASE SETUP - PostgreSQL (with SQLite fallback)
 # ===============================
@@ -81,6 +99,15 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # Get Redis URL from environment (Render sets this)
 REDIS_URL = os.environ.get("REDIS_URL")
+
+# ===============================
+# TRAINING / DEMONSTRATION MODE
+# ===============================
+# This build is intended for training and live demonstrations. It does not expose
+# payment details and it grants full-review access to every completed result so
+# certificate, advanced enrichment, citation-needed claims and exports remain open.
+DEMO_UNLOCK_ALL_FEATURES = os.environ.get("DEMO_UNLOCK_ALL_FEATURES", "true").strip().lower() not in {"0", "false", "no"}
+DEMO_ACCESS_EMAIL = os.environ.get("DEMO_ACCESS_EMAIL", "demo@citeintegrity.org")
 
 # ===============================
 # CONTACT EMAIL FORWARDING SETUP
@@ -721,6 +748,9 @@ async def security_middleware(request: Request, call_next):
         "/apply-autofix",
         "/queue/status",
         "/api/enrichment",
+        "/api/certificate",
+        "/api/citation-needed",
+        "/api/demo",
         "/new",
         "/analyse",
         "/results",
@@ -3470,6 +3500,316 @@ async def api_manual_verify_decision(request: Request):
     _manual_save_result(job_id, result)
     return {"ok": True, "message": f"Manual decision recorded: {decision_payload['manual_decision_label']}", "updated_rows": touched, "result": result}
 
+
+# ============================================================
+# TRAINING / DEMO FULL-REVIEW UNLOCK HELPERS
+# ============================================================
+
+def _demo_full_access_payload(job_id: str = "") -> Dict[str, Any]:
+    """Return a paid-style access payload without exposing payment details."""
+    return {
+        "paid": True,
+        "demo_unlocked": True,
+        "training_mode": True,
+        "source": "training_demo",
+        "user_email": DEMO_ACCESS_EMAIL,
+        "message": "Training/demo mode: all Full Review features are enabled.",
+        "package": {
+            "name": "Training Demonstration Full Review",
+            "document_tier_name": "Training Demonstration",
+            "tier_key": "training_demo_full_review",
+            "runs_total": None,
+            "runs_used": None,
+        },
+        "purchase": {
+            "payment_provider": "training_demo",
+            "status": "demo_unlocked",
+            "preview_job_id": job_id,
+            "email": DEMO_ACCESS_EMAIL,
+        },
+    }
+
+
+def _demo_is_locked_payload(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("locked") is True
+
+
+def _demo_extract_document_title(result: Dict[str, Any]) -> str:
+    """Best-effort title extraction for certificate display."""
+    if not isinstance(result, dict):
+        return "Untitled document"
+
+    candidates = [
+        result.get("document_title"),
+        result.get("title"),
+        result.get("manuscript_title"),
+        result.get("file_title"),
+        (result.get("metadata") or {}).get("title") if isinstance(result.get("metadata"), dict) else None,
+        result.get("filename"),
+        result.get("file_name"),
+    ]
+
+    for value in candidates:
+        value = str(value or "").strip()
+        if value:
+            value = re.sub(r"\.(docx|pdf|doc|txt)$", "", value, flags=re.I).strip()
+            value = value.replace("_", " ").replace("-", " ")
+            value = re.sub(r"\s+", " ", value).strip()
+            if value:
+                return value[:220]
+
+    return "Untitled document"
+
+
+def _demo_main_text(result: Dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        return ""
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    return (
+        str(result.get("main_text") or "")
+        or str(result.get("full_text") or "")
+        or str(data.get("main_text") or "")
+        or str(data.get("full_text") or "")
+        or ""
+    )
+
+
+def _demo_sentence_has_citation(sentence: str) -> bool:
+    if not sentence:
+        return False
+    # Author-year, numeric square, numeric superscript-ish, and common DOI/URL evidence.
+    patterns = [
+        r"\([A-Z][A-Za-z'’\-]+(?:\s+et\s+al\.)?,\s*\d{4}[a-z]?\)",
+        r"\[[0-9,\-\s]+\]",
+        r"\bdoi\b|https?://",
+    ]
+    return any(re.search(p, sentence) for p in patterns)
+
+
+def _demo_generate_citation_needed_claims(result: Dict[str, Any], limit: int = 60) -> List[Dict[str, Any]]:
+    """Lightweight demonstration detector for claims that may need citations."""
+    existing = result.get("citation_needed_claims") or result.get("citation_needed") or result.get("claims_needing_citation")
+    if isinstance(existing, list) and existing:
+        return existing[:limit]
+
+    text = _demo_main_text(result)
+    if not text:
+        return []
+
+    # Keep this conservative and explainable for demonstration.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    claim_markers = re.compile(
+        r"\b(\d+(?:\.\d+)?\s*%|percent|majority|minority|increase|decrease|significant|"
+        r"higher|lower|more likely|less likely|associated with|relationship between|effect of|impact of|"
+        r"determinants? of|predicts?|influences?|found that|shows that|reveals that|indicates that)\b",
+        re.I,
+    )
+
+    rows = []
+    seen = set()
+    for idx, sentence in enumerate(sentences):
+        clean = re.sub(r"\s+", " ", sentence or "").strip()
+        if len(clean) < 70 or len(clean) > 420:
+            continue
+        if _demo_sentence_has_citation(clean):
+            continue
+        if not claim_markers.search(clean):
+            continue
+        key = clean[:140].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        priority = "high" if re.search(r"\d+(?:\.\d+)?\s*%|significant|effect|impact", clean, re.I) else "medium"
+        rows.append({
+            "id": f"CN-{len(rows)+1:03d}",
+            "claim": clean,
+            "priority": priority,
+            "reason": "Potential factual or empirical claim without an immediately detected citation.",
+            "recommendation": "Add a supporting citation or revise the wording if the claim is interpretive.",
+            "source": "training_demo_detector",
+            "sentence_index": idx,
+        })
+        if len(rows) >= limit:
+            break
+
+    return rows
+
+
+def _demo_save_result(job_id: str, result: Dict[str, Any]) -> None:
+    """Persist updated demo result to PostgreSQL, Redis, and memory where available."""
+    if not job_id or not isinstance(result, dict):
+        return
+
+    with _lock:
+        if job_id in _store:
+            _store[job_id].setdefault("result", {})
+            _store[job_id]["result"] = result
+
+    if DATABASE_URL:
+        try:
+            with psycopg2.connect(DATABASE_URL) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+                        (json.dumps(result), job_id),
+                    )
+                    conn.commit()
+        except Exception as e:
+            print(f"[DEMO UNLOCK] Could not persist result for {job_id}: {e}")
+
+    if redis_conn:
+        try:
+            redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        except Exception as e:
+            print(f"[DEMO UNLOCK] Could not refresh Redis for {job_id}: {e}")
+
+
+def _demo_prepare_full_review_result(job_id: str, result: Dict[str, Any], *, persist: bool = False) -> Dict[str, Any]:
+    """Open all Full Review sections for the no-payment training/demonstration build."""
+    if not isinstance(result, dict):
+        return result
+
+    changed = False
+
+    if DEMO_UNLOCK_ALL_FEATURES:
+        result["access"] = _demo_full_access_payload(job_id)
+        result["payment_required"] = False
+        result["locked"] = False
+        result["demo_unlocked"] = True
+        changed = True
+
+    title = _demo_extract_document_title(result)
+    if result.get("document_title") != title:
+        result["document_title"] = title
+        changed = True
+
+    # Remove locked placeholders that commercial builds sometimes put in the result.
+    for key in ("recovery", "claim_support", "citation_needed_claims"):
+        if _demo_is_locked_payload(result.get(key)):
+            if key == "recovery":
+                result[key] = {"missing_recovery": [], "verification_recovery": []}
+            else:
+                result[key] = []
+            changed = True
+
+    # Recovery and claim support are expected by the result dashboard and certificate.
+    if not isinstance(result.get("recovery"), dict):
+        try:
+            result["recovery"] = build_context_specific_recovery(result)
+        except Exception as e:
+            print(f"[DEMO UNLOCK] Recovery build failed: {e}")
+            result["recovery"] = {"missing_recovery": [], "verification_recovery": []}
+        changed = True
+
+    if not isinstance(result.get("claim_support"), list):
+        try:
+            result["claim_support"] = build_claim_support_rows(result)
+        except Exception as e:
+            print(f"[DEMO UNLOCK] Claim support build failed: {e}")
+            result["claim_support"] = []
+        changed = True
+
+    if not isinstance(result.get("citation_needed_claims"), list):
+        result["citation_needed_claims"] = _demo_generate_citation_needed_claims(result)
+        changed = True
+
+    result.setdefault("summary", {})
+    if isinstance(result["summary"], dict):
+        result["summary"]["citation_needed_claims"] = len(result.get("citation_needed_claims") or [])
+        result["summary"]["claim_support_rows"] = len(result.get("claim_support") or [])
+        result["summary"]["document_title"] = result.get("document_title")
+        changed = True
+
+    if persist and changed:
+        _demo_save_result(job_id, result)
+
+    return result
+
+
+def _demo_complete_enrichment(job_id: str, result: Dict[str, Any], scope: str = "weak_only", reason: str = "local_demo") -> Dict[str, Any]:
+    """Local fallback for advanced enrichment during demonstrations."""
+    result = _demo_prepare_full_review_result(job_id, result, persist=False)
+    result["enrichment"] = {
+        "state": "completed",
+        "scope": scope,
+        "progress": 100,
+        "total": 100,
+        "message": "Advanced enrichment completed in training/demo mode.",
+        "requested_at": datetime.utcnow().isoformat(),
+        "completed_at": datetime.utcnow().isoformat(),
+        "deep_recovery_ready": True,
+        "deep_claim_support_ready": True,
+        "citation_needed_ready": True,
+        "mode": reason,
+    }
+    _demo_save_result(job_id, result)
+    return {
+        "ok": True,
+        "demo_unlocked": True,
+        "state": "completed",
+        "message": "Advanced enrichment completed in training/demo mode.",
+        "scope": scope,
+        "result": result,
+    }
+
+
+def _demo_certificate_fallback(result: Dict[str, Any], job_id: str = "") -> Dict[str, Any]:
+    """Fallback certificate if certificate_builder.py is not present."""
+    result = _demo_prepare_full_review_result(job_id, result, persist=False)
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    refs = result.get("references_raw") or result.get("references") or []
+    cites = result.get("in_text_citations") or result.get("citations") or result.get("reconciliation_intext_to_reference") or []
+    verify_rows = ((result.get("online_verification") or {}).get("rows") or []) if isinstance(result.get("online_verification"), dict) else []
+    verified = sum(1 for r in verify_rows if isinstance(r, dict) and str(r.get("status") or "").lower() == "verified")
+    certificate_id = "CI-DEMO-" + (job_id[:8].upper() if job_id else datetime.utcnow().strftime("%Y%m%d"))
+    generated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return {
+        "brand_name": "CiteIntegrity",
+        "certificate_title": "Citation Integrity Certificate",
+        "certificate_id": certificate_id,
+        "generated_at": generated_at,
+        "generated_at_display": generated_at.replace("T", " ").replace("Z", " UTC"),
+        "job_id": job_id,
+        "document_title": result.get("document_title") or _demo_extract_document_title(result),
+        "package": "Training Demonstration Full Review",
+        "total_in_text_citations": summary.get("in_text_citations_found") or len(cites),
+        "total_references": summary.get("reference_entries_found") or len(refs),
+        "acii_score": ((result.get("acii") or {}).get("ACII") if isinstance(result.get("acii"), dict) else None) or ((result.get("acii") or {}).get("score") if isinstance(result.get("acii"), dict) else None),
+        "acii_rating": "Demo review",
+        "clearance_status": "Citation Integrity Review Completed",
+        "summary": {
+            "automatically_verified_references": verified,
+            "user_attested_manual_verification_with_evidence": 0,
+            "user_attested_manual_verification_without_evidence": 0,
+            "citation_needed_claims": len(result.get("citation_needed_claims") or []),
+            "claim_support_issues": 0,
+        },
+        "risk_counts": {"critical": 0, "moderate": 0, "minor": 0},
+        "clearance_requirements": ["Review certificate metrics and conduct final human review before submission."],
+        "coverage_note": "Training/demo certificate generated without payment gating.",
+        "validity_note": "This certificate summarises CiteIntegrity review outputs and does not replace academic supervision, journal peer review, or independent source verification.",
+    }
+
+
+def _demo_build_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[str, Any]:
+    result = _demo_prepare_full_review_result(job_id, result, persist=False)
+    access = _demo_full_access_payload(job_id)
+    if build_citation_integrity_certificate is not None:
+        cert = build_citation_integrity_certificate(
+            result,
+            job_id=job_id,
+            access=access,
+            package_label="Training Demonstration Full Review",
+        )
+    else:
+        cert = _demo_certificate_fallback(result, job_id)
+
+    cert["document_title"] = result.get("document_title") or _demo_extract_document_title(result)
+    cert["demo_unlocked"] = True
+    cert["package"] = "Training Demonstration Full Review"
+    cert["analysis_run"] = "Training demonstration"
+    return cert
+
 # ============================================================
 # RESULT CHECK ENDPOINT
 # ============================================================
@@ -3487,7 +3827,9 @@ async def get_result(job_id: str, fresh: int = 0):
         cached = redis_conn.get(f"result:{job_id}")
         if cached:
             try:
-                return {"status": "completed", "data": json.loads(cached)}
+                cached_result = json.loads(cached)
+                cached_result = _demo_prepare_full_review_result(job_id, cached_result, persist=False)
+                return {"status": "completed", "data": cached_result}
             except:
                 pass
     
@@ -3511,6 +3853,7 @@ async def get_result(job_id: str, fresh: int = 0):
                 result = row["result"]
                 if isinstance(result, str):
                     result = json.loads(result)
+                result = _demo_prepare_full_review_result(job_id, result, persist=True)
                 return {"status": "completed", "data": result}
             elif row["status"] == "processing":
                 return {"status": "processing", "message": "Processing in background"}
@@ -3792,6 +4135,7 @@ def online_status(job_id: str):
             )
 
         result = job.get("result", {}) or {}
+        result = _demo_prepare_full_review_result(job_id, result, persist=False)
         verification = result.get("verification") or job.get("verification") or {}
 
         rq_job_id = verification.get("rq_job_id") or verification.get("verification_job_id")
@@ -3928,21 +4272,10 @@ def online_status(job_id: str):
 @app.post("/api/enrichment/start/{job_id}")
 async def start_advanced_enrichment(job_id: str, request: Request):
     """
-    Start advanced enrichment only when the user requests it.
-    This queues deep recovery and claim-support enrichment without blocking the dashboard.
+    Start advanced enrichment. In the training/demo build, this endpoint is
+    always open. If Redis or the deep worker is unavailable, it completes a
+    local enrichment pass so the demonstration does not show a closed feature.
     """
-    if not redis_conn:
-        return JSONResponse(
-            {"ok": False, "error": "Redis is not available."},
-            status_code=500
-        )
-
-    if not DATABASE_URL:
-        return JSONResponse(
-            {"ok": False, "error": "Database is not available."},
-            status_code=500
-        )
-
     try:
         payload = await request.json()
     except Exception:
@@ -3974,67 +4307,63 @@ async def start_advanced_enrichment(job_id: str, request: Request):
     enrichment = result.get("enrichment") or {}
     current_state = str(enrichment.get("state", "")).lower()
 
-    if current_state in {"queued", "running"}:
+    if current_state in {"queued", "running"} and redis_conn:
         return {
             "ok": True,
+            "demo_unlocked": DEMO_UNLOCK_ALL_FEATURES,
             "message": "Advanced enrichment is already running.",
             "state": current_state,
             "rq_job_id": enrichment.get("rq_job_id"),
             "scope": enrichment.get("scope", scope),
         }
 
-    deep_queue = Queue("deep_enrichment", connection=redis_conn)
-
-    rq_job = deep_queue.enqueue(
-        "worker.process_deep_enrichment",
-        job_id,
-        "apa",
-        scope,
-        job_timeout=10800,
-        result_ttl=86400,
-        failure_ttl=86400,
-    )
-
-    result["enrichment"] = {
-        "state": "queued",
-        "scope": scope,
-        "rq_job_id": rq_job.id,
-        "progress": 0,
-        "total": None,
-        "message": "Advanced enrichment queued.",
-        "requested_at": datetime.utcnow().isoformat(),
-        "deep_recovery_ready": False,
-        "deep_claim_support_ready": False,
-    }
-
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
+    # Demo fallback keeps the feature open when Redis/DB/worker is unavailable.
+    if DEMO_UNLOCK_ALL_FEATURES and (not redis_conn or not DATABASE_URL):
+        return _demo_complete_enrichment(job_id, result, scope, reason="local_demo_no_queue")
 
     try:
-        cursor.execute(
-            """
-            UPDATE jobs
-            SET result = %s::jsonb
-            WHERE job_id = %s
-            """,
-            (json.dumps(result), job_id)
+        deep_queue = Queue("deep_enrichment", connection=redis_conn)
+
+        rq_job = deep_queue.enqueue(
+            "worker.process_deep_enrichment",
+            job_id,
+            "apa",
+            scope,
+            job_timeout=10800,
+            result_ttl=86400,
+            failure_ttl=86400,
         )
-        conn.commit()
-    finally:
-        cursor.close()
-        conn.close()
 
-    try:
-        redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
+        result = _demo_prepare_full_review_result(job_id, result, persist=False)
+        result["enrichment"] = {
+            "state": "queued",
+            "scope": scope,
+            "rq_job_id": rq_job.id,
+            "progress": 0,
+            "total": None,
+            "message": "Advanced enrichment queued.",
+            "requested_at": datetime.utcnow().isoformat(),
+            "deep_recovery_ready": False,
+            "deep_claim_support_ready": False,
+            "citation_needed_ready": bool(result.get("citation_needed_claims")),
+            "demo_unlocked": DEMO_UNLOCK_ALL_FEATURES,
+        }
+
+        _demo_save_result(job_id, result)
+
+        return {
+            "ok": True,
+            "demo_unlocked": DEMO_UNLOCK_ALL_FEATURES,
+            "message": "Advanced enrichment queued.",
+            "rq_job_id": rq_job.id,
+            "scope": scope,
+        }
+
     except Exception as e:
-        print(f"[ENRICHMENT START] Could not update Redis cache: {e}")
-
-    return {
-        "ok": True,
-        "message": "Advanced enrichment queued.",
-        "rq_job_id": rq_job.id,
-        "scope": scope,
-    }
+        print(f"[ENRICHMENT START] Queue failed; using local demo fallback: {e}")
+        if DEMO_UNLOCK_ALL_FEATURES:
+            return _demo_complete_enrichment(job_id, result, scope, reason="local_demo_queue_fallback")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @app.get("/debug/enrichment-counts/{job_id}")
 async def debug_enrichment_counts(job_id: str):
@@ -4063,6 +4392,122 @@ async def debug_enrichment_counts(job_id: str):
         "sample_verification_recovery": verification_rows[:1],
         "sample_claim_support": claim_rows[:1],
     }
+
+# ============================================================
+# CERTIFICATE AND CITATION-NEEDED ENDPOINTS - TRAINING/DEMO OPEN ACCESS
+# ============================================================
+
+@app.get("/api/demo/access/{job_id}")
+async def demo_access_status(job_id: str):
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "access": _demo_full_access_payload(job_id),
+        "message": "Training/demo mode is enabled; all Full Review features are open.",
+    }
+
+
+@app.get("/api/citation-needed/{job_id}")
+async def get_citation_needed_claims(job_id: str):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = _demo_prepare_full_review_result(job_id, job.get("result") or {}, persist=True)
+    claims = result.get("citation_needed_claims") or []
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "demo_unlocked": DEMO_UNLOCK_ALL_FEATURES,
+        "claims": claims,
+        "count": len(claims),
+    }
+
+
+@app.post("/api/citation-needed/start/{job_id}")
+async def start_citation_needed_claims(job_id: str):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = job.get("result") or {}
+    result["citation_needed_claims"] = _demo_generate_citation_needed_claims(result)
+    result = _demo_prepare_full_review_result(job_id, result, persist=True)
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "demo_unlocked": DEMO_UNLOCK_ALL_FEATURES,
+        "message": "Citation-needed claims generated in training/demo mode.",
+        "claims": result.get("citation_needed_claims") or [],
+        "count": len(result.get("citation_needed_claims") or []),
+    }
+
+
+@app.get("/api/certificate/{job_id}")
+async def get_citation_integrity_certificate(job_id: str):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = _demo_prepare_full_review_result(job_id, job.get("result") or {}, persist=False)
+    certificate = _demo_build_certificate(result, job_id=job_id)
+    result["citation_integrity_certificate"] = certificate
+    _demo_save_result(job_id, result)
+
+    return {
+        "ok": True,
+        "demo_unlocked": DEMO_UNLOCK_ALL_FEATURES,
+        "certificate": certificate,
+    }
+
+
+@app.get("/api/certificate/{job_id}/download")
+async def download_citation_integrity_certificate(job_id: str, format: str = "pdf"):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    result = _demo_prepare_full_review_result(job_id, job.get("result") or {}, persist=False)
+    certificate = result.get("citation_integrity_certificate") or _demo_build_certificate(result, job_id=job_id)
+    result["citation_integrity_certificate"] = certificate
+    _demo_save_result(job_id, result)
+
+    safe_job = re.sub(r"[^A-Za-z0-9_-]+", "", job_id[:12] or "certificate")
+
+    if str(format or "pdf").lower() == "html":
+        if render_certificate_html is not None:
+            html_doc = render_certificate_html(certificate)
+        else:
+            html_doc = "<html><body><h1>CiteIntegrity Certificate</h1><pre>" + html.escape(json.dumps(certificate, indent=2)) + "</pre></body></html>"
+        return Response(
+            content=html_doc,
+            media_type="text/html; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}.html"'},
+        )
+
+    if render_certificate_pdf_bytes is None:
+        # Graceful fallback if reportlab/certificate PDF helper is not yet deployed.
+        if render_certificate_html is not None:
+            html_doc = render_certificate_html(certificate)
+        else:
+            html_doc = "<html><body><h1>CiteIntegrity Certificate</h1><pre>" + html.escape(json.dumps(certificate, indent=2)) + "</pre></body></html>"
+        return Response(
+            content=html_doc,
+            media_type="text/html; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}.html"'},
+        )
+
+    try:
+        pdf_bytes = render_certificate_pdf_bytes(certificate)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Certificate PDF generation failed: {e}")
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}.pdf"'},
+    )
+
 # ============================================================
 # DOCUMENT EXPORT
 # ============================================================
