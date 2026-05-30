@@ -836,28 +836,15 @@ def _manual_reference_key_for_certificate(text: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()[:260]
 
 
-def _manual_record_is_search_for_certificate(ev: Dict[str, Any]) -> bool:
-    if not isinstance(ev, dict):
-        return False
-    t = _norm(ev.get("evidence_type") or ev.get("type") or ev.get("search_type"))
-    source = _norm(ev.get("evidence_source") or ev.get("source") or ev.get("search_source"))
-    url = _norm(ev.get("evidence_url") or ev.get("url") or ev.get("search_url"))
-    return (
-        bool(ev.get("is_search_link"))
-        or t in {"search", "search_result", "search_opened", "search_activity"}
-        or "google search" in source
-        or "title search" in source
-        or "scholar.google" in url
-        or "google.com/search" in url
-        or "search.crossref" in url
-    )
-
-
 def _manual_verification_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     manual = _dict(result.get("manual_verification"))
     decisions = _list(manual.get("decisions"))
-    evidence = _list(manual.get("evidence"))
-    searches = _list(manual.get("searches")) or _list(manual.get("search_activity"))
+    evidence = (
+        _list(manual.get("evidence"))
+        or _list(result.get("manual_evidence_records"))
+        or _list(result.get("manual_verification_evidence"))
+        or _list(result.get("manual_evidence"))
+    )
 
     def ev_key(ev: Dict[str, Any]) -> str:
         return _safe_str(ev.get("manual_reference_key")) or _manual_reference_key_for_certificate(ev.get("reference"))
@@ -865,34 +852,23 @@ def _manual_verification_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     out = {
         "manual_verified_with_evidence": 0,
         "manual_verified_without_evidence": 0,
-        "manual_evidence_links_recorded": len([ev for ev in evidence if not _manual_record_is_search_for_certificate(ev)]),
-        "manual_search_links_recorded": len(searches),
+        "manual_evidence_links_recorded": len(evidence),
         "google_scholar_evidence_links_recorded": 0,
-        "google_scholar_search_links_recorded": 0,
-        "manual_evidence_records": [ev for ev in evidence if not _manual_record_is_search_for_certificate(ev)],
-        "manual_search_records": searches,
+        "manual_evidence_records": evidence,
     }
 
     for ev in evidence:
-        if _manual_record_is_search_for_certificate(ev):
-            continue
         source = _norm(ev.get("evidence_source") or ev.get("source"))
         url = _norm(ev.get("evidence_url") or ev.get("url"))
         if "google scholar" in source or "scholar.google" in url:
             out["google_scholar_evidence_links_recorded"] += 1
-
-    for ev in searches:
-        source = _norm(ev.get("search_source") or ev.get("evidence_source") or ev.get("source"))
-        url = _norm(ev.get("search_url") or ev.get("evidence_url") or ev.get("url"))
-        if "google scholar" in source or "scholar.google" in url:
-            out["google_scholar_search_links_recorded"] += 1
 
     for d in decisions:
         if _norm(d.get("decision")) != "manual_verified":
             continue
         key = _safe_str(d.get("manual_reference_key")) or _manual_reference_key_for_certificate(d.get("reference"))
         attached = _list(d.get("evidence_records"))
-        matched = [ev for ev in (attached or evidence) if not _manual_record_is_search_for_certificate(ev) and key and ev_key(ev) and (key == ev_key(ev) or key in ev_key(ev) or ev_key(ev) in key)]
+        matched = attached or [ev for ev in evidence if key and ev_key(ev) and (key == ev_key(ev) or key in ev_key(ev) or ev_key(ev) in key)]
         if matched:
             out["manual_verified_with_evidence"] += 1
         else:
@@ -1269,9 +1245,8 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
         ("System-verified references", s.get("automatically_verified_references", 0)),
         ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
         ("User-attested manual verification without evidence", s.get("user_attested_manual_verification_without_evidence", 0)),
-        ("Verified source evidence URLs recorded", s.get("manual_evidence_links_recorded", 0)),
-        ("Manual search links opened", s.get("manual_search_links_recorded", 0)),
-        ("Google Scholar search links opened", s.get("google_scholar_search_links_recorded", 0)),
+        ("Manual evidence links recorded", s.get("manual_evidence_links_recorded", 0)),
+        ("Google Scholar evidence/search links recorded", s.get("google_scholar_evidence_links_recorded", 0)),
         ("Not indexed but plausible references", s.get("not_indexed_but_plausible_references", 0)),
         ("References still needing review", s.get("references_still_needing_review", 0)),
         ("Not found references", s.get("not_found_references", 0)),
@@ -1291,9 +1266,9 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
             if isinstance(ev, dict)
         )
         manual_evidence_html = f"""
-    <h3>Verified Source Evidence Recorded</h3>
+    <h3>Manual Evidence Recorded</h3>
     <table>
-        <tr><th>#</th><th>Reference</th><th>Evidence source</th><th>Type</th><th>Verified source URL</th></tr>
+        <tr><th>#</th><th>Reference</th><th>Evidence source</th><th>Type</th><th>Evidence URL</th></tr>
         {evidence_rows}
     </table>
         """
@@ -1580,9 +1555,8 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         ("System-verified references", s.get("automatically_verified_references", 0)),
         ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
         ("User-attested manual verification without evidence", s.get("user_attested_manual_verification_without_evidence", 0)),
-        ("Verified source evidence URLs recorded", s.get("manual_evidence_links_recorded", 0)),
-        ("Manual search links opened", s.get("manual_search_links_recorded", 0)),
-        ("Google Scholar search links opened", s.get("google_scholar_search_links_recorded", 0)),
+        ("Manual evidence links recorded", s.get("manual_evidence_links_recorded", 0)),
+        ("Google Scholar evidence/search links recorded", s.get("google_scholar_evidence_links_recorded", 0)),
         ("Not indexed but plausible references", s.get("not_indexed_but_plausible_references", 0)),
         ("References still needing review", s.get("references_still_needing_review", 0)),
         ("Not found references", s.get("not_found_references", 0)),
