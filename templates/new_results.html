@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DEMO Results Dashboard | CiteIntegrity</title>
+    <title>Results Dashboard | CiteIntegrity</title>
     <meta name="description" content="CiteIntegrity results dashboard for citation integrity, verification, recovery, claim support, and ACII review.">
 
     <style>
@@ -903,42 +903,6 @@
             .paywall-grid, .paywall-controls { grid-template-columns: 1fr; }
         }
 
-
-
-
-        .manual-source-evidence-box {
-            margin: 10px 0 12px;
-            padding: 12px;
-            border: 1px solid #dbeafe;
-            background: #ffffff;
-            border-radius: 14px;
-        }
-        .manual-source-evidence-box label {
-            display: block;
-            font-size: 12px;
-            font-weight: 900;
-            color: var(--navy);
-            margin-bottom: 6px;
-        }
-        .manual-source-evidence-box input {
-            width: min(520px, 100%);
-            border: 1px solid #cbd5e1;
-            border-radius: 999px;
-            padding: 9px 12px;
-            font: inherit;
-            font-size: 12px;
-        }
-        .context-suggestion-box { display: grid; gap: 8px; }
-        .context-suggestion-box ul { margin-left: 17px; color: var(--slate); }
-        .context-suggestion-box li { margin-bottom: 5px; }
-        .context-snippet {
-            border-left: 3px solid var(--blue);
-            background: #f8fbff;
-            padding: 8px 10px;
-            border-radius: 10px;
-            color: var(--navy-soft);
-            font-size: 12px;
-        }
 
 
         .citation-needed-actions {
@@ -1849,7 +1813,7 @@
                                     <th>Claim needing citation</th>
                                     <th>Why flagged</th>
                                     <th>Recommended action</th>
-                                    <th>Context-specific suggestions</th>
+                                    <th>Search suggestions</th>
                                 </tr>
                             </thead>
                             <tbody id="citationNeededBody"></tbody>
@@ -1940,7 +1904,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "DEMO_RESULTS-evidence-url-context-suggestions-v1.5.46";
+    const RESULTS_UI_BUILD = "DEMO_RESULTS-preferred-search-setup-fixed-links-v1.5.46";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2601,11 +2565,10 @@ document.addEventListener("DOMContentLoaded", function () {
     function manualEvidenceCount(row) {
         if (!row) return 0;
         const direct = row.evidence_records || row.manual_evidence_records || row.manual_evidence || [];
-        if (Array.isArray(direct) && direct.length) return direct.filter(ev => !ev.is_search_link && (ev.evidence_url || ev.url)).length;
+        if (Array.isArray(direct) && direct.length) return direct.length;
         const key = normaliseManualReferenceKey(row);
         const evidence = (latestResults?.manual_verification?.evidence || []);
         return evidence.filter(ev => {
-            if (ev.is_search_link || ev.search_url || !String(ev.evidence_url || ev.url || "").trim()) return false;
             const evKey = ev.manual_reference_key || String(ev.reference || "")
                 .toLowerCase()
                 .replace(/https?:\/\/\S+/g, " ")
@@ -2616,23 +2579,6 @@ document.addEventListener("DOMContentLoaded", function () {
             return key && evKey && (key === evKey || key.includes(evKey) || evKey.includes(key));
         }).length;
     }
-
-    function manualSearchCount(row) {
-        if (!row) return 0;
-        const key = normaliseManualReferenceKey(row);
-        const searches = (latestResults?.manual_verification?.searches || latestResults?.manual_verification?.search_activity || []);
-        return searches.filter(ev => {
-            const evKey = ev.manual_reference_key || String(ev.reference || "")
-                .toLowerCase()
-                .replace(/https?:\/\/\S+/g, " ")
-                .replace(/[^a-z0-9]+/g, " ")
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 260);
-            return key && evKey && (key === evKey || key.includes(evKey) || evKey.includes(key));
-        }).length;
-    }
-
 
     function filterAndSortManualRows(rows) {
         const searchEl = $("manualVerifySearch");
@@ -2762,6 +2708,34 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
 
+
+    function getManualSearchQuery(refText) {
+        let q = String(refText || "")
+            .replace(/https?:\/\/\S+/gi, " ")
+            .replace(/\bdoi\s*:\s*\S+/gi, " ")
+            .replace(/[“”]/g, '"')
+            .replace(/[‘’]/g, "'")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        // Prefer author/year/title-like chunks and avoid sending a whole long reference to search engines.
+        if (q.length > 220) q = q.slice(0, 220).trim();
+        return cleanSearchQuery(q, 180);
+    }
+
+    function buildManualSearchLinks(refText) {
+        const q = getManualSearchQuery(refText);
+        const scholar = buildSafeSearchUrl("scholar", q);
+        const google = buildSafeSearchUrl("google", q);
+        const crossref = buildSafeSearchUrl("crossref", q);
+
+        return `
+            <a href="${scholar}" target="_blank" rel="noopener noreferrer">Search Google Scholar</a>
+            <a href="${google}" target="_blank" rel="noopener noreferrer">Search Google</a>
+            <a href="${crossref}" target="_blank" rel="noopener noreferrer">Search Crossref</a>
+        `;
+    }
+
     function renderManualVerification(data) {
         const box = $("manualVerificationBox");
         if (!box) return;
@@ -2789,9 +2763,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const manualDecisionRaw = row.manual_decision || "";
             const manualDecision = row.manual_decision_label || manualDecisionLabel(manualDecisionRaw);
             const evCount = manualEvidenceCount(row);
-            const searchCount = manualSearchCount(row);
-            const evidenceBadge = evCount ? `<span class="badge verified">Source evidence recorded: ${esc(evCount)}</span>` : `<span class="badge offline">No source evidence URL</span>`;
-            const searchBadge = searchCount ? `<span class="badge likely">Searches opened: ${esc(searchCount)}</span>` : "";
+            const evidenceBadge = evCount ? `<span class="badge verified">Evidence recorded: ${esc(evCount)}</span>` : `<span class="badge offline">No evidence recorded</span>`;
     
             return `
                 <div class="manual-card" data-manual-index="${i}" style="border:1px solid #dbeafe; border-left:4px solid #4f46e5; border-radius:20px; padding:18px; margin:14px 0; background:#f8fbff;">
@@ -2803,25 +2775,15 @@ document.addEventListener("DOMContentLoaded", function () {
                         <span>Automated status: ${formatBadge(status)}</span>
                         ${manualDecision ? `<span class="badge verified manual-decision-badge">${esc(manualDecision)}</span>` : `<span class="badge needs_review">No manual decision</span>`}
                         ${evidenceBadge}
-                        ${searchBadge}
                     </div>
     
-                    <div class="small-muted" style="margin-bottom:10px;">Search links - recorded as search activity only:</div>
+                    <div class="small-muted" style="margin-bottom:10px;">Manual search evidence links:</div>
     
                     <div class="filters" style="margin-bottom:12px;">
-                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Google Scholar" data-type="search_opened" href="${googleScholarUrl(query)}" target="_blank" rel="noopener">Open Google Scholar search</a>
-                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Google Search" data-type="search_opened" href="${googleSearchUrl(query)}" target="_blank" rel="noopener">Open Google search</a>
-                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="DOI" data-type="search_opened" href="${doiSearchUrl(row)}" target="_blank" rel="noopener">Open DOI search</a>
-                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Title search" data-type="search_opened" href="${titleSearchUrl(row)}" target="_blank" rel="noopener">Open title search</a>
-                    </div>
-
-                    <div class="manual-source-evidence-box">
-                        <label for="manualEvidenceUrl_${i}">Verified source evidence URL or DOI - not a search-results page</label>
-                        <div class="filters" style="margin-bottom:0;">
-                            <input id="manualEvidenceUrl_${i}" class="manual-evidence-url-input" type="text" placeholder="Paste DOI, publisher page, repository page, Google Books page, or source URL">
-                            <button class="btn btn-green manual-action" data-action="record-evidence-url" data-index="${i}">Record source evidence URL</button>
-                        </div>
-                        <div class="small-muted" style="margin-top:7px;">Search result pages are not treated as verified evidence. Paste the actual source page you reviewed.</div>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Google Scholar" data-type="search_result" href="${googleScholarUrl(query)}" target="_blank" rel="noopener">Search Google Scholar</a>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Google Search" data-type="search_result" href="${googleSearchUrl(query)}" target="_blank" rel="noopener">Search Google</a>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="DOI" data-type="source_lookup" href="${doiSearchUrl(row)}" target="_blank" rel="noopener">Search DOI</a>
+                        <a class="btn btn-outline manual-evidence-link" data-index="${i}" data-source="Title search" data-type="source_lookup" href="${titleSearchUrl(row)}" target="_blank" rel="noopener">Search title</a>
                     </div>
     
                     <div class="filters" style="margin-bottom:12px;">
@@ -2855,7 +2817,7 @@ document.addEventListener("DOMContentLoaded", function () {
             <div style="margin-bottom:10px;">
                 <strong>Manual Verification</strong><br>
                 <span class="small-muted">
-                    These references were not confidently verified automatically. Use the search links, review the source, then record one manual decision. Search clicks are recorded as search activity only. To support a manual verified decision, paste the actual DOI, publisher page, repository page, or source URL below.
+                    These references were not confidently verified automatically. Use the search links, review the source, then record one manual decision. Evidence links clicked here are recorded for the certificate.
                 </span>
             </div>
             <div class="filters" style="margin-bottom:14px;">
@@ -3031,27 +2993,12 @@ document.addEventListener("DOMContentLoaded", function () {
     
 
 
-    function normaliseEvidenceUrlInput(value) {
-        let url = String(value || "").trim();
-        if (!url) return "";
-        if (/^10\.\d{4,9}\//i.test(url)) return "https://doi.org/" + url;
-        if (/^doi:/i.test(url)) return "https://doi.org/" + url.replace(/^doi:/i, "").trim();
-        if (/^www\./i.test(url)) return "https://" + url;
-        return url;
-    }
-
-    function isSearchResultsUrl(url) {
-        const u = String(url || "").toLowerCase();
-        return u.includes("scholar.google.") || u.includes("google.com/search") || u.includes("search.crossref.org") || u.includes("/search?");
-    }
-
-    async function recordManualEvidence(index, evidenceSource, evidenceType, evidenceUrl, options = {}) {
+    async function recordManualEvidence(index, evidenceSource, evidenceType, evidenceUrl) {
         const row = manualVerifyRows[index];
         if (!row || !evidenceUrl) return;
         const reference = manualQueryFromRow(row);
         if (!reference) return;
-        const normalisedUrl = normaliseEvidenceUrlInput(evidenceUrl);
-        const isSearch = !!options.isSearchLink || String(evidenceType || "").includes("search") || isSearchResultsUrl(normalisedUrl);
+
         try {
             const response = await fetch("/api/manual-verify/evidence", {
                 method: "POST",
@@ -3060,49 +3007,24 @@ document.addEventListener("DOMContentLoaded", function () {
                 body: JSON.stringify({
                     job_id: JOB_ID,
                     reference,
-                    evidence_url: normalisedUrl,
-                    evidence_source: evidenceSource || (isSearch ? "Manual search" : "User-provided source URL"),
-                    evidence_type: isSearch ? "search_opened" : (evidenceType || "source_record"),
-                    is_search_link: isSearch,
+                    evidence_url: evidenceUrl,
+                    evidence_source: evidenceSource || "Manual search",
+                    evidence_type: evidenceType || "search_result",
                     source: "results_manual_verification_panel"
                 })
             });
             const js = await response.json().catch(() => ({}));
             if (response.ok && js.ok !== false) {
                 if (!latestResults.manual_verification) latestResults.manual_verification = {};
-                if (js.record_type === "search_activity" || js.search) {
-                    if (!Array.isArray(latestResults.manual_verification.searches)) latestResults.manual_verification.searches = [];
-                    if (js.search) latestResults.manual_verification.searches.push(js.search);
-                    setStatus(js.message || "Search activity recorded. Paste the actual source URL if you verify the reference.", "info");
-                } else {
-                    if (!Array.isArray(latestResults.manual_verification.evidence)) latestResults.manual_verification.evidence = [];
-                    if (js.evidence) latestResults.manual_verification.evidence.push(js.evidence);
-                    setStatus(js.message || "Verified source evidence URL recorded.", "good");
-                }
+                if (!Array.isArray(latestResults.manual_verification.evidence)) latestResults.manual_verification.evidence = [];
+                if (js.evidence) latestResults.manual_verification.evidence.push(js.evidence);
                 if (js.certificate_state) latestResults.certificate_state = js.certificate_state;
-                markCertificateNeedsGeneration(js.message || "Manual verification record changed. Generate an updated certificate.");
-                renderManualVerification(latestResults);
-                updateCounts(latestResults);
+                markCertificateNeedsGeneration("Manual evidence has been recorded. Generate an updated certificate after completing manual verification.");
             }
         } catch (error) {
-            console.warn("Manual evidence/search record failed:", error);
+            console.warn("Manual evidence could not be recorded:", error);
         }
     }
-
-    async function recordManualSourceEvidence(index) {
-        const input = document.getElementById(`manualEvidenceUrl_${index}`);
-        const url = normaliseEvidenceUrlInput(input?.value || "");
-        if (!url) {
-            setStatus("Paste the actual source URL or DOI before recording evidence.", "bad");
-            return;
-        }
-        if (isSearchResultsUrl(url)) {
-            setStatus("That looks like a search-results page. Please open the result and paste the actual DOI, publisher page, repository page, or source URL.", "bad");
-            return;
-        }
-        await recordManualEvidence(index, "User-provided source URL", "source_record", url, {isSearchLink: false});
-    }
-
 
     function scrollToManualVerification(index) {
         const section = $("manualVerificationBox");
@@ -3130,7 +3052,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!link) return;
         const index = Number(link.dataset.index);
         if (!Number.isInteger(index)) return;
-        recordManualEvidence(index, link.dataset.source || "Manual search", link.dataset.type || "search_opened", link.href, {isSearchLink: true});
+        recordManualEvidence(index, link.dataset.source || "Manual search", link.dataset.type || "search_result", link.href);
     });
 
     document.addEventListener("click", function (event) {
@@ -3146,11 +3068,6 @@ document.addEventListener("DOMContentLoaded", function () {
     
         if (action === "manual-search") {
             runManualSourceSearch(index);
-            return;
-        }
-
-        if (action === "record-evidence-url") {
-            recordManualSourceEvidence(index);
             return;
         }
     
@@ -3800,42 +3717,81 @@ document.addEventListener("DOMContentLoaded", function () {
         return out;
     }
 
-    function citationNeededSearchLinks(claim, row = {}) {
-        const query = String(row?.suggested_search_query || claim || "").replace(/\s+/g, " ").trim();
-        const shortQ = query.length > 180 ? query.slice(0, 180) : query;
-        const scholar = "https://scholar.google.com/scholar?q=" + encodeURIComponent(shortQ);
-        const google = "https://www.google.com/search?q=" + encodeURIComponent(shortQ);
-        const crossref = "https://search.crossref.org/?q=" + encodeURIComponent(shortQ);
+
+    function cleanSearchQuery(value, maxLen = 180) {
+        let q = String(value || "")
+            .replace(/[\u0000-\u001F\u007F]/g, " ")
+            .replace(/[“”]/g, '"')
+            .replace(/[‘’]/g, "'")
+            .replace(/[^\p{L}\p{N}\s\-'",.&()/:%]/gu, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        // Remove very generic words that make search links noisy.
+        const stop = new Set(["the","and","for","with","that","this","from","into","were","was","are","been","being","have","has","had"]);
+        const parts = q.split(" ").filter(w => !stop.has(w.toLowerCase()));
+        q = parts.join(" ").trim() || q;
+
+        if (q.length > maxLen) q = q.slice(0, maxLen).trim();
+        return q;
+    }
+
+    function buildSafeSearchUrl(provider, query) {
+        const q = encodeURIComponent(cleanSearchQuery(query));
+        if (!q) return "#";
+
+        if (provider === "scholar") {
+            return `https://scholar.google.com/scholar?q=${q}`;
+        }
+        if (provider === "crossref") {
+            return `https://search.crossref.org/?q=${q}`;
+        }
+        if (provider === "doi") {
+            return `https://doi.org/${encodeURIComponent(String(query || "").trim())}`;
+        }
+        return `https://www.google.com/search?q=${q}`;
+    }
+
+    function getCitationNeededQuery(row) {
+        const q =
+            row?.suggested_search_query ||
+            row?.focused_query ||
+            row?.search_query ||
+            row?.claim ||
+            row?.text ||
+            row?.sentence ||
+            "";
+        return cleanSearchQuery(q);
+    }
+
+    function citationNeededContextBox(row) {
+        const sourceType = row?.suggested_source_type || "Peer-reviewed article, authoritative book, official report, or credible scholarly source";
+        const keyTerms = Array.isArray(row?.key_terms) ? row.key_terms.join(", ") : (row?.key_terms || "");
+        const query = getCitationNeededQuery(row);
+        return `
+            <div class="suggestion-box" style="margin-top:8px;">
+                <strong>Suggested evidence type:</strong> ${esc(sourceType)}<br>
+                ${keyTerms ? `<strong>Key terms:</strong> ${esc(keyTerms)}<br>` : ""}
+                <strong>Focused search query:</strong> ${esc(query)}
+            </div>
+        `;
+    }
+
+    function citationNeededSearchLinks(claimOrRow) {
+        const row = typeof claimOrRow === "object" && claimOrRow !== null ? claimOrRow : { claim: claimOrRow };
+        const query = getCitationNeededQuery(row);
+        const scholar = buildSafeSearchUrl("scholar", query);
+        const google = buildSafeSearchUrl("google", query);
+        const crossref = buildSafeSearchUrl("crossref", query);
+
         return `
             <div class="citation-needed-actions">
-                <a href="${scholar}" target="_blank" rel="noopener">Search Scholar</a>
-                <a href="${google}" target="_blank" rel="noopener">Search Google</a>
-                <a href="${crossref}" target="_blank" rel="noopener">Search Crossref</a>
+                <a href="${scholar}" target="_blank" rel="noopener noreferrer">Google Scholar</a>
+                <a href="${google}" target="_blank" rel="noopener noreferrer">Google</a>
+                <a href="${crossref}" target="_blank" rel="noopener noreferrer">Crossref</a>
             </div>
         `;
     }
-
-    function citationNeededContextSuggestions(row, claim) {
-        const suggestions = Array.isArray(row?.context_specific_suggestions) ? row.context_specific_suggestions : [];
-        const terms = Array.isArray(row?.key_terms) ? row.key_terms : [];
-        const sourceType = row?.suggested_source_type || "Use a source that directly supports the claim.";
-        const snippet = row?.context_snippet || row?.context || "";
-        const list = suggestions.length ? suggestions : [
-            `Search for evidence on: ${terms.slice(0, 6).join(", ") || claim.slice(0, 120)}.`,
-            sourceType,
-            "Place the citation immediately after the claim or revise the claim if no direct source exists."
-        ];
-        return `
-            <div class="context-suggestion-box">
-                ${snippet ? `<div class="context-snippet"><strong>Context:</strong> ${esc(snippet)}</div>` : ""}
-                ${terms.length ? `<div class="small-muted"><strong>Key terms:</strong> ${esc(terms.join(", "))}</div>` : ""}
-                <ul>${list.map(item => `<li>${esc(item)}</li>`).join("")}</ul>
-                <div class="small-muted">Search links are optional aids only; verify the actual source page before citing it.</div>
-                ${citationNeededSearchLinks(claim, row)}
-            </div>
-        `;
-    }
-
 
     function renderCitationNeeded(data) {
         const body = $("citationNeededBody");
@@ -3900,8 +3856,8 @@ document.addEventListener("DOMContentLoaded", function () {
                         <div class="small-muted" style="margin-top:6px;">Detector/source: ${esc(source)}</div>
                     </td>
                     <td>${esc(reason)}</td>
-                    <td>${esc(recommendation)}</td>
-                    <td>${citationNeededContextSuggestions(row, claim)}</td>
+                    <td>${esc(recommendation)}${citationNeededContextBox(row)}</td>
+                    <td>${citationNeededSearchLinks(row)}</td>
                 </tr>
             `;
         }).join("");
