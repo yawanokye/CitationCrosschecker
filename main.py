@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-citation-needed-tab-manual-sort-certificate-flow-2026-05-30-v1.5.37"
+# MAIN_BUILD = "DEMO_MAIN-evidence-url-context-suggestions-2026-05-30-v1.5.38"
 
 import io
 import os
@@ -3406,10 +3406,59 @@ async def api_manual_search(request: Request):
 
 
 
-def _manual_evidence_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _manual_url_is_search_page(url: str, evidence_type: str = "", source: str = "") -> bool:
+    """Return True when the URL is only a search-results page, not a verified source page."""
+    u = str(url or "").strip().lower()
+    t = str(evidence_type or "").strip().lower()
+    s = str(source or "").strip().lower()
+    if t in {"search", "search_result", "search_opened", "search_activity"}:
+        return True
+    if "google scholar" in s or "google search" in s or "title search" in s:
+        return True
+    return any(marker in u for marker in [
+        "scholar.google.", "google.com/search", "www.google.com/search",
+        "search.crossref.org", "crossref.org/?q=", "openalex.org/works?page="
+    ])
+
+
+def _manual_normalise_evidence_url(value: str) -> str:
+    """Normalise a user-provided DOI or source URL into a clickable evidence URL."""
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    if re.match(r"^10\.\d{4,9}/\S+$", url, re.I):
+        return "https://doi.org/" + url
+    if url.lower().startswith("doi:"):
+        return "https://doi.org/" + url[4:].strip()
+    if url.lower().startswith("www."):
+        return "https://" + url
+    return url
+
+
+def _manual_all_evidence_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     manual = result.setdefault("manual_verification", {})
     records = manual.setdefault("evidence", [])
     return records if isinstance(records, list) else []
+
+
+def _manual_search_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    manual = result.setdefault("manual_verification", {})
+    records = manual.setdefault("searches", [])
+    return records if isinstance(records, list) else []
+
+
+def _manual_record_is_source_evidence(record: Dict[str, Any]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    url = str(record.get("evidence_url") or record.get("url") or "").strip()
+    evidence_type = str(record.get("evidence_type") or record.get("type") or "").strip()
+    source = str(record.get("evidence_source") or record.get("source") or "").strip()
+    return bool(url) and not _manual_url_is_search_page(url, evidence_type, source)
+
+
+def _manual_evidence_records(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Actual source evidence only. Search pages are kept separately in manual_verification.searches."""
+    return [r for r in _manual_all_evidence_records(result) if _manual_record_is_source_evidence(r)]
 
 
 def _manual_evidence_matches_key(record: Dict[str, Any], ref_key: str) -> bool:
@@ -3423,32 +3472,47 @@ def _manual_evidence_for_key(result: Dict[str, Any], ref_key: str) -> List[Dict[
     return [r for r in _manual_evidence_records(result) if _manual_evidence_matches_key(r, ref_key)]
 
 
-def _manual_add_evidence_record(result: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
-    records = _manual_evidence_records(result)
-    key = record.get("manual_reference_key") or _manual_reference_key(record.get("reference") or "")
-    url = str(record.get("evidence_url") or "").strip()
-    source = str(record.get("evidence_source") or "").strip()
-    evidence_type = str(record.get("evidence_type") or "").strip()
+def _manual_searches_for_key(result: Dict[str, Any], ref_key: str) -> List[Dict[str, Any]]:
+    return [r for r in _manual_search_records(result) if _manual_evidence_matches_key(r, ref_key)]
 
-    # Upsert by reference key + source + URL so repeated clicks do not inflate evidence counts.
+
+def _manual_add_record(records: List[Dict[str, Any]], record: Dict[str, Any], url_key: str) -> Dict[str, Any]:
+    key = record.get("manual_reference_key") or _manual_reference_key(record.get("reference") or "")
+    url = str(record.get(url_key) or "").strip()
+    source = str(record.get("evidence_source") or record.get("search_source") or "").strip()
+    record_type = str(record.get("evidence_type") or record.get("search_type") or "").strip()
     for existing in records:
-        if (
-            existing.get("manual_reference_key") == key
-            and str(existing.get("evidence_url") or "").strip() == url
-            and str(existing.get("evidence_source") or "").strip().lower() == source.lower()
-            and str(existing.get("evidence_type") or "").strip().lower() == evidence_type.lower()
-        ):
+        existing_url = str(existing.get(url_key) or "").strip()
+        existing_source = str(existing.get("evidence_source") or existing.get("search_source") or "").strip()
+        existing_type = str(existing.get("evidence_type") or existing.get("search_type") or "").strip()
+        if existing.get("manual_reference_key") == key and existing_url == url and existing_source.lower() == source.lower() and existing_type.lower() == record_type.lower():
             existing.update({k: v for k, v in record.items() if v not in (None, "")})
             return existing
-
     records.append(record)
     return record
+
+
+def _manual_add_evidence_record(result: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
+    """Store actual verified source evidence. Search-result pages are not stored here."""
+    record["evidence_url"] = _manual_normalise_evidence_url(record.get("evidence_url") or record.get("url") or "")
+    record.setdefault("evidence_type", "source_record")
+    record["is_search_link"] = False
+    return _manual_add_record(_manual_all_evidence_records(result), record, "evidence_url")
+
+
+def _manual_add_search_record(result: Dict[str, Any], record: Dict[str, Any]) -> Dict[str, Any]:
+    """Store search activity separately from actual source evidence."""
+    record["search_url"] = _manual_normalise_evidence_url(record.get("search_url") or record.get("evidence_url") or record.get("url") or "")
+    record.setdefault("search_type", "search_opened")
+    record["is_search_link"] = True
+    return _manual_add_record(_manual_search_records(result), record, "search_url")
 
 
 def _manual_build_summary(result: Dict[str, Any]) -> Dict[str, int]:
     manual = result.setdefault("manual_verification", {})
     decisions = manual.get("decisions") or []
-    evidence = manual.get("evidence") or []
+    evidence = _manual_evidence_records(result)
+    searches = _manual_search_records(result)
 
     out = {
         "manual_verified": 0,
@@ -3458,7 +3522,9 @@ def _manual_build_summary(result: Dict[str, Any]) -> Dict[str, int]:
         "not_indexed_but_plausible": 0,
         "keep_needs_review": 0,
         "manual_evidence_links_recorded": len(evidence),
+        "manual_search_links_recorded": len(searches),
         "google_scholar_evidence_links_recorded": 0,
+        "google_scholar_search_links_recorded": 0,
         "unique_manual_decisions": len(decisions),
         "total_manual_decisions": len(decisions),
     }
@@ -3468,6 +3534,12 @@ def _manual_build_summary(result: Dict[str, Any]) -> Dict[str, int]:
         url = str((ev or {}).get("evidence_url") or "").lower()
         if "google scholar" in source or "scholar.google" in url:
             out["google_scholar_evidence_links_recorded"] += 1
+
+    for ev in searches:
+        source = str((ev or {}).get("search_source") or (ev or {}).get("evidence_source") or "").lower()
+        url = str((ev or {}).get("search_url") or (ev or {}).get("evidence_url") or "").lower()
+        if "google scholar" in source or "scholar.google" in url:
+            out["google_scholar_search_links_recorded"] += 1
 
     for d in decisions:
         decision = str((d or {}).get("decision") or "").lower()
@@ -3495,31 +3567,47 @@ async def api_manual_verify_evidence(request: Request):
     payload = await request.json()
     job_id = str(payload.get("job_id") or "").strip()
     reference = _manual_norm(payload.get("reference") or "")
-    evidence_url = str(payload.get("evidence_url") or "").strip()
+    raw_url = str(payload.get("verified_url") or payload.get("source_url") or payload.get("evidence_url") or payload.get("search_url") or "").strip()
     evidence_source = _manual_norm(payload.get("evidence_source") or payload.get("source") or "Manual search")
-    evidence_type = _manual_norm(payload.get("evidence_type") or "search_result")
+    evidence_type = _manual_norm(payload.get("evidence_type") or "source_record")
 
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id is required")
     if not reference:
         raise HTTPException(status_code=400, detail="reference is required")
-    if not evidence_url:
-        raise HTTPException(status_code=400, detail="evidence_url is required")
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="Paste or open a URL before recording evidence")
 
     result = _manual_load_result(job_id)
     ref_key = _manual_reference_key(reference)
     stamp = datetime.utcnow().isoformat()
+    normalised_url = _manual_normalise_evidence_url(raw_url)
+    is_search = bool(payload.get("is_search_link")) or _manual_url_is_search_page(normalised_url, evidence_type, evidence_source)
 
-    record = _manual_add_evidence_record(result, {
-        "reference": reference,
-        "manual_reference_key": ref_key,
-        "evidence_source": evidence_source,
-        "evidence_type": evidence_type,
-        "evidence_url": evidence_url,
-        "opened_at": stamp,
-        "recorded_at": stamp,
-        "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
-    })
+    if is_search:
+        record = _manual_add_search_record(result, {
+            "reference": reference,
+            "manual_reference_key": ref_key,
+            "search_source": evidence_source,
+            "search_type": evidence_type or "search_opened",
+            "search_url": normalised_url,
+            "opened_at": stamp,
+            "recorded_at": stamp,
+            "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
+        })
+        message = "Search link recorded as search activity only. It will not be treated as verification evidence. Paste the actual DOI, publisher page, repository page, or source URL after you review it."
+    else:
+        record = _manual_add_evidence_record(result, {
+            "reference": reference,
+            "manual_reference_key": ref_key,
+            "evidence_source": evidence_source or "User-provided source URL",
+            "evidence_type": evidence_type if evidence_type not in {"search_result", "search_opened"} else "source_record",
+            "evidence_url": normalised_url,
+            "opened_at": stamp,
+            "recorded_at": stamp,
+            "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
+        })
+        message = "Verified source evidence recorded. Generate an updated certificate to include the actual evidence URL."
 
     result["manual_verification_summary"] = _manual_build_summary(result)
     result["certificate_state"] = {
@@ -3527,15 +3615,17 @@ async def api_manual_verify_evidence(request: Request):
         "manual_verification_updated_after_certificate": True,
         "last_manual_verification_at": stamp,
         "last_certificate_generated_at": ((result.get("citation_integrity_certificate") or {}).get("generated_at") or ""),
-        "reason": "Manual verification evidence was recorded. Generate an updated certificate to include it.",
+        "reason": "Manual verification evidence/search activity changed. Generate an updated certificate to include the latest user-attested record.",
     }
     result.pop("citation_integrity_certificate", None)
     _manual_save_result(job_id, result)
 
     return {
         "ok": True,
-        "message": "Manual verification evidence recorded.",
-        "evidence": record,
+        "message": message,
+        "evidence": None if is_search else record,
+        "search": record if is_search else None,
+        "record_type": "search_activity" if is_search else "source_evidence",
         "manual_verification_summary": result.get("manual_verification_summary"),
         "certificate_update_required": True,
         "certificate_state": result.get("certificate_state"),
@@ -3777,24 +3867,57 @@ def _demo_sentence_has_citation(sentence: str) -> bool:
     return any(re.search(p, sentence) for p in patterns)
 
 
-def _demo_generate_citation_needed_claims(result: Dict[str, Any], limit: int = 60) -> List[Dict[str, Any]]:
-    """Lightweight demonstration detector for claims that may need citations."""
+def _demo_generate_citation_needed_claims(result: Dict[str, Any], limit: int = 60, force: bool = False) -> List[Dict[str, Any]]:
+    """Lightweight demonstration detector with context-specific citation suggestions."""
     existing = result.get("citation_needed_claims") or result.get("citation_needed") or result.get("claims_needing_citation")
-    if isinstance(existing, list) and existing:
+    if not force and isinstance(existing, list) and existing and all(isinstance(r, dict) and r.get("context_specific_suggestions") for r in existing):
         return existing[:limit]
 
     text = _demo_main_text(result)
     if not text:
         return []
 
-    # Keep this conservative and explainable for demonstration.
+    def key_terms(sentence: str, max_terms: int = 8) -> List[str]:
+        stop = {"about", "above", "after", "again", "against", "also", "among", "because", "between", "could", "during", "effect", "from", "have", "into", "more", "most", "only", "other", "over", "such", "than", "that", "their", "there", "these", "this", "through", "under", "using", "which", "while", "with", "within", "would", "were", "was", "are", "and", "the", "for", "not", "can", "may"}
+        words = re.findall(r"\b[A-Za-z][A-Za-z\-]{3,}\b", sentence)
+        terms = []
+        for w in words:
+            lw = w.lower().strip("-")
+            if lw in stop or len(lw) < 4:
+                continue
+            if lw not in terms:
+                terms.append(lw)
+        return terms[:max_terms]
+
+    def source_type(sentence: str) -> str:
+        s = sentence.lower()
+        if re.search(r"\d+(?:\.\d+)?\s*%|percent|rate|prevalence|proportion|majority|minority", s):
+            return "Use a statistical report, survey, dataset, or empirical study that directly reports the figure or proportion."
+        if re.search(r"effect|impact|influence|determinant|predict|associated|relationship", s):
+            return "Use an empirical study, model result, systematic review, or theory-backed source that directly supports the relationship claimed."
+        if re.search(r"policy|regulation|law|standard|guideline|framework", s):
+            return "Use an official policy, law, standard, guideline, regulator publication, or authoritative institutional source."
+        if re.search(r"definition|defined as|conceptual|construct|theory", s):
+            return "Use a conceptual, theoretical, or methodological source that defines the construct or explains the concept."
+        return "Use a peer-reviewed source, authoritative report, dataset, or official document that directly supports the statement."
+
+    def context_for(sentences: List[str], idx: int) -> Dict[str, str]:
+        before = re.sub(r"\s+", " ", sentences[idx - 1]).strip() if idx > 0 else ""
+        after = re.sub(r"\s+", " ", sentences[idx + 1]).strip() if idx + 1 < len(sentences) else ""
+        return {"before": before[:360], "after": after[:360], "snippet": " ".join(x for x in [before, sentences[idx], after] if x)[:900]}
+
+    def suggestions(sentence: str, ctx: Dict[str, str]) -> List[str]:
+        terms = key_terms(sentence)
+        focus = ", ".join(terms[:5]) if terms else sentence[:120]
+        return [
+            f"Search for evidence on the specific idea: {focus}.",
+            source_type(sentence),
+            "Place the citation immediately after this claim, or rewrite the claim if it is interpretive and no direct source exists.",
+            "Prefer the actual source page, DOI, publisher page, institutional repository, dataset, or official report instead of a general search-results page.",
+        ]
+
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    claim_markers = re.compile(
-        r"\b(\d+(?:\.\d+)?\s*%|percent|majority|minority|increase|decrease|significant|"
-        r"higher|lower|more likely|less likely|associated with|relationship between|effect of|impact of|"
-        r"determinants? of|predicts?|influences?|found that|shows that|reveals that|indicates that)\b",
-        re.I,
-    )
+    claim_markers = re.compile(r"\b(\d+(?:\.\d+)?\s*%|percent|majority|minority|increase|decrease|significant|higher|lower|more likely|less likely|associated with|relationship between|effect of|impact of|determinants? of|predicts?|influences?|found that|shows that|reveals that|indicates that|evidence suggests|studies show|research shows|data show|survey|sample|respondents)\b", re.I)
 
     rows = []
     seen = set()
@@ -3810,26 +3933,34 @@ def _demo_generate_citation_needed_claims(result: Dict[str, Any], limit: int = 6
         if key in seen:
             continue
         seen.add(key)
-        priority = "high" if re.search(r"\d+(?:\.\d+)?\s*%|significant|effect|impact", clean, re.I) else "medium"
+        priority = "high" if re.search(r"\d+(?:\.\d+)?\s*%|significant|effect|impact|relationship|associated", clean, re.I) else "medium"
+        ctx = context_for(sentences, idx)
+        terms = key_terms(clean)
+        query = " ".join(terms[:8]) or clean[:180]
         rows.append({
             "id": f"CN-{len(rows)+1:03d}",
             "claim": clean,
             "priority": priority,
-            "reason": "Potential factual or empirical claim without an immediately detected citation.",
-            "recommendation": "Add a supporting citation or revise the wording if the claim is interpretive.",
-            "suggested_search_query": clean[:220],
+            "reason": "Potential factual, statistical, empirical, or interpretive claim without an immediately detected citation.",
+            "recommendation": "Add a source that directly supports the claim, or revise the wording if the statement is interpretive.",
+            "context_before": ctx["before"],
+            "context_after": ctx["after"],
+            "context_snippet": ctx["snippet"],
+            "key_terms": terms,
+            "suggested_source_type": source_type(clean),
+            "context_specific_suggestions": suggestions(clean, ctx),
+            "suggested_search_query": query,
             "suggested_sources": [
-                {"label": "Google Scholar", "type": "search", "query": clean[:220]},
-                {"label": "Google", "type": "search", "query": clean[:220]},
-                {"label": "Crossref", "type": "metadata_search", "query": clean[:220]},
+                {"label": "Google Scholar", "type": "search_query", "query": query},
+                {"label": "Google", "type": "search_query", "query": query},
+                {"label": "Crossref", "type": "metadata_search", "query": query},
             ],
             "status": "unresolved",
-            "source": "training_demo_detector",
+            "source": "training_demo_context_detector",
             "sentence_index": idx,
         })
         if len(rows) >= limit:
             break
-
     return rows
 
 
@@ -4641,7 +4772,7 @@ async def start_citation_needed_claims(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found.")
 
     result = job.get("result") or {}
-    result["citation_needed_claims"] = _demo_generate_citation_needed_claims(result)
+    result["citation_needed_claims"] = _demo_generate_citation_needed_claims(result, force=True)
     result = _demo_prepare_full_review_result(job_id, result, persist=True)
     return {
         "ok": True,
