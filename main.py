@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-citation-needed-logic-and-advanced-context-sources-2026-05-31-v1.5.41"
+# MAIN_BUILD = "DEMO_MAIN-preserve-tabs-citation-needed-logic-2026-05-31-v1.5.41"
 
 import io
 import os
@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote_plus
 
 # Optional lightweight preflight readers used only for queue routing.
 # If a reader is unavailable or fails, the file is routed safely to the large queue.
@@ -1351,7 +1352,7 @@ def _ensure_recovery_possible_sources(result: Dict[str, Any]) -> Dict[str, Any]:
                     )
                     _attach_context_source_payload(row, payload)
 
-    for key in ["advanced_enrichment", "advanced_recovery", "advanced_possible_sources", "advanced_enrichment_rows", "recovery_rows", "verification_recovery"]:
+    for key in ["advanced_enrichment", "advanced_recovery", "recovery_rows", "verification_recovery"]:
         rows = result.get(key)
         if isinstance(rows, list):
             for row in rows:
@@ -3925,15 +3926,16 @@ def _demo_sentence_has_citation(sentence: str) -> bool:
 
 
 
-
 def _citation_needed_is_results_statistics_sentence(sentence: str) -> bool:
     """
-    Conservative exclusion rule for Citation Needed.
+    Suppress Citation Needed false positives from the author's own work.
 
-    The Citation Needed detector should target unsupported literature,
-    background, definitional, policy, contextual and empirical claims. It should
-    not treat the author's own methodology, own results, chapter summaries,
-    conclusions or recommendations as external claims needing citation.
+    The detector should not flag methods, data-processing decisions, sampling,
+    questionnaire administration, regression/ANOVA/correlation output, descriptive
+    statistics, table narration, response-rate statements, chapter summaries,
+    conclusions, recommendations, or reported findings from the current study.
+
+    It should focus on external literature/background claims that lack citation.
     """
     s = re.sub(r"\s+", " ", str(sentence or "")).strip()
     if not s:
@@ -3941,160 +3943,105 @@ def _citation_needed_is_results_statistics_sentence(sentence: str) -> bool:
 
     low = s.lower()
 
-    # ------------------------------------------------------------
-    # 1. Heading-led or section-introductory sentences.
-    # ------------------------------------------------------------
-    if re.match(
-        r"^(regression analysis|anova results|correlation analysis|descriptive analysis|"
-        r"reliability analysis|response rate|data processing and analysis|research design|"
-        r"sampling procedures|sample size|study population|data collection procedure|"
-        r"ethical considerations|chapter summary|summary of findings|conclusion|recommendations)\b",
-        low,
-    ):
-        return True
-
-    if re.search(r"\b(this section|this chapter)\s+(presents|discusses|outlines|summarises|summarizes|provides|reports)\b", low):
-        return True
-
-    # ------------------------------------------------------------
-    # 2. Methodology / methods description. These may need methodological
-    #    review, but should not appear as missing external citations.
-    # ------------------------------------------------------------
-    methods_patterns = [
-        r"\bdata\s+(collected|were collected|was collected|coded|cleaned|entered|analysed|analyzed)\b",
-        r"\bstructured questionnaires?\b",
-        r"\bquestionnaires?\s+(were\s+)?(distributed|administered|returned|completed|retrieved)\b",
-        r"\brespondents?\s+(were|are|comprised|included|selected|given)\b",
-        r"\b(sample size|sampling procedure|stratified sampling|simple random sampling|proportionate allocation)\b",
-        r"\b(yamane|margin of error|confidence level|accessible population|study population)\b",
-        r"\b(cronbach|reliability test|validity|pilot test|content validity|internal consistency)\b",
-        r"\b(stata|spss|descriptive statistics|inferential analysis|multiple linear regression|pearson correlation)\b",
-        r"\b(control variables?|dependent variable|independent variables?|composite index|equal weighting)\b",
-        r"\b(to minimise|to minimize)\s+the\s+effect\s+of\s+non[- ]response\b",
-        r"\bformal letters were submitted\b",
-        r"\binformed consent\b",
-        r"\bethical\s+(principles|considerations|standards)\b",
-        r"\bthe approach is therefore suitable\b",
-        r"\bthe design was selected because\b",
-        r"\bwas considered appropriate because\b",
-        r"\bwas preferred because\b",
+    # 1. Methods / methodology / design / sampling / data collection statements.
+    method_patterns = [
+        r"\bthis study\s+(adopts?|employs?|uses?|used|relies|relied|focuses|examines|investigates|seeks|aims)\b",
+        r"\bthe study\s+(adopts?|employs?|uses?|used|relies|relied|focuses|examines|investigates|seeks|aims)\b",
+        r"\bquantitative\s+(research\s+)?approach\b",
+        r"\bcross[-\s]?sectional\s+survey\s+design\b",
+        r"\bresearch\s+design\b",
+        r"\bstudy\s+area\b",
+        r"\bstudy\s+population\b",
+        r"\bsampling\s+(procedure|procedures|technique|techniques|method|methods)\b",
+        r"\bsample\s+size\b",
+        r"\byamane\b",
+        r"\bstratified\s+sampling\b",
+        r"\bsimple\s+random\s+sampling\b",
+        r"\bproportionate\s+allocation\b",
+        r"\bquestionnaires?\s+(were\s+)?(distributed|administered|returned|retrieved|completed)\b",
+        r"\badditional\s+questionnaires?\s+were\s+distributed\b",
+        r"\bnon[-\s]?response\b",
+        r"\bresponse\s+rate\b",
+        r"\bdata\s+(were\s+)?(collected|coded|cleaned|entered|analysed|analyzed|processed)\b",
+        r"\bdata\s+processing\s+and\s+analysis\b",
+        r"\binferential\s+analysis\s+was\s+then\s+conducted\b",
+        r"\bmultiple\s+linear\s+regression\s+because\b",
+        r"\bregression\s+was\s+(used|preferred|conducted)\b",
+        r"\bcronbach[’']?s?\s+alpha\b",
+        r"\breliability\s+(test|analysis|statistics)\b",
+        r"\bvalidity\b",
+        r"\bpilot\s+test\b",
+        r"\bethical\s+considerations?\b",
+        r"\binformed\s+consent\b",
+        r"\bbefore\s+estimating\s+the\s+model\b",
+        r"\bnormality\s+of\s+residuals\b",
+        r"\bmulticollinearity\b",
+        r"\bhomoscedasticity\b",
+        r"\bcontrol\s+variables?\s+include\b",
+        r"\bthe\s+regression\s+model\s+specified\b",
     ]
-    if any(re.search(p, low, flags=re.I) for p in methods_patterns):
+    if any(re.search(p, low, flags=re.I) for p in method_patterns):
         return True
 
-    # ------------------------------------------------------------
-    # 3. Own results, own findings and statistical reporting.
-    # ------------------------------------------------------------
-    own_results_markers = [
-        r"\bthis study\b",
-        r"\bcurrent study\b",
-        r"\bpresent study\b",
-        r"\bthe study found\b",
-        r"\bthe study revealed\b",
-        r"\bthe findings\b",
-        r"\bthe results\b",
-        r"\bthe analysis\b",
-        r"\bthe evidence\b",
-        r"\bthe regression results\b",
-        r"\bregression analysis\b",
-        r"\bcorrelation analysis\b",
-        r"\banova\b",
-        r"\bmodel summary\b",
-        r"\bmodel explained\b",
-        r"\bdescriptive analysis\b",
-        r"\breliability analysis\b",
-        r"\bresponse rate\b",
-        r"\btable\s+\d+\b",
-        r"\bfigure\s+\d+\b",
-        r"\bhighest[- ]rated\b",
+    # 2. Results / own empirical findings / table narration.
+    result_patterns = [
+        r"\bchapter\s+four\b",
+        r"\bresults\s+and\s+discussion\b",
+        r"\bresults?\s+(show|shows|showed|revealed|indicated|confirm|confirmed|suggest|suggested)\b",
+        r"\bfindings?\s+(show|shows|showed|revealed|indicated|confirm|confirmed|suggest|suggested)\b",
+        r"\bthe\s+findings\s+revealed\b",
+        r"\bthe\s+model\s+explained\b",
+        r"\bmodel\s+summary\b",
+        r"\bregression\s+analysis\b",
+        r"\bmultiple\s+regression\s+results?\b",
+        r"\bthe\s+regression\s+analysis\s+(confirmed|indicates?|showed|revealed)\b",
+        r"\banova\s+results?\b",
+        r"\bcorrelation\s+analysis\b",
+        r"\bdescriptive\s+analysis\b",
+        r"\bdescriptive\s+statistics\b",
+        r"\btable\s+\d+\s+(shows?|presents?|reports?|summarises?|summarizes?)\b",
+        r"\bfigure\s+\d+\s+(shows?|presents?|illustrates?)\b",
+        r"\bhighest[-\s]?rated\s+challenge\b",
+        r"\blowest[-\s]?rated\b",
         r"\branked\s+(first|second|third|fourth|fifth|\d+)\b",
-    ]
-    stats_markers = [
-        r"\b\d+(?:\.\d+)?\s*%",
-        r"\bpercent\b",
-        r"\bp\s*[<=>]\s*\.?\d+",
-        r"\bp-value\b",
-        r"\bsig\.?\b",
-        r"\br\s*-?\s?square\b",
+        r"\bmean\s+and\s+standard\s+deviation\b",
+        r"\bm\s*=\s*\d",
+        r"\bsd\s*=\s*\d",
+        r"\bβ\s*=\s*[-+]?\d",
+        r"\bbeta\s*=\s*[-+]?\d",
+        r"\bp\s*[<=>]\s*0?\.\d+",
+        r"\br\s*[- ]?square\b",
         r"\br²\b",
-        r"\badjusted\s+r\b",
-        r"\bf\s*\(",
-        r"\bt\s*\(",
-        r"\bβ\b",
-        r"\bbeta\b",
-        r"\bcoefficient\b",
-        r"\bstandard\s+deviation\b",
-        r"\bsd\b",
-        r"\bmean\b",
-        r"\bmedian\b",
-        r"\bfrequency\b",
-        r"\bvalid\s+n\b",
-        r"\bvariation in\b",
-        r"\bstatistically significant\b",
-        r"\bsignificant effect\b",
-        r"\bpositive and statistically significant\b",
-        r"\bnegative and statistically significant\b",
+        r"\bf\s*\(.*?\)\s*=\s*\d",
+        r"\bt\s*\(.*?\)\s*=\s*\d",
+        r"\bcoefficient\b.*\bp\s*[<=>]",
+        r"\bstatistically\s+significant\s+(effect|relationship|association|influence)\b",
+        r"\bpositive\s+and\s+statistically\s+significant\b",
+        r"\bnegative\s+and\s+statistically\s+significant\b",
     ]
-    result_verbs = r"\b(revealed|showed|shows|show|confirmed|indicated|indicates|explained|reported|presents?|demonstrates?|suggests?|implies?|found|ranked|recorded)\b"
-    has_own = any(re.search(p, low, flags=re.I) for p in own_results_markers)
-    has_stats = any(re.search(p, low, flags=re.I) for p in stats_markers)
-    if has_own and (has_stats or re.search(result_verbs, low, flags=re.I)):
+    if any(re.search(p, low, flags=re.I) for p in result_patterns):
         return True
 
-    # Own inferential interpretation without explicit numeric values.
-    if re.search(r"\b(findings|results|regression|correlation|anova|model summary|model explained|descriptive results)\b", low) and re.search(result_verbs, low, flags=re.I):
+    # 3. Chapter 5 own summary/conclusion/recommendation language.
+    if re.search(r"\b(the\s+study\s+concludes|the\s+study\s+recommends|it\s+recommends|summary\s+of\s+findings|chapter\s+summary)\b", low):
         return True
 
-    # Chapter 5 synthesis/recommendation language. These are author's deductions
-    # from the study, not missing literature citations.
-    if re.search(r"\b(based on the findings|the study recommends|this study recommends|the study concludes|the study therefore concludes|the implication is that|the evidence therefore supports|these findings demonstrate|these findings suggest|these findings are also consistent)\b", low):
+    # 4. Statistical/numeric reporting plus own-results verbs.
+    has_stat = bool(re.search(
+        r"\b\d+(?:\.\d+)?\s*%|\bpercent\b|\bmean\b|\bmedian\b|\bsd\b|\bstandard\s+deviation\b|\bcoefficient\b|\bp[-\s]?value\b|\bsig\.?\b|\brespondents?\b|\bquestionnaires?\b",
+        low,
+        flags=re.I,
+    ))
+    has_own_reporting = bool(re.search(
+        r"\b(this\s+study|the\s+study|results?|findings?|analysis|regression|correlation|anova|table\s+\d+|model)\b",
+        low,
+        flags=re.I,
+    ))
+    if has_stat and has_own_reporting:
         return True
 
     return False
 
-
-def _demo_paragraph_has_citation(paragraph: str) -> bool:
-    """Detect whether a paragraph already contains nearby citation evidence."""
-    if not paragraph:
-        return False
-    return _demo_sentence_has_citation(paragraph)
-
-
-def _demo_iter_sentences_with_paragraph_context(text: str) -> List[Dict[str, Any]]:
-    """Return sentences with paragraph context for conservative citation-needed detection."""
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n|\r\n\s*\r\n", str(text or "")) if p and p.strip()]
-    out: List[Dict[str, Any]] = []
-    sentence_index = 0
-    for p_index, paragraph in enumerate(paragraphs):
-        paragraph_clean = re.sub(r"\s+", " ", paragraph).strip()
-        if not paragraph_clean:
-            continue
-        sentences = re.split(r"(?<=[.!?])\s+", paragraph_clean)
-        for sentence in sentences:
-            clean = re.sub(r"\s+", " ", sentence or "").strip()
-            if not clean:
-                continue
-            out.append({
-                "sentence": clean,
-                "paragraph": paragraph_clean,
-                "paragraph_index": p_index,
-                "sentence_index": sentence_index,
-                "paragraph_has_citation": _demo_paragraph_has_citation(paragraph_clean),
-            })
-            sentence_index += 1
-    if out:
-        return out
-    return [
-        {
-            "sentence": re.sub(r"\s+", " ", s or "").strip(),
-            "paragraph": "",
-            "paragraph_index": 0,
-            "sentence_index": i,
-            "paragraph_has_citation": False,
-        }
-        for i, s in enumerate(re.split(r"(?<=[.!?])\s+", str(text or "")))
-        if re.sub(r"\s+", " ", s or "").strip()
-    ]
 
 def _normalise_context_text_for_source(*parts: Any) -> str:
     """Join claim/citation/reference/context text for source guidance."""
@@ -4249,205 +4196,306 @@ def _ensure_citation_needed_possible_sources(result: Dict[str, Any]) -> Dict[str
     rows = result.get("citation_needed_claims") or result.get("citation_needed") or result.get("claims_needing_citation")
     if not isinstance(rows, list):
         return result
+    filtered_rows = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         claim = row.get("claim") or row.get("text") or row.get("sentence") or row.get("statement") or ""
         if not claim:
             continue
+        if not _citation_needed_row_should_keep(row):
+            continue
         payload = _citation_needed_possible_source_payload(str(claim))
         if not row.get("possible_source_guidance"):
             _attach_context_source_payload(row, payload)
         row.setdefault("recommendation", _citation_needed_recommendation(str(claim)))
         row.setdefault("context_snippet", str(claim)[:500])
+        filtered_rows.append(row)
+    result["citation_needed_claims"] = filtered_rows
+    if isinstance(result.get("summary"), dict):
+        result["summary"]["citation_needed_claims"] = len(filtered_rows)
     return result
 
 
 
 
-def _build_context_specific_advanced_enrichment_sources(result: Dict[str, Any], scope: str = "weak_only", limit: int = 80) -> List[Dict[str, Any]]:
+def _citation_needed_external_claim_marker(sentence: str) -> bool:
+    """True when a sentence looks like an external/background/literature claim."""
+    low = str(sentence or "").lower()
+    external_patterns = [
+        r"\bempirical\s+(evidence|studies|research)\s+(shows?|indicates?|suggests?|reveals?)\b",
+        r"\bprior\s+(studies|research|evidence)\s+(shows?|indicates?|suggests?|reveals?)\b",
+        r"\brecent\s+(studies|research|literature|scholarship)\s+(shows?|indicates?|suggests?|reveals?|emphasizes?|highlights?)\b",
+        r"\bmodern\s+literature\s+(shows?|indicates?|suggests?|emphasizes?|highlights?)\b",
+        r"\bthe\s+literature\s+(suggests?|shows?|indicates?|reveals?|emphasizes?|highlights?)\b",
+        r"\bliterature\s+(suggests?|shows?|indicates?|reveals?|emphasizes?|highlights?)\b",
+        r"\bresearch\s+(shows?|indicates?|suggests?|reveals?|demonstrates?)\b",
+        r"\bstudies\s+(show|indicate|suggest|reveal|demonstrate)\b",
+        r"\bhas\s+been\s+(linked|associated|shown|reported|identified)\b",
+        r"\bare\s+widely\s+(recognised|recognized|accepted|used|regarded)\b",
+        r"\bpublic\s+procurement\s+accounts\s+for\b",
+        r"\bthere\s+is\s+(also\s+)?(a\s+)?lack\s+of\s+empirical\s+evidence\b",
+        r"\bgap\s+in\s+the\s+(literature|evidence)\b",
+        r"\bexisting\s+(literature|studies|evidence)\b",
+        r"\bprevious\s+(studies|research)\b",
+        r"\bvalue\s+for\s+money\s+refers\b",
+        r"\be[-\s]?procurement\s+is\s+(viewed|considered|defined|expected)\b",
+    ]
+    return any(re.search(p, low, flags=re.I) for p in external_patterns)
+
+
+def _citation_needed_row_should_keep(row: Dict[str, Any]) -> bool:
+    """Filter existing/stale Citation Needed rows so old false positives do not remain."""
+    if not isinstance(row, dict):
+        return False
+    claim = str(row.get("claim") or row.get("text") or row.get("sentence") or row.get("statement") or "")
+    if not claim.strip():
+        return False
+    if _demo_sentence_has_citation(claim):
+        return False
+    if _citation_needed_is_results_statistics_sentence(claim):
+        return False
+    # Keep only external/background/literature claims or broad statistical claims.
+    if _citation_needed_external_claim_marker(claim):
+        return True
+    if re.search(r"\b\d+(?:\.\d+)?\s*%|\bpercent\b|\bprevalence\b|\bglobal\b|\bnational\b", claim, flags=re.I):
+        return True
+    return False
+
+
+def _demo_paragraph_has_citation(paragraph: str) -> bool:
+    return _demo_sentence_has_citation(paragraph or "")
+
+
+def _make_search_source(title: str, query: str, source_type: str = "search") -> Dict[str, Any]:
+    q = re.sub(r"\s+", " ", str(query or "")).strip()[:180]
+    return {
+        "title": title,
+        "suggested": title,
+        "year": "Review required",
+        "authors": "Search result",
+        "relevance": "context-specific search",
+        "confidence": "review",
+        "source_type": source_type,
+        "query": q,
+        "url": "https://scholar.google.com/scholar?q=" + quote_plus(q) if q else "",
+        "reason": "Generated from the extracted claim/context; open and verify before using.",
+    }
+
+
+def _context_terms_for_query(text: str, authors: str = "", citation: str = "") -> str:
+    raw = _normalise_context_text_for_source(text, authors, citation)
+    terms = _extract_claim_key_terms(raw, max_terms=10)
+    if authors:
+        for a in re.findall(r"[A-Za-z][A-Za-z'\-]{2,}", str(authors))[:3]:
+            if a not in terms:
+                terms.insert(0, a)
+    return " ".join(terms[:10])[:180] or raw[:180]
+
+
+def _demo_enrich_problem_rows_in_place(result: Dict[str, Any], scope: str = "weak_only") -> Dict[str, Any]:
     """
-    Build visible context-specific possible-source rows for Advanced Enrichment.
+    Preserve the old structure: advanced enrichment updates the relevant tabs.
 
-    This mirrors the explanatory style used for Claim Support and Recovery, but
-    covers all problem areas in one list: Citation Needed, Missing Recovery,
-    Verification Recovery, Claim Support, and weak verification rows.
+    - Claim Support rows get alternative_sources where status is weak/unclear/insufficient/source_needs_review.
+    - Recovery rows get suggestions/deep_suggestions using claim/citation context and author/reference text.
+    - Citation Needed rows get possible-source guidance and alternative search sources in the Citation Needed tab.
+
+    No separate Advanced Enrichment results table is created.
     """
-    if not isinstance(result, dict):
-        return []
-
-    rows: List[Dict[str, Any]] = []
-    seen = set()
-
-    def add_row(source_area: str, text: str, citation: str = "", reference: str = "", row_type: str = "advanced"):
-        if len(rows) >= limit:
-            return
-        context = _normalise_context_text_for_source(text, citation, reference)
-        if not context:
-            return
-        key = (source_area + "|" + context[:180]).lower()
-        if key in seen:
-            return
-        seen.add(key)
-        payload = _context_specific_possible_source_payload(
-            text=context,
-            citation=citation,
-            reference=reference,
-            row_type=row_type,
-        )
-        row = {
-            "id": f"AE-{len(rows)+1:03d}",
-            "source_area": source_area,
-            "row_type": row_type,
-            "claim_or_context": context[:700],
-            "citation": citation,
-            "reference": reference,
-            "priority": "high" if source_area in {"Citation Needed", "Verification Recovery", "Weak Verification"} else "medium",
-            "status": "context_source_suggested",
-        }
-        rows.append(_attach_context_source_payload(row, payload))
-
-    scope = str(scope or "weak_only").lower()
-    include_recovery = scope in {"weak_only", "recovery_only", "all_problem_rows"}
-    include_claim = scope in {"weak_only", "claim_only", "citation_needed_only", "all_problem_rows"}
-    include_verification = scope in {"weak_only", "all_problem_rows"}
-
-    if include_claim:
-        for item in result.get("citation_needed_claims") or []:
-            if not isinstance(item, dict):
-                continue
-            claim = item.get("claim") or item.get("text") or item.get("sentence") or item.get("context_snippet") or ""
-            if claim:
-                add_row("Citation Needed", claim, row_type="citation_needed")
-
-        for item in result.get("claim_support") or []:
-            if not isinstance(item, dict):
-                continue
-            claim = item.get("claim") or item.get("sentence") or item.get("text") or item.get("context") or item.get("context_snippet") or ""
-            cited = item.get("citation") or item.get("source") or item.get("matched_reference") or ""
-            support = str(item.get("support") or item.get("judgement") or item.get("status") or "").lower()
-            if claim and (scope == "claim_only" or support in {"weak", "unsupported", "needs_review", "not_supported", "not found", "not_found", ""}):
-                add_row("Claim Support", claim, citation=cited, row_type="claim_support")
-
-    if include_recovery:
-        recovery = result.get("recovery") or {}
-        if isinstance(recovery, dict):
-            for item in recovery.get("missing_recovery") or []:
-                if isinstance(item, dict):
-                    add_row(
-                        "Missing Citation Recovery",
-                        item.get("context_snippet") or item.get("citation") or "",
-                        citation=item.get("citation", ""),
-                        reference=item.get("reference", ""),
-                        row_type="missing_recovery",
-                    )
-            for item in recovery.get("verification_recovery") or []:
-                if isinstance(item, dict):
-                    add_row(
-                        "Verification Recovery",
-                        item.get("context_snippet") or item.get("matched_title") or item.get("reference") or item.get("citation") or "",
-                        citation=item.get("citation", ""),
-                        reference=item.get("reference", ""),
-                        row_type="verification_recovery",
-                    )
-
-    if include_verification:
-        verify_rows = ((result.get("online_verification") or {}).get("rows") or []) if isinstance(result.get("online_verification"), dict) else []
-        for item in verify_rows:
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get("status") or "").lower()
-            if status not in {"needs_review", "not_found", "offline", "likely"}:
-                continue
-            ref = item.get("reference") or ""
-            context = item.get("recovery_query") or item.get("matched_title") or item.get("query_used") or ref
-            add_row("Weak Verification", context, reference=ref, row_type="weak_verification")
-
-    return rows[:limit]
-
-
-def _ensure_advanced_enrichment_possible_sources(result: Dict[str, Any], scope: str = "weak_only") -> Dict[str, Any]:
-    """Attach Advanced Enrichment possible-source rows to the result payload."""
     if not isinstance(result, dict):
         return result
-    rows = _build_context_specific_advanced_enrichment_sources(result, scope=scope, limit=100)
-    result["advanced_possible_sources"] = rows
-    result["advanced_enrichment_rows"] = rows
-    result["advanced_enrichment_summary"] = {
-        "context_specific_possible_sources": len(rows),
-        "scope": scope,
-        "ready": True,
+
+    full_text = _demo_main_text(result) or result.get("main_text", "") or result.get("full_text", "") or ""
+
+    weak_statuses = {
+        "source_needs_review", "insufficient_evidence", "weak", "unclear", "weak_or_unclear",
+        "needs_review", "not_found", "no_evidence_found", "related_evidence", "offline"
     }
+
+    def enrich_claim_row(row: Dict[str, Any]) -> None:
+        status = str(row.get("support_status") or row.get("status") or "").lower().replace(" ", "_")
+        if scope not in {"weak_only", "claim_only", "all_problem_rows"}:
+            return
+        if status not in weak_statuses and scope == "weak_only":
+            return
+        claim = str(row.get("claim") or row.get("claim_extracted") or row.get("extracted_claim") or row.get("context") or "")
+        citation = str(row.get("citation") or "")
+        authors = str(row.get("matched_authors") or row.get("authors") or row.get("author") or "")
+        context = claim
+        if citation and full_text:
+            try:
+                context = extract_context(full_text, citation, window=420) or claim
+            except Exception:
+                context = claim
+        source_payload = _context_specific_possible_source_payload(context or claim, citation=citation, reference=authors, row_type="claim_support")
+        _attach_context_source_payload(row, source_payload)
+        query = _context_terms_for_query(context or claim, authors=authors, citation=citation)
+        alt = row.get("alternative_sources") or row.get("deep_suggestions") or row.get("suggestions") or []
+        if not isinstance(alt, list):
+            alt = []
+        if not alt:
+            alt = [
+                _make_search_source("Search Google Scholar for a stronger supporting source", query, "google_scholar"),
+                _make_search_source("Search Crossref/OpenAlex by claim keywords", query, "metadata_search"),
+            ]
+        row["alternative_sources"] = alt
+        row["enrichment_note"] = "Advanced enrichment updated this Claim Support row in place using the extracted claim/context."
+
+    def enrich_recovery_row(row: Dict[str, Any], row_type: str) -> None:
+        if scope not in {"weak_only", "recovery_only", "all_problem_rows"}:
+            return
+        citation = str(row.get("citation") or "")
+        reference = str(row.get("reference") or row.get("matched_title") or "")
+        base = str(row.get("context_snippet") or citation or reference or "")
+        context = base
+        if citation and full_text:
+            try:
+                context = extract_context(full_text, citation, window=420) or base
+            except Exception:
+                context = base
+        source_payload = _context_specific_possible_source_payload(context or base, citation=citation, reference=reference, row_type=row_type)
+        _attach_context_source_payload(row, source_payload)
+        existing = row.get("deep_suggestions") or row.get("suggestions") or []
+        if not isinstance(existing, list):
+            existing = []
+        if not existing:
+            query = _context_terms_for_query(context or base, authors=reference, citation=citation)
+            existing = [
+                _make_search_source("Search Google Scholar using citation context and authors", query, "google_scholar"),
+                _make_search_source("Search Crossref/OpenAlex using title/authors/year", query, "metadata_search"),
+            ]
+        row["suggestions"] = existing
+        row["deep_suggestions"] = existing
+        row["enrichment_note"] = "Advanced enrichment updated this Recovery row in place using citation context and author/reference text."
+
+    def enrich_citation_needed_row(row: Dict[str, Any]) -> None:
+        if scope not in {"weak_only", "citation_needed_only", "all_problem_rows"}:
+            return
+        claim = str(row.get("claim") or row.get("text") or row.get("sentence") or row.get("statement") or "")
+        if not claim:
+            return
+        source_payload = _citation_needed_possible_source_payload(claim)
+        _attach_context_source_payload(row, source_payload)
+        query = row.get("suggested_search_query") or _context_terms_for_query(claim)
+        alt = row.get("alternative_sources") or []
+        if not isinstance(alt, list):
+            alt = []
+        if not alt:
+            alt = [
+                _make_search_source("Search Google Scholar for a source supporting this claim", query, "google_scholar"),
+                _make_search_source("Search Crossref/OpenAlex for a scholarly source", query, "metadata_search"),
+            ]
+        row["alternative_sources"] = alt
+        row["enrichment_note"] = "Advanced enrichment updated this Citation Needed row in place using the claim text."
+
+    for row in result.get("claim_support") or []:
+        if isinstance(row, dict):
+            enrich_claim_row(row)
+
+    recovery = result.get("recovery") or {}
+    if isinstance(recovery, dict):
+        for row in recovery.get("missing_recovery") or []:
+            if isinstance(row, dict):
+                enrich_recovery_row(row, "missing_recovery")
+        for row in recovery.get("verification_recovery") or []:
+            if isinstance(row, dict):
+                enrich_recovery_row(row, "verification_recovery")
+
+    filtered_cn = []
+    for row in result.get("citation_needed_claims") or []:
+        if isinstance(row, dict) and _citation_needed_row_should_keep(row):
+            enrich_citation_needed_row(row)
+            filtered_cn.append(row)
+    result["citation_needed_claims"] = filtered_cn
+
+    result.setdefault("summary", {})
+    if isinstance(result["summary"], dict):
+        result["summary"]["citation_needed_claims"] = len(result.get("citation_needed_claims") or [])
+
     return result
 
 def _demo_generate_citation_needed_claims(result: Dict[str, Any], limit: int = 60) -> List[Dict[str, Any]]:
-    """Lightweight demonstration detector for claims that may need citations."""
-    existing = result.get("citation_needed_claims") or result.get("citation_needed") or result.get("claims_needing_citation")
-    if isinstance(existing, list) and existing:
-        return existing[:limit]
+    """
+    Conservative detector for external claims that may need citations.
 
+    It deliberately suppresses the author's own methods/results/statistics and
+    focuses on uncited background/literature/empirical-evidence claims.
+    """
     text = _demo_main_text(result)
     if not text:
         return []
 
-    # Keep this conservative and explainable for demonstration.
-    sentence_items = _demo_iter_sentences_with_paragraph_context(text)
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p and p.strip()]
+    if not paragraphs:
+        paragraphs = [text]
+
     claim_markers = re.compile(
-        r"\b(\d+(?:\.\d+)?\s*%|percent|majority|minority|increase|decrease|significant|"
-        r"higher|lower|more likely|less likely|associated with|relationship between|effect of|impact of|"
-        r"determinants? of|predicts?|influences?|found that|shows that|reveals that|indicates that|"
-        r"empirical evidence|empirical studies|prior studies|previous studies|literature suggests|literature shows|"
-        r"studies show|studies indicate|it is well established|has been linked to|is associated with)\b",
+        r"\b(empirical\s+evidence|empirical\s+studies|prior\s+studies|recent\s+research|modern\s+literature|"
+        r"literature\s+suggests|literature\s+shows|research\s+shows|studies\s+show|previous\s+studies|"
+        r"has\s+been\s+linked|has\s+been\s+associated|widely\s+recognised|widely\s+recognized|"
+        r"lack\s+of\s+empirical\s+evidence|gap\s+in\s+the\s+literature|public\s+procurement\s+accounts\s+for|"
+        r"increase|decrease|prevalence|majority|minority|global|national|countrywide)\b",
         re.I,
     )
 
-    rows = []
+    rows: List[Dict[str, Any]] = []
     seen = set()
-    for item in sentence_items:
-        clean = re.sub(r"\s+", " ", item.get("sentence") or "").strip()
-        idx = int(item.get("sentence_index", 0) or 0)
-        paragraph = item.get("paragraph") or ""
-        if len(clean) < 70 or len(clean) > 420:
+    sent_idx = 0
+
+    for paragraph in paragraphs:
+        paragraph_clean = re.sub(r"\s+", " ", paragraph).strip()
+        if not paragraph_clean:
             continue
-        if _demo_sentence_has_citation(clean):
-            continue
-        # If the surrounding paragraph already contains a citation, treat the
-        # sentence as contextually supported and do not flag it separately.
-        if item.get("paragraph_has_citation"):
-            continue
-        if _citation_needed_is_results_statistics_sentence(clean):
-            continue
-        if not claim_markers.search(clean):
-            continue
-        key = clean[:140].lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        priority = "high" if re.search(r"\d+(?:\.\d+)?\s*%|significant|effect|impact", clean, re.I) else "medium"
-        focused_query = _build_citation_needed_search_query(clean)
-        possible_source = _citation_needed_possible_source_payload(clean)
-        rows.append({
-            "id": f"CN-{len(rows)+1:03d}",
-            "claim": clean,
-            "priority": priority,
-            "reason": "Potential factual or empirical claim without an immediately detected citation.",
-            "recommendation": _citation_needed_recommendation(clean),
-            "context_snippet": clean,
-            "key_terms": _extract_claim_key_terms(clean),
-            "suggested_source_type": possible_source.get("possible_source_type"),
-            "possible_source": possible_source.get("possible_source"),
-            "possible_source_type": possible_source.get("possible_source_type"),
-            "possible_source_guidance": possible_source.get("possible_source_guidance"),
-            "possible_source_examples": possible_source.get("possible_source_examples"),
-            "suggested_search_query": focused_query,
-            "suggested_sources": possible_source.get("suggested_sources"),
-            "status": "unresolved",
-            "source": "training_demo_detector",
-            "sentence_index": idx,
-            "paragraph_index": item.get("paragraph_index"),
-        })
-        if len(rows) >= limit:
-            break
+        paragraph_has_citation = _demo_paragraph_has_citation(paragraph_clean)
+        sentences = re.split(r"(?<=[.!?])\s+", paragraph_clean)
+
+        for sentence in sentences:
+            clean = re.sub(r"\s+", " ", sentence or "").strip()
+            sent_idx += 1
+            if len(clean) < 70 or len(clean) > 420:
+                continue
+            if _demo_sentence_has_citation(clean):
+                continue
+            if _citation_needed_is_results_statistics_sentence(clean):
+                continue
+            # If the paragraph already has a citation, do not separately flag a
+            # neighbouring sentence unless it is a clear external-gap claim.
+            if paragraph_has_citation and not re.search(r"\b(lack\s+of\s+empirical\s+evidence|gap\s+in\s+the\s+literature)\b", clean, re.I):
+                continue
+            if not claim_markers.search(clean) and not _citation_needed_external_claim_marker(clean):
+                continue
+
+            key = clean[:160].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            priority = "high" if re.search(r"\d+(?:\.\d+)?\s*%|prevalence|global|national", clean, re.I) else "medium"
+            focused_query = _build_citation_needed_search_query(clean)
+            possible_source = _citation_needed_possible_source_payload(clean)
+            row = {
+                "id": f"CN-{len(rows)+1:03d}",
+                "claim": clean,
+                "priority": priority,
+                "reason": "External factual, literature, empirical-evidence or background claim without a detected supporting citation.",
+                "recommendation": _citation_needed_recommendation(clean),
+                "context_snippet": clean,
+                "key_terms": _extract_claim_key_terms(clean),
+                "suggested_source_type": possible_source.get("possible_source_type"),
+                "possible_source": possible_source.get("possible_source"),
+                "possible_source_type": possible_source.get("possible_source_type"),
+                "possible_source_guidance": possible_source.get("possible_source_guidance"),
+                "possible_source_examples": possible_source.get("possible_source_examples"),
+                "suggested_search_query": focused_query,
+                "suggested_sources": possible_source.get("suggested_sources"),
+                "status": "unresolved",
+                "source": "training_demo_detector",
+                "sentence_index": sent_idx,
+            }
+            rows.append(row)
+            if len(rows) >= limit:
+                return rows
 
     return rows
 
@@ -4533,8 +4581,6 @@ def _demo_prepare_full_review_result(job_id: str, result: Dict[str, Any], *, per
     try:
         _ensure_citation_needed_possible_sources(result)
         _ensure_recovery_possible_sources(result)
-        if isinstance(result.get("enrichment"), dict) and str(result.get("enrichment", {}).get("state", "")).lower() == "completed":
-            _ensure_advanced_enrichment_possible_sources(result, scope=str(result.get("enrichment", {}).get("scope", "weak_only")))
     except Exception as e:
         print(f"[DEMO ACCESS] context-specific possible-source guidance skipped: {e}")
 
@@ -4554,23 +4600,21 @@ def _demo_prepare_full_review_result(job_id: str, result: Dict[str, Any], *, per
 def _demo_complete_enrichment(job_id: str, result: Dict[str, Any], scope: str = "weak_only", reason: str = "local_demo") -> Dict[str, Any]:
     """Local fallback for advanced enrichment during demonstrations."""
     result = _demo_prepare_full_review_result(job_id, result, persist=False)
-    _ensure_citation_needed_possible_sources(result)
-    _ensure_recovery_possible_sources(result)
-    _ensure_advanced_enrichment_possible_sources(result, scope=scope)
-    advanced_rows = result.get("advanced_possible_sources") or []
+    try:
+        _demo_enrich_problem_rows_in_place(result, scope=scope)
+    except Exception as e:
+        print(f"[DEMO ENRICHMENT] In-place context-specific source enrichment skipped: {e}")
     result["enrichment"] = {
         "state": "completed",
         "scope": scope,
         "progress": 100,
         "total": 100,
-        "message": "Advanced enrichment completed with context-specific possible-source guidance.",
+        "message": "Advanced enrichment completed in training/demo mode.",
         "requested_at": datetime.utcnow().isoformat(),
         "completed_at": datetime.utcnow().isoformat(),
         "deep_recovery_ready": True,
         "deep_claim_support_ready": True,
         "citation_needed_ready": True,
-        "context_specific_possible_sources_ready": True,
-        "advanced_possible_sources_count": len(advanced_rows),
         "mode": reason,
     }
     _demo_save_result(job_id, result)
@@ -5160,9 +5204,9 @@ async def start_advanced_enrichment(job_id: str, request: Request):
             "scope": enrichment.get("scope", scope),
         }
 
-    # Demo mode: complete enrichment locally so context-specific possible-source rows are visible immediately.
-    if DEMO_UNLOCK_ALL_FEATURES:
-        return _demo_complete_enrichment(job_id, result, scope, reason="local_demo_context_sources")
+    # Demo fallback keeps the feature open when Redis/DB/worker is unavailable.
+    if DEMO_UNLOCK_ALL_FEATURES and (not redis_conn or not DATABASE_URL):
+        return _demo_complete_enrichment(job_id, result, scope, reason="local_demo_no_queue")
 
     try:
         deep_queue = Queue("deep_enrichment", connection=redis_conn)
@@ -5178,7 +5222,6 @@ async def start_advanced_enrichment(job_id: str, request: Request):
         )
 
         result = _demo_prepare_full_review_result(job_id, result, persist=False)
-        _ensure_advanced_enrichment_possible_sources(result, scope=scope)
         result["enrichment"] = {
             "state": "queued",
             "scope": scope,
