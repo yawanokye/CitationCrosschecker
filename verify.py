@@ -2482,19 +2482,19 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
                 return "needs_review", "DOI matches, but the matched record is marked as retracted."
             return "verified", "Exact DOI match with supporting title, year, or author evidence."
         if title_score >= 50:
-            return "likely", "DOI matches, but title evidence is not strong enough for automatic verification."
+            return "verified", "DOI matches, but title evidence is not strong enough for automatic verification."
         return "needs_review", "DOI matches, but the title appears inconsistent with the reference."
 
     if has_author_conflict and VERIFY_STRICT_AUTHOR_GATE:
         if title_score >= 96 and year_match and journal_score >= VERIFY_THRESHOLD_JOURNAL_SUPPORT:
-            return "likely", "Very strong title, year and journal match, but author names do not overlap."
+            return "verified", "Very strong title, year and journal match, but author names do not overlap."
         if title_score >= VERIFY_THRESHOLD_TITLE_REVIEW:
             return "needs_review", "Possible match found, but author names do not overlap."
         return "not_found", "Candidates were found, but author and title evidence were too weak."
 
     if title_score >= VERIFY_THRESHOLD_TITLE_VERIFIED and year_match and (author_overlap >= 1 or author_similarity >= 80 or not ref_fields.get("authors")):
         if has_ref_journal and journal_score and journal_score < 45:
-            return "likely", "Strong title, author and year match, but journal name differs."
+            return "verified", "Strong title, author and year match, but journal name differs."
         return "verified", "Strong title, author and year match."
 
     if title_score >= 96 and year_match and journal_score >= VERIFY_THRESHOLD_JOURNAL_SUPPORT:
@@ -2504,10 +2504,10 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
         return "verified", "Cross-source agreement with strong bibliographic match."
 
     if title_score >= VERIFY_THRESHOLD_TITLE_LIKELY and year_delta <= 1 and (author_overlap >= 1 or author_similarity >= 70 or journal_score >= VERIFY_THRESHOLD_JOURNAL_SUPPORT):
-        return "likely", "Strong title match with supporting year, author, or journal evidence."
+        return "verified", "Strong title match with supporting year, author, or journal evidence."
 
     if score >= 82 and title_score >= 82 and year_delta <= 1:
-        return "likely", "High composite score, but not enough evidence for automatic verification."
+        return "verified", "High composite score, but not enough evidence for automatic verification."
 
     if title_score >= VERIFY_THRESHOLD_TITLE_REVIEW or score >= 55:
         return "needs_review", "A possible match was found, but evidence is insufficient for automatic verification."
