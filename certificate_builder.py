@@ -1,5 +1,5 @@
 """
-certificate_builder.py
+certificate_builder.py — PDF open-evidence links and clickable footer
 CiteIntegrity Citation Integrity Review Certificate.
 
 This module builds a careful, defensible certificate from an existing CiteIntegrity
@@ -36,6 +36,7 @@ import os
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
+from urllib.parse import urlsplit, urlunsplit, quote
 
 
 CLAIM_CRITICAL_STATUSES = {
@@ -1691,6 +1692,45 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         # Text passed here is either controlled labels or already HTML-escaped values.
         return Paragraph(_safe_str(text).replace("\n", "<br/>"), style)
 
+    def pdf_safe_url(value: Any) -> str:
+        """Return a PDF-safe URL for hyperlink annotations."""
+        url = _safe_str(value).strip()
+        if not url:
+            return ""
+        if url.lower().startswith("doi:"):
+            url = "https://doi.org/" + url[4:].strip()
+        elif re.match(r"^10\.\d{4,9}/\S+$", url, flags=re.I):
+            url = "https://doi.org/" + url
+        elif not re.match(r"^https?://", url, flags=re.I):
+            return ""
+
+        try:
+            parts = urlsplit(url)
+            if not parts.scheme or not parts.netloc:
+                return ""
+            path = quote(parts.path or "", safe="/:%@!$&'()*+,;=-._~")
+            query = quote(parts.query or "", safe="=&:%@!$'()*+,;?/.-_~")
+            fragment = quote(parts.fragment or "", safe="=&:%@!$'()*+,;?/.-_~")
+            return urlunsplit((parts.scheme, parts.netloc, path, query, fragment))
+        except Exception:
+            return url if re.match(r"^https?://", url, flags=re.I) else ""
+
+    def pdf_link(value: Any, label: str = "Open evidence", style=small) -> Paragraph:
+        """Clickable PDF label for evidence URLs.
+
+        The visible text is short so PDF viewers do not break long URLs across lines.
+        The complete evidence URL is embedded as the hyperlink annotation.
+        """
+        url = pdf_safe_url(value)
+        if not url:
+            return p("Not available", style)
+        href = _html(url)
+        safe_label = _html(label)
+        return Paragraph(
+            f'<link href="{href}"><font color="#1d4ed8"><u>{safe_label}</u></font></link>',
+            style,
+        )
+
     def table_rows(rows: List[Tuple[str, Any]], col_widths=None) -> Table:
         data = [[p(label), p(f"<b>{_html(value)}</b>")] for label, value in rows]
         table = Table(data, colWidths=col_widths or [1.35 * inch, 1.55 * inch], hAlign="LEFT")
@@ -1828,7 +1868,7 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
     manual_evidence = c.get("manual_evidence_records") or []
     if manual_evidence:
         story.append(Paragraph("Manual Evidence Recorded", h3))
-        evidence_data = [[p("#"), p("Reference"), p("Evidence source"), p("Type"), p("Evidence URL")]]
+        evidence_data = [[p("#"), p("Reference"), p("Evidence source"), p("Type"), p("Evidence link")]]
         for i, ev in enumerate(manual_evidence[:20]):
             if not isinstance(ev, dict):
                 continue
@@ -1837,7 +1877,7 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
                 p(_html(ev.get("reference", "")), small),
                 p(_html(ev.get("evidence_source") or ev.get("source") or ""), small),
                 p(_html(ev.get("evidence_type") or ev.get("type") or ""), small),
-                p(_html(ev.get("evidence_url") or ev.get("url") or ""), small),
+                pdf_link(ev.get("evidence_url") or ev.get("url") or "", "Open evidence", small),
             ])
         evidence_table = Table(evidence_data, colWidths=[0.35 * inch, 2.1 * inch, 1.25 * inch, 0.85 * inch, 2.35 * inch], hAlign="CENTER", repeatRows=1)
         evidence_table.setStyle(TableStyle([
@@ -1852,6 +1892,7 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         story.append(evidence_table)
+        story.append(Paragraph("PDF note: Evidence links in the PDF are shown as clickable labels to prevent long URLs from breaking across lines. The complete URL is embedded in the link.", small))
         story.append(Spacer(1, 8))
 
     story.append(Paragraph("Required Corrections", h3))
@@ -1887,6 +1928,43 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         canvas.drawCentredString(0, -8, "REVIEW")
         canvas.setFont("Helvetica-Bold", 5.7)
         canvas.drawCentredString(0, -22, "CITEINTEGRITY")
+        canvas.restoreState()
+
+        # Cross-check footer on every page.
+        # The domain is drawn separately and linked so PDF viewers do not treat it
+        # as plain text. This makes citeintegrity.org clickable on every page.
+        canvas.saveState()
+        footer_font = "Helvetica"
+        footer_size = 7.4
+        footer_y = 14
+        footer_prefix = "Cross-check this certificate at "
+        footer_link = "citeintegrity.org"
+        footer_suffix = f" | Certificate ID: {c.get('certificate_id', '')} | Page {document.page}"
+        prefix_w = canvas.stringWidth(footer_prefix, footer_font, footer_size)
+        link_w = canvas.stringWidth(footer_link, footer_font, footer_size)
+        suffix_w = canvas.stringWidth(footer_suffix, footer_font, footer_size)
+        total_w = prefix_w + link_w + suffix_w
+        footer_x = max(24, (width - total_w) / 2)
+
+        canvas.setFont(footer_font, footer_size)
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        canvas.drawString(footer_x, footer_y, footer_prefix)
+
+        link_x = footer_x + prefix_w
+        canvas.setFillColor(colors.HexColor("#1d4ed8"))
+        canvas.drawString(link_x, footer_y, footer_link)
+        canvas.setStrokeColor(colors.HexColor("#1d4ed8"))
+        canvas.setLineWidth(0.35)
+        canvas.line(link_x, footer_y - 1.2, link_x + link_w, footer_y - 1.2)
+        canvas.linkURL(
+            "https://citeintegrity.org",
+            (link_x, footer_y - 2.5, link_x + link_w, footer_y + footer_size + 2.5),
+            relative=0,
+            thickness=0,
+        )
+
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        canvas.drawString(link_x + link_w, footer_y, footer_suffix)
         canvas.restoreState()
 
     doc.build(story, onFirstPage=decorate, onLaterPages=decorate)
