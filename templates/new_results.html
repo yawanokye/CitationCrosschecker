@@ -1827,7 +1827,7 @@
                             <div class="section-title">
                                 <div>
                                     <h2>Advanced Enrichment</h2>
-                                    <p>Generate deeper source suggestions only for weak, insufficient, or no-evidence cases.</p>
+                                    <p>Run deeper source search; results are written back into the Recovery, Claim Support, and Citation Needed tabs.</p>
                                 </div>
                             </div>
         
@@ -1840,32 +1840,12 @@
                                 </select>
         
                                 <button class="btn btn-primary" id="btnStartEnrichment">
-                            ✨ Start Advanced Enrichment
+                                 Start Advanced Enrichment
                         </button>
                     </div>
 
                     <div class="empty" id="enrichmentStatusBox">
-                        Advanced enrichment has not been started. Run it after verification is complete.
-                    </div>
-
-                    <div class="empty" id="advancedSourceNote" style="margin-top:14px;">
-                        Context-specific possible sources will appear here after Advanced Enrichment.
-                    </div>
-
-                    <div class="table-wrap" style="margin-top:12px;">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>No.</th>
-                                    <th>Area</th>
-                                    <th>Context / claim</th>
-                                    <th>Possible source</th>
-                                    <th>Recommended action</th>
-                                    <th>Search</th>
-                                </tr>
-                            </thead>
-                            <tbody id="advancedSourceBody"></tbody>
-                        </table>
+                        Advanced enrichment has not been started. When run, it updates the relevant rows inside Recovery, Claim Support, and Citation Needed instead of creating a separate table.
                     </div>
 
                     <!-- Manual Verification moved to the Verification tab. -->
@@ -1924,7 +1904,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "DEMO_RESULTS-preferred-search-setup-fixed-links-v1.5.46";
+    const RESULTS_UI_BUILD = "DEMO_RESULTS-preserve-tabs-enrichment-v1.5.47";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3332,7 +3312,6 @@ document.addEventListener("DOMContentLoaded", function () {
         renderRecovery(data);
         renderClaimSupport(data);
         renderCitationNeeded(data);
-        renderAdvancedSources(data);
         renderSuggestions(data);
         renderManualVerification(data);
         renderCertificate(data);
@@ -3522,38 +3501,48 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function renderAlternativeSources(row) {
-        const alternatives = row.alternative_sources || row.alternativeSources || [];
+        const alternatives = row.alternative_sources || row.alternativeSources || row.possible_sources || row.deep_suggestions || [];
         if (!Array.isArray(alternatives) || !alternatives.length) return "";
 
-        const items = alternatives.slice(0, 3).map((src, index) => {
-            const title = src.title || src.suggested || "Untitled source";
-            const year = src.year || "Year not available";
-            const authors = Array.isArray(src.authors) ? src.authors.join(", ") : (src.authors || "Authors not available");
-            const relevance = src.relevance ?? src.confidence ?? src.score ?? "Not scored";
+        const items = alternatives.slice(0, 4).map((src, index) => {
+            const title = src.title || src.suggested || src.label || "Review suggested source/search";
+            const year = src.year || "Review required";
+            const authors = Array.isArray(src.authors) ? src.authors.join(", ") : (src.authors || src.source || "Search/source suggestion");
+            const relevance = src.relevance ?? src.confidence ?? src.score ?? src.source_type ?? "context-specific";
             const doi = src.doi || "";
+            const url = src.url || src.link || "";
+            const query = src.query || src.manual_search_query || "";
             const doiHtml = doi
                 ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a>`
-                : `<span class="small-muted">DOI not available</span>`;
+                : "";
+            const urlHtml = url
+                ? `<a class="doi-link" href="${esc(url)}" target="_blank" rel="noopener">Open source/search</a>`
+                : "";
+            const queryHtml = query ? `<div class="alt-source-meta"><strong>Query:</strong> ${esc(query)}</div>` : "";
+            const reason = src.reason ? `<div class="alt-source-meta"><strong>Reason:</strong> ${esc(src.reason)}</div>` : "";
 
             return `
                 <div class="alt-source-item">
                     <div class="alt-source-title">${index + 1}. ${esc(title)}</div>
-                    <div class="alt-source-meta"><strong>Authors:</strong> ${esc(authors)}</div>
+                    <div class="alt-source-meta"><strong>Authors/source:</strong> ${esc(authors)}</div>
                     <div class="alt-source-meta"><strong>Year:</strong> ${esc(year)}</div>
                     <div class="alt-source-meta"><strong>Relevance:</strong> ${esc(relevance)}</div>
-                    <div>${doiHtml}</div>
+                    ${queryHtml}${reason}
+                    <div>${doiHtml || urlHtml || '<span class="small-muted">Open the suggested search and verify manually.</span>'}</div>
                 </div>
             `;
         }).join("");
 
         return `
-            <details class="alt-source-box">
-                <summary>Possible alternative supporting sources</summary>
-                <p class="alt-source-note">These are review-only suggestions. Confirm the source before using it.</p>
+            <details class="alt-source-box" open>
+                <summary>Context-specific possible alternative sources</summary>
+                <p class="alt-source-note">These are written back by Advanced Enrichment to this row. Confirm the source before using it.</p>
                 ${items}
             </details>
         `;
     }
+
+
     function recoverySuggestionLabel(s) {
         const t = String(s.candidate_type || s.suggestion_type || s.candidate_quality || s.source || "").toLowerCase();
         if (s.is_real_source === true || t.includes("candidate")) return "Exact reference candidate";
@@ -3561,6 +3550,26 @@ document.addEventListener("DOMContentLoaded", function () {
         if (t.includes("manual")) return "Manual verification";
         if (t.includes("claim")) return "Claim-source fit";
         return "Review guidance";
+    }
+
+    function renderPossibleSourceGuidance(row) {
+        if (!row) return "";
+        const type = row.possible_source_type || row.possible_source || row.suggested_source_type || "";
+        const guidance = row.possible_source_guidance || row.recommended_action || "";
+        const query = row.suggested_search_query || row.manual_search_query || "";
+        const terms = Array.isArray(row.key_terms) ? row.key_terms.join(", ") : (row.key_terms || "");
+        const note = row.possible_source_note || "";
+        if (!type && !guidance && !query && !terms && !note) return "";
+        return `
+            <div class="alt-source-box">
+                <strong>Possible source guidance</strong>
+                ${type ? `<div class="alt-source-meta"><strong>Source type:</strong> ${esc(type)}</div>` : ""}
+                ${terms ? `<div class="alt-source-meta"><strong>Key terms:</strong> ${esc(terms)}</div>` : ""}
+                ${query ? `<div class="alt-source-meta"><strong>Search query:</strong> ${esc(query)}</div>` : ""}
+                ${guidance ? `<div class="alt-source-note">${esc(guidance)}</div>` : ""}
+                ${note ? `<div class="small-muted">${esc(note)}</div>` : ""}
+            </div>
+        `;
     }
 
     function renderSuggestionList(suggestions, note = "") {
@@ -3627,7 +3636,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
             else {
                 const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
+                missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.deep_suggestions || row.suggestions || row.alternative_sources || [], row.enrichment_note || "")}${renderPossibleSourceGuidance(row)}${renderAlternativeSources(row)}</td></tr>`).join("");
                 if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
             }
         }
@@ -3636,7 +3645,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!verifyRows.length) { verifyBody.innerHTML = `<tr><td colspan="5"><div class="empty">No verification recovery rows available.</div></td></tr>`; }
             else {
                 const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
-                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.suggestions || [], row.enrichment_note || "")}</td></tr>`).join("");
+                verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.deep_suggestions || row.suggestions || row.alternative_sources || [], row.enrichment_note || "")}${renderPossibleSourceGuidance(row)}${renderAlternativeSources(row)}</td></tr>`).join("");
                 if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
             }
         }
@@ -3786,17 +3795,23 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function citationNeededContextBox(row) {
-        const sourceType = row?.suggested_source_type || "Peer-reviewed article, authoritative book, official report, or credible scholarly source";
+        const sourceType = row?.possible_source_type || row?.possible_source || row?.suggested_source_type || "Peer-reviewed article, authoritative book, official report, or credible scholarly source";
         const keyTerms = Array.isArray(row?.key_terms) ? row.key_terms.join(", ") : (row?.key_terms || "");
         const query = getCitationNeededQuery(row);
+        const guidance = row?.possible_source_guidance || row?.recommended_action || "";
+        const note = row?.enrichment_note || "";
         return `
             <div class="suggestion-box" style="margin-top:8px;">
                 <strong>Suggested evidence type:</strong> ${esc(sourceType)}<br>
                 ${keyTerms ? `<strong>Key terms:</strong> ${esc(keyTerms)}<br>` : ""}
                 <strong>Focused search query:</strong> ${esc(query)}
+                ${guidance ? `<div class="claim-note">${esc(guidance)}</div>` : ""}
+                ${note ? `<div class="small-muted" style="margin-top:6px;">${esc(note)}</div>` : ""}
             </div>
+            ${renderAlternativeSources(row)}
         `;
     }
+
 
     function citationNeededSearchLinks(claimOrRow) {
         const row = typeof claimOrRow === "object" && claimOrRow !== null ? claimOrRow : { claim: claimOrRow };
@@ -4347,13 +4362,13 @@ document.addEventListener("DOMContentLoaded", function () {
                 throw new Error(js.error || "Could not start advanced enrichment.");
             }
     
-            setStatus("Advanced enrichment queued. Results will update in the background.", "good");
+            setStatus("Advanced enrichment queued. Relevant tabs will update in the background.", "good");
     
             if (box) {
                 box.innerHTML = `
                     <strong>Advanced enrichment queued.</strong><br>
                     Scope: ${esc(scope)}<br>
-                    The dashboard will update when deeper suggestions arrive.
+                    Recovery, Claim Support, and Citation Needed rows will update when deeper suggestions arrive.
                 `;
             }
     
@@ -4382,57 +4397,6 @@ document.addEventListener("DOMContentLoaded", function () {
     
             if (btn) btn.disabled = false;
         }
-    }
-
-
-
-    function getAdvancedSourceRows(data) {
-        const rows = data?.advanced_possible_sources || data?.advanced_enrichment_rows || data?.advanced_recovery || [];
-        if (Array.isArray(rows)) return rows;
-        if (Array.isArray(data?.advanced_enrichment?.rows)) return data.advanced_enrichment.rows;
-        return [];
-    }
-
-    function advancedSourceSearchLinks(row) {
-        const query = cleanSearchQuery(row?.suggested_search_query || row?.claim_or_context || row?.context_snippet || row?.reference || "");
-        if (!query) return "";
-        return `
-            <div class="citation-needed-actions">
-                <a href="${buildSafeSearchUrl("scholar", query)}" target="_blank" rel="noopener noreferrer">Google Scholar</a>
-                <a href="${buildSafeSearchUrl("google", query)}" target="_blank" rel="noopener noreferrer">Google</a>
-                <a href="${buildSafeSearchUrl("crossref", query)}" target="_blank" rel="noopener noreferrer">Crossref</a>
-            </div>
-        `;
-    }
-
-    function renderAdvancedSources(data) {
-        const body = $("advancedSourceBody");
-        const note = $("advancedSourceNote");
-        if (!body) return;
-        const rows = getAdvancedSourceRows(data);
-        if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="6"><div class="empty">No context-specific advanced source rows are available yet. Click <strong>Start Advanced Enrichment</strong>.</div></td></tr>`;
-            if (note) note.innerHTML = "Advanced Enrichment will list possible sources for Citation Needed, Recovery, Claim Support, and weak verification rows.";
-            return;
-        }
-        if (note) {
-            note.innerHTML = `Showing <strong>${rows.length}</strong> context-specific possible-source row(s) generated by Advanced Enrichment.`;
-        }
-        body.innerHTML = rows.slice(0, 120).map((row, i) => {
-            const context = row?.claim_or_context || row?.context_snippet || row?.claim || row?.citation || row?.reference || "";
-            const possible = row?.possible_source_guidance || row?.possible_source || row?.possible_source_type || "Review manually";
-            const action = row?.recommended_action || row?.possible_source_note || "Open and verify the source before accepting it.";
-            return `
-                <tr>
-                    <td>${i + 1}</td>
-                    <td>${esc(row?.source_area || row?.row_type || "Advanced")}</td>
-                    <td>${esc(context)}</td>
-                    <td>${esc(possible)}</td>
-                    <td>${esc(action)}</td>
-                    <td>${advancedSourceSearchLinks(row)}</td>
-                </tr>
-            `;
-        }).join("");
     }
 
     function getEnrichmentState(result) {
@@ -4476,7 +4440,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     if (box) {
                         box.innerHTML = `
                             <strong>Advanced enrichment completed.</strong><br>
-                            Context-specific possible sources have been added for Citation Needed, Recovery, Claim Support, and weak verification rows.
+                            Deeper Recovery, Claim Support, and Citation Needed suggestions have been updated in their respective tabs.
                         `;
                     }
                 
