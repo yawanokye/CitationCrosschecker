@@ -740,7 +740,8 @@ async def security_middleware(request: Request, call_next):
         "/health",
         "/privacy",
         "/terms",
-	"/static",
+		"/about",
+		"/static",
         "/export-fixed-document",
         "/export-references",
         "/autofix-suggestions",
@@ -2585,6 +2586,11 @@ async def terms_page(request: Request):
         "request": request
     })
 
+@app.get("/about", response_class=HTMLResponse)
+async def terms_page(request: Request):
+    return templates.TemplateResponse("about.html", {
+        "request": request
+    })
 # ============================================================
 # CONTACT PAGE AND EMAIL FORWARDING
 # ============================================================
