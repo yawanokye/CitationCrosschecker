@@ -1476,7 +1476,7 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
     if manual_evidence:
         evidence_rows = "".join(
             f"<tr><td>{i+1}</td><td>{_html(ev.get('reference', ''))}</td><td>{_html(ev.get('evidence_source') or ev.get('source') or '')}</td><td>{_html(ev.get('evidence_type') or ev.get('type') or '')}</td><td>{_html(ev.get('evidence_url') or ev.get('url') or '')}</td></tr>"
-            for i, ev in enumerate(manual_evidence[:20])
+            for i, ev in enumerate(manual_evidence[:500])
             if isinstance(ev, dict)
         )
         manual_evidence_html = f"""
