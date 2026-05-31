@@ -12,6 +12,7 @@ Certificate includes:
 - total in-text citations
 - total references
 - ACII score
+- ACII component-level scores and interpretation
 - clearance status
 - automatically verified references
 - manually verified references
@@ -33,7 +34,6 @@ import html
 import io
 import os
 import re
-from urllib.parse import urlsplit, urlunsplit, quote
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -840,12 +840,7 @@ def _manual_reference_key_for_certificate(text: Any) -> str:
 def _manual_verification_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     manual = _dict(result.get("manual_verification"))
     decisions = _list(manual.get("decisions"))
-    evidence = (
-        _list(manual.get("evidence"))
-        or _list(result.get("manual_evidence_records"))
-        or _list(result.get("manual_verification_evidence"))
-        or _list(result.get("manual_evidence"))
-    )
+    evidence = _list(manual.get("evidence"))
 
     def ev_key(ev: Dict[str, Any]) -> str:
         return _safe_str(ev.get("manual_reference_key")) or _manual_reference_key_for_certificate(ev.get("reference"))
@@ -1061,6 +1056,204 @@ def _acii(result: Dict[str, Any]) -> Tuple[float, str]:
     return round(score, 2), rating
 
 
+
+def _component_category(score: float) -> str:
+    """Interpret a 0-100 component score using the same broad ACII bands."""
+    score = _safe_float(score, 0.0)
+    if score >= 90:
+        return "Excellent"
+    if score >= 80:
+        return "Very Good"
+    if score >= 70:
+        return "Good"
+    if score >= 60:
+        return "Moderate"
+    if score >= 50:
+        return "Weak"
+    if score > 0:
+        return "Poor"
+    return "Not available"
+
+
+def _format_component_score(value: Any) -> Any:
+    score = _safe_float(value, 0.0)
+    if score == 0 and str(value or "").strip() in {"", "None", "none", "null"}:
+        return "Not available"
+    rounded = round(score, 2)
+    if float(rounded).is_integer():
+        return int(rounded)
+    return rounded
+
+
+def _normalise_component_name(name: str) -> str:
+    name = re.sub(r"[_\-]+", " ", _safe_str(name)).strip().lower()
+    name = re.sub(r"\s+", " ", name)
+    aliases = {
+        "author diversity score": "author diversity",
+        "temporal balance score": "temporal balance",
+        "temporal quality score": "temporal quality",
+        "citation concentration score": "citation concentration",
+        "verification integrity score": "verification integrity",
+        "recency score": "recency",
+    }
+    return aliases.get(name, name)
+
+
+def _acii_component_remark(component: str, score: Any, category: str, supplied: str = "") -> str:
+    if supplied:
+        return _safe_str(supplied)
+
+    comp = _normalise_component_name(component)
+    score_value = _format_component_score(score)
+    score_text = _safe_str(score_value)
+
+    if comp == "recency":
+        if category in {"Poor", "Weak"}:
+            return f"{category} - only about {score_text}% of references are recent. Add more current sources."
+        return f"{category} - recent sources are adequately represented."
+    if comp == "author diversity":
+        return f"{category} - references include diverse authors." if category != "Not available" else "Author diversity score not available."
+    if comp == "temporal balance":
+        return f"{category} temporal distribution across years." if category != "Not available" else "Temporal balance score not available."
+    if comp == "temporal quality":
+        return "Combined score from recency (60%) and balance (40%)."
+    if comp == "citation concentration":
+        if _safe_float(score, 0) >= 80:
+            return f"{category} distribution - citations are spread across many authors."
+        return f"{category} - citation use may be concentrated around a limited set of authors."
+    if comp == "verification integrity":
+        return f"{category} - {score_text}% of references verified in scholarly databases." if category != "Not available" else "Verification integrity score not available."
+    return f"{category} - component score is {score_text}."
+
+
+def _coerce_acii_component(item: Any, fallback_name: str = "") -> Dict[str, Any] | None:
+    """Convert a component represented as dict/tuple/value to the certificate schema."""
+    if isinstance(item, dict):
+        name = _normalise_component_name(
+            item.get("component")
+            or item.get("name")
+            or item.get("label")
+            or fallback_name
+        )
+        score = _format_component_score(
+            item.get("score")
+            or item.get("value")
+            or item.get("percentage")
+            or item.get("percent")
+        )
+        category = _safe_str(item.get("category") or item.get("rating") or item.get("interpretation") or "")
+        if not category or category == "Not available":
+            category = _component_category(score)
+        remark = _acii_component_remark(
+            name,
+            score,
+            category,
+            item.get("remark") or item.get("comment") or item.get("message") or item.get("description") or "",
+        )
+        if not name:
+            return None
+        return {"component": name, "score": score, "category": category, "remark": remark}
+
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        name = _normalise_component_name(item[0] or fallback_name)
+        score = _format_component_score(item[1])
+        category = _safe_str(item[2]) if len(item) >= 3 else _component_category(score)
+        remark = _safe_str(item[3]) if len(item) >= 4 else _acii_component_remark(name, score, category)
+        if not name:
+            return None
+        return {"component": name, "score": score, "category": category, "remark": remark}
+
+    if fallback_name:
+        name = _normalise_component_name(fallback_name)
+        score = _format_component_score(item)
+        category = _component_category(score)
+        return {"component": name, "score": score, "category": category, "remark": _acii_component_remark(name, score, category)}
+
+    return None
+
+
+def _acii_components(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return ACII component-level interpretation rows for HTML/PDF certificates.
+
+    Supports several possible result schemas:
+    - result['acii']['components'] as list or dict
+    - result['acii']['component_scores'] / result['acii_components']
+    - direct ACII keys such as recency, author_diversity, temporal_balance, etc.
+    """
+    result = result or {}
+    acii = _dict(result.get("acii"))
+    sources = [
+        result.get("acii_components"),
+        result.get("acii_component_scores"),
+        acii.get("components"),
+        acii.get("component_scores"),
+        acii.get("component_interpretation"),
+        acii.get("breakdown"),
+    ]
+
+    rows: List[Dict[str, Any]] = []
+
+    for source in sources:
+        if not source:
+            continue
+        if isinstance(source, list):
+            for item in source:
+                row = _coerce_acii_component(item)
+                if row:
+                    rows.append(row)
+        elif isinstance(source, dict):
+            for key, value in source.items():
+                row = _coerce_acii_component(value, key)
+                if row:
+                    rows.append(row)
+        if rows:
+            break
+
+    # Fallback from common direct keys.
+    if not rows:
+        direct_keys = [
+            ("recency", ["recency", "recency_score", "recent_sources", "recent_reference_score"]),
+            ("author diversity", ["author_diversity", "author_diversity_score", "diversity_score"]),
+            ("temporal balance", ["temporal_balance", "temporal_balance_score", "year_balance"]),
+            ("temporal quality", ["temporal_quality", "temporal_quality_score"]),
+            ("citation concentration", ["citation_concentration", "citation_concentration_score", "concentration_score"]),
+            ("verification integrity", ["verification_integrity", "verification_integrity_score", "verified_reference_score"]),
+        ]
+        for label, keys in direct_keys:
+            value = None
+            for key in keys:
+                if key in acii:
+                    value = acii.get(key)
+                    break
+                if key in result:
+                    value = result.get(key)
+                    break
+            if value is not None:
+                row = _coerce_acii_component(value, label)
+                if row:
+                    rows.append(row)
+
+    # Deduplicate and order consistently.
+    preferred_order = [
+        "recency",
+        "author diversity",
+        "temporal balance",
+        "temporal quality",
+        "citation concentration",
+        "verification integrity",
+    ]
+    order_map = {name: i for i, name in enumerate(preferred_order)}
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        name = _normalise_component_name(row.get("component", ""))
+        if not name:
+            continue
+        row["component"] = name
+        deduped[name] = row
+
+    return sorted(deduped.values(), key=lambda row: order_map.get(row.get("component", ""), 999))
+
+
 def _risk_counts(summary: Dict[str, int], verify: Dict[str, int], claim: Dict[str, int], cite_needed: Dict[str, int]) -> Dict[str, int]:
     critical = (
         verify["not_found_references"]
@@ -1156,6 +1349,7 @@ def build_citation_integrity_certificate(
     claim = _claim_counts(result)
     cite_needed = _citation_needed_counts(result)
     score, rating = _acii(result)
+    acii_component_rows = _acii_components(result)
     risk = _risk_counts(summary, verify, claim, cite_needed)
     status = _clearance_status(score, summary, verify, claim, cite_needed)
     captured_document_title = _extract_document_title(result, document_title)
@@ -1192,6 +1386,7 @@ def build_citation_integrity_certificate(
         "total_references": summary["total_references"],
         "acii_score": score if score else None,
         "acii_rating": rating,
+        "acii_components": acii_component_rows,
         "clearance_status": status,
         "verified_stamp": "VERIFIED REVIEW",
         "download_format": "PDF",
@@ -1201,6 +1396,7 @@ def build_citation_integrity_certificate(
             **claim,
             **cite_needed,
             "acii_score": score if score else None,
+            "acii_components_count": len(acii_component_rows),
             "clearance_status": status,
             "document_title": captured_document_title,
         },
@@ -1258,6 +1454,22 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
     ]
 
     metrics_html = "".join(row(k, v) for k, v in metrics)
+    acii_components = c.get("acii_components") or []
+    acii_components_html = ""
+    if acii_components:
+        component_rows = "".join(
+            f"<tr><td>{_html(comp.get('component', ''))}</td><td><strong>{_html(comp.get('score', ''))}</strong></td><td>{_html(comp.get('category', ''))}</td><td>{_html(comp.get('remark', ''))}</td></tr>"
+            for comp in acii_components
+            if isinstance(comp, dict)
+        )
+        acii_components_html = f"""
+    <h3>ACII Components</h3>
+    <p class="note">Component-level interpretation of the citation integrity score.</p>
+    <table>
+        <tr><th>Component</th><th>Score</th><th>Category</th><th>Remark</th></tr>
+        {component_rows}
+    </table>
+        """
     manual_evidence = c.get("manual_evidence_records") or []
     manual_evidence_html = ""
     if manual_evidence:
@@ -1479,70 +1691,6 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         # Text passed here is either controlled labels or already HTML-escaped values.
         return Paragraph(_safe_str(text).replace("\n", "<br/>"), style)
 
-    def pdf_safe_url(value: Any) -> str:
-        """Return a valid URL for ReportLab PDF hyperlink annotations.
-
-        Long raw URLs often wrap badly in PDF table cells and some viewers only
-        auto-link the first visual line. We therefore create an explicit PDF
-        link annotation using a cleaned href and display a short readable label.
-        """
-        url = _safe_str(value).strip()
-        if not url:
-            return ""
-
-        url = url.replace("&amp;", "&").replace(" ", "%20")
-
-        # DOI-only values are common evidence entries. Convert them to a stable DOI URL.
-        if url.lower().startswith("doi:"):
-            url = "https://doi.org/" + url.split(":", 1)[1].strip().lstrip("/")
-        elif re.match(r"^10\.\d{4,9}/\S+$", url, flags=re.I):
-            url = "https://doi.org/" + url
-
-        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
-            if re.match(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$", url):
-                url = "https://" + url
-            else:
-                return ""
-
-        try:
-            parts = urlsplit(url)
-            if not parts.scheme or not parts.netloc:
-                return ""
-            # Quote unsafe characters while preserving useful URL syntax and existing percent escapes.
-            path = quote(parts.path or "", safe="/%:@+~#=-._")
-            query = quote(parts.query or "", safe="=&%/:?+,.@~#;-_()'")
-            fragment = quote(parts.fragment or "", safe="=&%/:?+,.@~#;-_()'")
-            return urlunsplit((parts.scheme, parts.netloc, path, query, fragment))
-        except Exception:
-            return url
-
-    def pdf_short_url(value: Any, max_len: int = 52) -> str:
-        url = pdf_safe_url(value)
-        if not url:
-            return "Not available"
-        shown = url.replace("https://", "").replace("http://", "")
-        if len(shown) > max_len:
-            shown = shown[: max_len - 3] + "..."
-        return shown
-
-    def pdf_link(value: Any, label: str = "Open evidence source", style=small) -> Paragraph:
-        """Clickable link for PDF evidence cells.
-
-        The full URL is embedded as a PDF hyperlink annotation; the visible text is
-        short to prevent broken-looking wrapped URLs.
-        """
-        url = pdf_safe_url(value)
-        if not url:
-            return p("Not available", style)
-        href = _html(url)
-        safe_label = _html(label)
-        short = _html(pdf_short_url(url))
-        return Paragraph(
-            f'<link href="{href}"><font color="#1d4ed8"><u>{safe_label}</u></font></link>'
-            f'<br/><font size="7" color="#64748b">{short}</font>',
-            style,
-        )
-
     def table_rows(rows: List[Tuple[str, Any]], col_widths=None) -> Table:
         data = [[p(label), p(f"<b>{_html(value)}</b>")] for label, value in rows]
         table = Table(data, colWidths=col_widths or [1.35 * inch, 1.55 * inch], hAlign="LEFT")
@@ -1648,10 +1796,39 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
     story.append(metric_table)
     story.append(Spacer(1, 8))
 
+    acii_components = c.get("acii_components") or []
+    if acii_components:
+        story.append(Paragraph("ACII Components", h3))
+        story.append(Paragraph("Component-level interpretation of the citation integrity score.", small))
+        acii_data = [[p("Component"), p("Score"), p("Category"), p("Remark")]]
+        for comp in acii_components:
+            if not isinstance(comp, dict):
+                continue
+            acii_data.append([
+                p(_html(comp.get("component", "")), small),
+                p(f"<b>{_html(comp.get('score', ''))}</b>", small),
+                p(_html(comp.get("category", "")), small),
+                p(_html(comp.get("remark", "")), small),
+            ])
+        acii_table = Table(acii_data, colWidths=[1.35 * inch, 0.65 * inch, 0.9 * inch, 4.0 * inch], hAlign="CENTER", repeatRows=1)
+        acii_table.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#e2e8f0")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8fafc")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(acii_table)
+        story.append(Spacer(1, 8))
+
     manual_evidence = c.get("manual_evidence_records") or []
     if manual_evidence:
         story.append(Paragraph("Manual Evidence Recorded", h3))
-        evidence_data = [[p("#"), p("Reference"), p("Evidence source"), p("Type"), p("Evidence link")]]
+        evidence_data = [[p("#"), p("Reference"), p("Evidence source"), p("Type"), p("Evidence URL")]]
         for i, ev in enumerate(manual_evidence[:20]):
             if not isinstance(ev, dict):
                 continue
@@ -1660,7 +1837,7 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
                 p(_html(ev.get("reference", "")), small),
                 p(_html(ev.get("evidence_source") or ev.get("source") or ""), small),
                 p(_html(ev.get("evidence_type") or ev.get("type") or ""), small),
-                pdf_link(ev.get("evidence_url") or ev.get("url") or "", "Open evidence"),
+                p(_html(ev.get("evidence_url") or ev.get("url") or ""), small),
             ])
         evidence_table = Table(evidence_data, colWidths=[0.35 * inch, 2.1 * inch, 1.25 * inch, 0.85 * inch, 2.35 * inch], hAlign="CENTER", repeatRows=1)
         evidence_table.setStyle(TableStyle([
@@ -1675,7 +1852,6 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         story.append(evidence_table)
-        story.append(Paragraph("PDF note: Evidence links are embedded as clickable source labels to prevent long URLs from breaking across lines. The HTML certificate displays the full URLs.", small))
         story.append(Spacer(1, 8))
 
     story.append(Paragraph("Required Corrections", h3))
