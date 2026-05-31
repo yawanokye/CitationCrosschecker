@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-18-style-specific-suggestions-for-author-year-and-numeric-FINAL"
+ENGINE_BUILD = "commercial-2026-05-31-author-year-suggestion-guard-v1.5.18"
 
 # Fuzzy matching (optional)
 try:
@@ -3558,6 +3558,121 @@ class FixSuggestion:
 
 
 # ============================================================
+# AUTHOR-YEAR SUGGESTION SAFETY GUARDS
+# ============================================================
+
+def _suggestion_author_norm(author: str) -> str:
+    """Normalise an author key for safe suggestion comparison."""
+    author = norm_space(author or "")
+    author = re.sub(r"\bet\s*\.?\s*al\.?\b", "", author, flags=re.I)
+    author = author.replace("&", " and ")
+    author = re.sub(r"\band\b", " ", author, flags=re.I)
+    author = strip_punct(author)
+    author = re.sub(r"\s+", " ", author).strip()
+    return author
+
+
+def _author_years_in_reference_list(
+    author: str,
+    references: List[RefAY],
+    ref_map: Dict[str, str],
+) -> set:
+    """
+    Return all reference years that appear for the same first-author/org key.
+
+    This is deliberately general. It applies to OECD, World Bank, Mensah,
+    Afriyie, Venkatesh, Adam, etc. If one author has several valid publications
+    in the reference list, the engine must not automatically replace one year
+    with another.
+    """
+    target = _suggestion_author_norm(author)
+    if not target:
+        return set()
+
+    years = set()
+
+    # Check keys already built as author|year.
+    for key in (ref_map or {}).keys():
+        if "|" not in str(key):
+            continue
+        a, y = str(key).rsplit("|", 1)
+        if _suggestion_author_norm(a) == target:
+            by = _base_year(str(y))
+            if by:
+                years.add(by)
+
+    # Check parsed references as a fallback.
+    for ref in references or []:
+        try:
+            info = _reference_author_year(ref)
+        except Exception:
+            info = {}
+
+        possible_authors = []
+        if info.get("author"):
+            possible_authors.append(info.get("author"))
+        possible_authors.extend(info.get("aliases") or [])
+
+        for possible in possible_authors:
+            if _suggestion_author_norm(possible) == target:
+                y = _base_year(info.get("year") or "")
+                if y:
+                    years.add(y)
+
+    return years
+
+
+def _author_year_exists_in_reference_list(
+    author: str,
+    year: str,
+    references: List[RefAY],
+    ref_map: Dict[str, str],
+) -> bool:
+    """True when the cited author-year already exists in the reference list."""
+    by = _base_year(str(year or ""))
+    if not by:
+        return False
+    return by in _author_years_in_reference_list(author, references, ref_map)
+
+
+def _safe_year_typo_candidate(
+    author: str,
+    cited_year: str,
+    candidate_year: str,
+    references: List[RefAY],
+    ref_map: Dict[str, str],
+) -> bool:
+    """
+    Decide whether a year-typo replacement is safe.
+
+    Rules:
+    1. If the exact cited author-year exists, do not suggest any replacement.
+    2. If the same author has multiple valid years in the reference list, do not
+       replace one year with another. That situation needs human review.
+    3. Only allow a replacement when the author has exactly one reference year
+       and that year is the proposed candidate.
+    """
+    cited_base = _base_year(str(cited_year or ""))
+    candidate_base = _base_year(str(candidate_year or ""))
+
+    if not cited_base or not candidate_base:
+        return False
+
+    years = _author_years_in_reference_list(author, references, ref_map)
+
+    # Exact author-year already exists. The citation is not a year typo.
+    if cited_base in years:
+        return False
+
+    # Same author has several valid publications. Do not guess which one the
+    # writer intended. This applies to all authors, not only institutions.
+    if len(years) != 1:
+        return False
+
+    return candidate_base in years
+
+
+# ============================================================
 # CORE CITATION SUGGESTION ENGINE
 # ============================================================
 
@@ -4066,6 +4181,8 @@ def _generate_citation_fixes(
                     continue
                 alt_key = f"{test_auth}|{alt_year_str}".lower()
                 if alt_key in ref_map:
+                    if not _safe_year_typo_candidate(test_auth, year, alt_year_str, references, ref_map):
+                        continue
                     alt_citation = re.sub(r'\b' + re.escape(year) + r'\b', alt_year_str, citation)
                     return FixSuggestion(
                         original=citation,
@@ -4075,7 +4192,16 @@ def _generate_citation_fixes(
                         reason=f"Malformed year '{year}' corrected to '{alt_year_str}' based on reference for '{test_auth}'"
                     )
     
-    # Case 1: Year typo (off by 1 or more) - only for 4-digit years
+    # Case 1: Year typo (off by 1 or more) - only for 4-digit years.
+    #
+    # Safety upgrade:
+    # Do NOT automatically replace a year when:
+    # - the exact cited author-year already exists in the reference list; or
+    # - the same author has multiple valid publication years in the reference list.
+    #
+    # This protects every author, not only institutions. Examples:
+    # OECD 2016/2017/2019/2022, Afriyie 2021/2023, Mensah 2021/2023,
+    # Venkatesh 2003/2016, etc.
     if len(year) == 4 and year.isdigit():
         try:
             year_int = int(year[:4])
@@ -4083,17 +4209,27 @@ def _generate_citation_fixes(
                 alt_year = str(year_int + offset)
                 if len(alt_year) != 4:
                     continue
+
                 alt_key = f"{auth}|{alt_year}".lower()
-                if alt_key in ref_map:
-                    alt_citation = citation.replace(year, alt_year)
-                    confidence = 0.95 if abs(offset) <= 2 else 0.80
-                    return FixSuggestion(
-                        original=citation,
-                        suggested=alt_citation,
-                        fix_type="year_typo",
-                        confidence=confidence,
-                        reason=f"Year {year} corrected to {alt_year} (off by {abs(offset)})"
+                if alt_key not in ref_map:
+                    continue
+
+                if not _safe_year_typo_candidate(auth, year, alt_year, references, ref_map):
+                    continue
+
+                alt_citation = citation.replace(year, alt_year)
+                confidence = 0.90 if abs(offset) <= 2 else 0.72
+                return FixSuggestion(
+                    original=citation,
+                    suggested=alt_citation,
+                    fix_type="year_typo",
+                    confidence=confidence,
+                    reason=(
+                        f"Year {year} may be a typo for {alt_year}. "
+                        "Suggested only because this author has one unique reference year "
+                        "and the cited author-year is absent from the reference list."
                     )
+                )
         except (ValueError, TypeError):
             pass
     
