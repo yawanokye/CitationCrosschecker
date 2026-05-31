@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-31-preserve-old-citation-needed-author-year-guard-v1.5.19"
+ENGINE_BUILD = "commercial-2026-05-31-author-year-guard-only-v1.5.19"
 
 # Fuzzy matching (optional)
 try:
@@ -3578,11 +3578,11 @@ def _author_years_in_reference_list(
     ref_map: Dict[str, str],
 ) -> set:
     """
-    Return all reference years appearing for the same first-author/org key.
+    Return all reference years appearing for the same author key.
 
-    This is deliberately general. It applies to every author, not only
-    institutions. If one author has several valid publications in the reference
-    list, the engine must not automatically replace one year with another.
+    This applies to every author, not only institutional authors. If the same
+    author has several valid publications in the reference list, the engine must
+    not automatically replace one year with another.
     """
     target = _suggestion_author_norm(author)
     if not target:
@@ -3627,13 +3627,14 @@ def _safe_year_typo_candidate(
     ref_map: Dict[str, str],
 ) -> bool:
     """
-    Safe rule for year-typo suggestions.
+    Conservative guard for year-typo suggestions.
 
-    1. If the exact cited author-year exists, do not suggest replacement.
-    2. If the same author has multiple valid years in the reference list, do not
-       replace one year with another.
-    3. Only allow replacement when the author has one unique reference year and
-       that year is the proposed candidate.
+    Allow year correction only when the author has exactly one unique reference
+    year and that unique year is the proposed replacement.
+
+    Suppress automatic year replacement when:
+    - the exact cited author-year already exists; or
+    - the same author has multiple valid publication years in the reference list.
     """
     cited_base = _base_year(str(cited_year or ""))
     candidate_base = _base_year(str(candidate_year or ""))
@@ -4174,12 +4175,12 @@ def _generate_citation_fixes(
     
     # Case 1: Year typo (off by 1 or more) - only for 4-digit years.
     #
-    # Safety upgrade:
+    # Safety guard:
     # Do NOT automatically replace a year when:
     # - the exact cited author-year already exists in the reference list; or
     # - the same author has multiple valid publication years in the reference list.
     #
-    # This protects every author, not only institutions.
+    # This applies to every author, not only institutional authors.
     if len(year) == 4 and year.isdigit():
         try:
             year_int = int(year[:4])
