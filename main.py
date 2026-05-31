@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-current-demo-citation-needed-stats-guard-sources-2026-05-31-v1.5.39"
+# MAIN_BUILD = "DEMO_MAIN-current-citation-needed-recovery-context-sources-2026-05-31-v1.5.40"
 
 import io
 import os
@@ -1239,12 +1239,27 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"[DEBUG] Missing recovery failed for {citation_text}: {e}")
                 suggestions = []
 
-        payload["missing_recovery"].append({
+        recovery_context = ""
+        if full_text:
+            try:
+                recovery_context = extract_context(full_text, citation_text, window=350) or ""
+            except Exception:
+                recovery_context = ""
+
+        source_payload = _context_specific_possible_source_payload(
+            text=recovery_context or citation_text,
+            citation=citation_text,
+            reference="",
+            row_type="missing_recovery",
+        )
+
+        recovery_row = {
             "citation": citation_text,
             "count": count,
             "suggestions": suggestions,
-            "message": "" if suggestions else "No evidence found."
-        })
+            "message": "" if suggestions else "No evidence found.",
+        }
+        payload["missing_recovery"].append(_attach_context_source_payload(recovery_row, source_payload))
 
     # Verification recovery
     verify_rows = (result.get("online_verification") or {}).get("rows", []) or []
@@ -1279,15 +1294,83 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"[DEBUG] Verification recovery failed for {citation_text}: {e}")
                 suggestions = []
 
-        payload["verification_recovery"].append({
+        recovery_context = ""
+        if citation_text and full_text:
+            try:
+                recovery_context = extract_context(full_text, citation_text, window=350) or ""
+            except Exception:
+                recovery_context = ""
+
+        source_payload = _context_specific_possible_source_payload(
+            text=recovery_context or matched_title or original_ref,
+            citation=citation_text,
+            reference=original_ref,
+            row_type="verification_recovery",
+        )
+
+        recovery_row = {
             "reference": original_ref,
             "status": status,
             "citation": citation_text,
+            "matched_title": matched_title,
             "suggestions": suggestions,
-            "message": "" if suggestions else "No evidence found."
-        })
+            "message": "" if suggestions else "No evidence found.",
+        }
+        payload["verification_recovery"].append(_attach_context_source_payload(recovery_row, source_payload))
 
     return payload
+
+
+def _ensure_recovery_possible_sources(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ensure every recovery-like row in result has context-specific possible-source fields.
+    Safe to call repeatedly and safe for older saved jobs.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    recovery = result.get("recovery") or {}
+    if isinstance(recovery, dict):
+        for key, row_type in [
+            ("missing_recovery", "missing_recovery"),
+            ("verification_recovery", "verification_recovery"),
+        ]:
+            rows = recovery.get(key) or []
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("possible_source_guidance"):
+                        continue
+                    context_text = row.get("context_snippet") or row.get("claim") or row.get("citation") or row.get("matched_title") or row.get("reference") or ""
+                    payload = _context_specific_possible_source_payload(
+                        text=context_text,
+                        citation=row.get("citation", ""),
+                        reference=row.get("reference", ""),
+                        row_type=row_type,
+                    )
+                    _attach_context_source_payload(row, payload)
+
+    for key in ["advanced_enrichment", "advanced_recovery", "recovery_rows", "verification_recovery"]:
+        rows = result.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("possible_source_guidance"):
+                    continue
+                context_text = row.get("context_snippet") or row.get("claim") or row.get("citation") or row.get("matched_title") or row.get("reference") or ""
+                payload = _context_specific_possible_source_payload(
+                    text=context_text,
+                    citation=row.get("citation", ""),
+                    reference=row.get("reference", ""),
+                    row_type="recovery",
+                )
+                _attach_context_source_payload(row, payload)
+
+    return result
+
+
 
 def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
     with _lock:
@@ -1650,7 +1733,8 @@ def start_progress_sync(job_id: str, verification_job_id: str):
                                         _store[job_id]["result"]["recovery"] = build_context_specific_recovery(
                                             _store[job_id]["result"]
                                         )
-                                        print("[RECOVERY] Rows built")
+                                        _ensure_recovery_possible_sources(_store[job_id]["result"])
+                                        print("[RECOVERY] Rows built with context-specific possible-source guidance")
                                     except Exception as e:
                                         print(f"[RECOVERY ERROR] {e}")
                                         _store[job_id]["result"]["recovery"] = {
@@ -3939,6 +4023,14 @@ def _citation_needed_is_results_statistics_sentence(sentence: str) -> bool:
 
 
 
+
+def _normalise_context_text_for_source(*parts: Any) -> str:
+    """Join claim/citation/reference/context text for source guidance."""
+    joined = " ".join(str(p or "") for p in parts if p is not None)
+    joined = re.sub(r"\s+", " ", joined).strip()
+    return joined[:1200]
+
+
 def _citation_needed_possible_source_payload(claim: str) -> Dict[str, Any]:
     """
     Build possible-source guidance for a Citation Needed claim.
@@ -3975,7 +4067,7 @@ def _citation_needed_possible_source_payload(claim: str) -> Dict[str, Any]:
             "validated measurement scale",
             "authoritative textbook",
         ]
-    elif re.search(r"\b(ghana|africa|country|national|regional|local|municipal|district|institutional)\b", low):
+    elif re.search(r"\b(ghana|africa|country|national|regional|local|municipal|district|institutional|university|public sector)\b", low):
         examples = [
             "country-specific empirical study",
             "official national report",
@@ -3992,7 +4084,7 @@ def _citation_needed_possible_source_payload(claim: str) -> Dict[str, Any]:
 
     guidance = (
         f"Look for a source that directly supports the claim. Possible source type: {source_type}. "
-        f"Search using focused terms such as: {', '.join(key_terms) if key_terms else search_query}. "
+        f"Use focused terms such as: {', '.join(key_terms) if key_terms else search_query}. "
         "If no direct evidence exists, soften or qualify the claim rather than forcing a weak citation."
     )
 
@@ -4009,6 +4101,94 @@ def _citation_needed_possible_source_payload(claim: str) -> Dict[str, Any]:
             {"label": "Crossref", "type": "metadata_search", "query": search_query},
         ],
     }
+
+
+def _context_specific_possible_source_payload(
+    text: str,
+    citation: str = "",
+    reference: str = "",
+    row_type: str = "recovery",
+) -> Dict[str, Any]:
+    """
+    Context-specific possible-source guidance for recovery rows.
+
+    Used for:
+    - missing citation recovery
+    - verification recovery
+    - advanced recovery rows
+
+    It does not claim that a source is correct. It tells the user what kind of
+    source is most defensible and what focused query should be used.
+    """
+    context_text = _normalise_context_text_for_source(text, citation, reference)
+    source_payload = _citation_needed_possible_source_payload(context_text)
+
+    if row_type == "missing_recovery":
+        action = (
+            "Find the full bibliographic source that supports the in-text citation and add it to the reference list. "
+            "If the citation is not supported by the surrounding claim, replace it with a better source."
+        )
+    elif row_type == "verification_recovery":
+        action = (
+            "Use the possible source guidance to manually verify the reference title, authors, year, DOI or publisher record. "
+            "If a stronger source is found, update the reference entry."
+        )
+    else:
+        action = (
+            "Use the possible source guidance to locate a source that directly supports the claim or reference context."
+        )
+
+    source_payload.update({
+        "recovery_type": row_type,
+        "context_snippet": context_text[:500],
+        "citation": citation,
+        "reference": reference,
+        "recommended_action": action,
+        "possible_source_note": (
+            "Possible source guidance is a search direction only. The user should still open and verify the actual source before accepting it."
+        ),
+    })
+    return source_payload
+
+
+def _attach_context_source_payload(row: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach possible-source fields to a recovery or citation-needed row."""
+    if not isinstance(row, dict):
+        return row
+    payload = payload if isinstance(payload, dict) else {}
+
+    row["possible_source"] = payload.get("possible_source") or payload.get("possible_source_type") or ""
+    row["possible_source_type"] = payload.get("possible_source_type") or row.get("possible_source") or ""
+    row["possible_source_guidance"] = payload.get("possible_source_guidance") or ""
+    row["possible_source_examples"] = payload.get("possible_source_examples") or []
+    row["key_terms"] = payload.get("key_terms") or []
+    row["suggested_search_query"] = payload.get("suggested_search_query") or ""
+    row["suggested_sources"] = payload.get("suggested_sources") or []
+    row["context_snippet"] = payload.get("context_snippet") or row.get("context_snippet") or ""
+    row["recommended_action"] = payload.get("recommended_action") or row.get("recommended_action") or ""
+    row["possible_source_note"] = payload.get("possible_source_note") or row.get("possible_source_note") or ""
+    return row
+
+
+def _ensure_citation_needed_possible_sources(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill possible-source fields for existing Citation Needed rows."""
+    if not isinstance(result, dict):
+        return result
+    rows = result.get("citation_needed_claims") or result.get("citation_needed") or result.get("claims_needing_citation")
+    if not isinstance(rows, list):
+        return result
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        claim = row.get("claim") or row.get("text") or row.get("sentence") or row.get("statement") or ""
+        if not claim:
+            continue
+        payload = _citation_needed_possible_source_payload(str(claim))
+        if not row.get("possible_source_guidance"):
+            _attach_context_source_payload(row, payload)
+        row.setdefault("recommendation", _citation_needed_recommendation(str(claim)))
+        row.setdefault("context_snippet", str(claim)[:500])
+    return result
 
 
 
@@ -4152,6 +4332,12 @@ def _demo_prepare_full_review_result(job_id: str, result: Dict[str, Any], *, per
     if not isinstance(result.get("citation_needed_claims"), list):
         result["citation_needed_claims"] = _demo_generate_citation_needed_claims(result)
         changed = True
+
+    try:
+        _ensure_citation_needed_possible_sources(result)
+        _ensure_recovery_possible_sources(result)
+    except Exception as e:
+        print(f"[DEMO ACCESS] context-specific possible-source guidance skipped: {e}")
 
     result.setdefault("summary", {})
     if isinstance(result["summary"], dict):
