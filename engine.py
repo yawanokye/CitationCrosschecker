@@ -14,7 +14,7 @@ except Exception:
     process_pdf = None
     PDF_PIPELINE_OK = False
 
-ENGINE_BUILD = "commercial-2026-05-31-author-year-suggestion-guard-v1.5.18"
+ENGINE_BUILD = "commercial-2026-05-31-preserve-old-citation-needed-author-year-guard-v1.5.19"
 
 # Fuzzy matching (optional)
 try:
@@ -3578,12 +3578,11 @@ def _author_years_in_reference_list(
     ref_map: Dict[str, str],
 ) -> set:
     """
-    Return all reference years that appear for the same first-author/org key.
+    Return all reference years appearing for the same first-author/org key.
 
-    This is deliberately general. It applies to OECD, World Bank, Mensah,
-    Afriyie, Venkatesh, Adam, etc. If one author has several valid publications
-    in the reference list, the engine must not automatically replace one year
-    with another.
+    This is deliberately general. It applies to every author, not only
+    institutions. If one author has several valid publications in the reference
+    list, the engine must not automatically replace one year with another.
     """
     target = _suggestion_author_norm(author)
     if not target:
@@ -3591,7 +3590,6 @@ def _author_years_in_reference_list(
 
     years = set()
 
-    # Check keys already built as author|year.
     for key in (ref_map or {}).keys():
         if "|" not in str(key):
             continue
@@ -3601,7 +3599,6 @@ def _author_years_in_reference_list(
             if by:
                 years.add(by)
 
-    # Check parsed references as a fallback.
     for ref in references or []:
         try:
             info = _reference_author_year(ref)
@@ -3622,19 +3619,6 @@ def _author_years_in_reference_list(
     return years
 
 
-def _author_year_exists_in_reference_list(
-    author: str,
-    year: str,
-    references: List[RefAY],
-    ref_map: Dict[str, str],
-) -> bool:
-    """True when the cited author-year already exists in the reference list."""
-    by = _base_year(str(year or ""))
-    if not by:
-        return False
-    return by in _author_years_in_reference_list(author, references, ref_map)
-
-
 def _safe_year_typo_candidate(
     author: str,
     cited_year: str,
@@ -3643,14 +3627,13 @@ def _safe_year_typo_candidate(
     ref_map: Dict[str, str],
 ) -> bool:
     """
-    Decide whether a year-typo replacement is safe.
+    Safe rule for year-typo suggestions.
 
-    Rules:
-    1. If the exact cited author-year exists, do not suggest any replacement.
+    1. If the exact cited author-year exists, do not suggest replacement.
     2. If the same author has multiple valid years in the reference list, do not
-       replace one year with another. That situation needs human review.
-    3. Only allow a replacement when the author has exactly one reference year
-       and that year is the proposed candidate.
+       replace one year with another.
+    3. Only allow replacement when the author has one unique reference year and
+       that year is the proposed candidate.
     """
     cited_base = _base_year(str(cited_year or ""))
     candidate_base = _base_year(str(candidate_year or ""))
@@ -3660,12 +3643,9 @@ def _safe_year_typo_candidate(
 
     years = _author_years_in_reference_list(author, references, ref_map)
 
-    # Exact author-year already exists. The citation is not a year typo.
     if cited_base in years:
         return False
 
-    # Same author has several valid publications. Do not guess which one the
-    # writer intended. This applies to all authors, not only institutions.
     if len(years) != 1:
         return False
 
@@ -4199,9 +4179,7 @@ def _generate_citation_fixes(
     # - the exact cited author-year already exists in the reference list; or
     # - the same author has multiple valid publication years in the reference list.
     #
-    # This protects every author, not only institutions. Examples:
-    # OECD 2016/2017/2019/2022, Afriyie 2021/2023, Mensah 2021/2023,
-    # Venkatesh 2003/2016, etc.
+    # This protects every author, not only institutions.
     if len(year) == 4 and year.isdigit():
         try:
             year_int = int(year[:4])
