@@ -1,4 +1,4 @@
-# verify.py — Complete with full metadata capture for APA/Harvard formatting
+# verify.py — Complete with full metadata capture for APA/Harvard formatting + recovery context metadata
 
 import os
 import re
@@ -1260,6 +1260,46 @@ def _get_top_suggestions(
 # SINGLE REFERENCE VERIFICATION
 # ============================================================
 
+
+def _verification_recovery_metadata(ref: str, fields: Dict[str, Any], query: str, title_only: str) -> Dict[str, Any]:
+    """
+    Metadata used by main.py to build context-specific possible-source guidance.
+    This does not affect scoring or classification.
+    """
+    title = fields.get("title", "") or title_only or ""
+    authors = fields.get("authors", []) or []
+    year = fields.get("year", "") or ""
+    doi = fields.get("doi", "") or ""
+    journal = fields.get("journal", "") or fields.get("container_title", "") or fields.get("source", "") or ""
+
+    terms = []
+    for value in [title, journal, " ".join(authors), year]:
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", str(value or "")):
+            low = term.lower()
+            if low not in _QUERY_STOP_WORDS and low not in terms:
+                terms.append(low)
+            if len(terms) >= 10:
+                break
+        if len(terms) >= 10:
+            break
+
+    focused_query = " ".join(terms[:8]) or query or ref[:180]
+
+    return {
+        "recovery_query": focused_query[:180],
+        "recovery_key_terms": terms[:10],
+        "recovery_title": title,
+        "recovery_year": year,
+        "recovery_doi": doi,
+        "recovery_journal": journal,
+        "recovery_possible_source_type": (
+            "DOI/publisher record" if doi else
+            "Crossref/OpenAlex metadata record, Google Scholar record, publisher page, repository record, or official report page"
+        ),
+    }
+
+
+
 def _verify_single_reference(
     ref: str, 
     style: str, 
@@ -1297,6 +1337,11 @@ def _verify_single_reference(
         "match_note": "",
     }
 
+    try:
+        row.update(_verification_recovery_metadata(ref, fields, query, title_only))
+    except Exception:
+        pass
+
     # Fast commercial skip: no DOI and weak title/query should not trigger slow online searches.
     if VERIFY_SKIP_WEAK_TITLE and not ref_doi and _significant_word_count(title_only or ref_title) < VERIFY_MIN_TITLE_WORDS:
         row = _make_fast_review_row(
@@ -1306,6 +1351,10 @@ def _verify_single_reference(
             authors=ref_authors,
             reason="No DOI and too few significant title words for reliable fast verification.",
         )
+        try:
+            row.update(_verification_recovery_metadata(ref, fields, query, title_only))
+        except Exception:
+            pass
         row["status"] = _normalize_verify_status(row.get("status"))
         _cache_set(cache_key, row)
         return row
