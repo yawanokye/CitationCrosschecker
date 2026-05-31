@@ -1,5 +1,5 @@
 """
-certificate_builder.py — PDF open-evidence links and clickable footer
+certificate_builder.py — all manual evidence links and provisional clearance rule
 CiteIntegrity Citation Integrity Review Certificate.
 
 This module builds a careful, defensible certificate from an existing CiteIntegrity
@@ -963,6 +963,117 @@ def _verification_counts(result: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
+
+def _manual_verification_completeness(result: Dict[str, Any]) -> Dict[str, int]:
+    """
+    Determine whether all references that require manual verification have been
+    manually verified with recorded evidence.
+
+    Manual-required rows are online verification rows with status needs_review,
+    not_found, or offline. They are considered cleared only when a matching
+    manual_verified decision has recorded evidence attached or matching evidence
+    exists in manual_verification.evidence.
+    """
+    ov = _dict(result.get("online_verification"))
+    rows = _list(ov.get("rows"))
+    manual = _dict(result.get("manual_verification"))
+    decisions = _list(manual.get("decisions"))
+    evidence = _list(manual.get("evidence"))
+
+    required_statuses = {"needs_review", "not_found", "offline"}
+
+    def row_key(row: Dict[str, Any]) -> str:
+        return _manual_reference_key_for_certificate(
+            row.get("reference")
+            or row.get("original_reference")
+            or row.get("reference_text")
+            or row.get("matched_reference")
+            or row.get("matched_title")
+            or row.get("citation")
+        )
+
+    def evidence_key(ev: Dict[str, Any]) -> str:
+        return _safe_str(ev.get("manual_reference_key")) or _manual_reference_key_for_certificate(
+            ev.get("reference")
+            or ev.get("original_reference")
+            or ev.get("reference_text")
+            or ev.get("matched_reference")
+            or ev.get("matched_title")
+            or ev.get("citation")
+        )
+
+    def decision_key(decision: Dict[str, Any]) -> str:
+        return _safe_str(decision.get("manual_reference_key")) or _manual_reference_key_for_certificate(
+            decision.get("reference")
+            or decision.get("original_reference")
+            or decision.get("reference_text")
+            or decision.get("matched_reference")
+            or decision.get("matched_title")
+            or decision.get("citation")
+        )
+
+    evidence_by_key: Dict[str, List[Dict[str, Any]]] = {}
+    for ev in evidence:
+        if not isinstance(ev, dict):
+            continue
+        k = evidence_key(ev)
+        url = _safe_str(ev.get("evidence_url") or ev.get("url"))
+        if k and url:
+            evidence_by_key.setdefault(k, []).append(ev)
+
+    manually_verified_with_evidence_keys = set()
+    for d in decisions:
+        if not isinstance(d, dict) or _norm(d.get("decision")) != "manual_verified":
+            continue
+        k = decision_key(d)
+        attached = [ev for ev in _list(d.get("evidence_records")) if isinstance(ev, dict)]
+        attached_has_url = any(_safe_str(ev.get("evidence_url") or ev.get("url")) for ev in attached)
+        if k and (attached_has_url or evidence_by_key.get(k)):
+            manually_verified_with_evidence_keys.add(k)
+
+    required_keys = set()
+    verified_required_keys = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = _norm(row.get("status") or row.get("automated_status") or "")
+        if status not in required_statuses:
+            continue
+        k = row_key(row)
+        if not k:
+            continue
+        required_keys.add(k)
+
+        row_evidence = [ev for ev in _list(row.get("evidence_records")) if isinstance(ev, dict)]
+        row_has_evidence = any(_safe_str(ev.get("evidence_url") or ev.get("url")) for ev in row_evidence)
+        row_has_evidence = row_has_evidence or bool(_safe_str(row.get("evidence_url") or row.get("url") or row.get("manual_evidence_url")))
+        if _norm(row.get("manual_decision")) == "manual_verified" and (row_has_evidence or evidence_by_key.get(k)):
+            verified_required_keys.add(k)
+        if k in manually_verified_with_evidence_keys:
+            verified_required_keys.add(k)
+
+    # If the row-level details are not available, fall back to backend summary counts.
+    if not rows:
+        verify_summary = _verification_counts(result)
+        required_count = (
+            verify_summary.get("references_still_needing_review", 0)
+            + verify_summary.get("not_found_references", 0)
+            + verify_summary.get("offline_references", 0)
+        )
+        with_evidence_count = verify_summary.get("user_attested_manual_verification_with_evidence", 0)
+        unresolved_count = max(required_count - with_evidence_count, 0)
+    else:
+        required_count = len(required_keys)
+        with_evidence_count = len(required_keys & verified_required_keys)
+        unresolved_count = max(required_count - with_evidence_count, 0)
+
+    return {
+        "manual_required_references": required_count,
+        "manual_required_verified_with_evidence": with_evidence_count,
+        "manual_required_unresolved": unresolved_count,
+        "manual_required_all_verified_with_evidence": 1 if unresolved_count == 0 else 0,
+    }
+
 def _claim_counts(result: Dict[str, Any]) -> Dict[str, int]:
     rows = _list(result.get("claim_support"))
 
@@ -1286,10 +1397,56 @@ def _risk_counts(summary: Dict[str, int], verify: Dict[str, int], claim: Dict[st
     }
 
 
-def _clearance_status(score: float, summary: Dict[str, int], verify: Dict[str, int], claim: Dict[str, int], cite_needed: Dict[str, int]) -> str:
+
+def _acii_recency_score(result: Dict[str, Any], component_rows: List[Dict[str, Any]] | None = None) -> float:
+    """Return the ACII recency component as a 0-100 percentage score where available."""
+    rows = component_rows if isinstance(component_rows, list) else _acii_components(result)
+
+    def parse_score(value: Any) -> float:
+        if isinstance(value, str):
+            cleaned = value.replace("%", "").strip()
+            score = _safe_float(cleaned, 0.0)
+        else:
+            score = _safe_float(value, 0.0)
+        if 0 < score <= 1:
+            score = score * 100
+        return round(score, 2)
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if _normalise_component_name(row.get("component", "")) == "recency":
+            return parse_score(row.get("score"))
+
+    acii = _dict((result or {}).get("acii"))
+    for key in ["recency", "recency_score", "recent_sources", "recent_reference_score"]:
+        if key in acii:
+            return parse_score(acii.get(key))
+        if key in (result or {}):
+            return parse_score(result.get(key))
+
+    return 0.0
+
+def _clearance_status(
+    score: float,
+    summary: Dict[str, int],
+    verify: Dict[str, int],
+    claim: Dict[str, int],
+    cite_needed: Dict[str, int],
+    recency_score: float = 0.0,
+) -> str:
     risk = _risk_counts(summary, verify, claim, cite_needed)
     critical = risk["critical"]
     moderate = risk["moderate"]
+
+    provisional_ready = (
+        _safe_int(summary.get("uncited_references")) == 0
+        and _safe_int(summary.get("missing_references")) == 0
+        and _safe_int(verify.get("manual_required_all_verified_with_evidence")) == 1
+        and _safe_float(recency_score, 0.0) >= 60
+    )
+    if provisional_ready:
+        return "Provisional clearance"
 
     if score >= 85 and critical == 0 and moderate <= 5:
         return "Clearance Recommended"
@@ -1303,7 +1460,13 @@ def _clearance_status(score: float, summary: Dict[str, int], verify: Dict[str, i
     return "Revision Required"
 
 
-def _requirements(summary: Dict[str, int], verify: Dict[str, int], claim: Dict[str, int], cite_needed: Dict[str, int]) -> List[str]:
+def _requirements(
+    summary: Dict[str, int],
+    verify: Dict[str, int],
+    claim: Dict[str, int],
+    cite_needed: Dict[str, int],
+    recency_score: float = 0.0,
+) -> List[str]:
     reqs = []
 
     if verify["not_found_references"]:
@@ -1312,12 +1475,18 @@ def _requirements(summary: Dict[str, int], verify: Dict[str, int], claim: Dict[s
         reqs.append(f"Recheck {verify['offline_references']} reference(s) that could not be verified online.")
     if verify["references_still_needing_review"]:
         reqs.append(f"Review {verify['references_still_needing_review']} reference(s) still needing review.")
+    if verify.get("manual_required_unresolved"):
+        reqs.append(
+            f"Record manual verification evidence for {verify['manual_required_unresolved']} reference(s) that still require manual verification."
+        )
     if verify["manual_not_verified_references"]:
         reqs.append(f"Correct or remove {verify['manual_not_verified_references']} reference(s) marked not verified after manual search.")
     if summary["missing_references"]:
         reqs.append(f"Add full reference-list entries for {summary['missing_references']} missing in-text citation(s).")
     if summary["uncited_references"]:
         reqs.append(f"Review {summary['uncited_references']} uncited reference(s) and either cite or remove them.")
+    if _safe_float(recency_score, 0.0) < 60:
+        reqs.append("Improve the ACII recency component to at least 60% by adding sufficient current sources.")
     if claim["critical_claim_support_issues"]:
         reqs.append(f"Strengthen or correct {claim['critical_claim_support_issues']} critical claim-support issue(s).")
     if claim["moderate_claim_support_issues"]:
@@ -1347,12 +1516,14 @@ def build_citation_integrity_certificate(
     generated_at = _utc_timestamp()
     summary = _summary_counts(result)
     verify = _verification_counts(result)
+    verify.update(_manual_verification_completeness(result))
     claim = _claim_counts(result)
     cite_needed = _citation_needed_counts(result)
     score, rating = _acii(result)
     acii_component_rows = _acii_components(result)
+    recency_score = _acii_recency_score(result, acii_component_rows)
     risk = _risk_counts(summary, verify, claim, cite_needed)
-    status = _clearance_status(score, summary, verify, claim, cite_needed)
+    status = _clearance_status(score, summary, verify, claim, cite_needed, recency_score)
     captured_document_title = _extract_document_title(result, document_title)
 
     purchase = access.get("purchase") if isinstance(access.get("purchase"), dict) else {}
@@ -1398,11 +1569,13 @@ def build_citation_integrity_certificate(
             **cite_needed,
             "acii_score": score if score else None,
             "acii_components_count": len(acii_component_rows),
+            "acii_recency_score": recency_score,
+            "provisional_clearance_recency_threshold": 60,
             "clearance_status": status,
             "document_title": captured_document_title,
         },
         "risk_counts": risk,
-        "clearance_requirements": _requirements(summary, verify, claim, cite_needed),
+        "clearance_requirements": _requirements(summary, verify, claim, cite_needed, recency_score),
         "coverage_note": (
             "References not found in Crossref, OpenAlex, Semantic Scholar, DataCite, or related discovery sources are not automatically invalid. "
             "They are reported for manual review unless other evidence indicates a higher citation integrity risk."
@@ -1439,6 +1612,10 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
         ("Total in-text citations", c.get("total_in_text_citations", s.get("total_in_text_citations", 0))),
         ("Total references", c.get("total_references", s.get("total_references", 0))),
         ("ACII score", c.get("acii_score", "Not available")),
+        ("ACII recency component", f"{s.get('acii_recency_score', 0)}%"),
+        ("Manual-required references", s.get("manual_required_references", 0)),
+        ("Manual-required verified with evidence", s.get("manual_required_verified_with_evidence", 0)),
+        ("Manual-required unresolved", s.get("manual_required_unresolved", 0)),
         ("Clearance status", c.get("clearance_status", "")),
         ("System-verified references", s.get("automatically_verified_references", 0)),
         ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
@@ -1476,7 +1653,7 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
     if manual_evidence:
         evidence_rows = "".join(
             f"<tr><td>{i+1}</td><td>{_html(ev.get('reference', ''))}</td><td>{_html(ev.get('evidence_source') or ev.get('source') or '')}</td><td>{_html(ev.get('evidence_type') or ev.get('type') or '')}</td><td>{_html(ev.get('evidence_url') or ev.get('url') or '')}</td></tr>"
-            for i, ev in enumerate(manual_evidence[:500])
+            for i, ev in enumerate(manual_evidence)
             if isinstance(ev, dict)
         )
         manual_evidence_html = f"""
@@ -1804,6 +1981,10 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         ("Total in-text citations", c.get("total_in_text_citations", s.get("total_in_text_citations", 0))),
         ("Total references", c.get("total_references", s.get("total_references", 0))),
         ("ACII score", c.get("acii_score", "Not available")),
+        ("ACII recency component", f"{s.get('acii_recency_score', 0)}%"),
+        ("Manual-required references", s.get("manual_required_references", 0)),
+        ("Manual-required verified with evidence", s.get("manual_required_verified_with_evidence", 0)),
+        ("Manual-required unresolved", s.get("manual_required_unresolved", 0)),
         ("Clearance status", c.get("clearance_status", "")),
         ("System-verified references", s.get("automatically_verified_references", 0)),
         ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
@@ -1869,7 +2050,7 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
     if manual_evidence:
         story.append(Paragraph("Manual Evidence Recorded", h3))
         evidence_data = [[p("#"), p("Reference"), p("Evidence source"), p("Type"), p("Evidence link")]]
-        for i, ev in enumerate(manual_evidence[:20]):
+        for i, ev in enumerate(manual_evidence):
             if not isinstance(ev, dict):
                 continue
             evidence_data.append([
