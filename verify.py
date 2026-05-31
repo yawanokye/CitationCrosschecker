@@ -1,4 +1,4 @@
-# verify.py — Complete with full metadata capture for APA/Harvard formatting + recovery context metadata
+# verify.py — Complete with full metadata capture for APA/Harvard formatting + recovery context metadata + recovery context metadata
 
 import os
 import re
