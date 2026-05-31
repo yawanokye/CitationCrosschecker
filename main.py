@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-evidence-recording-to-certificate-fixed-2026-05-30-v1.5.39"
+# MAIN_BUILD = "DEMO_MAIN-current-demo-citation-needed-stats-guard-sources-2026-05-31-v1.5.39"
 
 import io
 import os
@@ -105,7 +105,7 @@ REDIS_URL = os.environ.get("REDIS_URL")
 # ===============================
 # This build is intended for training and live demonstrations. It does not expose
 # payment details and it grants full-review access to every completed result so
-# certificate, advanced enrichment, citation-needed-possible-sources-results-statistics-guard claims and exports remain open.
+# certificate, advanced enrichment, citation-needed claims and exports remain open.
 DEMO_UNLOCK_ALL_FEATURES = os.environ.get("DEMO_UNLOCK_ALL_FEATURES", "true").strip().lower() not in {"0", "false", "no"}
 DEMO_ACCESS_EMAIL = os.environ.get("DEMO_ACCESS_EMAIL", "demo@citeintegrity.org")
 
@@ -740,7 +740,8 @@ async def security_middleware(request: Request, call_next):
         "/health",
         "/privacy",
         "/terms",
-	"/static",
+		"/about",
+		"/static",
         "/export-fixed-document",
         "/export-references",
         "/autofix-suggestions",
@@ -2585,6 +2586,11 @@ async def terms_page(request: Request):
         "request": request
     })
 
+@app.get("/about", response_class=HTMLResponse)
+async def terms_page(request: Request):
+    return templates.TemplateResponse("about.html", {
+        "request": request
+    })
 # ============================================================
 # CONTACT PAGE AND EMAIL FORWARDING
 # ============================================================
@@ -3547,54 +3553,6 @@ def _manual_build_summary(result: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
-
-def _manual_sync_evidence_for_certificate(result: Dict[str, Any]) -> None:
-    """
-    Mirror manual verification evidence into stable certificate-facing fields.
-    This prevents the certificate from missing evidence when the builder looks
-    at top-level records rather than manual_verification.evidence.
-    """
-    if not isinstance(result, dict):
-        return
-
-    manual = result.setdefault("manual_verification", {})
-    evidence = manual.get("evidence") or []
-    if not isinstance(evidence, list):
-        evidence = []
-        manual["evidence"] = evidence
-
-    # Deduplicate by reference key + source + URL.
-    deduped = []
-    seen = set()
-    for ev in evidence:
-        if not isinstance(ev, dict):
-            continue
-        key = (
-            str(ev.get("manual_reference_key") or "").strip().lower(),
-            str(ev.get("evidence_source") or ev.get("source") or "").strip().lower(),
-            str(ev.get("evidence_url") or ev.get("url") or "").strip(),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(ev)
-
-    manual["evidence"] = deduped
-    result["manual_evidence_records"] = deduped
-    result["manual_verification_evidence"] = deduped
-
-    # Also attach matching evidence to each manual decision for certificate counting.
-    decisions = manual.get("decisions") or []
-    if isinstance(decisions, list):
-        for decision in decisions:
-            if not isinstance(decision, dict):
-                continue
-            ref_key = decision.get("manual_reference_key") or _manual_reference_key(decision.get("reference") or "")
-            matching = [ev for ev in deduped if _manual_evidence_matches_key(ev, ref_key)]
-            decision["evidence_records"] = matching
-            decision["manual_evidence_recorded"] = bool(matching)
-
-
 @app.post("/api/manual-verify/evidence")
 async def api_manual_verify_evidence(request: Request):
     payload = await request.json()
@@ -3626,8 +3584,6 @@ async def api_manual_verify_evidence(request: Request):
         "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
     })
 
-    _manual_sync_evidence_for_certificate(result)
-    _manual_sync_evidence_for_certificate(result)
     result["manual_verification_summary"] = _manual_build_summary(result)
     result["certificate_state"] = {
         "requires_regeneration": True,
@@ -3887,12 +3843,18 @@ def _demo_sentence_has_citation(sentence: str) -> bool:
 
 def _citation_needed_is_results_statistics_sentence(sentence: str) -> bool:
     """
-    Do not treat the author's own results/statistics reporting as citation-needed.
+    Prevent Citation Needed false positives from the author's own results/statistics.
 
-    This prevents Chapter Four/results statements such as response rate, ANOVA,
-    regression, correlation, model summary, beta, p-value, R-square, means,
-    standard deviations and "findings revealed" from being flagged as needing an
-    external reference. Literature claims still pass through the normal detector.
+    These are usually Chapter Four / findings statements and should not be
+    treated as needing an external source:
+    - response rate
+    - descriptive statistics
+    - reliability statistics
+    - correlation/regression/ANOVA output
+    - model summary, R-square, beta, p-values
+    - findings/results revealed by the current study
+
+    Literature/background claims are not suppressed by this guard.
     """
     s = re.sub(r"\s+", " ", str(sentence or "")).strip()
     if not s:
@@ -3943,7 +3905,11 @@ def _citation_needed_is_results_statistics_sentence(sentence: str) -> bool:
         r"\bstandard\s+deviation\b",
         r"\bsd\b",
         r"\bmean\b",
+        r"\bmedian\b",
+        r"\bfrequency\b",
+        r"\bvalid\s+n\b",
         r"\bvariation in\b",
+        r"\bmodel explained\b",
         r"\bstatistically significant\b",
         r"\bsignificant effect\b",
         r"\bpositive and statistically significant\b",
@@ -3953,10 +3919,19 @@ def _citation_needed_is_results_statistics_sentence(sentence: str) -> bool:
     has_own_marker = any(re.search(p, low, flags=re.I) for p in own_results_markers)
     has_stats_marker = any(re.search(p, low, flags=re.I) for p in stats_markers)
 
-    if has_own_marker and (has_stats_marker or re.search(r"\b(show|shows|present|presents|revealed|indicated|explained|reported)\b", low)):
+    if has_own_marker and (
+        has_stats_marker
+        or re.search(r"\b(show|shows|present|presents|revealed|indicated|explained|reported)\b", low)
+    ):
         return True
 
-    if re.search(r"\b(findings|results|regression|correlation|anova|model summary|model explained)\b", low) and re.search(r"\b(revealed|showed|shows|indicated|explained|significant|effect|relationship|association|variation)\b", low):
+    if re.search(
+        r"\b(findings|results|regression|correlation|anova|model summary|model explained|response rate)\b",
+        low,
+    ) and re.search(
+        r"\b(revealed|showed|shows|indicated|explained|significant|effect|relationship|association|variation|reported|presents?)\b",
+        low,
+    ):
         return True
 
     return False
@@ -3964,104 +3939,76 @@ def _citation_needed_is_results_statistics_sentence(sentence: str) -> bool:
 
 
 
-def _citation_needed_key_terms(sentence: str, max_terms: int = 8) -> List[str]:
-    """Extract short, readable key terms for a citation-needed claim."""
-    text = re.sub(r"\s+", " ", str(sentence or "")).strip()
-    stop = {
-        "the", "and", "for", "with", "that", "this", "from", "into", "were", "was",
-        "are", "been", "being", "have", "has", "had", "can", "may", "might", "will",
-        "would", "should", "could", "study", "research", "result", "results",
-        "finding", "findings", "therefore", "however", "also", "than", "then",
-        "public", "sector", "institutions", "institution", "selected"
-    }
-    raw_terms = re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", text)
-    terms: List[str] = []
-    seen = set()
-    for term in raw_terms:
-        low = term.lower()
-        if low in stop or low in seen:
-            continue
-        seen.add(low)
-        terms.append(term)
-        if len(terms) >= max_terms:
-            break
-    return terms
+def _citation_needed_possible_source_payload(claim: str) -> Dict[str, Any]:
+    """
+    Build possible-source guidance for a Citation Needed claim.
 
+    This does not verify the source. It gives the user a defensible direction
+    for what kind of evidence should be searched for and later verified.
+    """
+    claim_text = str(claim or "")
+    source_type = _suggested_source_type_for_claim(claim_text)
+    key_terms = _extract_claim_key_terms(claim_text, max_terms=8)
+    search_query = _build_citation_needed_search_query(claim_text)
 
-def _citation_needed_possible_source_type(sentence: str) -> str:
-    """Suggest the type of evidence/source needed for a flagged claim."""
-    s = str(sentence or "").lower()
+    low = claim_text.lower()
+    examples: List[str] = []
 
-    if re.search(r"\b(public procurement act|procurement act|law|regulation|regulatory|policy|guideline|framework|mandate|compliance|authority|ministry|commission)\b", s):
-        return "Legal, regulatory, policy, official guideline, or institutional source"
+    if re.search(r"\b(percent|percentage|rate|increase|decrease|prevalence|average|mean|median|ratio|statistic|data|survey|sample|respondents)\b", low):
+        examples = [
+            "peer-reviewed empirical article",
+            "official statistics or dataset",
+            "survey report",
+            "methodology or measurement source",
+        ]
+    elif re.search(r"\b(policy|regulation|law|act|standard|guideline|framework|compliance|authority|ministry|commission)\b", low):
+        examples = [
+            "government policy document",
+            "law, regulation, or official guideline",
+            "institutional report",
+            "regulatory authority publication",
+        ]
+    elif re.search(r"\b(theory|model|framework|concept|construct|definition|dimension|relationship|mechanism)\b", low):
+        examples = [
+            "theory paper",
+            "conceptual article",
+            "validated measurement scale",
+            "authoritative textbook",
+        ]
+    elif re.search(r"\b(ghana|africa|country|national|regional|local|municipal|district|institutional)\b", low):
+        examples = [
+            "country-specific empirical study",
+            "official national report",
+            "institutional publication",
+            "government or development-agency report",
+        ]
+    else:
+        examples = [
+            "peer-reviewed article",
+            "authoritative book",
+            "official report",
+            "credible scholarly source",
+        ]
 
-    if re.search(r"\b(ghaneps|ghana electronic procurement system|electronic procurement system|government platform|public procurement authority|ppa)\b", s):
-        return "Official GHANEPS/PPA document, Ghana public procurement policy source, World Bank/OECD report, or institutional implementation report"
-
-    if re.search(r"\b(percent|percentage|rate|increase|decrease|prevalence|average|mean|median|ratio|statistics?|data|survey|sample|respondents?|model explained|variation|r-square|anova|regression|correlation)\b", s):
-        return "Empirical article, dataset, official statistics, survey report, methods paper, or the study's own results table if it is an internal result"
-
-    if re.search(r"\b(theory|model|framework|construct|concept|definition|dimension|relationship|mechanism|determinants?)\b", s):
-        return "Theory paper, conceptual article, textbook, validated scale/instrument source, or empirical study"
-
-    if re.search(r"\b(ghana|municipal|district|cape coast|africa|country|national|local government|public sector)\b", s):
-        return "Country-specific empirical study, official national report, government document, or institutional report"
-
-    return "Peer-reviewed empirical article, authoritative book, official report, credible policy document, or dataset"
-
-
-def _citation_needed_source_guidance(sentence: str) -> str:
-    """Provide practical source guidance, not just generic search links."""
-    source_type = _citation_needed_possible_source_type(sentence)
-    terms = _citation_needed_key_terms(sentence, max_terms=6)
-    term_text = ", ".join(terms) if terms else "the main claim keywords"
-    return (
-        f"Possible source: {source_type}. "
-        f"Use focused terms such as: {term_text}. "
-        "If the statement is an internal result from the author's own analysis, link it to the relevant results table instead of adding an external reference."
+    guidance = (
+        f"Look for a source that directly supports the claim. Possible source type: {source_type}. "
+        f"Search using focused terms such as: {', '.join(key_terms) if key_terms else search_query}. "
+        "If no direct evidence exists, soften or qualify the claim rather than forcing a weak citation."
     )
 
-
-def _citation_needed_focused_query(sentence: str) -> str:
-    """Build a short search query for evidence discovery."""
-    terms = _citation_needed_key_terms(sentence, max_terms=8)
-    if terms:
-        return " ".join(terms)[:180]
-    return re.sub(r"\s+", " ", str(sentence or "")).strip()[:180]
-
-
-def _citation_needed_possible_source_examples(sentence: str) -> List[str]:
-    """Small list of likely source categories to display in the UI."""
-    s = str(sentence or "").lower()
-    if re.search(r"\b(ghaneps|ghana electronic procurement system|public procurement authority|ppa)\b", s):
-        return [
-            "Public Procurement Authority/GHANEPS documentation",
-            "World Bank or OECD public procurement reform report",
-            "Ghana public procurement policy or implementation report",
-        ]
-    if re.search(r"\b(policy|law|regulation|act|guideline|compliance)\b", s):
-        return [
-            "Relevant Act, regulation or policy document",
-            "Official government guideline",
-            "Institutional compliance report",
-        ]
-    if re.search(r"\b(percent|rate|statistics?|survey|respondents?|regression|anova|correlation|mean|standard deviation|model explained)\b", s):
-        return [
-            "Own results table, where this is an internal finding",
-            "Empirical journal article",
-            "Official statistics or survey report",
-        ]
-    if re.search(r"\b(theory|model|framework|construct|concept|definition)\b", s):
-        return [
-            "Theory or conceptual paper",
-            "Textbook or handbook",
-            "Validated scale/instrument article",
-        ]
-    return [
-        "Peer-reviewed empirical article",
-        "Authoritative book or report",
-        "Official institutional or policy document",
-    ]
+    return {
+        "possible_source": source_type,
+        "possible_source_type": source_type,
+        "possible_source_guidance": guidance,
+        "possible_source_examples": examples,
+        "key_terms": key_terms,
+        "suggested_search_query": search_query,
+        "suggested_sources": [
+            {"label": "Google Scholar", "type": "search", "query": search_query},
+            {"label": "Google", "type": "search", "query": search_query},
+            {"label": "Crossref", "type": "metadata_search", "query": search_query},
+        ],
+    }
 
 
 
@@ -4101,29 +4048,23 @@ def _demo_generate_citation_needed_claims(result: Dict[str, Any], limit: int = 6
             continue
         seen.add(key)
         priority = "high" if re.search(r"\d+(?:\.\d+)?\s*%|significant|effect|impact", clean, re.I) else "medium"
-        focused_query = _citation_needed_focused_query(clean)
-        focused_query = _citation_needed_focused_query(clean)
+        focused_query = _build_citation_needed_search_query(clean)
+        possible_source = _citation_needed_possible_source_payload(clean)
         rows.append({
             "id": f"CN-{len(rows)+1:03d}",
             "claim": clean,
             "priority": priority,
             "reason": "Potential factual or empirical claim without an immediately detected citation.",
-            "possible_source": _citation_needed_possible_source_type(clean),
-            "possible_source_type": _citation_needed_possible_source_type(clean),
-            "possible_source_guidance": _citation_needed_source_guidance(clean),
-            "possible_source_examples": _citation_needed_possible_source_examples(clean),
-            "context_snippet": clean,
-            "key_terms": _citation_needed_key_terms(clean),
             "recommendation": _citation_needed_recommendation(clean),
             "context_snippet": clean,
             "key_terms": _extract_claim_key_terms(clean),
-            "suggested_source_type": _suggested_source_type_for_claim(clean),
+            "suggested_source_type": possible_source.get("possible_source_type"),
+            "possible_source": possible_source.get("possible_source"),
+            "possible_source_type": possible_source.get("possible_source_type"),
+            "possible_source_guidance": possible_source.get("possible_source_guidance"),
+            "possible_source_examples": possible_source.get("possible_source_examples"),
             "suggested_search_query": focused_query,
-            "suggested_sources": [
-                {"label": "Google Scholar", "type": "search", "query": focused_query},
-                {"label": "Google", "type": "search", "query": focused_query},
-                {"label": "Crossref", "type": "metadata_search", "query": focused_query},
-            ],
+            "suggested_sources": possible_source.get("suggested_sources"),
             "status": "unresolved",
             "source": "training_demo_detector",
             "sentence_index": idx,
@@ -4278,14 +4219,11 @@ def _demo_certificate_fallback(result: Dict[str, Any], job_id: str = "") -> Dict
         "clearance_status": "Citation Integrity Review Completed",
         "summary": {
             "automatically_verified_references": verified,
-            "user_attested_manual_verification_with_evidence": (result.get("manual_verification_summary") or {}).get("manual_verified_with_evidence", 0),
-            "user_attested_manual_verification_without_evidence": (result.get("manual_verification_summary") or {}).get("manual_verified_without_evidence", 0),
-            "manual_evidence_links_recorded": len(result.get("manual_evidence_records") or (result.get("manual_verification") or {}).get("evidence") or []),
-            "google_scholar_evidence_links_recorded": (result.get("manual_verification_summary") or {}).get("google_scholar_evidence_links_recorded", 0),
+            "user_attested_manual_verification_with_evidence": 0,
+            "user_attested_manual_verification_without_evidence": 0,
             "citation_needed_claims": len(result.get("citation_needed_claims") or []),
             "claim_support_issues": 0,
         },
-        "manual_evidence_records": result.get("manual_evidence_records") or (result.get("manual_verification") or {}).get("evidence") or [],
         "risk_counts": {"critical": 0, "moderate": 0, "minor": 0},
         "clearance_requirements": ["Review certificate metrics and conduct final human review before submission."],
         "coverage_note": "Training/demo certificate generated without payment gating.",
@@ -4295,8 +4233,6 @@ def _demo_certificate_fallback(result: Dict[str, Any], job_id: str = "") -> Dict
 
 def _demo_build_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[str, Any]:
     result = _demo_prepare_full_review_result(job_id, result, persist=False)
-    _manual_sync_evidence_for_certificate(result)
-    result["manual_verification_summary"] = _manual_build_summary(result)
     access = _demo_full_access_payload(job_id)
     document_title = result.get("document_title") or _demo_extract_document_title(result)
     if build_citation_integrity_certificate is not None:
