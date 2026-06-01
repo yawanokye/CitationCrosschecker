@@ -32,7 +32,7 @@ from claim_checker import (
 )
 
 __version__ = "1.5.31"
-WORKER_BUILD = "commercial-2026-06-01-large-queue-nonblocking"
+WORKER_BUILD = "commercial-2026-06-01-large-queue-worker-health"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -4902,6 +4902,7 @@ if __name__ == "__main__":
         worker = Worker(queues_to_listen, connection=redis_conn)
 
         print(f"✅ Worker ready, listening to: {queues_to_listen}")
+        print("📌 Large queue note: files routed to large_document_processing need a worker listening to that exact queue.")
         print("📋 Detection scenarios enabled:")
         print("   Scenario 1: Year mismatches")
         print("   Scenario 2: Author name mismatches")
