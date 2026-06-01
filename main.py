@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-preserve-tabs-citation-needed-logic-2026-05-31-v1.5.41"
+# MAIN_BUILD = "DEMO_MAIN-manual-evidence-before-verified-certificate-2026-06-01-v1.5.42"
 
 import io
 import os
@@ -3593,6 +3593,52 @@ def _manual_add_evidence_record(result: Dict[str, Any], record: Dict[str, Any]) 
     return record
 
 
+
+
+def _manual_attach_evidence_to_verified_decisions(result: Dict[str, Any], ref_key: str, record: Dict[str, Any]) -> int:
+    """Attach a newly recorded evidence link to any existing manual_verified decision.
+
+    This makes the certificate robust when a user clicks an evidence link shortly
+    before or after marking the reference as manually verified. The evidence is
+    stored once in manual_verification.evidence and also attached to the matching
+    verified decision so certificate generation can include it reliably.
+    """
+    if not isinstance(result, dict) or not ref_key or not isinstance(record, dict):
+        return 0
+    manual = result.setdefault("manual_verification", {})
+    decisions = manual.setdefault("decisions", [])
+    attached_count = 0
+    record_url = str(record.get("evidence_url") or record.get("url") or "").strip()
+
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            continue
+        if str(decision.get("decision") or "").lower() != "manual_verified":
+            continue
+        decision_key = decision.get("manual_reference_key") or _manual_reference_key(
+            decision.get("reference") or (decision.get("candidate") or {}).get("title") or ""
+        )
+        if not decision_key or not (decision_key == ref_key or decision_key in ref_key or ref_key in decision_key):
+            continue
+
+        evidence_records = decision.setdefault("evidence_records", [])
+        if not isinstance(evidence_records, list):
+            evidence_records = []
+            decision["evidence_records"] = evidence_records
+
+        duplicate = False
+        for existing in evidence_records:
+            if not isinstance(existing, dict):
+                continue
+            if record_url and str(existing.get("evidence_url") or existing.get("url") or "").strip() == record_url:
+                duplicate = True
+                break
+        if not duplicate:
+            evidence_records.append(record)
+        decision["manual_evidence_recorded"] = True
+        attached_count += 1
+    return attached_count
+
 def _manual_build_summary(result: Dict[str, Any]) -> Dict[str, int]:
     manual = result.setdefault("manual_verification", {})
     decisions = manual.get("decisions") or []
@@ -3669,6 +3715,8 @@ async def api_manual_verify_evidence(request: Request):
         "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
     })
 
+    _manual_attach_evidence_to_verified_decisions(result, ref_key, record)
+
     result["manual_verification_summary"] = _manual_build_summary(result)
     result["certificate_state"] = {
         "requires_regeneration": True,
@@ -3698,6 +3746,10 @@ async def api_manual_verify_decision(request: Request):
     decision = str(payload.get("decision") or "").strip().lower()
     candidate = payload.get("candidate") or {}
     note = _manual_norm(payload.get("note") or "")
+    incoming_evidence = payload.get("evidence") or payload.get("evidence_record") or {}
+    incoming_evidence_records = payload.get("evidence_records") or []
+    if isinstance(incoming_evidence, dict) and incoming_evidence:
+        incoming_evidence_records = list(incoming_evidence_records or []) + [incoming_evidence]
 
     allowed = {"manual_verified", "manual_not_verified", "not_indexed_but_plausible", "keep_needs_review"}
     if not job_id:
@@ -3716,6 +3768,27 @@ async def api_manual_verify_decision(request: Request):
         "not_indexed_but_plausible": "Plausible",
         "keep_needs_review": "Needs review",
     }
+
+    # Evidence links clicked immediately before the manual decision are sent with
+    # the decision payload as a fallback. Upsert them before evidence is matched
+    # to the manual_verified decision record.
+    for ev in incoming_evidence_records if isinstance(incoming_evidence_records, list) else []:
+        if not isinstance(ev, dict):
+            continue
+        ev_url = str(ev.get("evidence_url") or ev.get("url") or "").strip()
+        if not ev_url:
+            continue
+        ev_record = _manual_add_evidence_record(result, {
+            "reference": reference,
+            "manual_reference_key": ref_key,
+            "evidence_source": _manual_norm(ev.get("evidence_source") or ev.get("source") or "Manual search"),
+            "evidence_type": _manual_norm(ev.get("evidence_type") or ev.get("type") or "search_result"),
+            "evidence_url": ev_url,
+            "opened_at": ev.get("opened_at") or stamp,
+            "recorded_at": ev.get("recorded_at") or stamp,
+            "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
+        })
+        _manual_attach_evidence_to_verified_decisions(result, ref_key, ev_record)
 
     decision_payload = {
         "manual_decision": decision,
@@ -3784,7 +3857,7 @@ async def api_manual_verify_decision(request: Request):
     candidate_source = str(candidate.get("source") or "Manual search candidate").strip() if isinstance(candidate, dict) else "Manual search candidate"
     if candidate_doi or candidate_url:
         evidence_url = candidate_url or f"https://doi.org/{candidate_doi.replace('https://doi.org/', '').strip()}"
-        _manual_add_evidence_record(result, {
+        candidate_evidence_record = _manual_add_evidence_record(result, {
             "reference": reference,
             "manual_reference_key": ref_key,
             "evidence_source": candidate_source,
@@ -3794,6 +3867,7 @@ async def api_manual_verify_decision(request: Request):
             "recorded_at": stamp,
             "recorded_by": DEMO_ACCESS_EMAIL if DEMO_UNLOCK_ALL_FEATURES else "user",
         })
+        _manual_attach_evidence_to_verified_decisions(result, ref_key, candidate_evidence_record)
 
     # Attach any recorded evidence to the decision itself so the certificate can show
     # whether the manual decision was user-attested with evidence or without evidence.
