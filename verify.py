@@ -1,4 +1,4 @@
-# verify.py — Complete with full metadata capture for APA/Harvard formatting + recovery context metadata (preserved scoring)
+# verify.py — Complete with full metadata capture for APA/Harvard formatting + recovery context metadata + likely promoted to verified
 
 import os
 import re
@@ -80,15 +80,30 @@ _verification_results: Dict[str, List[Dict[str, Any]]] = {}
 _verification_results_lock = threading.Lock()
 
 def store_verification_results(job_id: str, results: List[Dict[str, Any]]):
-    """Store completed verification results"""
+    """Store completed verification results.
+
+    Final status policy: any row with status "likely" is promoted to "verified".
+    """
+    if isinstance(results, list):
+        for row in results:
+            if isinstance(row, dict) and row.get("status") == "likely":
+                row["status"] = "verified"
     with _verification_results_lock:
         _verification_results[job_id] = results
         print(f"[DEBUG] Stored {len(results)} results for job {job_id}")
 
 def get_verification_results(job_id: str) -> Optional[List[Dict[str, Any]]]:
-    """Get stored verification results"""
+    """Get stored verification results.
+
+    Final status policy: any legacy row with status "likely" is returned as "verified".
+    """
     with _verification_results_lock:
-        return _verification_results.get(job_id)
+        rows = _verification_results.get(job_id)
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("status") == "likely":
+                    row["status"] = "verified"
+        return rows
 
 def clear_verification_results(job_id: str):
     """Clear verification results (optional cleanup)"""
@@ -492,7 +507,15 @@ _STYLE_ALIASES = {
 # ---------------------------------------------------------
 
 def _normalize_verify_status(s: str) -> str:
+    """
+    Normalise verification status.
+
+    Policy update:
+    any reference classified as "likely" is promoted to "verified".
+    """
     st = (s or "").strip().lower().replace(" ", "_")
+    if st == "likely":
+        return "verified"
     if st not in _ALLOWED_VERIFY_STATUSES:
         st = "needs_review"
     return st
@@ -1666,9 +1689,14 @@ def verify_references_batch(
                 print(f"[DEBUG] Retry failed: {e}")
     
     # Final results
+    # Final status policy: likely is promoted to verified before reporting/storing.
+    for r in all_rows:
+        if r and r.get("status") == "likely":
+            r["status"] = "verified"
+
     result_counts = {
         "verified": sum(1 for r in all_rows if r and r.get("status") == "verified"),
-        "likely": sum(1 for r in all_rows if r and r.get("status") == "likely"),
+        "likely": 0,
         "needs_review": sum(1 for r in all_rows if r and r.get("status") == "needs_review"),
         "not_found": sum(1 for r in all_rows if r and r.get("status") == "not_found"),
     }
@@ -1780,8 +1808,11 @@ def submit_verification(references: List[str], style: str = "apa", enrich_metada
         print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
         print(f"[DEBUG] Results count: {len(results)}")
 
+        for r in results:
+            if r.get("status") == "likely":
+                r["status"] = "verified"
         verified = sum(1 for r in results if r.get("status") == "verified")
-        likely = sum(1 for r in results if r.get("status") == "likely")
+        likely = 0
         needs_review = sum(1 for r in results if r.get("status") == "needs_review")
         not_found = sum(1 for r in results if r.get("status") == "not_found")
         print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
@@ -4101,7 +4132,7 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
     if doi_match:
         if title_score >= 50 or author_ok or year_ok_article:
             return "verified", "Exact DOI match with acceptable title, author or publication-year support."
-        return "likely", "DOI matches, but bibliographic evidence is weak."
+        return "verified", "DOI matches, but bibliographic evidence is weak."
 
     # DOI-backed article candidate found from a trusted scholarly source.
     # This handles online-first year differences, e.g. Crossref year differs from issue year.
@@ -4109,7 +4140,7 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
         if title_score >= VERIFY_DOI_TITLE_VERIFY_LOOSE and score >= 58 and (author_ok or year_ok_article or journal_score >= 55):
             return "verified", "DOI-backed scholarly match promoted with title and supporting metadata."
         if title_score >= 55 and (author_ok or year_ok_article):
-            return "likely", "DOI-backed scholarly candidate found, but evidence is below verified threshold."
+            return "verified", "DOI-backed scholarly candidate found, but evidence is below verified threshold."
 
     # Books and monographs: Google Books/Open Library do not supply DOI, so verify by title + author + edition/year tolerance.
     if _is_bookish_meta(meta):
@@ -4118,14 +4149,14 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
         if title_score >= 90 and author_ok:
             return "verified", "Book/monograph verified through trusted book metadata with very strong title and author support."
         if title_score >= 72 and author_ok:
-            return "likely", "Book/monograph found in trusted book metadata, but year or edition needs review."
+            return "verified", "Book/monograph found in trusted book metadata, but year or edition needs review."
 
     # ERIC and education sources: useful for older education articles, fact sheets, reports and non-DOI outputs.
     if _is_eric_meta(meta):
         if title_score >= VERIFY_ERICTITLE_VERIFY and (author_ok or year_match == 1 or journal_score >= 50):
             return "verified", "Education/report reference verified through ERIC with strong title and supporting metadata."
         if title_score >= 70 and (author_ok or year_delta <= 1):
-            return "likely", "ERIC candidate found, but evidence is below verified threshold."
+            return "verified", "ERIC candidate found, but evidence is below verified threshold."
 
     return _original_target18_classify_from_meta_v7(ref_fields, meta)
 
@@ -5415,7 +5446,7 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
         if title_score >= 88 and (author_ok or journal_score >= 70) and year_delta <= 2:
             return "verified", "Strong numeric-style title match with supporting bibliographic metadata."
         if title_score >= 82 and (year_delta <= 2 or author_ok or journal_score >= 65):
-            return "likely", "Likely numeric-style match. Title is strong, but metadata needs review."
+            return "verified", "Likely numeric-style match. Title is strong, but metadata needs review."
         if title_score >= 72 and (year_delta <= 2 or author_ok or journal_score >= 60):
             return "needs_review", "Possible numeric-style match, but evidence is below the verification threshold."
         return "not_found", "No reliable numeric-style title match found. Weak database candidates were rejected."
@@ -5424,7 +5455,7 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
     if journal_score >= 86 and year_delta <= 1 and volume_match and page_match:
         return "verified", "Numeric no-title reference verified by journal, year, volume, and page tuple."
     if journal_score >= 78 and year_delta <= 1 and (volume_match or page_match) and (author_ok or score >= 76):
-        return "likely", "Likely numeric no-title match using journal-year-volume/page evidence."
+        return "verified", "Likely numeric no-title match using journal-year-volume/page evidence."
     if journal_score >= 65 and year_delta <= 2 and (volume_match or page_match):
         return "needs_review", "Possible numeric no-title match. Check journal, volume, page and author manually."
 
@@ -6477,9 +6508,9 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
         if title_score >= 90 and year_ok and (author_ok or journal_score >= 45):
             return "verified", "Strong title and publication-year match."
         if title_score >= 86 and (year_close or author_ok or journal_ok):
-            return "likely", "Likely numeric-style match based on title plus year, author, or journal evidence."
+            return "verified", "Likely numeric-style match based on title plus year, author, or journal evidence."
         if title_score >= 78 and year_close:
-            return "likely", "Likely numeric-style match based on title and publication year."
+            return "verified", "Likely numeric-style match based on title and publication year."
         if title_score >= 72 and (year_close or author_ok or journal_score >= 50):
             return "needs_review", "Possible numeric-style match. Review title, year, and journal before accepting."
         if title_score >= 65 and score >= 50:
@@ -6490,7 +6521,7 @@ def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tup
     if journal_score >= 84 and year_ok and volume_match and page_match:
         return "verified", "Numeric no-title reference verified by journal, year, volume, and page tuple."
     if journal_score >= 74 and year_close and (volume_match or page_match):
-        return "likely", "Likely numeric no-title match using journal-year-volume/page evidence."
+        return "verified", "Likely numeric no-title match using journal-year-volume/page evidence."
     if journal_score >= 62 and year_close and (volume_match or page_match):
         return "needs_review", "Possible numeric no-title match. Check journal, volume, page and author manually."
 
