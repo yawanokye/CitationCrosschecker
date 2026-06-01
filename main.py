@@ -45,6 +45,15 @@ import redis
 from rq import Queue, Worker
 from rq.registry import StartedJobRegistry, FailedJobRegistry, DeferredJobRegistry
 
+# Optional automatic high-memory Render One-Off Job trigger for large files.
+# If the helper file is not deployed or environment is incomplete, normal queueing still works.
+try:
+    from render_large_worker_autostart import trigger_large_worker_if_needed
+except Exception as e:
+    print(f"⚠️ Large worker autostart helper not loaded: {e}")
+    def trigger_large_worker_if_needed(redis_conn=None, reason: str = ""):
+        return {"started": False, "reason": f"helper unavailable: {e}"}
+
 # FastAPI and web frameworks
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -959,173 +968,6 @@ LARGE_FILE_REDIS_TTL = int(os.environ.get("LARGE_FILE_REDIS_TTL", "21600"))
 
 NORMAL_DOCUMENT_JOB_TIMEOUT = int(os.environ.get("NORMAL_DOCUMENT_JOB_TIMEOUT", "3600"))
 LARGE_DOCUMENT_JOB_TIMEOUT = int(os.environ.get("LARGE_DOCUMENT_JOB_TIMEOUT", "14400"))
-
-
-# --------------------------------------------------
-# Automatic pay-as-you-use large-file worker autostart
-# --------------------------------------------------
-# When a large document is routed to large_document_processing, the web service
-# can start a Render One-Off Job automatically. The one-off job should run a
-# burst-mode worker command that exits when the queue is empty, so the high-memory
-# instance is paid for only while it is processing.
-LARGE_WORKER_AUTOSTART_ENABLED = os.environ.get(
-    "LARGE_WORKER_AUTOSTART_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-
-RENDER_API_KEY = os.environ.get("RENDER_API_KEY", "").strip()
-RENDER_LARGE_WORKER_BASE_SERVICE_ID = os.environ.get(
-    "RENDER_LARGE_WORKER_BASE_SERVICE_ID", ""
-).strip()
-RENDER_LARGE_WORKER_PLAN_ID = os.environ.get(
-    "RENDER_LARGE_WORKER_PLAN_ID", "plan-srv-011"
-).strip()
-RENDER_LARGE_WORKER_COMMAND = os.environ.get(
-    "RENDER_LARGE_WORKER_COMMAND", "python large_worker_oneoff_burst.py"
-).strip()
-LARGE_WORKER_LOCK_TTL_SECONDS = int(os.environ.get("LARGE_WORKER_LOCK_TTL_SECONDS", "7200") or 7200)
-LARGE_WORKER_AUTOSTART_LOCK_KEY = "citeintegrity:large-worker:autostart-lock"
-LARGE_WORKER_LAST_RENDER_JOB_KEY = "citeintegrity:large-worker:last-render-job"
-
-
-def trigger_large_worker_autostart(job_id: str, filename: str = "", load_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Start a Render One-Off Job for large_document_processing.
-
-    This is deliberately non-blocking from the user's perspective: upload should
-    remain successful even if Render API autostart fails. The queue/status page
-    and logs will show the autostart result for admin troubleshooting.
-    """
-    if not LARGE_WORKER_AUTOSTART_ENABLED:
-        return {"started": False, "reason": "LARGE_WORKER_AUTOSTART_ENABLED is not true"}
-
-    if not redis_conn:
-        return {"started": False, "reason": "Redis is not available for autostart lock"}
-
-    if not RENDER_API_KEY or not RENDER_LARGE_WORKER_BASE_SERVICE_ID:
-        return {
-            "started": False,
-            "reason": "Missing RENDER_API_KEY or RENDER_LARGE_WORKER_BASE_SERVICE_ID",
-        }
-
-    # Prevent expensive duplicate one-off jobs if several large uploads arrive
-    # close together. The burst worker file clears this lock when it exits.
-    try:
-        lock_value = json.dumps({
-            "job_id": job_id,
-            "filename": filename,
-            "started_at": now(),
-            "load_info": load_info or {},
-        })
-        got_lock = redis_conn.set(
-            LARGE_WORKER_AUTOSTART_LOCK_KEY,
-            lock_value,
-            nx=True,
-            ex=LARGE_WORKER_LOCK_TTL_SECONDS,
-        )
-        if not got_lock:
-            return {
-                "started": False,
-                "reason": "A large-file one-off worker was already started recently",
-                "lock_key": LARGE_WORKER_AUTOSTART_LOCK_KEY,
-            }
-    except Exception as e:
-        print(f"[LARGE WORKER AUTOSTART] Redis lock failed: {e}")
-
-    payload = {"startCommand": RENDER_LARGE_WORKER_COMMAND}
-    if RENDER_LARGE_WORKER_PLAN_ID:
-        payload["planId"] = RENDER_LARGE_WORKER_PLAN_ID
-
-    url = f"https://api.render.com/v1/services/{RENDER_LARGE_WORKER_BASE_SERVICE_ID}/jobs"
-
-    try:
-        import urllib.error
-        import urllib.request
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {RENDER_API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            try:
-                data = json.loads(raw) if raw else {}
-            except Exception:
-                data = {"raw": raw[:500]}
-
-        try:
-            redis_conn.setex(
-                LARGE_WORKER_LAST_RENDER_JOB_KEY,
-                86400,
-                json.dumps({
-                    "job_id": job_id,
-                    "filename": filename,
-                    "render_response": data,
-                    "payload": payload,
-                    "created_at": now(),
-                }),
-            )
-        except Exception as cache_error:
-            print(f"[LARGE WORKER AUTOSTART] Could not cache Render job response: {cache_error}")
-
-        return {
-            "started": True,
-            "reason": "Render one-off job started for large_document_processing",
-            "base_service_id": RENDER_LARGE_WORKER_BASE_SERVICE_ID,
-            "plan_id": RENDER_LARGE_WORKER_PLAN_ID,
-            "command": RENDER_LARGE_WORKER_COMMAND,
-            "render_response": data,
-        }
-
-    except urllib.error.HTTPError as e:
-        error_text = e.read().decode("utf-8", errors="replace")[:700]
-        try:
-            redis_conn.delete(LARGE_WORKER_AUTOSTART_LOCK_KEY)
-        except Exception:
-            pass
-        return {
-            "started": False,
-            "reason": f"Render API HTTP {e.code}: {error_text}",
-            "payload": payload,
-        }
-    except Exception as e:
-        try:
-            redis_conn.delete(LARGE_WORKER_AUTOSTART_LOCK_KEY)
-        except Exception:
-            pass
-        return {
-            "started": False,
-            "reason": str(e),
-            "payload": payload,
-        }
-
-
-def persist_large_worker_autostart_status(job_id: str, autostart_status: Dict[str, Any]) -> None:
-    """Store autostart status in jobs.result for later queue/status diagnosis."""
-    if not DATABASE_URL or not autostart_status:
-        return
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE jobs
-            SET result = COALESCE(result, '{}'::jsonb) || %s::jsonb
-            WHERE job_id = %s
-            """,
-            (json.dumps({"large_worker_autostart": autostart_status}), job_id),
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print(f"[LARGE WORKER AUTOSTART] Could not persist autostart status for {job_id}: {e}")
 
 
 def estimate_document_load(file_bytes: bytes, filename: str) -> Dict[str, Any]:
@@ -3596,6 +3438,12 @@ async def verify(
             content={"error": "Queue not initialized"}
         )
 
+    large_worker_autostart = {
+        "started": False,
+        "reason": "not a large-file route",
+        "queue_name": queue_name,
+    }
+
     try:
         target_queue = Queue(queue_name, connection=redis_conn)
 
@@ -3616,15 +3464,23 @@ async def verify(
             f"with autofix={autofix_enabled}, timeout={job_timeout}s"
         )
 
-        large_worker_autostart = None
+        # Automatic pay-as-you-use large-file processing.
+        # When a file is routed to large_document_processing, start a temporary
+        # high-memory Render One-Off Job that drains the large queue and exits.
         if queue_name == LARGE_DOCUMENT_QUEUE:
-            large_worker_autostart = trigger_large_worker_autostart(
-                job_id=job_id,
-                filename=file.filename,
-                load_info=load_info,
-            )
-            persist_large_worker_autostart_status(job_id, large_worker_autostart)
-            print(f"[LARGE WORKER AUTOSTART] {large_worker_autostart}")
+            try:
+                large_worker_autostart = trigger_large_worker_if_needed(
+                    redis_conn,
+                    reason=f"large upload {job_id}"
+                )
+                print(f"[LARGE WORKER AUTOSTART] {large_worker_autostart}")
+            except Exception as autostart_error:
+                large_worker_autostart = {
+                    "started": False,
+                    "reason": f"autostart exception: {autostart_error}",
+                    "queue_name": queue_name,
+                }
+                print(f"[LARGE WORKER AUTOSTART ERROR] {autostart_error}")
 
     except Exception as q_error:
         print(f"❌ Queue error: {q_error}")
@@ -3664,7 +3520,6 @@ async def verify(
         "file_size_mb": file_size_mb,
         "queue": queue_name,
         "large_file": is_large_file,
-        "large_worker_autostart": large_worker_autostart if is_large_file else None,
         "route_reason": load_info.get("route_reason"),
         "page_count": load_info.get("page_count"),
         "word_count": load_info.get("word_count"),
@@ -3673,8 +3528,37 @@ async def verify(
             if is_pdf else ""
         ),
         "autofix_enabled": autofix_enabled,  # Include for debugging
-        "selected_style": _main_style_token(style)
+        "selected_style": _main_style_token(style),
+        "large_worker_autostart": large_worker_autostart,
+        "large_worker_autostart_enabled": os.environ.get("LARGE_WORKER_AUTOSTART_ENABLED", "false"),
     }
+
+
+
+
+@app.get("/admin/large-worker/autostart-status")
+async def large_worker_autostart_status(_auth: Any = Depends(authenticate)):
+    """Admin diagnostic: shows whether automatic large-worker launch is configured. API key is masked."""
+    api_key = os.environ.get("RENDER_API_KEY", "")
+    return {
+        "enabled": os.environ.get("LARGE_WORKER_AUTOSTART_ENABLED", "false"),
+        "base_service_id": os.environ.get("RENDER_LARGE_WORKER_BASE_SERVICE_ID", ""),
+        "plan_id": os.environ.get("RENDER_LARGE_WORKER_PLAN_ID", ""),
+        "command": os.environ.get("RENDER_LARGE_WORKER_COMMAND", ""),
+        "has_api_key": bool(api_key),
+        "api_key_prefix": (api_key[:6] + "..." if api_key else ""),
+        "lock_key": "citeintegrity:large-worker:autostart-lock",
+        "lock_exists": bool(redis_conn.get("citeintegrity:large-worker:autostart-lock")) if redis_conn else False,
+        "last_render_job": (redis_conn.get("citeintegrity:large-worker:last-render-job") or b"").decode("utf-8", errors="ignore")[:1000] if redis_conn else "",
+    }
+
+@app.api_route("/admin/large-worker/clear-autostart-lock", methods=["GET", "POST"])
+async def clear_large_worker_autostart_lock_endpoint(_auth: Any = Depends(authenticate)):
+    """Admin diagnostic: clears the autostart lock if a previous API call failed or a one-off job ended."""
+    if not redis_conn:
+        return {"ok": False, "message": "Redis not connected"}
+    redis_conn.delete("citeintegrity:large-worker:autostart-lock")
+    return {"ok": True, "message": "Large-worker autostart lock cleared"}
 
 
 # ============================================================
