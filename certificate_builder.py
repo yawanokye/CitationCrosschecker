@@ -1,5 +1,5 @@
 """
-certificate_builder.py — all manual evidence links and provisional clearance rule
+certificate_builder.py — manual verified evidence only and provisional clearance rule
 CiteIntegrity Citation Integrity Review Certificate.
 
 This module builds a careful, defensible certificate from an existing CiteIntegrity
@@ -846,36 +846,63 @@ def _manual_verification_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     def ev_key(ev: Dict[str, Any]) -> str:
         return _safe_str(ev.get("manual_reference_key")) or _manual_reference_key_for_certificate(ev.get("reference"))
 
+    def add_verified_evidence(target: List[Dict[str, Any]], ev: Dict[str, Any]) -> None:
+        if not isinstance(ev, dict):
+            return
+        url = _safe_str(ev.get("evidence_url") or ev.get("url"))
+        if not url:
+            return
+        key = (ev_key(ev), url, _safe_str(ev.get("evidence_source") or ev.get("source")))
+        for existing in target:
+            existing_key = (
+                _safe_str(existing.get("manual_reference_key")) or _manual_reference_key_for_certificate(existing.get("reference")),
+                _safe_str(existing.get("evidence_url") or existing.get("url")),
+                _safe_str(existing.get("evidence_source") or existing.get("source")),
+            )
+            if existing_key == key:
+                return
+        target.append(ev)
+
+    verified_evidence: List[Dict[str, Any]] = []
     out = {
         "manual_verified_with_evidence": 0,
         "manual_verified_without_evidence": 0,
         "manual_evidence_links_recorded": len(evidence),
+        "manual_verified_evidence_links_recorded": 0,
         "google_scholar_evidence_links_recorded": 0,
-        "manual_evidence_records": evidence,
+        "manual_all_evidence_records": evidence,
+        # Certificate display must only show evidence linked to a manual_verified decision.
+        "manual_evidence_records": verified_evidence,
     }
 
     for ev in evidence:
-        source = _norm(ev.get("evidence_source") or ev.get("source"))
-        url = _norm(ev.get("evidence_url") or ev.get("url"))
+        source = _norm((ev or {}).get("evidence_source") or (ev or {}).get("source"))
+        url = _norm((ev or {}).get("evidence_url") or (ev or {}).get("url"))
         if "google scholar" in source or "scholar.google" in url:
             out["google_scholar_evidence_links_recorded"] += 1
 
     for d in decisions:
-        if _norm(d.get("decision")) != "manual_verified":
+        if not isinstance(d, dict) or _norm(d.get("decision")) != "manual_verified":
             continue
         key = _safe_str(d.get("manual_reference_key")) or _manual_reference_key_for_certificate(d.get("reference"))
-        attached = _list(d.get("evidence_records"))
-        matched = attached or [ev for ev in evidence if key and ev_key(ev) and (key == ev_key(ev) or key in ev_key(ev) or ev_key(ev) in key)]
+        attached = [ev for ev in _list(d.get("evidence_records")) if isinstance(ev, dict)]
+        matched = attached or [
+            ev for ev in evidence
+            if isinstance(ev, dict) and key and ev_key(ev) and (key == ev_key(ev) or key in ev_key(ev) or ev_key(ev) in key)
+        ]
         if matched:
             out["manual_verified_with_evidence"] += 1
+            for ev in matched:
+                add_verified_evidence(verified_evidence, ev)
         else:
             out["manual_verified_without_evidence"] += 1
 
-    # Prefer backend summary if it was already computed.
+    out["manual_verified_evidence_links_recorded"] = len(verified_evidence)
+
+    # Backend summary may still supply aggregate link counts. Do not let a stale
+    # summary override the decision-linked evidence records used on the certificate.
     ms = _dict(result.get("manual_verification_summary"))
     if ms:
-        out["manual_verified_with_evidence"] = _safe_int(ms.get("manual_verified_with_evidence"), out["manual_verified_with_evidence"])
-        out["manual_verified_without_evidence"] = _safe_int(ms.get("manual_verified_without_evidence"), out["manual_verified_without_evidence"])
         out["manual_evidence_links_recorded"] = _safe_int(ms.get("manual_evidence_links_recorded"), out["manual_evidence_links_recorded"])
         out["google_scholar_evidence_links_recorded"] = _safe_int(ms.get("google_scholar_evidence_links_recorded"), out["google_scholar_evidence_links_recorded"])
 
@@ -958,6 +985,7 @@ def _verification_counts(result: Dict[str, Any]) -> Dict[str, int]:
     out["user_attested_manual_verification_with_evidence"] = manual_payload.get("manual_verified_with_evidence", 0)
     out["user_attested_manual_verification_without_evidence"] = manual_payload.get("manual_verified_without_evidence", 0)
     out["manual_evidence_links_recorded"] = manual_payload.get("manual_evidence_links_recorded", 0)
+    out["manual_verified_evidence_links_recorded"] = manual_payload.get("manual_verified_evidence_links_recorded", 0)
     out["google_scholar_evidence_links_recorded"] = manual_payload.get("google_scholar_evidence_links_recorded", 0)
 
     return out
@@ -1590,6 +1618,7 @@ def build_citation_integrity_certificate(
             "Google Scholar evidence links may record a search-results page and should be reviewed with the underlying publisher, DOI, repository, or source page where available."
         ),
         "manual_evidence_records": _manual_verification_payload(result).get("manual_evidence_records", []),
+        "manual_all_evidence_records": _manual_verification_payload(result).get("manual_all_evidence_records", []),
     }
 
     return certificate
@@ -1621,6 +1650,7 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
         ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
         ("User-attested manual verification without evidence", s.get("user_attested_manual_verification_without_evidence", 0)),
         ("Manual evidence links recorded", s.get("manual_evidence_links_recorded", 0)),
+        ("Manual verified evidence links on certificate", s.get("manual_verified_evidence_links_recorded", 0)),
         ("Google Scholar evidence/search links recorded", s.get("google_scholar_evidence_links_recorded", 0)),
         ("Not indexed but plausible references", s.get("not_indexed_but_plausible_references", 0)),
         ("References still needing review", s.get("references_still_needing_review", 0)),
