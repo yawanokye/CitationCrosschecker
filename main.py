@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-web-safe-nonblocking-queue-2026-06-01-v1.5.43"
+# MAIN_BUILD = "DEMO_MAIN-web-safe-queue-worker-health-2026-06-01-v1.5.44"
 
 import io
 import os
@@ -42,7 +42,8 @@ from psycopg2.extras import RealDictCursor
 
 # Queue libraries
 import redis
-from rq import Queue
+from rq import Queue, Worker
+from rq.registry import StartedJobRegistry, FailedJobRegistry, DeferredJobRegistry
 
 # FastAPI and web frameworks
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
@@ -2629,33 +2630,158 @@ async def debug_jobs():
         "total_jobs": len(jobs_info),
         "jobs": jobs_info
     }
+
+def _rq_job_age_seconds(job) -> Optional[int]:
+    try:
+        ts = getattr(job, "enqueued_at", None) or getattr(job, "created_at", None)
+        if not ts:
+            return None
+        if ts.tzinfo is not None:
+            age = datetime.now(ts.tzinfo) - ts
+        else:
+            age = datetime.utcnow() - ts
+        return max(0, int(age.total_seconds()))
+    except Exception:
+        return None
+
+
+def _rq_queue_diagnostics(queue_name: str) -> Dict[str, Any]:
+    """Small, safe queue diagnostic used by /queue/status."""
+    info: Dict[str, Any] = {
+        "name": queue_name,
+        "waiting": 0,
+        "started": 0,
+        "failed": 0,
+        "deferred": 0,
+        "oldest_waiting_seconds": None,
+        "sample_job_ids": [],
+        "error": None,
+    }
+    if not redis_conn:
+        info["error"] = "Redis not configured"
+        return info
+
+    try:
+        q = Queue(queue_name, connection=redis_conn)
+        info["waiting"] = q.count
+
+        try:
+            jobs = q.get_jobs(offset=0, length=5)
+            info["sample_job_ids"] = [j.id for j in jobs]
+            ages = [_rq_job_age_seconds(j) for j in jobs]
+            ages = [a for a in ages if a is not None]
+            info["oldest_waiting_seconds"] = max(ages) if ages else None
+        except Exception:
+            pass
+
+        try:
+            info["started"] = StartedJobRegistry(queue_name, connection=redis_conn).count
+        except Exception:
+            pass
+        try:
+            info["failed"] = FailedJobRegistry(queue_name, connection=redis_conn).count
+        except Exception:
+            pass
+        try:
+            info["deferred"] = DeferredJobRegistry(queue_name, connection=redis_conn).count
+        except Exception:
+            pass
+
+    except Exception as e:
+        info["error"] = str(e)
+
+    return info
+
+
+def _rq_worker_diagnostics() -> List[Dict[str, Any]]:
+    """Return active RQ workers and the queues they listen to."""
+    out: List[Dict[str, Any]] = []
+    if not redis_conn:
+        return out
+    try:
+        for w in Worker.all(connection=redis_conn):
+            queues = []
+            try:
+                queues = [q.name for q in getattr(w, "queues", [])]
+            except Exception:
+                queues = []
+            try:
+                state = w.get_state()
+            except Exception:
+                state = ""
+            out.append({
+                "name": getattr(w, "name", ""),
+                "state": state,
+                "queues": queues,
+                "last_heartbeat": str(getattr(w, "last_heartbeat", "") or ""),
+                "current_job_id": getattr(w, "get_current_job_id", lambda: None)(),
+            })
+    except Exception as e:
+        out.append({"error": str(e)})
+    return out
+
+
 # ============================================================
 # QUEUE STATUS ENDPOINT
 # ============================================================
 
 @app.get("/queue/status")
 async def queue_status():
+    """Queue and worker health endpoint.
+
+    This endpoint now shows whether queues have active workers. A queue can have
+    waiting jobs forever if no RQ worker is listening to that queue.
+    """
     status = get_queue_status()
     status["server_busy"] = is_server_busy()
     status["message"] = "Server is busy, please try later" if status["server_busy"] else "Server is ready"
-    # Add queue lengths from Redis if available
+
+    queue_names = [
+        NORMAL_DOCUMENT_QUEUE,
+        LARGE_DOCUMENT_QUEUE,
+        "verification",
+        "deep_enrichment",
+    ]
+
     if redis_conn:
         try:
-            normal_queue = Queue(NORMAL_DOCUMENT_QUEUE, connection=redis_conn)
-            large_queue = Queue(LARGE_DOCUMENT_QUEUE, connection=redis_conn)
-            verify_queue = Queue("verification", connection=redis_conn)
-            deep_queue = Queue("deep_enrichment", connection=redis_conn)
+            queue_details = {name: _rq_queue_diagnostics(name) for name in queue_names}
+            workers = _rq_worker_diagnostics()
 
-            status["redis_queue_length"] = len(normal_queue)
-            status["document_processing_queue_length"] = len(normal_queue)
-            status["large_document_processing_queue_length"] = len(large_queue)
-            status["verification_queue_length"] = len(verify_queue)
-            status["deep_enrichment_queue_length"] = len(deep_queue)
+            listened_queues = set()
+            for w in workers:
+                for q in w.get("queues", []) or []:
+                    listened_queues.add(q)
+
+            status["queues"] = queue_details
+            status["workers"] = workers
+            status["listened_queues"] = sorted(listened_queues)
+            status["queue_has_worker"] = {name: name in listened_queues for name in queue_names}
+
+            status["redis_queue_length"] = queue_details.get(NORMAL_DOCUMENT_QUEUE, {}).get("waiting", 0)
+            status["document_processing_queue_length"] = queue_details.get(NORMAL_DOCUMENT_QUEUE, {}).get("waiting", 0)
+            status["large_document_processing_queue_length"] = queue_details.get(LARGE_DOCUMENT_QUEUE, {}).get("waiting", 0)
+            status["verification_queue_length"] = queue_details.get("verification", {}).get("waiting", 0)
+            status["deep_enrichment_queue_length"] = queue_details.get("deep_enrichment", {}).get("waiting", 0)
+
+            status["queue_warning"] = ""
+            unserved = [
+                name for name in queue_names
+                if queue_details.get(name, {}).get("waiting", 0) > 0 and name not in listened_queues
+            ]
+            if unserved:
+                status["queue_warning"] = (
+                    "Jobs are waiting in queue(s) with no active worker listening: "
+                    + ", ".join(unserved)
+                )
+
         except Exception as e:
             status["redis_queue_length"] = 0
             status["queue_error"] = str(e)
     else:
         status["redis_queue_length"] = 0
+        status["queue_error"] = "Redis not configured"
+
     return status
 
 # ============================================================
