@@ -32,7 +32,7 @@ from claim_checker import (
 )
 
 __version__ = "1.5.31"
-WORKER_BUILD = "commercial-2026-06-01-large-document-queue-listener"
+WORKER_BUILD = "commercial-2026-06-01-large-queue-nonblocking"
 
 try:
     from claim_support_scorer import score_claim_support
