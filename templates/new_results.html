@@ -4,8 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Results Dashboard | CiteIntegrity</title>
-    <meta name="description" content="CiteIntegrity results dashboard for citation integrity, verification, recovery, claim support, and ACII review.">
-    <!-- Patch: Verification UI promotes likely to verified and hides Likely filter/KPI. -->
+    <meta name="description" content="CiteIntegrity results dashboard for citation integrity, verification, recovery, claim support, and ACII review.">\n    <!-- Patch: slower queue polling to protect web service responsiveness. -->
 
     <style>
         :root {
@@ -1702,6 +1701,7 @@
                         <select id="verifyFilter">
                             <option value="">All statuses</option>
                             <option value="verified">Verified</option>
+                            <option value="likely">Likely</option>
                             <option value="needs_review">Needs review</option>
                             <option value="not_found">Not found</option>
                             <option value="offline">Offline</option>
@@ -1887,7 +1887,7 @@
 <footer class="footer">
     <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
     <div class="footer-links">
-        <a href="/new">Home</a>
+        <a href="/new">New Landing Page</a>
         <a href="/new/analyse">New Analysis</a>
         <a href="/privacy">Privacy Policy</a>
     </div>
@@ -1910,9 +1910,11 @@ document.addEventListener("DOMContentLoaded", function () {
         MAX_VERIFY_DISPLAY: 600,
         MAX_CLAIM_DISPLAY: 500,
         MAX_RECOVERY_DISPLAY: 500,
-        POLL_INTERVAL: 2500,
-        MAX_FINAL_ATTEMPTS: 180,
-        FINAL_RETRY_DELAY: 3000,
+        POLL_INTERVAL: 8000,
+        RESULT_POLL_BASE_DELAY: 10000,
+        RESULT_POLL_MAX_DELAY: 30000,
+        MAX_FINAL_ATTEMPTS: 120,
+        FINAL_RETRY_DELAY: 5000,
         MAX_STATUS_ERRORS: 12
     };
 
@@ -1932,6 +1934,8 @@ document.addEventListener("DOMContentLoaded", function () {
     let partialFinalRendered = false;
     let enrichmentPollTimer = null;
     let enrichmentPollCount = 0;
+    let resultPollTimer = null;
+    let resultPollCount = 0;
     const MAX_ENRICHMENT_POLLS = 80;
     // ================================================================
 
@@ -3424,31 +3428,16 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     function renderVerification(data) {
         const ov = data.online_verification || {};
-        const rawRows = ov.rows || [];
-        // Verification UI policy: "likely" is not shown as a separate category.
-        // Any legacy/cached likely row is displayed and filtered as verified.
-        const rows = rawRows.map(row => {
-            if ((row.status || "").toLowerCase() === "likely") {
-                return { ...row, status: "verified", original_status: row.original_status || "likely" };
-            }
-            return row;
-        });
+        const rows = ov.rows || [];
         const summary = ov.summary || {};
         const body = $("verifyBody");
         const kpis = $("verifyKpis");
-        const toNum = value => {
-            const n = Number(value);
-            return Number.isFinite(n) ? n : 0;
-        };
         if (kpis) {
-            const verifiedCount = (summary.verified !== undefined || summary.likely !== undefined)
-                ? toNum(summary.verified) + toNum(summary.likely)
-                : rows.filter(r => r.status === "verified").length;
             const items = [
-                ["Verified", verifiedCount],
+                ["Verified", summary.verified ?? rows.filter(r => r.status === "verified").length],
+                ["Likely", summary.likely ?? rows.filter(r => r.status === "likely").length],
                 ["Needs review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
-                ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length],
-                ["Offline", summary.offline ?? rows.filter(r => r.status === "offline").length]
+                ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length]
             ];
             kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
@@ -4509,15 +4498,23 @@ document.addEventListener("DOMContentLoaded", function () {
             if (showMessage) setStatus("Loading results...", "info");
             const js = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}?fresh=1`);
             if (js.status === "completed") {
+                if (resultPollTimer) { clearTimeout(resultPollTimer); resultPollTimer = null; }
+                resultPollCount = 0;
                 const result = js.data || js.result;
                 renderAll(result);
                 setStatus(hasPaidAccess(latestResults) ? "Full Review results loaded." : "Free Preview loaded. Unlock Full Review to see all results.", hasPaidAccess(latestResults) ? "good" : "warn");
                 return result;
             }
             if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
-                setStatus(js.message || "Results are still processing. Refreshing shortly...", "warn");
-                showProgress(35, "Waiting for analysis result...");
-                setTimeout(() => loadExistingResult(false), 2500);
+                resultPollCount += 1;
+                const delay = Math.min(
+                    CONFIG.RESULT_POLL_MAX_DELAY,
+                    CONFIG.RESULT_POLL_BASE_DELAY + Math.max(0, resultPollCount - 1) * 5000
+                );
+                setStatus(js.message || `Results are still processing. Next check in ${Math.round(delay / 1000)} seconds...`, "warn");
+                showProgress(35, `Waiting for analysis result... next check in ${Math.round(delay / 1000)}s`);
+                if (resultPollTimer) clearTimeout(resultPollTimer);
+                resultPollTimer = setTimeout(() => loadExistingResult(false), delay);
                 return null;
             }
             if (js.status === "failed" || js.status === "error") { setStatus(js.error || "Analysis failed.", "bad"); return null; }
@@ -4753,13 +4750,7 @@ ${claimTable}
             });
         });
         const verifyFilter = $("verifyFilter");
-        if(verifyFilter) verifyFilter.addEventListener("change", () => {
-            const body=$("verifyBody");
-            if(body) body.querySelectorAll("tr").forEach(row => {
-                const status = row.dataset.status === "likely" ? "verified" : row.dataset.status;
-                row.style.display = !verifyFilter.value || (status === verifyFilter.value) ? "" : "none";
-            });
-        });
+        if(verifyFilter) verifyFilter.addEventListener("change", () => { const body=$("verifyBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !verifyFilter.value || (row.dataset.status === verifyFilter.value) ? "" : "none"); });
         const claimFilter = $("claimFilter");
         if(claimFilter) claimFilter.addEventListener("change", () => { const body=$("claimBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !claimFilter.value || (row.dataset.status === claimFilter.value) ? "" : "none"); });
     }
