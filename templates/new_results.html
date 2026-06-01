@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Results Dashboard | CiteIntegrity</title>
     <meta name="description" content="CiteIntegrity results dashboard for citation integrity, verification, recovery, claim support, and ACII review.">
+    <!-- Patch: Verification UI promotes likely to verified and hides Likely filter/KPI. -->
 
     <style>
         :root {
@@ -1701,7 +1702,6 @@
                         <select id="verifyFilter">
                             <option value="">All statuses</option>
                             <option value="verified">Verified</option>
-                            <option value="likely">Likely</option>
                             <option value="needs_review">Needs review</option>
                             <option value="not_found">Not found</option>
                             <option value="offline">Offline</option>
@@ -1887,7 +1887,7 @@
 <footer class="footer">
     <p>© Prof Anokye M. Adam, University of Cape Coast. CiteIntegrity, Thesis and Manuscript Readiness and Citation Integrity Platform.</p>
     <div class="footer-links">
-        <a href="/new">New Landing Page</a>
+        <a href="/new">Home</a>
         <a href="/new/analyse">New Analysis</a>
         <a href="/privacy">Privacy Policy</a>
     </div>
@@ -3424,16 +3424,31 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     function renderVerification(data) {
         const ov = data.online_verification || {};
-        const rows = ov.rows || [];
+        const rawRows = ov.rows || [];
+        // Verification UI policy: "likely" is not shown as a separate category.
+        // Any legacy/cached likely row is displayed and filtered as verified.
+        const rows = rawRows.map(row => {
+            if ((row.status || "").toLowerCase() === "likely") {
+                return { ...row, status: "verified", original_status: row.original_status || "likely" };
+            }
+            return row;
+        });
         const summary = ov.summary || {};
         const body = $("verifyBody");
         const kpis = $("verifyKpis");
+        const toNum = value => {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : 0;
+        };
         if (kpis) {
+            const verifiedCount = (summary.verified !== undefined || summary.likely !== undefined)
+                ? toNum(summary.verified) + toNum(summary.likely)
+                : rows.filter(r => r.status === "verified").length;
             const items = [
-                ["Verified", summary.verified ?? rows.filter(r => r.status === "verified").length],
-                ["Likely", summary.likely ?? rows.filter(r => r.status === "likely").length],
+                ["Verified", verifiedCount],
                 ["Needs review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
-                ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length]
+                ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length],
+                ["Offline", summary.offline ?? rows.filter(r => r.status === "offline").length]
             ];
             kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
@@ -4738,7 +4753,13 @@ ${claimTable}
             });
         });
         const verifyFilter = $("verifyFilter");
-        if(verifyFilter) verifyFilter.addEventListener("change", () => { const body=$("verifyBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !verifyFilter.value || (row.dataset.status === verifyFilter.value) ? "" : "none"); });
+        if(verifyFilter) verifyFilter.addEventListener("change", () => {
+            const body=$("verifyBody");
+            if(body) body.querySelectorAll("tr").forEach(row => {
+                const status = row.dataset.status === "likely" ? "verified" : row.dataset.status;
+                row.style.display = !verifyFilter.value || (status === verifyFilter.value) ? "" : "none";
+            });
+        });
         const claimFilter = $("claimFilter");
         if(claimFilter) claimFilter.addEventListener("change", () => { const body=$("claimBody"); if(body) body.querySelectorAll("tr").forEach(row => row.style.display = !claimFilter.value || (row.dataset.status === claimFilter.value) ? "" : "none"); });
     }
