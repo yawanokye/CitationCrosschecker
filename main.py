@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-manual-evidence-before-verified-certificate-2026-06-01-v1.5.42"
+# MAIN_BUILD = "DEMO_MAIN-web-safe-nonblocking-queue-2026-06-01-v1.5.43"
 
 import io
 import os
@@ -109,6 +109,13 @@ REDIS_URL = os.environ.get("REDIS_URL")
 # certificate, advanced enrichment, citation-needed claims and exports remain open.
 DEMO_UNLOCK_ALL_FEATURES = os.environ.get("DEMO_UNLOCK_ALL_FEATURES", "true").strip().lower() not in {"0", "false", "no"}
 DEMO_ACCESS_EMAIL = os.environ.get("DEMO_ACCESS_EMAIL", "demo@citeintegrity.org")
+
+# Keep the web service responsive. Heavy recovery, claim-support and large-text
+# citation-needed generation must not run inside homepage/result polling requests.
+WEB_SAFE_RESULT_PREPARE = os.environ.get("WEB_SAFE_RESULT_PREPARE", "true").strip().lower() not in {"0", "false", "no"}
+RUN_RECOVERY_SUGGESTIONS_IN_WEB = os.environ.get("RUN_RECOVERY_SUGGESTIONS_IN_WEB", "false").strip().lower() in {"1", "true", "yes", "on"}
+RUN_CLAIM_SUPPORT_IN_WEB = os.environ.get("RUN_CLAIM_SUPPORT_IN_WEB", "false").strip().lower() in {"1", "true", "yes", "on"}
+WEB_CITATION_NEEDED_MAX_CHARS = int(os.environ.get("WEB_CITATION_NEEDED_MAX_CHARS", "150000"))
 
 # ===============================
 # CONTACT EMAIL FORWARDING SETUP
@@ -1226,8 +1233,10 @@ def build_context_specific_recovery(result: Dict[str, Any]) -> Dict[str, Any]:
 
         suggestions = missing_suggestions.get(citation_text, []) or []
 
-        # Generate context-based suggestions if none already exist
-        if not suggestions and full_text:
+        # Do not run live Crossref/OpenAlex recovery from the web process by default.
+        # This was causing long queue/result polling delays and API rate-limit loops.
+        # Deep source recovery should run in the background worker/enrichment queue.
+        if not suggestions and full_text and RUN_RECOVERY_SUGGESTIONS_IN_WEB:
             try:
                 context = extract_context(full_text, citation_text, window=250)
                 if context:
@@ -2653,9 +2662,23 @@ async def queue_status():
 # INDEX
 # ============================================================
 
+_INDEX_HTML_CACHE: Optional[str] = None
+
+def _get_cached_index_html() -> str:
+    """Serve the homepage without touching queues, database, or heavy template work."""
+    global _INDEX_HTML_CACHE
+    if _INDEX_HTML_CACHE is None:
+        index_path = Path(templates_dir) / "index.html"
+        try:
+            _INDEX_HTML_CACHE = index_path.read_text(encoding="utf-8")
+        except Exception as e:
+            print(f"[HOME] Could not load cached index.html: {e}")
+            _INDEX_HTML_CACHE = "<!doctype html><html><body>CiteIntegrity is starting. Please refresh.</body></html>"
+    return _INDEX_HTML_CACHE
+
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+async def index(request: Request):
+    return HTMLResponse(_get_cached_index_html())
 
 # ============================================================
 # PRIVACY POLICY
@@ -4631,25 +4654,40 @@ def _demo_prepare_full_review_result(job_id: str, result: Dict[str, Any], *, per
                 result[key] = []
             changed = True
 
-    # Recovery and claim support are expected by the result dashboard and certificate.
+    # Recovery and claim support are expected by the dashboard and certificate,
+    # but they must not be built with live lookups inside result polling/homepage web workers.
+    # The worker/deep-enrichment queue should populate these sections.
     if not isinstance(result.get("recovery"), dict):
-        try:
-            result["recovery"] = build_context_specific_recovery(result)
-        except Exception as e:
-            print(f"[DEMO UNLOCK] Recovery build failed: {e}")
+        if WEB_SAFE_RESULT_PREPARE and not RUN_RECOVERY_SUGGESTIONS_IN_WEB:
             result["recovery"] = {"missing_recovery": [], "verification_recovery": []}
+            result.setdefault("deferred_sections", {})["recovery"] = "Deferred to background enrichment to keep the web service responsive."
+        else:
+            try:
+                result["recovery"] = build_context_specific_recovery(result)
+            except Exception as e:
+                print(f"[DEMO UNLOCK] Recovery build failed: {e}")
+                result["recovery"] = {"missing_recovery": [], "verification_recovery": []}
         changed = True
 
     if not isinstance(result.get("claim_support"), list):
-        try:
-            result["claim_support"] = build_claim_support_rows(result)
-        except Exception as e:
-            print(f"[DEMO UNLOCK] Claim support build failed: {e}")
+        if WEB_SAFE_RESULT_PREPARE and not RUN_CLAIM_SUPPORT_IN_WEB:
             result["claim_support"] = []
+            result.setdefault("deferred_sections", {})["claim_support"] = "Deferred to background enrichment to keep the web service responsive."
+        else:
+            try:
+                result["claim_support"] = build_claim_support_rows(result)
+            except Exception as e:
+                print(f"[DEMO UNLOCK] Claim support build failed: {e}")
+                result["claim_support"] = []
         changed = True
 
     if not isinstance(result.get("citation_needed_claims"), list):
-        result["citation_needed_claims"] = _demo_generate_citation_needed_claims(result)
+        main_text_for_citation_needed = _demo_main_text(result)
+        if WEB_SAFE_RESULT_PREPARE and len(main_text_for_citation_needed or "") > WEB_CITATION_NEEDED_MAX_CHARS:
+            result["citation_needed_claims"] = []
+            result.setdefault("deferred_sections", {})["citation_needed_claims"] = "Large-text citation-needed detection deferred to background enrichment."
+        else:
+            result["citation_needed_claims"] = _demo_generate_citation_needed_claims(result)
         changed = True
 
     try:
@@ -4830,16 +4868,24 @@ async def get_result(job_id: str, fresh: int = 0):
     return {"status": "pending", "message": "Job not found"}
 
 @app.get("/job/{job_id}")
-def get_job_endpoint(job_id: str):
+def get_job_endpoint(job_id: str, include_result: int = 0):
+    """Lightweight job status endpoint.
+
+    By default this no longer returns the full result JSON, preventing large
+    completed jobs from blocking other homepage/result requests.
+    Use ?include_result=1 only when the full result is required.
+    """
     job = load_job_record_fresh(job_id)
     if not job:
         return {"status": "not_found"}
 
-    return {
+    payload = {
         "status": job.get("status", "unknown"),
-        "result": job.get("result"),
         "verification": job.get("verification", {})
     }
+    if include_result:
+        payload["result"] = job.get("result")
+    return payload
 # ============================================================
 # AUTO-FIX ENDPOINTS
 # ============================================================
