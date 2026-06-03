@@ -7883,3 +7883,284 @@ def _verify_single_reference(
         pass
 
     return row
+
+
+# ============================================================
+# OPENALEX SHORT-REFERENCE / BOOK RESCUE v1.5.34
+# ============================================================
+# Why this exists:
+# - Some valid classic books and short article titles are skipped by the fast
+#   weak-title rule because they have fewer than VERIFY_MIN_TITLE_WORDS.
+# - Examples include: "Sampling techniques", "Survey sampling",
+#   "Sample size calculation", and "Sampling: Design and Analysis".
+# - These should not run expensive fallback for every reference, but they
+#   should get one small OpenAlex rescue when author + year are present.
+VERIFY_BUILD = "commercial-2026-06-03-openalex-short-reference-rescue-v1.5.34"
+
+VERIFY_SHORT_OPENALEX_RESCUE = _env_flag("VERIFY_SHORT_OPENALEX_RESCUE", "1")
+VERIFY_SHORT_OPENALEX_ROWS = int(os.getenv("VERIFY_SHORT_OPENALEX_ROWS", "5"))
+VERIFY_SHORT_OPENALEX_MAX_QUERIES = int(os.getenv("VERIFY_SHORT_OPENALEX_MAX_QUERIES", "3"))
+VERIFY_SHORT_OPENALEX_MIN_TITLE_SCORE = int(os.getenv("VERIFY_SHORT_OPENALEX_MIN_TITLE_SCORE", "82"))
+VERIFY_SHORT_OPENALEX_REVIEW_TITLE_SCORE = int(os.getenv("VERIFY_SHORT_OPENALEX_REVIEW_TITLE_SCORE", "70"))
+
+_BOOK_REFERENCE_HINTS = {
+    "ed", "edition", "publisher", "press", "wiley", "sons", "erlbaum",
+    "harper", "row", "pearson", "brooks", "cole", "routledge",
+    "oxford", "cambridge", "guilford", "crc", "chapman", "hall",
+    "book", "books", "internet", "archive", "publisher", "link",
+    "official", "site"
+}
+
+
+def _v1534_simple_words(value: str) -> List[str]:
+    return [
+        w.lower()
+        for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{1,}", value or "")
+        if w.lower() not in _QUERY_STOP_WORDS
+    ]
+
+
+def _v1534_is_short_or_book_reference(ref: str, fields: Dict[str, Any]) -> bool:
+    """Identify short but legitimate references that should not be fast-skipped."""
+    title = fields.get("title", "") or ""
+    year = fields.get("year", "") or ""
+    authors = fields.get("authors", []) or []
+    ref_low = (ref or "").lower()
+
+    title_words = _v1534_simple_words(title)
+    has_book_hint = any(h in ref_low for h in _BOOK_REFERENCE_HINTS)
+    has_volume_pages = bool(re.search(r"\b\d+\s*\(\s*\d+\s*\)\s*,\s*\d+", ref or ""))
+    has_journal_like = bool(re.search(r"\bjournal\b|\bresearch\b|\bmethods?\b|\bsurvey\b|\bsampling\b", ref_low))
+
+    # The key condition: short title, but enough bibliographic structure.
+    if year and authors and 2 <= len(title_words) <= 5 and (has_book_hint or has_volume_pages or has_journal_like):
+        return True
+
+    return False
+
+
+def _v1534_openalex_work_url(item: Dict[str, Any]) -> str:
+    try:
+        return _safe_strip(item.get("id") or item.get("doi") or "")
+    except Exception:
+        return ""
+
+
+def _v1534_query_openalex_doi(doi: str) -> List[Dict[str, Any]]:
+    doi = _normalise_doi(doi) if "_normalise_doi" in globals() else _safe_strip(doi).lower()
+    if not doi:
+        return []
+    url = "https://api.openalex.org/works"
+    params = {"filter": f"doi:{doi}", "per-page": 1}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
+    items = (data or {}).get("results", [])
+    return [{"source": "openalex", "item": it} for it in items]
+
+
+def _v1534_build_openalex_rescue_queries(ref: str, fields: Dict[str, Any]) -> List[str]:
+    title = _clean_query_text(fields.get("title", "") or "")
+    year = fields.get("year", "") or ""
+    authors = fields.get("authors", []) or []
+
+    first_author = authors[0] if authors else ""
+    second_author = authors[1] if len(authors) > 1 else ""
+
+    queries = []
+    if title and first_author and year:
+        queries.append(f"{title} {first_author} {year}")
+    if title and first_author and second_author and year:
+        queries.append(f"{title} {first_author} {second_author} {year}")
+    if title and year:
+        queries.append(f"{title} {year}")
+    if title and first_author:
+        queries.append(f"{title} {first_author}")
+    if title:
+        queries.append(title)
+
+    return _dedupe_preserve(queries)[:max(1, VERIFY_SHORT_OPENALEX_MAX_QUERIES)]
+
+
+def _v1534_select_openalex_rescue_candidate(
+    ref: str,
+    fields: Dict[str, Any],
+    candidates: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any], str]:
+    ref_title = fields.get("title") or ref
+    ref_authors = fields.get("authors", []) or []
+    ref_year = fields.get("year", "") or ""
+    ref_doi = fields.get("doi", "") or ""
+
+    best = None
+    best_meta: Dict[str, Any] = {}
+    best_rank = (-1, -1, -999, -1, -1)
+    best_status = "not_found"
+
+    for cand in candidates:
+        if cand.get("source") != "openalex":
+            continue
+
+        doi, title, year, authors = _candidate_fields(cand)
+        meta = _score(ref_title, ref_authors, ref_year, title, authors, year)
+
+        doi_match = bool(ref_doi and doi and _normalise_doi(ref_doi) == _normalise_doi(doi))
+        year_delta = 999
+        try:
+            if ref_year and year:
+                year_delta = abs(int(str(ref_year)[:4]) - int(str(year)[:4]))
+        except Exception:
+            year_delta = 999
+
+        title_score = int(meta.get("title_score", 0) or 0)
+        author_overlap = int(meta.get("author_overlap", 0) or 0)
+        score = int(meta.get("score", 0) or 0)
+
+        # Strict enough to avoid promoting the wrong OpenAlex item.
+        if doi_match and title_score >= 60:
+            status = "verified"
+            rank_status = 3
+            reason = "OpenAlex DOI rescue."
+        elif title_score >= 90 and year_delta <= 1:
+            status = "verified"
+            rank_status = 3
+            reason = "OpenAlex rescue: very strong title and close year."
+        elif title_score >= VERIFY_SHORT_OPENALEX_MIN_TITLE_SCORE and year_delta <= 2 and author_overlap >= 1:
+            status = "verified"
+            rank_status = 3
+            reason = "OpenAlex rescue: short/classic title with author-year support."
+        elif title_score >= VERIFY_SHORT_OPENALEX_MIN_TITLE_SCORE and author_overlap >= 1:
+            status = "needs_review"
+            rank_status = 2
+            reason = "OpenAlex candidate has strong title-author support but year needs review."
+        elif title_score >= VERIFY_SHORT_OPENALEX_REVIEW_TITLE_SCORE and year_delta <= 2:
+            status = "needs_review"
+            rank_status = 2
+            reason = "OpenAlex candidate has plausible title-year support."
+        else:
+            status = "not_found"
+            rank_status = 1
+            reason = "OpenAlex candidate too weak for automatic rescue."
+
+        rank = (
+            rank_status,
+            title_score,
+            -year_delta,
+            author_overlap,
+            score,
+        )
+
+        if rank > best_rank:
+            best = cand
+            best_status = status
+            best_rank = rank
+            best_meta = dict(meta)
+            best_meta.update({
+                "doi_match": doi_match,
+                "doi": doi,
+                "title": title,
+                "year": year,
+                "authors": authors,
+                "year_delta": year_delta,
+                "status": status,
+                "reason": reason,
+            })
+
+    return best, best_meta, best_status
+
+
+_V1534_PREVIOUS_VERIFY_SINGLE_REFERENCE = globals().get("_verify_single_reference")
+
+
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    row = _V1534_PREVIOUS_VERIFY_SINGLE_REFERENCE(ref, style, use_crossref, use_openalex, enrich_metadata)
+
+    try:
+        row["verification_build"] = VERIFY_BUILD
+        row["openalex_short_rescue_enabled"] = bool(VERIFY_SHORT_OPENALEX_RESCUE)
+        row["openalex_fallback_enabled"] = bool(VERIFY_FORCE_OPENALEX_FALLBACK)
+    except Exception:
+        pass
+
+    if not VERIFY_SHORT_OPENALEX_RESCUE:
+        return row
+
+    try:
+        fields = _extract_fields_by_style(ref, style)
+        current_status = _normalize_verify_status(row.get("status"))
+        current_source = str(row.get("source", "") or "").lower()
+        title_score_now = int(row.get("title_score", 0) or 0)
+
+        should_rescue = (
+            current_status in {"needs_review", "not_found"}
+            and (
+                current_source == "fast_skip"
+                or current_source == "openalex"
+                or _v1534_is_short_or_book_reference(ref, fields)
+            )
+        )
+
+        # Do not disturb already verified Crossref/OpenAlex records.
+        if not should_rescue:
+            return row
+
+        if not _v1534_is_short_or_book_reference(ref, fields) and title_score_now >= 60:
+            # A normal candidate already exists; let the standard verifier handle it.
+            return row
+
+        candidates: List[Dict[str, Any]] = []
+
+        ref_doi = fields.get("doi", "") or ""
+        if ref_doi:
+            candidates.extend(_v1534_query_openalex_doi(ref_doi))
+
+        queries = _v1534_build_openalex_rescue_queries(ref, fields)
+        for q in queries:
+            candidates.extend(_query_openalex(q, rows=VERIFY_SHORT_OPENALEX_ROWS))
+
+        best, meta, rescue_status = _v1534_select_openalex_rescue_candidate(ref, fields, candidates)
+
+        row["openalex_short_rescue_attempted"] = True
+        row["openalex_short_rescue_queries"] = queries
+        row["openalex_short_rescue_candidates"] = len(candidates)
+        row["openalex_short_rescue_status"] = rescue_status
+        row["openalex_short_rescue_reason"] = meta.get("reason", "No usable OpenAlex candidate")
+
+        if best and rescue_status in {"verified", "needs_review"}:
+            # Only replace if the rescue improves status or evidence quality.
+            status_rank = {"not_found": 0, "needs_review": 1, "verified": 2}
+            if status_rank.get(rescue_status, 0) > status_rank.get(current_status, 0) or int(meta.get("title_score", 0)) > title_score_now:
+                row.update({
+                    "status": rescue_status,
+                    "source": "openalex",
+                    "score": int(meta.get("score", 0)),
+                    "doi": _safe_strip(meta.get("doi")),
+                    "matched_title": _safe_strip(meta.get("title")),
+                    "matched_year": _safe_strip(meta.get("year")),
+                    "matched_authors": ", ".join(meta.get("authors", [])),
+                    "title_score": int(meta.get("title_score", 0)),
+                    "author_overlap": int(meta.get("author_overlap", 0)),
+                    "author_similarity": int(meta.get("author_similarity", 0)),
+                    "year_match": int(meta.get("year_match", 0)),
+                    "year_delta": int(meta.get("year_delta", 999)),
+                    "match_note": meta.get("reason", ""),
+                    "confidence_reason": meta.get("reason", ""),
+                    "openalex_selected": True,
+                    "openalex_short_rescue_applied": rescue_status == "verified",
+                    "openalex_work_url": _v1534_openalex_work_url(best.get("item") or {}),
+                })
+
+    except Exception as e:
+        try:
+            row["openalex_short_rescue_error"] = str(e)
+        except Exception:
+            pass
+
+    row["status"] = _normalize_verify_status(row.get("status"))
+    return row
