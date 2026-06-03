@@ -1,16 +1,22 @@
-# verify.py — Complete with full metadata capture for APA/Harvard formatting + recovery context metadata + likely promoted to verified
+# verify.py — metadata capture + recovery metadata + OpenAlex rescue + Redis-persistent verification progress
 
 import os
 import re
 import threading
 import time
 import uuid
+import json
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 
 import requests
+
+try:
+    import redis
+except Exception:
+    redis = None
 from rapidfuzz import fuzz
 
 
@@ -22,6 +28,74 @@ MAILTO = (
     or os.getenv("OPENALEX_MAILTO")
     or ""
 ).strip()
+
+# ============================================================
+# REDIS-PERSISTENT VERIFICATION PROGRESS
+# ============================================================
+# Render runs web and workers as separate processes/services. In-memory globals
+# are not shared across those services. These keys allow /online/status to see
+# progress/results even when verification runs in another process.
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
+VERIFY_REDIS_TTL = int(os.getenv("VERIFY_REDIS_TTL", "21600") or "21600")
+
+verify_redis_conn = None
+if redis is not None and REDIS_URL:
+    try:
+        verify_redis_conn = redis.from_url(REDIS_URL)
+        verify_redis_conn.ping()
+        print("✅ verify.py Redis progress store connected")
+    except Exception as e:
+        print(f"⚠️ verify.py Redis progress store unavailable: {e}")
+        verify_redis_conn = None
+
+
+def _verify_status_key(job_id: str) -> str:
+    return f"verify:status:{job_id}"
+
+
+def _verify_results_key(job_id: str) -> str:
+    return f"verify:results:{job_id}"
+
+
+def _redis_set_json(key: str, value: Any, ttl: int = VERIFY_REDIS_TTL) -> bool:
+    if not verify_redis_conn:
+        return False
+    try:
+        verify_redis_conn.setex(key, ttl, json.dumps(value, default=str))
+        return True
+    except Exception as e:
+        print(f"[VERIFY REDIS] set failed for {key}: {e}")
+        return False
+
+
+def _redis_get_json(key: str):
+    if not verify_redis_conn:
+        return None
+    try:
+        raw = verify_redis_conn.get(key)
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="ignore")
+        return json.loads(raw)
+    except Exception as e:
+        print(f"[VERIFY REDIS] get failed for {key}: {e}")
+        return None
+
+
+def _persist_job_status(job_id: str, payload: Dict[str, Any]) -> None:
+    if not job_id:
+        return
+    payload = dict(payload or {})
+    payload.setdefault("job_id", job_id)
+    payload.setdefault("updated_at", datetime.now().isoformat())
+    _redis_set_json(_verify_status_key(job_id), payload)
+
+
+def _persist_job_results(job_id: str, rows: List[Dict[str, Any]]) -> None:
+    if not job_id:
+        return
+    _redis_set_json(_verify_results_key(job_id), rows or [])
 
 # ============================================================
 # TIMEOUT SETTINGS - ADDED FOR LARGE REFERENCE SETS
@@ -80,82 +154,153 @@ _verification_results: Dict[str, List[Dict[str, Any]]] = {}
 _verification_results_lock = threading.Lock()
 
 def store_verification_results(job_id: str, results: List[Dict[str, Any]]):
-    """Store completed verification results.
-
-    Final status policy: any row with status "likely" is promoted to "verified".
-    """
+    """Store completed verification results in memory and Redis."""
     if isinstance(results, list):
         for row in results:
             if isinstance(row, dict) and row.get("status") == "likely":
                 row["status"] = "verified"
     with _verification_results_lock:
         _verification_results[job_id] = results
-        print(f"[DEBUG] Stored {len(results)} results for job {job_id}")
+    _persist_job_results(job_id, results or [])
+    print(f"[DEBUG] Stored {len(results or [])} results for job {job_id}")
 
 def get_verification_results(job_id: str) -> Optional[List[Dict[str, Any]]]:
-    """Get stored verification results.
-
-    Final status policy: any legacy row with status "likely" is returned as "verified".
-    """
+    """Get stored verification results from memory first, then Redis."""
+    rows = None
     with _verification_results_lock:
         rows = _verification_results.get(job_id)
-        if isinstance(rows, list):
-            for row in rows:
-                if isinstance(row, dict) and row.get("status") == "likely":
-                    row["status"] = "verified"
+
+    if rows is None:
+        rows = _redis_get_json(_verify_results_key(job_id))
+
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and row.get("status") == "likely":
+                row["status"] = "verified"
         return rows
 
+    return None
+
 def clear_verification_results(job_id: str):
-    """Clear verification results (optional cleanup)"""
+    """Clear verification results."""
     with _verification_results_lock:
         if job_id in _verification_results:
             del _verification_results[job_id]
+    if verify_redis_conn:
+        try:
+            verify_redis_conn.delete(_verify_results_key(job_id))
+            verify_redis_conn.delete(_verify_status_key(job_id))
+        except Exception:
+            pass
 
 def create_verification_job(job_id: str, total: int) -> str:
-    """Create a new verification job for tracking progress only"""
+    """Create a new verification job for tracking progress."""
+    started = datetime.now().isoformat()
     with _jobs_lock:
         _jobs[job_id] = VerificationJob(
             job_id=job_id,
             total=total,
-            started_at=datetime.now().isoformat(),
+            started_at=started,
             status="processing"
         )
+    _persist_job_status(job_id, {
+        "job_id": job_id,
+        "status": "processing",
+        "progress": 0,
+        "total": total,
+        "percentage": 0,
+        "started_at": started,
+        "completed_at": None,
+        "error": None,
+        "message": f"Verification started: 0/{total}",
+    })
     return job_id
 
 def update_job_progress(job_id: str, progress: int):
-    """Update job progress (does NOT store results)"""
+    """Update job progress and persist it to Redis for cross-process polling."""
+    status_payload = None
     with _jobs_lock:
         if job_id in _jobs:
             job = _jobs[job_id]
             job.progress = progress
-            # 🔥 Ensure status is "processing" while in progress
             if progress < job.total:
                 job.status = "processing"
             else:
                 job.status = "completed"
                 job.completed_at = datetime.now().isoformat()
                 print(f"[DEBUG] Job {job_id}: COMPLETED - {progress}/{job.total}")
-            
-            # Print every update for debugging
+
+            status_payload = {
+                "job_id": job.job_id,
+                "status": job.status,
+                "progress": job.progress,
+                "total": job.total,
+                "percentage": int((job.progress / job.total) * 100) if job.total > 0 else 0,
+                "started_at": job.started_at,
+                "completed_at": job.completed_at,
+                "error": job.error,
+                "message": f"Verification {job.progress}/{job.total}",
+            }
+
             if progress % 5 == 0 or progress == job.total:
                 print(f"[DEBUG] Job {job_id}: progress {progress}/{job.total} (status: {job.status})")
+        else:
+            current = _redis_get_json(_verify_status_key(job_id)) or {}
+            total = int(current.get("total") or max(progress, 0))
+            status = "completed" if total and progress >= total else "processing"
+            status_payload = {
+                "job_id": job_id,
+                "status": status,
+                "progress": progress,
+                "total": total,
+                "percentage": int((progress / max(total, 1)) * 100) if total else 0,
+                "started_at": current.get("started_at") or datetime.now().isoformat(),
+                "completed_at": datetime.now().isoformat() if status == "completed" else None,
+                "error": None,
+                "message": f"Verification {progress}/{total}",
+            }
+
+    if status_payload:
+        _persist_job_status(job_id, status_payload)
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get job progress status"""
+    """Get job progress status from memory, Redis, or stored results."""
     with _jobs_lock:
-        if job_id not in _jobs:
-            return None
-        job = _jobs[job_id]
+        if job_id in _jobs:
+            job = _jobs[job_id]
+            payload = {
+                "job_id": job.job_id,
+                "status": job.status,
+                "progress": job.progress,
+                "total": job.total,
+                "percentage": int((job.progress / job.total) * 100) if job.total > 0 else 0,
+                "started_at": job.started_at,
+                "completed_at": job.completed_at,
+                "error": job.error
+            }
+            _persist_job_status(job_id, payload)
+            return payload
+
+    payload = _redis_get_json(_verify_status_key(job_id))
+    if isinstance(payload, dict):
+        return payload
+
+    rows = get_verification_results(job_id)
+    if isinstance(rows, list) and rows:
+        total = len(rows)
         return {
-            "job_id": job.job_id,
-            "status": job.status,
-            "progress": job.progress,
-            "total": job.total,
-            "percentage": int((job.progress / job.total) * 100) if job.total > 0 else 0,
-            "started_at": job.started_at,
-            "completed_at": job.completed_at,
-            "error": job.error
+            "job_id": job_id,
+            "status": "completed",
+            "progress": total,
+            "total": total,
+            "percentage": 100,
+            "started_at": None,
+            "completed_at": datetime.now().isoformat(),
+            "error": None,
+            "message": "Verification completed from stored results",
         }
+
+    return None
 
 def get_queue_stats() -> Dict[str, Any]:
     """Get queue statistics"""
@@ -1797,25 +1942,49 @@ def submit_verification(references: List[str], style: str = "apa", enrich_metada
     def run():
         print(f"[DEBUG] Starting background thread for job {job_id}")
         start_time = time.time()
-        results = verify_references_batch(
-            references,
-            style,
-            job_id=job_id,
-            enrich_metadata=enrich_metadata
-        )
-        elapsed = time.time() - start_time
-        print(f"[DEBUG] Background thread completed for job {job_id}")
-        print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
-        print(f"[DEBUG] Results count: {len(results)}")
+        try:
+            results = verify_references_batch(
+                references,
+                style,
+                job_id=job_id,
+                enrich_metadata=enrich_metadata
+            )
+            elapsed = time.time() - start_time
+            print(f"[DEBUG] Background thread completed for job {job_id}")
+            print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
+            print(f"[DEBUG] Results count: {len(results)}")
 
-        for r in results:
-            if r.get("status") == "likely":
-                r["status"] = "verified"
-        verified = sum(1 for r in results if r.get("status") == "verified")
-        likely = 0
-        needs_review = sum(1 for r in results if r.get("status") == "needs_review")
-        not_found = sum(1 for r in results if r.get("status") == "not_found")
-        print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
+            for r in results:
+                if r.get("status") == "likely":
+                    r["status"] = "verified"
+            store_verification_results(job_id, results)
+            update_job_progress(job_id, len(results))
+
+            verified = sum(1 for r in results if r.get("status") == "verified")
+            likely = 0
+            needs_review = sum(1 for r in results if r.get("status") == "needs_review")
+            not_found = sum(1 for r in results if r.get("status") == "not_found")
+            print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
+
+        except Exception as e:
+            print(f"[DEBUG] Verification thread failed for job {job_id}: {e}")
+            with _jobs_lock:
+                if job_id in _jobs:
+                    _jobs[job_id].status = "error"
+                    _jobs[job_id].error = str(e)
+                    _jobs[job_id].completed_at = datetime.now().isoformat()
+            current = _redis_get_json(_verify_status_key(job_id)) or {}
+            _persist_job_status(job_id, {
+                "job_id": job_id,
+                "status": "error",
+                "progress": int(current.get("progress") or 0),
+                "total": int(current.get("total") or total_refs),
+                "percentage": int(current.get("percentage") or 0),
+                "started_at": current.get("started_at"),
+                "completed_at": datetime.now().isoformat(),
+                "error": str(e),
+                "message": f"Verification failed: {str(e)[:180]}",
+            })
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
