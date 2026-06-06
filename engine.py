@@ -6090,3 +6090,286 @@ def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
         if tail:
             out.append(tail)
     return [x for x in out if x and (not re.fullmatch(r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.\s*){1,5}(?:,|&)?", x))]
+
+
+# ============================================================
+# v1.5.22: ENTREPRENEURSHIP PDF FALSE-MISSING GUARD
+# Fixes false missing citations from statistical parentheticals, wrapped
+# APA references, acronym-title references, and date-style embedded refs.
+# ============================================================
+ENGINE_BUILD = "commercial-2026-06-06-author-year-stat-parenthetical-reference-guard-v1.5.22"
+
+# Add small non-author tokens observed in PDF extraction/statistical parentheticals.
+try:
+    NON_NAME_AUTHOR_KEYS.update({
+        "and", "or", "but", "resp", "response", "respondent", "respondents",
+        "graduate", "graduates", "cohort", "cohorts", "year", "years",
+        "percentage", "percent", "figure", "fig", "table", "sample",
+        "participants", "n", "cf",
+    })
+except Exception:
+    pass
+
+_STAT_PARENTHESES_RE = re.compile(
+    r"\b("
+    r"out\s+of|graduates?|respondents?|cohorts?|resp\.?|cf\.?|figure|fig\.?|table|"
+    r"employment\s+rate|self[-\s]?employed|surveyed|participants?|sample\s+size"
+    r")\b",
+    re.I,
+)
+
+_PREV_CI_CITATION_CONTEXT_IS_NON_CITATION_V1522 = _citation_context_is_non_citation
+
+def _citation_context_is_non_citation(text: str, start: int, end: int, candidate: str = "") -> bool:
+    """Suppress statistical/reporting parentheticals that look like author-year citations."""
+    if _PREV_CI_CITATION_CONTEXT_IS_NON_CITATION_V1522(text, start, end, candidate):
+        return True
+
+    cand = norm_space(candidate or "")
+    cand_low = cand.lower()
+    if _STAT_PARENTHESES_RE.search(cand_low):
+        # Examples:
+        # (195 out of 279 graduates from the years 2015, 2016, and 2017)
+        # (resp. 2018 cohort)
+        return True
+
+    # Look at the whole parenthetical when possible.
+    ctx = norm_space((text or "")[max(0, start):min(len(text or ""), end)])
+    if _STAT_PARENTHESES_RE.search(ctx.lower()) and re.search(r"\b(19|20)\d{2}\b", ctx):
+        return True
+
+    return False
+
+
+_PREV_SPLIT_AUTHOR_YEAR_CHUNK_V1522 = _split_author_year_chunk
+
+def _split_author_year_chunk(chunk: str) -> List[str]:
+    """Do not split statistical year lists into fake author-year citations."""
+    s = norm_space(chunk or "")
+    if not s:
+        return []
+
+    if _STAT_PARENTHESES_RE.search(s.lower()):
+        return []
+
+    # Reject pure reporting strings with several years and no clear author marker.
+    years = list(YEAR_RE.finditer(s))
+    if len(years) >= 2 and re.search(r"\b(years?|graduates?|respondents?|cohort|surveyed|out\s+of)\b", s, re.I):
+        return []
+
+    return _PREV_SPLIT_AUTHOR_YEAR_CHUNK_V1522(s)
+
+
+_PREV_PARSE_AUTHOR_YEAR_FROM_CITE_V1522 = _parse_author_year_from_cite
+
+def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
+    """Final guard against false author-year parses from narrative/statistical text."""
+    s = norm_space(cite or "")
+    if not s:
+        return None
+
+    if _STAT_PARENTHESES_RE.search(s.lower()):
+        return None
+
+    parsed = _PREV_PARSE_AUTHOR_YEAR_FROM_CITE_V1522(s)
+    if not parsed:
+        return None
+
+    auth, year = parsed
+    if _is_non_author_key(auth):
+        return None
+
+    # Reject extracted "and, 2017", "resp. 2018 cohort", etc.
+    left = s[:YEAR_RE.search(s).start()].strip(" ,;:()[]{}") if YEAR_RE.search(s) else ""
+    left_key = strip_punct(left)
+    if _is_non_author_key(left_key) or not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", left):
+        return None
+
+    return parsed
+
+
+_PREV_PARSE_REFERENCE_AUTHOR_YEAR_V1522 = parse_reference_author_year
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    """
+    Parse APA/Harvard reference with support for acronym-title references such as:
+    HCP-Principales caractéristiques ... (2023), HCP.
+    """
+    s = norm_space(ref or "")
+    if not s:
+        return None
+
+    s_clean = _strip_leading_reference_number(s)
+
+    # HCP-style institutional/acronym references whose report title contains a year
+    # before the actual publication year in parentheses.
+    m_acr = re.match(r"^\s*([A-Z]{2,12})\s*[-–:]\s+(.+)$", s_clean)
+    if m_acr:
+        acr = strip_punct(m_acr.group(1))
+        if acr and not _is_non_author_key(acr):
+            # Prefer parenthetical publication year; otherwise use first year.
+            m_year = re.search(r"\(\s*(" + YEAR + r")\s*\)", s_clean)
+            if not m_year:
+                m_year = re.search(r"\b(" + YEAR + r")\b", s_clean)
+            if m_year:
+                return RefAY(reference_full=s_clean, key=f"{acr}|{m_year.group(1)}".lower())
+
+    return _PREV_PARSE_REFERENCE_AUTHOR_YEAR_V1522(ref)
+
+
+_PREV_SPLIT_EMBEDDED_APA_REFS_V1522 = _split_embedded_apa_refs
+
+def _ci_split_date_style_embedded_apa_refs(refs: List[str]) -> List[str]:
+    """
+    Split merged APA references when the next entry has a date in the year
+    parentheses, e.g. Cooney, T. M. (2012, November 28).
+    """
+    out: List[str] = []
+    UPPER = r"A-ZÀ-ÖØ-Þ"
+    NAME_BODY = r"A-Za-zÀ-ÖØ-öø-ÿ'’\-"
+    SURNAME = rf"[{UPPER}][{NAME_BODY}]+"
+    INITIALS = r"(?:[A-Z]\.\s*){1,5}"
+    YEAR_DATE_IN_PARENS = r"\(\s*(?:1[6-9]\d{2}|20\d{2})(?:[a-z])?(?:\s*,\s*[A-Za-z]+\s+\d{1,2})?\s*\)"
+    PERSON = rf"{SURNAME},\s*{INITIALS}"
+
+    # Date-style start. Keep this narrow to avoid splitting continuation authors.
+    person_start_date = re.compile(rf"(?=(?:{PERSON}\s*{YEAR_DATE_IN_PARENS}))")
+
+    for ref in refs or []:
+        s = norm_space(ref)
+        if not s:
+            continue
+        cuts: List[int] = []
+        for m in person_start_date.finditer(s):
+            pos = m.start()
+            if pos <= 0:
+                continue
+
+            before = s[:pos]
+            # Must follow a clear end of a previous reference/title/URL/page range.
+            boundary_ok = bool(re.search(r"[\.\?!]\s*$", before[-20:])) or bool(DOI_RE.search(before)) or bool(re.search(r"https?://\S+\s*$", before, re.I))
+            if not boundary_ok:
+                continue
+
+            gap = _ci_recent_reference_boundary_gap(s, pos)
+            gap_clean = norm_space(gap)
+            # Do not split inside multi-author lists.
+            if _ci_apa_author_marker_count(gap_clean) > 0:
+                continue
+            if re.search(r"(?:,|&|and|＆)\s*$", s[max(0, pos - 30):pos], flags=re.I):
+                continue
+
+            cuts.append(pos)
+
+        cuts = sorted(set(cuts))
+        if not cuts:
+            out.append(s)
+            continue
+
+        prev = 0
+        for pos in cuts:
+            part = norm_space(s[prev:pos])
+            if part:
+                out.append(part)
+            prev = pos
+        tail = norm_space(s[prev:])
+        if tail:
+            out.append(tail)
+
+    return out
+
+
+def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
+    first = _PREV_SPLIT_EMBEDDED_APA_REFS_V1522(merged)
+    return _ci_split_date_style_embedded_apa_refs(first)
+
+
+_PREV_CLEAN_REFERENCE_LIST_V1522 = _clean_reference_list
+
+def _clean_reference_list(refs: List[str], style_hint: str = "apa") -> List[str]:
+    """Clean and repair APA reference list after embedded-date splitting."""
+    cleaned = _PREV_CLEAN_REFERENCE_LIST_V1522(refs, style_hint=style_hint)
+
+    if style_hint != "apa":
+        return cleaned
+
+    repaired: List[str] = []
+    for ref in cleaned:
+        s = norm_space(ref)
+        if not s:
+            continue
+
+        # Merge fake references that are actually continuation page/DOI tails.
+        # Example: "440. https://doi.org/10.1111/..."
+        if repaired and re.match(r"^\s*\d{1,4}\s*[\.\-–—]?\s+(?:https?://|doi\b|10\.)", s, re.I):
+            repaired[-1] = norm_space(repaired[-1].rstrip(" .") + " " + s)
+            continue
+
+        # Also merge if previous entry ends with an open page range.
+        if repaired and re.search(r"[\-–—]\s*$", repaired[-1]) and not re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*)", s):
+            repaired[-1] = norm_space(repaired[-1] + " " + s)
+            continue
+
+        repaired.append(s)
+
+    # Re-split after repair so Cooney-style merged refs are separated.
+    repaired = _ci_split_date_style_embedded_apa_refs(repaired)
+    return _dedupe_keep_order(repaired)
+
+
+_PREV_EXTRACT_AUTHOR_YEAR_CITATIONS_V1522 = extract_author_year_citations
+
+def extract_author_year_citations(text: str) -> List[str]:
+    """Extract author-year citations, then remove residual statistical false positives."""
+    found = _PREV_EXTRACT_AUTHOR_YEAR_CITATIONS_V1522(text)
+    out: List[str] = []
+    for c in found:
+        s = norm_space(c)
+        if not s:
+            continue
+        if _STAT_PARENTHESES_RE.search(s.lower()):
+            continue
+        parsed = _parse_author_year_from_cite(s)
+        if not parsed:
+            continue
+        auth, _yr = parsed
+        if _is_non_author_key(auth):
+            continue
+        out.append(s)
+    return out
+
+
+# ============================================================
+# v1.5.23: ACRONYM-DASH REFERENCE KEY FIX
+# Handles "HCP-Principales..." where no whitespace follows the hyphen.
+# ============================================================
+ENGINE_BUILD = "commercial-2026-06-06-author-year-stat-parenthetical-reference-guard-v1.5.23"
+
+_PREV_PARSE_REFERENCE_AUTHOR_YEAR_V1523 = parse_reference_author_year
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    s = norm_space(ref or "")
+    if not s:
+        return None
+
+    s_clean = _strip_leading_reference_number(s)
+
+    # Acronym-author followed by dash/colon and a report title.
+    # Example: HCP-Principales caractéristiques ... (2023), HCP.
+    m_acr = re.match(r"^\s*([A-Z]{2,12})\s*[-–:]\s*(.+)$", s_clean)
+    if m_acr:
+        acr = strip_punct(m_acr.group(1))
+        if acr and not _is_non_author_key(acr):
+            # Prefer a parenthetical publication year after the title.
+            paren_years = list(re.finditer(r"\(\s*(" + YEAR + r")\s*\)", s_clean))
+            if paren_years:
+                year = paren_years[-1].group(1)
+                return RefAY(reference_full=s_clean, key=f"{acr}|{year}".lower())
+
+            # Fallback: use the last year in the string, not the first year in a title.
+            years = list(YEAR_RE.finditer(s_clean))
+            if years:
+                year = years[-1].group(1)
+                return RefAY(reference_full=s_clean, key=f"{acr}|{year}".lower())
+
+    return _PREV_PARSE_REFERENCE_AUTHOR_YEAR_V1523(ref)
