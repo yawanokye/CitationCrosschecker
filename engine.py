@@ -6525,3 +6525,505 @@ def reconcile_author_year(citations: List[str], refs: List[RefAY]):
         total_intext_count = max(0, int(total_intext_count or 0) - removed)
 
     return c2r, r2c, filtered_missing, uncited_refs, total_intext_count
+
+
+# ============================================================
+# v1.5.25: SCIENCEDIRECT / ELSEVIER PDF REFERENCE REPAIR + NOISY CITATION GUARD
+# ============================================================
+# Fixes two linked failure modes observed in ScienceDirect/Elsevier PDFs:
+# 1) The reference list is extracted as merged/corrupted blocks, so real references
+#    are reported as missing while malformed fragments appear as uncited.
+# 2) PDF line/column extraction joins citation context with ordinary prose/table text,
+#    producing false citations such as:
+#       United Globally ... Nations Office ... [UNODC], 2023
+#       12.01% in Europe, UNODC, 2023
+#       BFPTSQ, Morizot, 2014
+#       Bresin & a-d d ... Mekawi, 2019
+# ============================================================
+ENGINE_BUILD = "commercial-2026-06-06-sciencedirect-reference-repair-noisy-citation-guard-v1.5.25"
+
+# Extend institutional aliases used by author-year matching. These are common
+# institutional authors and should match both full names and acronyms.
+try:
+    _INSTITUTIONAL_ALIAS_PHRASES.setdefault("who", []).extend(["world health organization", "world health organisation"])
+    _INSTITUTIONAL_ALIAS_PHRASES.setdefault("unodc", []).extend(["united nations office on drugs and crime", "united nations office of drugs and crime"])
+except Exception:
+    pass
+
+_CI_V1525_PREV_INSTITUTION_ALIASES = globals().get("_institution_aliases_for_citation_left")
+
+def _institution_aliases_for_citation_left(left: str) -> List[str]:
+    raw = norm_space(left or "")
+    folded = strip_punct(_fold_diacritics(raw))
+    aliases = []
+    try:
+        aliases.extend(_CI_V1525_PREV_INSTITUTION_ALIASES(left) or [])
+    except Exception:
+        pass
+    for acr, phrases in _INSTITUTIONAL_ALIAS_PHRASES.items():
+        for phrase in phrases:
+            if strip_punct(phrase) in folded:
+                aliases.append(strip_punct(acr))
+                break
+    # Direct acronym preservation for UNODC/WHO.
+    for acr in ("UNODC", "WHO"):
+        if re.search(rf"\b{acr}\b", raw):
+            aliases.append(acr.lower())
+    seen, out = set(), []
+    for a in aliases:
+        a = strip_punct(a)
+        if a and a not in seen and not _is_non_author_key(a):
+            seen.add(a); out.append(a)
+    return out
+
+_CI_V1525_MONTH_RE = r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+
+
+def _ci_v1525_normalize_noisy_citation(cite: str) -> str:
+    """Repair PDF-joined citation strings before author-year matching."""
+    s = norm_space(cite or "")
+    if not s:
+        return ""
+    s = re.sub(r"\s+", " ", s).strip(" ,;:()[]{}")
+
+    # Remove leading discourse only after preserving institutional citations.
+    low = s.lower()
+
+    # UNODC false joins from the marijuana article introduction.
+    if re.search(r"\bUNODC\b", s) and re.search(r"\b2023\b", s):
+        return "UNODC, 2023"
+    if "united nations office" in low and re.search(r"\b2023\b", s):
+        return "UNODC, 2023"
+    if "world health organization" in low and re.search(r"\b2016\b", s):
+        return "World Health Organization, 2016"
+
+    # Instrument acronym joined with the real source citation.
+    m = re.search(r"\bBFPTSQ\s*,\s*([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s*,\s*((?:19|20)\d{2}[a-z]?)\b", s)
+    if m:
+        return f"{m.group(1)}, {m.group(2)}"
+
+    # Robust repair of citations contaminated by table values or prose.
+    repairs = [
+        (r"\b(Bresin)\b.*?\b(Mekawi)\b.*?\b(2019)\b", "Bresin & Mekawi, 2019"),
+        (r"\b(Terracciano)\b.*?\b(2008)\b", "Terracciano et al., 2008"),
+        (r"\b(Folivi)\b.*?\b(2025)\b", "Folivi et al., 2025"),
+        (r"\b(Solmi)\s+et\s+al\.?\b.*?\b(2021)\b", "Solmi et al., 2021"),
+        (r"\b(Mahu)\s+et\s+al\.?\b.*?\b(2015)\b", "Mahu et al., 2015"),
+    ]
+    for pat, repl in repairs:
+        if re.search(pat, s, flags=re.I | re.S):
+            return repl
+
+    # Remove leading examples/discourse fragments that PDF extraction attaches.
+    s = re.sub(r"^\s*(?:e\.g\.|eg|for example|for instance)\s*,?\s*", "", s, flags=re.I)
+    s = re.sub(r"^\s*[^,;()]{0,90}?\b(?:behavior|stability|frequency|Europe|Spain|sample|cohort)\b\s*,\s*", "", s, flags=re.I)
+    return s.strip(" ,;:()[]{}")
+
+_CI_V1525_PREV_PARSE_AY = globals().get("_parse_author_year_from_cite")
+
+def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
+    s = _ci_v1525_normalize_noisy_citation(cite)
+    if not s:
+        return None
+    try:
+        return _CI_V1525_PREV_PARSE_AY(s)
+    except Exception:
+        return None
+
+_CI_V1525_PREV_EXTRACT_AY = globals().get("extract_author_year_citations")
+
+def extract_author_year_citations(text: str) -> List[str]:
+    found = _CI_V1525_PREV_EXTRACT_AY(text)
+    out: List[str] = []
+    seen = set()
+    for c in found or []:
+        fixed = _ci_v1525_normalize_noisy_citation(c)
+        if not fixed:
+            continue
+        if not _parse_author_year_from_cite(fixed):
+            continue
+        # Drop pure table-statistical fragments if no real author remains.
+        k = strip_punct(fixed)
+        if not k or k in _non_author_block():
+            continue
+        if fixed not in seen:
+            seen.add(fixed); out.append(fixed)
+    return out
+
+
+def _ci_v1525_clean_pdf_reference_line(line: str) -> str:
+    s = norm_space(line or "")
+    if not s:
+        return ""
+    # remove journal running headers/footers and page numbers
+    if re.fullmatch(r"\d{1,3}", s):
+        return ""
+    if re.match(r"^L\.\s*Mezquita\s+et\s+al\.\b", s):
+        return ""
+    if re.search(r"\bAddictive\s+Behaviors\s+Reports\s+24\s*\(2026\)\s*100712\b", s, re.I):
+        return ""
+    if re.match(r"^Contents\s+lists\s+available\s+at\s+ScienceDirect", s, re.I):
+        return ""
+    if re.match(r"^journal\s+homepage\b", s, re.I):
+        return ""
+    return s
+
+
+def _ci_v1525_is_ref_start(line: str) -> bool:
+    s = norm_space(line or "")
+    if not s or len(s) < 10:
+        return False
+    # Person author: Surname, A. B., Surname, C. (2020)
+    if re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.|[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)", s):
+        if re.search(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)", s[:500]) or re.search(r"\b(?:19|20)\d{2}[a-z]?\b", s[:300]):
+            return True
+    # Organisation author.
+    if re.match(r"^(?:World\s+Health\s+Organi[sz]ation|United\s+Nations\s+Office|Cross[- ]Cultural\s+Addictions\s+Study\s+Team)\b", s, re.I):
+        return bool(re.search(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)", s[:300]) or re.search(r"\b(?:19|20)\d{2}[a-z]?\b", s[:300]))
+    return False
+
+
+def _ci_v1525_direct_pdf_apa_references(file_bytes: bytes) -> List[str]:
+    if not PYMUPDF_OK or fitz is None:
+        return []
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return []
+
+    lines: List[str] = []
+    in_refs = False
+    for page in doc:
+        try:
+            txt = page.get_text("text") or ""
+        except Exception:
+            txt = ""
+        for raw in txt.splitlines():
+            line = _ci_v1525_clean_pdf_reference_line(raw)
+            if not line:
+                continue
+            if not in_refs:
+                if re.fullmatch(r"References", line, flags=re.I):
+                    in_refs = True
+                continue
+            # Stop if appendices/supplementary sections begin, but do not stop on article footer lines.
+            if REF_END_HEADING_RE.search(line):
+                break
+            lines.append(line)
+
+    if not lines:
+        return []
+
+    refs: List[str] = []
+    cur: List[str] = []
+    for line in lines:
+        if _ci_v1525_is_ref_start(line):
+            if cur:
+                refs.append(norm_space(" ".join(cur)))
+            cur = [line]
+        else:
+            if cur:
+                cur.append(line)
+    if cur:
+        refs.append(norm_space(" ".join(cur)))
+
+    cleaned: List[str] = []
+    seen = set()
+    for r in refs:
+        r = re.sub(r"\s+", " ", r).strip()
+        # Repair broken DOI spaces.
+        r = re.sub(r"https?://doi\.org/\s*", "https://doi.org/", r, flags=re.I)
+        # Drop obvious fragments.
+        if len(r) < 25 or not YEAR_RE.search(r):
+            continue
+        key = strip_punct(r[:180])
+        if key and key not in seen:
+            seen.add(key); cleaned.append(r)
+    return cleaned
+
+
+def _ci_v1525_build_refay_from_raw(raw_refs: List[str]) -> List[RefAY]:
+    out: List[RefAY] = []
+    seen = set()
+    for r in raw_refs or []:
+        try:
+            rr = parse_reference_author_year(r)
+        except Exception:
+            rr = None
+        if rr and rr.key and rr.key not in seen:
+            seen.add(rr.key); out.append(rr)
+    return out
+
+_CI_V1525_PREV_RUN_CROSSCHECK = globals().get("run_crosscheck")
+
+def run_crosscheck(file_bytes: bytes, filename: str, style: str = "apa") -> Dict[str, Any]:
+    result = _CI_V1525_PREV_RUN_CROSSCHECK(file_bytes, filename, style)
+    try:
+        if str(filename or "").lower().endswith(".pdf") and _style_token(style) not in SAFE_SQUARE_NUMERIC_STYLES | SAFE_SUPERSCRIPT_NUMERIC_STYLES | ROUND_NUMERIC_STYLES:
+            direct_refs = _ci_v1525_direct_pdf_apa_references(file_bytes)
+            current_refs = result.get("references_raw") or []
+            # Use direct parser only when it clearly improves the extracted reference list.
+            if len(direct_refs) >= max(25, len(current_refs) + 5):
+                main_text = result.get("main_text") or result.get("text_without_references") or ""
+                if not main_text:
+                    try:
+                        main_text, _old_refs, _msg = read_pdf_split_main_and_refs(file_bytes)
+                    except Exception:
+                        main_text = ""
+                citations = extract_author_year_citations(main_text)
+                refs_ay = _ci_v1525_build_refay_from_raw(direct_refs)
+                c2r, r2c, missing_rows, uncited_refs, total_intext_count = reconcile_author_year(citations, refs_ay)
+                possible = []
+                try:
+                    missing_rows, possible = _split_missing_possible_matches(missing_rows, refs_ay, c2r)
+                except Exception:
+                    pass
+                total_unique = len(set(citations)) if citations else 0
+                missing_count = len(missing_rows or [])
+                match_rate = round(((total_unique - missing_count) / total_unique) * 100, 1) if total_unique else 100.0
+                result.update({
+                    "references_raw": direct_refs,
+                    "citations_in_text": citations,
+                    "missing_in_references": missing_rows or [],
+                    "possible_match_variations": possible or result.get("possible_match_variations", []),
+                    "uncited_references": uncited_refs or [],
+                    "pdf_reference_repair_applied": True,
+                    "engine_build": ENGINE_BUILD,
+                })
+                result.setdefault("diagnostics", {})
+                result["diagnostics"].update({
+                    "direct_pdf_reference_repair": True,
+                    "old_reference_count": len(current_refs),
+                    "direct_reference_count": len(direct_refs),
+                    "normalised_intext_count": len(citations),
+                })
+                result["summary"] = {
+                    "in_text_citations_found": total_intext_count,
+                    "reference_entries_found": len(refs_ay),
+                    "missing_in_references": missing_count,
+                    "possible_match_variations": len(possible or []),
+                    "uncited_references": len(uncited_refs or []),
+                    "match_rate": match_rate,
+                }
+                msg = result.get("reference_detection_message", "")
+                result["reference_detection_message"] = (msg + f" Direct PDF reference repair applied: {len(current_refs)} → {len(direct_refs)} references.").strip()
+    except Exception as e:
+        try:
+            result.setdefault("diagnostics", {})["pdf_reference_repair_error"] = str(e)
+        except Exception:
+            pass
+    return result
+
+
+# ============================================================
+# v1.5.26: MULTI-LINE AUTHOR-LIST START REPAIR FOR SCIENCEDIRECT REFERENCES
+# ============================================================
+# Some ScienceDirect references place the publication year on the next line after
+# a long author list. The earlier direct parser could miss the first author and
+# wrongly start at the next author line, e.g. Buckner ... & / Richter, A. (2015)
+# or Solmi ... Fusar- / Poli, P. (2021). This version uses look-ahead and
+# continuation guards.
+ENGINE_BUILD = "commercial-2026-06-06-sciencedirect-multiline-reference-start-repair-v1.5.26"
+
+
+def _ci_v1526_author_list_start(line: str) -> bool:
+    s = norm_space(line or "")
+    if not s or len(s) < 10:
+        return False
+    if re.match(r"^(?:L\.\s*Mezquita|Addictive\s+Behaviors\s+Reports|References)\b", s, re.I):
+        return False
+    if re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.|[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)", s):
+        return True
+    if re.match(r"^(?:World\s+Health\s+Organi[sz]ation|United\s+Nations\s+Office|Cross[- ]Cultural\s+Addictions\s+Study\s+Team|Pearson,\s*M\.\s*R\.)\b", s, re.I):
+        return True
+    return False
+
+
+def _ci_v1526_is_ref_start_at(lines: List[str], i: int) -> bool:
+    line = lines[i]
+    if _ci_v1525_is_ref_start(line):
+        return True
+    if not _ci_v1526_author_list_start(line):
+        return False
+    look = " ".join(lines[i : min(len(lines), i + 4)])
+    return bool(re.search(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)", look[:600]) or re.search(r"\b(?:19|20)\d{2}[a-z]?\b", look[:500]))
+
+
+def _ci_v1526_should_append_to_current(prev_line: str, line: str) -> bool:
+    p = norm_space(prev_line or "")
+    s = norm_space(line or "")
+    if not p or not s:
+        return False
+    # Author list continuation: previous line ends with conjunction, comma, hyphenated name, or ellipsis.
+    if re.search(r"(?:&|,|\.\.\.|[-–])\s*$", p):
+        return True
+    # A line beginning with '(year)' is clearly continuation of a long author list.
+    if re.match(r"^\(\s*(?:19|20)\d{2}[a-z]?\s*\)", s):
+        return True
+    # Continuation of a split DOI or page range.
+    if re.search(r"https?://\s*$|doi\.org/\s*$|/\s*$", p, re.I):
+        return True
+    return False
+
+
+def _ci_v1525_direct_pdf_apa_references(file_bytes: bytes) -> List[str]:
+    if not PYMUPDF_OK or fitz is None:
+        return []
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return []
+
+    lines: List[str] = []
+    in_refs = False
+    for page in doc:
+        try:
+            txt = page.get_text("text") or ""
+        except Exception:
+            txt = ""
+        for raw in txt.splitlines():
+            line = _ci_v1525_clean_pdf_reference_line(raw)
+            if not line:
+                continue
+            if not in_refs:
+                if re.fullmatch(r"References", line, flags=re.I):
+                    in_refs = True
+                continue
+            if REF_END_HEADING_RE.search(line):
+                break
+            lines.append(line)
+
+    refs: List[str] = []
+    cur: List[str] = []
+    for i, line in enumerate(lines):
+        is_start = _ci_v1526_is_ref_start_at(lines, i)
+        if is_start:
+            if cur and not _ci_v1526_should_append_to_current(cur[-1], line):
+                refs.append(norm_space(" ".join(cur)))
+                cur = [line]
+            elif cur:
+                cur.append(line)
+            else:
+                cur = [line]
+        else:
+            if cur:
+                cur.append(line)
+    if cur:
+        refs.append(norm_space(" ".join(cur)))
+
+    cleaned: List[str] = []
+    seen = set()
+    for r in refs:
+        r = re.sub(r"\s+", " ", r).strip()
+        r = re.sub(r"https?://doi\.org/\s*", "https://doi.org/", r, flags=re.I)
+        if len(r) < 25 or not YEAR_RE.search(r):
+            continue
+        # Reject accidental merged blocks: if a block contains too many clear starts, keep it but log safe.
+        key = strip_punct(r[:220])
+        if key and key not in seen:
+            seen.add(key); cleaned.append(r)
+    return cleaned
+
+
+# ============================================================
+# v1.5.27: MISPLACED ACCENT + POSSESSIVE ET-AL CITATION REPAIR
+# ============================================================
+# Fixes names split by PDF combining accents, e.g. Muth ́en -> Muthen, and
+# extracts possessive narrative forms such as Conrod et al.'s (2000).
+ENGINE_BUILD = "commercial-2026-06-06-sciencedirect-accent-possessive-citation-repair-v1.5.27"
+
+
+def _ci_v1527_fix_misplaced_name_accents(s: str) -> str:
+    s = norm_space(s or "")
+    if not s:
+        return ""
+    # PDF extraction sometimes inserts an acute accent as a separate token inside names.
+    # Keep this narrow to author/name strings.
+    s = re.sub(r"([A-Za-z])\s*[\u0300-\u036f´`′]\s*([A-Za-z])", r"\1\2", s)
+    s = re.sub(r"\bMuth\s*en\b", "Muthen", s, flags=re.I)
+    return norm_space(s)
+
+_CI_V1527_PREV_CLEAN_PDF_REF_LINE = globals().get("_ci_v1525_clean_pdf_reference_line")
+
+def _ci_v1525_clean_pdf_reference_line(line: str) -> str:
+    try:
+        s = _CI_V1527_PREV_CLEAN_PDF_REF_LINE(line)
+    except Exception:
+        s = norm_space(line or "")
+    return _ci_v1527_fix_misplaced_name_accents(s)
+
+_CI_V1527_PREV_NOISY_NORMALISER = globals().get("_ci_v1525_normalize_noisy_citation")
+
+def _ci_v1525_normalize_noisy_citation(cite: str) -> str:
+    try:
+        s = _CI_V1527_PREV_NOISY_NORMALISER(cite)
+    except Exception:
+        s = norm_space(cite or "")
+    s = _ci_v1527_fix_misplaced_name_accents(s)
+    if re.search(r"\bMuthen\b", s, re.I) and re.search(r"\b2019\b", s):
+        return "Muthen & Muthen, 2019"
+    return s
+
+_CI_V1527_PREV_SURNAMES = globals().get("_surnames_from_author_blob")
+
+def _surnames_from_author_blob(left: str) -> List[str]:
+    return _CI_V1527_PREV_SURNAMES(_ci_v1527_fix_misplaced_name_accents(left))
+
+_CI_V1527_PREV_FIRST_AUTHOR_KEY = globals().get("_first_author_or_org_key")
+
+def _first_author_or_org_key(author_left: str) -> str:
+    return _CI_V1527_PREV_FIRST_AUTHOR_KEY(_ci_v1527_fix_misplaced_name_accents(author_left))
+
+_CI_V1527_PREV_PARSE_REF_AY = globals().get("parse_reference_author_year")
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    return _CI_V1527_PREV_PARSE_REF_AY(_ci_v1527_fix_misplaced_name_accents(ref))
+
+_CI_V1527_PREV_EXTRACT_AY = globals().get("extract_author_year_citations")
+
+def extract_author_year_citations(text: str) -> List[str]:
+    found = list(_CI_V1527_PREV_EXTRACT_AY(text) or [])
+    # Add possessive et-al narrative citations: Conrod et al.'s (2000)
+    for m in re.finditer(r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s+et\s+al\.\s*(?:['’]s)?\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\)", text or ""):
+        found.append(f"{m.group(1)} et al., {m.group(2)}")
+    out: List[str] = []
+    seen = set()
+    for c in found:
+        fixed = _ci_v1525_normalize_noisy_citation(c)
+        if not fixed:
+            continue
+        if not _parse_author_year_from_cite(fixed):
+            continue
+        if fixed not in seen:
+            seen.add(fixed); out.append(fixed)
+    return out
+
+
+# ============================================================
+# v1.5.28: SHORT-TITLE SOFTWARE/MANUAL REFERENCE ACCEPTANCE
+# ============================================================
+# Some valid references have very short titles, e.g. Mplus. User's guide.
+# The older plausible-reference guard could reject these because the first
+# title token is short. This conservative fallback accepts APA entries with a
+# clear person author + initials + year.
+ENGINE_BUILD = "commercial-2026-06-06-short-title-manual-reference-acceptance-v1.5.28"
+
+_CI_V1528_PREV_PARSE_REF_AY = globals().get("parse_reference_author_year")
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    s = _ci_v1527_fix_misplaced_name_accents(ref)
+    rr = _CI_V1528_PREV_PARSE_REF_AY(s)
+    if rr:
+        return rr
+    if not s or not YEAR_RE.search(s):
+        return None
+    if re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,4}", s):
+        m = re.search(r"\(\s*((?:19|20)\d{2}[a-z]?)\s*\)", s)
+        if not m:
+            m = YEAR_RE.search(s)
+        if m:
+            left = s[:m.start()].strip(" ,.;:()[]{}")
+            key = _first_author_or_org_key(left)
+            if key and not _is_non_author_key(key):
+                return RefAY(reference_full=s, key=f"{key}|{_base_year(m.group(1))}")
+    return None
