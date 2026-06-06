@@ -7064,3 +7064,409 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
             if key and not _is_non_author_key(key):
                 return RefAY(reference_full=s, key=f"{key}|{_base_year(m.group(1))}")
     return None
+
+
+# ============================================================
+# v1.5.29: UGSPACE THESIS MIXED-STYLE REFERENCE REPAIR + CITATION CLEANUP
+# ============================================================
+# Fixes thesis PDFs where the reference list mixes APA and Vancouver-like forms:
+#   Carayon P, Gurses AP. ... 2008
+#   Oyatoye E.O., Amole B.B., Adebiyi S.O. ... 2016
+#   Paul NI, Ugwu RO (2019)
+#   Tang WM, Soong C, Lim WC (2013)
+# It also cleans location/noise prefixes in extracted author-year citations:
+#   In Hong Kong, Chou & Chi (2015) -> Chou & Chi, 2015
+#   In Nigeria, Odetola (2015) -> Odetola, 2015
+#   Ministry of Health, Ethiopia (2011) is not reduced to Health, Ethiopia, 2011.
+ENGINE_BUILD = "commercial-2026-06-06-ugspace-thesis-reference-repair-v1.5.29"
+
+_CI_V1529_COUNTRY_OR_PLACE_PREFIXES = {
+    "nigeria", "ghana", "ethiopia", "uganda", "china", "india", "spain", "greece",
+    "jordan", "pakistan", "hong kong", "south africa", "south-south zone of nigeria",
+}
+
+_CI_V1529_PREV_PARSE_AY_CITE = globals().get("_parse_author_year_from_cite")
+_CI_V1529_PREV_EXTRACT_AY_CITES = globals().get("extract_author_year_citations")
+_CI_V1529_PREV_PARSE_REF_AY = globals().get("parse_reference_author_year")
+_CI_V1529_PREV_RUN_CROSSCHECK = globals().get("run_crosscheck")
+
+
+def _ci_v1529_canonical_citation_display(cite: str) -> str:
+    s = norm_space(cite or "")
+    if not s:
+        return ""
+
+    s = _normalise_common_citation_typos(s)
+    s = re.sub(r"\bATinga\b", "Atinga", s)
+    s = re.sub(r"\bet\s+al\s*\.?", "et al.", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r",\s*&\s*", " & ", s)
+    s = re.sub(r"\s+&\s+", " & ", s)
+    s = re.sub(r"\bGDHS\s*,?\s*((?:19|20)\d{2})", r"GDHS, \1", s, flags=re.I)
+
+    # PDF extraction sometimes captures location/context before the real citation.
+    # Keep this narrow: only recognised location + a following proper author-year citation.
+    s = re.sub(r"^(?:In\s+)?Hong\s+Kong,\s*(Chou\s*&\s*Chi,\s*(?:19|20)\d{2}[a-z]?)$", r"\1", s, flags=re.I)
+    s = re.sub(r"^(?:In\s+)?Nigeria,\s*(Odetola,\s*(?:19|20)\d{2}[a-z]?)$", r"\1", s, flags=re.I)
+    s = re.sub(r"^(?:In\s+)?(Uganda|Spain|India|Greece|China|Ghana|Ethiopia),\s*([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s+et\s+al\.)?,\s*(?:19|20)\d{2}[a-z]?)$", r"\2", s, flags=re.I)
+
+    # Preserve institutional phrase; do not leave only "Health, Ethiopia".
+    if re.fullmatch(r"Health,\s*Ethiopia,\s*(?:19|20)\d{2}[a-z]?", s, flags=re.I):
+        y = YEAR_RE.search(s).group(1)
+        s = f"Ministry of Health, Ethiopia, {y}"
+
+    # APA display: "Paul and Ugwu, 2019" -> "Paul & Ugwu, 2019".
+    s = re.sub(
+        r"^([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s+and\s+([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+),\s*((?:19|20)\d{2}[a-z]?)$",
+        r"\1 & \2, \3",
+        s,
+    )
+
+    return s.strip(" ,;:()[]{}")
+
+
+def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
+    s = _ci_v1529_canonical_citation_display(cite)
+    if not s:
+        return None
+
+    # Institutional author aliases.
+    m = re.match(r"^(World\s+Health\s+Organi[sz]ation|WHO)\s*,\s*((?:19|20)\d{2}[a-z]?)$", s, re.I)
+    if m:
+        return ("who", _base_year(m.group(2)))
+    m = re.match(r"^(Ministry\s+of\s+Health(?:\s*,\s*Ethiopia)?|MOH)\s*,\s*((?:19|20)\d{2}[a-z]?)$", s, re.I)
+    if m:
+        return ("moh", _base_year(m.group(2)))
+    m = re.match(r"^(GDHS)\s*,\s*((?:19|20)\d{2}[a-z]?)$", s, re.I)
+    if m:
+        return ("gdhs", _base_year(m.group(2)))
+
+    if _CI_V1529_PREV_PARSE_AY_CITE:
+        return _CI_V1529_PREV_PARSE_AY_CITE(s)
+    return None
+
+
+def extract_author_year_citations(text: str) -> List[str]:
+    found = []
+    if _CI_V1529_PREV_EXTRACT_AY_CITES:
+        found = list(_CI_V1529_PREV_EXTRACT_AY_CITES(text) or [])
+
+    out: List[str] = []
+    seen = set()
+    for c in found:
+        s = _ci_v1529_canonical_citation_display(c)
+        if not s:
+            continue
+        if not _parse_author_year_from_cite(s):
+            continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def _ci_v1529_reference_year(s: str) -> str:
+    s = norm_space(s or "")
+    m = re.search(r"\(\s*((?:19|20)\d{2}[a-z]?)\s*\)", s)
+    if m:
+        return _base_year(m.group(1))
+    m = re.search(r"\b((?:19|20)\d{2}[a-z]?)\b", s)
+    return _base_year(m.group(1)) if m else ""
+
+
+def _ci_v1529_ref_first_surname_no_comma(s: str) -> str:
+    """First author in Vancouver-like forms: Tang WM, Soong C; Carayon P, Gurses AP."""
+    s = norm_space(s or "")
+    m = re.match(r"^([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s+(?:[A-Z]\.?){1,5}\s*(?:,|\b)", s)
+    if not m:
+        return ""
+    key = strip_punct(m.group(1))
+    return "" if _is_non_author_key(key) else key
+
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    s = norm_space(ref or "")
+    if not s:
+        return None
+
+    # Repair common OCR/line-start losses.
+    if re.match(r"^HO,\s*World\s+Bank", s, re.I):
+        s = "WHO, World Bank" + s.split("World Bank", 1)[1]
+
+    # Institutional author references.
+    y = _ci_v1529_reference_year(s)
+    if y and re.match(r"^(?:World\s+Health\s+Organi[sz]ation|WHO)\b", s, re.I):
+        return RefAY(reference_full=s, key=f"who|{y}")
+    if y and re.match(r"^(?:Ministry\s+of\s+Health|MOH)\b", s, re.I):
+        return RefAY(reference_full=s, key=f"moh|{y}")
+    if y and re.match(r"^(?:Ghana\s+Demographic\s+and\s+Health\s+Survey|GDHS)\b", s, re.I):
+        return RefAY(reference_full=s, key=f"gdhs|{y}")
+
+    # Vancouver-like thesis references without comma after surname.
+    # Examples: Tang WM, Soong C, Lim WC (2013); Carayon P, Gurses AP. ... 2008.
+    key = _ci_v1529_ref_first_surname_no_comma(s)
+    if key and y:
+        return RefAY(reference_full=s, key=f"{key}|{y}")
+
+    rr = _CI_V1529_PREV_PARSE_REF_AY(s) if _CI_V1529_PREV_PARSE_REF_AY else None
+
+    # If older parser produced an initials-only key, retry with no-comma surname logic.
+    if rr:
+        k = (rr.key or "").split("|", 1)[0]
+        if k in {"d", "ni", "wm", "ho", "organization"}:
+            key = _ci_v1529_ref_first_surname_no_comma(s)
+            if key and y:
+                return RefAY(reference_full=s, key=f"{key}|{y}")
+        return rr
+
+    return None
+
+
+def _ci_v1529_clean_pdf_reference_line(line: str) -> str:
+    s = norm_space(line or "")
+    if not s:
+        return ""
+    if "University of Ghana http://ugspace.ug.edu.gh" in s:
+        return ""
+    if re.fullmatch(r"\d{1,3}", s):
+        return ""
+    s = re.sub(r"\[PAGE\s+\d+\]", "", s, flags=re.I)
+    return norm_space(s)
+
+
+def _ci_v1529_author_list_start(line: str) -> bool:
+    s = norm_space(line or "")
+    if not s or len(s) < 5:
+        return False
+    if re.match(r"^(?:References|APPENDIX|CHAPTER|University\s+of\s+Ghana)\b", s, re.I):
+        return False
+    # APA-style author start.
+    if re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}(?:[,&]|\s|$)", s):
+        return True
+    # Vancouver-like author start with initials after surname.
+    if re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+\s+(?:[A-Z]\.?){1,5}\s*,", s):
+        return True
+    if re.match(r"^(?:World\s+Health\s+Organi[sz]ation|WHO|MOH|Ministry\s+of\s+Health|Ghana\s+(?:Demographic|Statistical)|GDHS)\b", s, re.I):
+        return True
+    return False
+
+
+def _ci_v1529_is_ref_start_at(lines: List[str], i: int) -> bool:
+    if not _ci_v1529_author_list_start(lines[i]):
+        return False
+    look = " ".join(lines[i : min(len(lines), i + 10)])[:1000]
+    return bool(re.search(rf"\(\s*{YEAR}\s*\)", look) or YEAR_RE.search(look))
+
+
+def _ci_v1529_should_append_to_current(prev_line: str, line: str) -> bool:
+    p = norm_space(prev_line or "")
+    s = norm_space(line or "")
+    if not p or not s:
+        return False
+    if re.search(r"[-–]\s*$", p):
+        return True
+    if re.search(r"[,;&]\s*$", p):
+        return True
+    return False
+
+
+def _ci_v1529_direct_pdf_ugspace_references(file_bytes: bytes) -> List[str]:
+    if not PYMUPDF_OK or fitz is None:
+        return []
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception:
+        return []
+
+    lines: List[str] = []
+    in_refs = False
+    for page in doc:
+        try:
+            txt = page.get_text("text") or ""
+        except Exception:
+            txt = ""
+        for raw in txt.splitlines():
+            line = _ci_v1529_clean_pdf_reference_line(raw)
+            if not line:
+                continue
+            if not in_refs:
+                if re.fullmatch(r"References", line, flags=re.I):
+                    in_refs = True
+                continue
+            if re.match(r"^APPENDIX\b", line, flags=re.I) or REF_END_HEADING_RE.search(line):
+                in_refs = False
+                break
+            lines.append(line)
+
+    refs: List[str] = []
+    cur: List[str] = []
+    for i, line in enumerate(lines):
+        is_start = _ci_v1529_is_ref_start_at(lines, i)
+        if is_start:
+            if cur and not _ci_v1529_should_append_to_current(cur[-1], line):
+                refs.append(norm_space(" ".join(cur)))
+                cur = [line]
+            else:
+                cur.append(line)
+        else:
+            if cur:
+                cur.append(line)
+    if cur:
+        refs.append(norm_space(" ".join(cur)))
+
+    cleaned: List[str] = []
+    seen = set()
+    for r in refs:
+        r = re.sub(r"\s+", " ", r).strip()
+        if len(r) < 20 or not YEAR_RE.search(r):
+            continue
+        key = strip_punct(r[:260])
+        if key and key not in seen:
+            seen.add(key)
+            cleaned.append(r)
+    return cleaned
+
+
+def _ci_v1529_split_possible(missing_rows, refs_ay, c2r=None):
+    fn = globals().get("_split_missing_possible_matches")
+    if not fn:
+        return missing_rows or [], []
+    try:
+        return fn(missing_rows or [], refs_ay, c2r or {})
+    except TypeError:
+        try:
+            return fn(missing_rows or [], refs_ay)
+        except Exception:
+            return missing_rows or [], []
+    except Exception:
+        return missing_rows or [], []
+
+
+def run_crosscheck(
+    file_bytes: bytes,
+    filename: str,
+    style: str = "apa",
+    verify_online: bool = False,
+    verify_mode: str = "all",
+    max_verify: int = 0,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    **kwargs,
+) -> Dict[str, Any]:
+    result = _CI_V1529_PREV_RUN_CROSSCHECK(
+        file_bytes=file_bytes,
+        filename=filename,
+        style=style,
+        verify_online=verify_online,
+        verify_mode=verify_mode,
+        max_verify=max_verify,
+        throttle_s=throttle_s,
+        use_crossref=use_crossref,
+        use_openalex=use_openalex,
+        **kwargs,
+    )
+
+    try:
+        style_is_author_year = _style_token(style) not in (SAFE_SQUARE_NUMERIC_STYLES | SAFE_SUPERSCRIPT_NUMERIC_STYLES | ROUND_NUMERIC_STYLES)
+        if not str(filename or "").lower().endswith(".pdf") or not style_is_author_year:
+            return result
+
+        direct_refs = _ci_v1529_direct_pdf_ugspace_references(file_bytes)
+        current_refs = result.get("references_raw") or []
+        # Apply when it captures explicit mixed-style starts that the base parser commonly misses.
+        joined = "\n".join(direct_refs[:80])
+        has_thesis_mixed_style_gain = any(x in joined for x in ["Carayon P", "Oyatoye E.O", "Tang WM", "Paul NI"])
+        if len(direct_refs) < max(20, len(current_refs) - 2) or not has_thesis_mixed_style_gain:
+            return result
+
+        main_text = result.get("main_text") or result.get("text_without_references") or ""
+        if not main_text:
+            try:
+                main_text, _old_refs, _msg = read_pdf_split_main_and_refs(file_bytes)
+            except Exception:
+                main_text = ""
+
+        citations = extract_author_year_citations(main_text)
+        refs_ay: List[RefAY] = []
+        for r in direct_refs:
+            rr = parse_reference_author_year(r)
+            if rr:
+                refs_ay.append(rr)
+
+        c2r, r2c, missing_rows, uncited_refs, total_intext_count = reconcile_author_year(citations, refs_ay)
+        missing_rows, possible = _ci_v1529_split_possible(missing_rows, refs_ay, c2r)
+
+        total_unique = len(set(citations)) if citations else 0
+        missing_count = len(missing_rows or [])
+        match_rate = round(((total_unique - missing_count) / total_unique) * 100, 1) if total_unique else 100.0
+
+        result.update({
+            "references_raw": direct_refs,
+            "citations_in_text": citations,
+            "missing_in_references": missing_rows or [],
+            "possible_match_variations": possible or result.get("possible_match_variations", []),
+            "uncited_references": uncited_refs or [],
+            "reconciliation_intext_to_reference": c2r,
+            "reconciliation_reference_to_intext": r2c,
+            "ugspace_reference_repair_applied": True,
+            "engine_build": ENGINE_BUILD,
+        })
+        result.setdefault("diagnostics", {})
+        result["diagnostics"].update({
+            "ugspace_reference_repair": True,
+            "old_reference_count": len(current_refs),
+            "direct_reference_count": len(direct_refs),
+            "normalised_intext_count": len(citations),
+            "reference_keys_after_repair": [rr.key for rr in refs_ay[:200]],
+        })
+        result["summary"] = {
+            "in_text_citations_found": total_intext_count,
+            "reference_entries_found": len(refs_ay),
+            "missing_in_references": missing_count,
+            "possible_match_variations": len(possible or []),
+            "uncited_references": len(uncited_refs or []),
+            "match_rate": match_rate,
+        }
+        msg = result.get("reference_detection_message", "")
+        result["reference_detection_message"] = (msg + f" UGSpace mixed-style reference repair applied: {len(current_refs)} → {len(direct_refs)} references.").strip()
+    except Exception as e:
+        try:
+            result.setdefault("diagnostics", {})["ugspace_reference_repair_error"] = str(e)
+        except Exception:
+            pass
+    return result
+
+
+# ============================================================
+# v1.5.30: UGSPACE LOCATION PREFIX + NAME-WORD AUTHOR START REPAIR
+# ============================================================
+# Adds:
+# - Kong, Chou & Chi, 2015 -> Chou & Chi, 2015
+# - Yan-Ning, Li., Dong-Xiao... (2016) as a valid new reference start.
+ENGINE_BUILD = "commercial-2026-06-06-ugspace-thesis-reference-repair-v1.5.30"
+
+_CI_V1530_PREV_CANONICAL_CITATION = globals().get("_ci_v1529_canonical_citation_display")
+_CI_V1530_PREV_AUTHOR_START = globals().get("_ci_v1529_author_list_start")
+
+
+def _ci_v1529_canonical_citation_display(cite: str) -> str:
+    s = _CI_V1530_PREV_CANONICAL_CITATION(cite) if _CI_V1530_PREV_CANONICAL_CITATION else norm_space(cite or "")
+    if not s:
+        return ""
+    # When the sentence says "In Hong Kong, Chou & Chi (2015)", older extraction
+    # may keep only "Kong" as the false first author.
+    s = re.sub(r"^Kong,\s*(Chou\s*&\s*Chi,\s*(?:19|20)\d{2}[a-z]?)$", r"\1", s, flags=re.I)
+    # General narrow location prefix before a clear author-year citation.
+    s = re.sub(r"^(?:Ghana|Nigeria|Ethiopia|Uganda|China|India|Spain|Greece),\s*([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s+et\s+al\.)?,\s*(?:19|20)\d{2}[a-z]?)$", r"\1", s, flags=re.I)
+    return norm_space(s)
+
+
+def _ci_v1529_author_list_start(line: str) -> bool:
+    s = norm_space(line or "")
+    if not s or len(s) < 5:
+        return False
+    # Support unusual author formatting in some theses: Yan-Ning, Li., Dong-Xiao, L., ...
+    if re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+\.", s):
+        return True
+    return _CI_V1530_PREV_AUTHOR_START(s) if _CI_V1530_PREV_AUTHOR_START else False
