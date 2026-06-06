@@ -5719,3 +5719,374 @@ def run_crosscheck_with_autofix(
         }
 
     return result
+
+# ============================================================
+# PDF APA reference-wrap repair + year-variation uncited guard
+# Added 2026-06-06
+# ============================================================
+ENGINE_BUILD = "commercial-2026-06-06-pdf-apa-wrap-uncited-guard-v1.5.20"
+
+
+def _ci_apa_author_marker_count(text: str) -> int:
+    """Count APA-style person author markers in a text segment."""
+    return len(re.findall(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.\s*){1,5}",
+        text or "",
+    ))
+
+
+def _ci_recent_reference_boundary_gap(s: str, pos: int) -> str:
+    """
+    Return text between the nearest credible reference boundary and a proposed
+    embedded APA reference start. The gap must not already contain author
+    markers, otherwise the proposed start is probably a continuation author,
+    not the start of a separate reference.
+    """
+    before = s[:pos]
+    candidates = [0]
+
+    for m in DOI_RE.finditer(before):
+        # DOI boundary is credible only at the end of a previous reference.
+        candidates.append(m.end())
+
+    for m in re.finditer(r"https?://\S+", before, flags=re.I):
+        candidates.append(m.end())
+
+    # Sentence boundary before a new reference. Keep the boundary end.
+    for m in re.finditer(r"[.!?]\s+", before):
+        candidates.append(m.end())
+
+    boundary = max(candidates)
+    return before[boundary:pos]
+
+
+def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
+    """
+    Split merged APA references without splitting multi-author lists.
+
+    The earlier splitter allowed any DOI anywhere to the left to justify a split.
+    In PDFs this created false standalone references when a reference wrapped as:
+       ... DOI Jonauskaite, D., Dael, N., ... &
+       Mohr, C. (2018). Title...
+    It then treated "Mohr, C. (2018)" as a new reference. This version only
+    accepts an embedded split when the gap from the nearest boundary contains no
+    APA author markers, so continuation authors are not split off.
+    """
+    out: List[str] = []
+
+    UPPER = r"A-ZÀ-ÖØ-Þ"
+    NAME_BODY = r"A-Za-zÀ-ÖØ-öø-ÿ'’\-"
+    SURNAME = rf"[{UPPER}][{NAME_BODY}]+"
+    INITIALS = r"(?:[A-Z]\.\s*){1,5}"
+    YEAR_IN_PARENS = r"\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)"
+    PERSON = rf"{SURNAME},\s*{INITIALS}"
+
+    person_start = re.compile(
+        rf"(?=(?:{PERSON}(?:(?:,\s*|,\s*&\s*|\s*&\s*|\s+and\s+){PERSON}){{0,16}}\s*{YEAR_IN_PARENS}))"
+    )
+    person_start_broad = re.compile(
+        rf"(?=(?:{SURNAME},\s*.{{1,280}}?{YEAR_IN_PARENS}))"
+    )
+    org_start = re.compile(
+        r"(?=(?:[A-Z][A-Za-z&/\-]+(?:\s+[A-Z][A-Za-z&/\-]+){1,12}"
+        r"\.\s*\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)))"
+    )
+
+    for ref in merged or []:
+        s = norm_space(ref)
+        if not s:
+            continue
+
+        cuts: List[int] = []
+        for pat in (person_start, person_start_broad, org_start):
+            for m in pat.finditer(s):
+                pos = m.start()
+                if pos <= 0:
+                    continue
+
+                gap = _ci_recent_reference_boundary_gap(s, pos)
+                gap_clean = norm_space(gap)
+
+                # A true embedded reference normally starts immediately after a
+                # DOI/URL/sentence boundary. If the gap already contains a
+                # person-author marker, we are inside a multi-author list.
+                if _ci_apa_author_marker_count(gap_clean) > 0:
+                    continue
+
+                # Reject splits after an author-list connector.
+                if re.search(r"(?:,|&|and|＆)\s*$", s[max(0, pos - 25):pos], flags=re.I):
+                    continue
+
+                # Keep the gap short unless the only material is punctuation/space.
+                gap_letters = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ]", "", gap_clean)
+                if gap_letters and len(gap_letters) > 4:
+                    continue
+
+                cuts.append(pos)
+
+        cuts = sorted(set(cuts))
+        if not cuts:
+            out.append(s)
+            continue
+
+        prev = 0
+        for pos in cuts:
+            part = norm_space(s[prev:pos])
+            if part:
+                out.append(part)
+            prev = pos
+        tail = norm_space(s[prev:])
+        if tail:
+            out.append(tail)
+
+    # Final clean-up: remove fragments that are just continuation authors.
+    return [x for x in out if x and (not re.fullmatch(r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.\s*){1,5}(?:,|&)?", x))]
+
+
+_PREV_RECONCILE_AUTHOR_YEAR_V15120 = reconcile_author_year
+
+
+def _ci_reference_matches_missing_author_different_year(ref_full: str, missing_rows: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    """Detect references that are cited with the same author(s) but a different year."""
+    rr = parse_reference_author_year(ref_full)
+    if not rr:
+        return False, ""
+    try:
+        ref_key_author, ref_key_year = rr.key.split("|", 1)
+    except Exception:
+        return False, ""
+
+    ref_year = _base_year(ref_key_year)
+    ym_r = YEAR_RE.search(ref_full)
+    left_r = ref_full[: ym_r.start()].strip(" ,;()") if ym_r else ref_full
+    ref_names = _surnames_from_author_blob(left_r)
+
+    for row in missing_rows or []:
+        c = row.get("citation_in_text") if isinstance(row, dict) else str(row)
+        parsed = _parse_author_year_from_cite(c or "")
+        if not parsed:
+            continue
+        cite_author, cite_year = parsed
+        cite_year_base = _base_year(cite_year)
+        if cite_year_base == ref_year:
+            continue
+        ym_c = YEAR_RE.search(c or "")
+        left_c = (c[: ym_c.start()] or "").strip(" ,;()") if ym_c else c
+        cite_names = _surnames_from_author_blob(left_c)
+
+        if ref_names and cite_names:
+            overlap = len(set(ref_names[:2]) & set(cite_names[:2]))
+            if overlap >= 1 and (ref_names[0] == cite_names[0] or overlap >= 2):
+                return True, f"Cited with possible year variation: {c}"
+        elif ref_key_author and cite_author and ref_key_author == cite_author:
+            return True, f"Cited with possible year variation: {c}"
+
+    return False, ""
+
+
+def reconcile_author_year(citations: List[str], references: List[RefAY]) -> Tuple[
+    List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[str], int
+]:
+    c2r, r2c, missing_rows, uncited_refs, total = _PREV_RECONCILE_AUTHOR_YEAR_V15120(citations, references)
+
+    if not uncited_refs or not missing_rows:
+        return c2r, r2c, missing_rows, uncited_refs, total
+
+    still_uncited: List[str] = []
+    year_variation_notes: Dict[str, str] = {}
+    for ref_full in uncited_refs:
+        matched, reason = _ci_reference_matches_missing_author_different_year(ref_full, missing_rows)
+        if matched:
+            year_variation_notes[ref_full] = reason
+        else:
+            still_uncited.append(ref_full)
+
+    if year_variation_notes:
+        for row in r2c:
+            ref_full = row.get("reference") if isinstance(row, dict) else ""
+            if ref_full in year_variation_notes:
+                row["possible_year_variation_cited"] = True
+                row["year_variation_note"] = year_variation_notes[ref_full]
+                cited_by = list(row.get("cited_by") or [])
+                cited_by.append(year_variation_notes[ref_full].replace("Cited with possible year variation: ", ""))
+                row["cited_by"] = list(dict.fromkeys(cited_by))[:6]
+
+    return c2r, r2c, missing_rows, still_uncited, total
+
+# ============================================================
+# PDF reference-list tail repair for author-list fragments
+# Added after initial v1.5.20 test: handles converter outputs that already
+# split the continuation line into a separate reference before our embedded
+# splitter sees it.
+# ============================================================
+
+
+def _ci_find_trailing_author_list_fragment(ref: str) -> Tuple[str, str]:
+    """
+    Return (prefix, tail) when a reference contains a complete prior reference
+    followed by a dangling APA author list fragment with no year.
+
+    Example:
+      '... DOI Jonauskaite, D., Dael, N., ... &' ->
+      ('... DOI', 'Jonauskaite, D., Dael, N., ... &')
+    """
+    s = norm_space(ref or "")
+    if not s:
+        return s, ""
+
+    boundary_positions = []
+    for m in DOI_RE.finditer(s):
+        boundary_positions.append(m.end())
+    for m in re.finditer(r"https?://\S+", s, flags=re.I):
+        boundary_positions.append(m.end())
+    for m in re.finditer(r"[.!?]\s+", s):
+        boundary_positions.append(m.end())
+
+    if not boundary_positions:
+        return s, ""
+
+    boundary = max(boundary_positions)
+    after = s[boundary:].strip()
+    if not after or YEAR_RE.search(after):
+        return s, ""
+
+    m = re.search(
+        r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.\s*){1,5}",
+        after,
+    )
+    if not m:
+        return s, ""
+
+    tail = after[m.start():].strip()
+    # Must look like an author-list fragment, not a random sentence.
+    if _ci_apa_author_marker_count(tail) < 1:
+        return s, ""
+    if len(tail) < 6:
+        return s, ""
+
+    prefix = s[:boundary].strip()
+    return prefix, tail
+
+
+def _ci_join_author_tail_with_next(tail: str, nxt: str) -> str:
+    tail = norm_space(tail or "")
+    nxt = norm_space(nxt or "")
+    if not tail:
+        return nxt
+    if not nxt:
+        return tail
+    if tail.endswith("-"):
+        return norm_space(tail[:-1] + "-" + nxt)
+    return norm_space(tail + " " + nxt)
+
+
+def _repair_apa_wrapped_reference_list(refs: List[str]) -> List[str]:
+    """Repair PDF-converter reference lists with dangling author fragments."""
+    src = [norm_space(str(r)) for r in (refs or []) if norm_space(str(r))]
+    out: List[str] = []
+    i = 0
+    while i < len(src):
+        cur = src[i]
+        prefix, tail = _ci_find_trailing_author_list_fragment(cur)
+
+        if tail and i + 1 < len(src):
+            nxt = src[i + 1]
+            # The next line must be a plausible continuation with a year.
+            if _looks_like_new_apa_reference_start(nxt) or YEAR_RE.search(nxt):
+                if prefix and _is_plausible_reference_entry(prefix):
+                    out.append(prefix)
+                combined = _ci_join_author_tail_with_next(tail, nxt)
+                out.append(combined)
+                i += 2
+                continue
+
+        out.append(cur)
+        i += 1
+
+    # One final embedded split handles cases still merged after repair.
+    return _split_embedded_apa_refs(out)
+
+
+_PREV_CLEAN_REFERENCE_LIST_V15120 = _clean_reference_list
+
+
+def _clean_reference_list(refs: List[str], style_hint: str = "apa") -> List[str]:
+    if style_hint == "apa":
+        refs = _repair_apa_wrapped_reference_list(refs)
+    return _PREV_CLEAN_REFERENCE_LIST_V15120(refs, style_hint=style_hint)
+
+# v1.5.21: refine embedded APA splitter to avoid splitting hyphenated surnames
+# such as Vega-Perona and Robles-Galán.
+ENGINE_BUILD = "commercial-2026-06-06-pdf-apa-wrap-uncited-guard-v1.5.21"
+
+
+def _ci_recent_reference_boundary_gap(s: str, pos: int) -> str:
+    before = s[:pos]
+    candidates = [0]
+    for m in DOI_RE.finditer(before):
+        candidates.append(m.end())
+    for m in re.finditer(r"https?://\S+", before, flags=re.I):
+        candidates.append(m.end())
+    for m in re.finditer(r"[.!?]\s+", before):
+        # Do not treat initials in author lists as sentence boundaries.
+        dot_pos = m.start()
+        prev = before[max(0, dot_pos - 3):dot_pos + 1]
+        if re.search(r"\b[A-Z]\.\s*$", prev):
+            continue
+        candidates.append(m.end())
+    boundary = max(candidates)
+    return before[boundary:pos]
+
+
+def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
+    out: List[str] = []
+    UPPER = r"A-ZÀ-ÖØ-Þ"
+    NAME_BODY = r"A-Za-zÀ-ÖØ-öø-ÿ'’\-"
+    SURNAME = rf"[{UPPER}][{NAME_BODY}]+"
+    INITIALS = r"(?:[A-Z]\.\s*){1,5}"
+    YEAR_IN_PARENS = r"\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)"
+    PERSON = rf"{SURNAME},\s*{INITIALS}"
+    person_start = re.compile(
+        rf"(?=(?:{PERSON}(?:(?:,\s*|,\s*&\s*|\s*&\s*|\s+and\s+){PERSON}){{0,16}}\s*{YEAR_IN_PARENS}))"
+    )
+    person_start_broad = re.compile(rf"(?=(?:{SURNAME},\s*.{{1,280}}?{YEAR_IN_PARENS}))")
+    org_start = re.compile(
+        r"(?=(?:[A-Z][A-Za-z&/\-]+(?:\s+[A-Z][A-Za-z&/\-]+){1,12}"
+        r"\.\s*\(\s*(?:1[6-9]\d{2}|20\d{2})[a-z]?\s*\)))"
+    )
+    for ref in merged or []:
+        s = norm_space(ref)
+        if not s:
+            continue
+        cuts: List[int] = []
+        for pat in (person_start, person_start_broad, org_start):
+            for m in pat.finditer(s):
+                pos = m.start()
+                if pos <= 0:
+                    continue
+                if s[pos - 1:pos] in {"-", "–", "—"}:
+                    continue
+                gap = _ci_recent_reference_boundary_gap(s, pos)
+                gap_clean = norm_space(gap)
+                if _ci_apa_author_marker_count(gap_clean) > 0:
+                    continue
+                if re.search(r"(?:,|&|and|＆)\s*$", s[max(0, pos - 25):pos], flags=re.I):
+                    continue
+                gap_letters = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ]", "", gap_clean)
+                if gap_letters and len(gap_letters) > 4:
+                    continue
+                cuts.append(pos)
+        cuts = sorted(set(cuts))
+        if not cuts:
+            out.append(s)
+            continue
+        prev = 0
+        for pos in cuts:
+            part = norm_space(s[prev:pos])
+            if part:
+                out.append(part)
+            prev = pos
+        tail = norm_space(s[prev:])
+        if tail:
+            out.append(tail)
+    return [x for x in out if x and (not re.fullmatch(r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.\s*){1,5}(?:,|&)?", x))]
