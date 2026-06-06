@@ -6756,8 +6756,45 @@ def _ci_v1525_build_refay_from_raw(raw_refs: List[str]) -> List[RefAY]:
 
 _CI_V1525_PREV_RUN_CROSSCHECK = globals().get("run_crosscheck")
 
-def run_crosscheck(file_bytes: bytes, filename: str, style: str = "apa") -> Dict[str, Any]:
-    result = _CI_V1525_PREV_RUN_CROSSCHECK(file_bytes, filename, style)
+def run_crosscheck(
+    file_bytes: bytes,
+    filename: str,
+    style: str = "apa",
+    verify_online: bool = False,
+    verify_mode: str = "all",
+    max_verify: int = 0,
+    throttle_s: float = 0.12,
+    use_crossref: bool = True,
+    use_openalex: bool = True,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Compatibility wrapper around the main run_crosscheck().
+
+    The ScienceDirect PDF repair wrapper previously narrowed the signature to
+    (file_bytes, filename, style). main.py may call run_crosscheck(...,
+    verify_online=..., verify_mode=..., max_verify=..., throttle_s=...,
+    use_crossref=..., use_openalex=...). This wrapper now preserves those
+    arguments and forwards them to the original full implementation.
+    """
+    try:
+        result = _CI_V1525_PREV_RUN_CROSSCHECK(
+            file_bytes=file_bytes,
+            filename=filename,
+            style=style,
+            verify_online=verify_online,
+            verify_mode=verify_mode,
+            max_verify=max_verify,
+            throttle_s=throttle_s,
+            use_crossref=use_crossref,
+            use_openalex=use_openalex,
+            **kwargs,
+        )
+    except TypeError as e:
+        # Backward-safe fallback if an older captured implementation does not
+        # accept one of the newer keyword arguments.
+        if "unexpected keyword argument" not in str(e):
+            raise
+        result = _CI_V1525_PREV_RUN_CROSSCHECK(file_bytes, filename, style)
     try:
         if str(filename or "").lower().endswith(".pdf") and _style_token(style) not in SAFE_SQUARE_NUMERIC_STYLES | SAFE_SUPERSCRIPT_NUMERIC_STYLES | ROUND_NUMERIC_STYLES:
             direct_refs = _ci_v1525_direct_pdf_apa_references(file_bytes)
@@ -6823,7 +6860,7 @@ def run_crosscheck(file_bytes: bytes, filename: str, style: str = "apa") -> Dict
 # wrongly start at the next author line, e.g. Buckner ... & / Richter, A. (2015)
 # or Solmi ... Fusar- / Poli, P. (2021). This version uses look-ahead and
 # continuation guards.
-ENGINE_BUILD = "commercial-2026-06-06-sciencedirect-multiline-reference-start-repair-v1.5.26"
+ENGINE_BUILD = "commercial-2026-06-06-sciencedirect-reference-repair-signature-compatible-v1.5.27"
 
 
 def _ci_v1526_author_list_start(line: str) -> bool:
