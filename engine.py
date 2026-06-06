@@ -6373,3 +6373,155 @@ def parse_reference_author_year(ref: str) -> Optional[RefAY]:
                 return RefAY(reference_full=s_clean, key=f"{acr}|{year}".lower())
 
     return _PREV_PARSE_REFERENCE_AUTHOR_YEAR_V1523(ref)
+
+
+# ============================================================
+# v1.5.24: PERSONAL-COMMUNICATION / FIELDNOTE MONTH-DATE GUARD
+# Fixes false missing citations such as:
+#   WT, March, 2024
+#   GA, March, 2024
+#   SJS, March, 2024
+#   LP, March, 2024
+# These are interviewee/fieldnote/person identifiers with dates, not reference-list
+# citations. They should not be reported as missing references.
+# ============================================================
+ENGINE_BUILD = "commercial-2026-06-06-author-year-personal-communication-month-date-guard-v1.5.24"
+
+_CI_MONTH_NAME_RE = (
+    r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+)
+
+_CI_INITIALS_MONTH_YEAR_RE = re.compile(
+    rf"^\s*[A-Z]{{1,5}}(?:\s*[./]\s*[A-Z]{{1,5}})*\s*,?\s+(?:{_CI_MONTH_NAME_RE})\s*,?\s+(?:19|20)\d{{2}}[a-z]?\b",
+    re.I,
+)
+
+_CI_INITIALS_COMMA_MONTH_YEAR_RE = re.compile(
+    rf"^\s*[A-Z]{{1,5}}(?:\s*[./]\s*[A-Z]{{1,5}})*\s*,\s*(?:{_CI_MONTH_NAME_RE})\s*,\s*(?:19|20)\d{{2}}[a-z]?\b",
+    re.I,
+)
+
+_CI_INTERVIEW_CONTEXT_RE = re.compile(
+    r"\b("
+    r"interview|interviews|interviewee|participant|respondent|informant|focus\s+group|"
+    r"field\s*note|fieldnote|personal\s+communication|oral\s+communication|"
+    r"conversation|transcript|quote|quoted|said|remarked|noted"
+    r")\b",
+    re.I,
+)
+
+
+def _ci_is_initials_month_year_token(cite: str) -> bool:
+    s = norm_space(cite or "")
+    if not s:
+        return False
+    return bool(_CI_INITIALS_COMMA_MONTH_YEAR_RE.search(s) or _CI_INITIALS_MONTH_YEAR_RE.search(s))
+
+
+def _ci_is_personal_comm_month_citation(cite: str, text: str = "", start: int = -1, end: int = -1) -> bool:
+    """
+    Detect interview/fieldnote/personal-communication labels that look like APA citations.
+
+    Safe boundary:
+    - Only suppresses short all-capital initials + Month + Year.
+    - Does not suppress institutional citations such as HCP, 2023 because there is no month.
+    - Does not suppress normal author-year citations such as Fraser, 2009.
+    """
+    s = norm_space(cite or "")
+    if not _ci_is_initials_month_year_token(s):
+        return False
+
+    # If there is surrounding context, require interview/fieldnote wording unless
+    # the candidate is only initials + month + year. This keeps the guard narrow.
+    initials_only = bool(re.match(r"^\s*[A-Z]{1,5}\s*,", s))
+    if initials_only:
+        return True
+
+    if text and start >= 0:
+        window = text[max(0, start - 180): min(len(text), max(end, start) + 180)]
+        return bool(_CI_INTERVIEW_CONTEXT_RE.search(window))
+
+    return True
+
+
+_PREV_CITATION_CONTEXT_IS_NON_CITATION_V1524 = _citation_context_is_non_citation
+
+def _citation_context_is_non_citation(text: str, start: int, end: int, candidate: str = "") -> bool:
+    if _ci_is_personal_comm_month_citation(candidate, text, start, end):
+        return True
+    return _PREV_CITATION_CONTEXT_IS_NON_CITATION_V1524(text, start, end, candidate)
+
+
+_PREV_SPLIT_AUTHOR_YEAR_CHUNK_V1524 = _split_author_year_chunk
+
+def _split_author_year_chunk(chunk: str) -> List[str]:
+    s = norm_space(chunk or "")
+    if not s:
+        return []
+    if _ci_is_initials_month_year_token(s):
+        return []
+    return _PREV_SPLIT_AUTHOR_YEAR_CHUNK_V1524(s)
+
+
+_PREV_PARSE_AUTHOR_YEAR_FROM_CITE_V1524 = _parse_author_year_from_cite
+
+def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
+    s = norm_space(cite or "")
+    if not s:
+        return None
+
+    if _ci_is_initials_month_year_token(s):
+        return None
+
+    parsed = _PREV_PARSE_AUTHOR_YEAR_FROM_CITE_V1524(s)
+    if not parsed:
+        return None
+
+    auth, year = parsed
+
+    # Final safety: if the extracted author is all caps initials and the raw
+    # citation contains a month near the year, reject it as a fieldnote/interview code.
+    auth_raw = str(auth or "").strip()
+    if re.fullmatch(r"[A-Z]{1,5}", auth_raw, flags=re.I) and re.search(rf"\b(?:{_CI_MONTH_NAME_RE})\b", s, flags=re.I):
+        return None
+
+    return parsed
+
+
+_PREV_EXTRACT_AUTHOR_YEAR_CITATIONS_V1524 = extract_author_year_citations
+
+def extract_author_year_citations(text: str) -> List[str]:
+    found = _PREV_EXTRACT_AUTHOR_YEAR_CITATIONS_V1524(text)
+    out: List[str] = []
+    for c in found:
+        s = norm_space(c)
+        if not s:
+            continue
+        if _ci_is_initials_month_year_token(s):
+            continue
+        parsed = _parse_author_year_from_cite(s)
+        if not parsed:
+            continue
+        out.append(s)
+    return out
+
+
+_PREV_RECONCILE_AUTHOR_YEAR_V1524 = reconcile_author_year
+
+def reconcile_author_year(citations: List[str], refs: List[RefAY]):
+    c2r, r2c, missing_rows, uncited_refs, total_intext_count = _PREV_RECONCILE_AUTHOR_YEAR_V1524(citations, refs)
+
+    filtered_missing = []
+    removed = 0
+    for row in missing_rows or []:
+        cite = row.get("citation_in_text") or row.get("citation") or row.get("text") or ""
+        if _ci_is_initials_month_year_token(str(cite)):
+            removed += 1
+            continue
+        filtered_missing.append(row)
+
+    if removed:
+        total_intext_count = max(0, int(total_intext_count or 0) - removed)
+
+    return c2r, r2c, filtered_missing, uncited_refs, total_intext_count
