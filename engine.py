@@ -7470,3 +7470,218 @@ def _ci_v1529_author_list_start(line: str) -> bool:
     if re.match(r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+\.", s):
         return True
     return _CI_V1530_PREV_AUTHOR_START(s) if _CI_V1530_PREV_AUTHOR_START else False
+
+
+# ============================================================
+# v1.5.31: DOCX INSTITUTIONAL ALIAS + ETHICS-CODE GUARD
+# Fixes false missing rows observed in Newman Amaning PhD DOCX:
+# - International Federation of Accountants [IFAC], 2022
+# - World Bank, 2022 / Bank, 2022
+# - IRB No.; UCC-531/2024
+# - Kock, 2015
+# ============================================================
+ENGINE_BUILD = "commercial-2026-06-06-docx-institutional-alias-ethics-code-guard-v1.5.31"
+
+_CI_V1531_ETHICS_CODE_RE = re.compile(
+    r"\b(?:IRB|ERC|CHRPE|GHS-ERC|UCC)\b\s*(?:No\.?|Number|Ref\.?)?\s*[:;]?\s*[A-Z]{2,10}[-/]\d{2,6}/\d{4}\b|\bUCC-\d{2,6}/\d{4}\b",
+    re.I,
+)
+
+
+def _ci_v1531_is_ethics_or_protocol_code(cite: str) -> bool:
+    s = norm_space(cite or "")
+    if not s:
+        return False
+    if _CI_V1531_ETHICS_CODE_RE.search(s):
+        return True
+    if re.search(r"\bIRB\s+No\.?\b", s, re.I):
+        return True
+    return False
+
+
+def _ci_v1531_citation_aliases(author_key: str, citation_text: str = "") -> set:
+    k = strip_punct(author_key or "")
+    raw = norm_space(citation_text or "")
+    folded = strip_punct(raw)
+    aliases = {k} if k else set()
+
+    # Institutional aliases
+    if k in {"ifac"} or "international federation of accountants" in folded:
+        aliases.update({"ifac", "international federation of accountants", "federation of accountants"})
+    if k in {"wb", "bank", "worldbank", "world bank"} or "world bank" in folded:
+        aliases.update({"wb", "worldbank", "world bank", "bank"})
+    if k in {"un", "united nations"} or "united nations" in folded:
+        aliases.update({"un", "united nations"})
+    if k in {"wef"} or "world economic forum" in folded:
+        aliases.update({"wef", "world economic forum"})
+
+    return {a for a in aliases if a}
+
+
+def _ci_v1531_reference_contains_alias_and_year(ref_text: str, aliases: set, year: str) -> bool:
+    s = norm_space(ref_text or "")
+    if not s or not year:
+        return False
+    folded = strip_punct(s)
+    y = _base_year(str(year))
+
+    if not re.search(rf"\b{re.escape(y)}\b", s):
+        return False
+
+    for a in aliases:
+        ak = strip_punct(a)
+        if not ak:
+            continue
+        if ak in {"wb", "ifac", "wef", "un"}:
+            # Acronyms must appear as standalone uppercase-ish tokens in the original text.
+            if re.search(rf"\b{re.escape(ak)}\b", folded, re.I):
+                return True
+        elif ak in folded:
+            return True
+
+    return False
+
+
+def _ci_v1531_missing_is_actually_in_raw_references(cite: str, refs: List[RefAY]) -> bool:
+    if _ci_v1531_is_ethics_or_protocol_code(cite):
+        return True
+
+    parsed = _parse_author_year_from_cite(cite)
+    if not parsed:
+        return False
+
+    author_key, year = parsed
+    aliases = _ci_v1531_citation_aliases(author_key, cite)
+
+    # Bank, 2022 is usually a chopped version of World Bank, 2022.
+    if strip_punct(author_key) == "bank":
+        aliases.update({"world bank", "worldbank", "wb"})
+
+    for r in refs or []:
+        full = getattr(r, "reference_full", "") or str(r)
+        if _ci_v1531_reference_contains_alias_and_year(full, aliases, year):
+            return True
+
+    return False
+
+
+_CI_V1531_PREV_PARSE_REF_AY = parse_reference_author_year
+
+def parse_reference_author_year(ref: str) -> Optional[RefAY]:
+    s = norm_space(ref or "")
+    if not s:
+        return None
+
+    # Repair standard APA entries that earlier wrappers missed, e.g.
+    # Kock, N. (2015). Common method bias ...
+    m = re.match(
+        r"^\s*([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)\s*,\s*(?:[A-Z]\.\s*){1,6}\(?\s*((?:19|20)\d{2}[a-z]?)\s*\)?",
+        s,
+    )
+    if m:
+        key = strip_punct(m.group(1))
+        y = _base_year(m.group(2))
+        if key and not _is_non_author_key(key):
+            return RefAY(reference_full=s, key=f"{key}|{y}")
+
+    # Institutional references embedded after a previous reference because of DOCX/PDF wrapping.
+    y = _ci_v1529_reference_year(s) if "_ci_v1529_reference_year" in globals() else None
+    if y:
+        folded = strip_punct(s)
+        if "international federation of accountants" in folded or re.search(r"\bIFAC\b", s):
+            return RefAY(reference_full=s, key=f"ifac|{y}")
+        if "world bank" in folded:
+            return RefAY(reference_full=s, key=f"wb|{y}")
+
+    return _CI_V1531_PREV_PARSE_REF_AY(ref)
+
+
+_CI_V1531_PREV_PARSE_AY_CITE = _parse_author_year_from_cite
+
+def _parse_author_year_from_cite(cite: str) -> Optional[Tuple[str, str]]:
+    s = norm_space(cite or "")
+    if not s:
+        return None
+
+    if _ci_v1531_is_ethics_or_protocol_code(s):
+        return None
+
+    m = re.match(r"^(International\s+Federation\s+of\s+Accountants\s*(?:\[\s*IFAC\s*\])?|IFAC)\s*,\s*((?:19|20)\d{2}[a-z]?)$", s, re.I)
+    if m:
+        return ("ifac", _base_year(m.group(2)))
+
+    m = re.match(r"^(World\s+Bank)\s*,\s*((?:19|20)\d{2}[a-z]?)$", s, re.I)
+    if m:
+        return ("wb", _base_year(m.group(2)))
+
+    parsed = _CI_V1531_PREV_PARSE_AY_CITE(s)
+    if not parsed:
+        return None
+
+    # Suppress chopped "Bank, 2022" if it came from "World Bank, 2022".
+    # It will also be removed in reconciliation if still captured.
+    return parsed
+
+
+_CI_V1531_PREV_CITATION_CONTEXT_IS_NON_CITATION = _citation_context_is_non_citation
+
+def _citation_context_is_non_citation(text: str, start: int, end: int, candidate: str = "") -> bool:
+    if _ci_v1531_is_ethics_or_protocol_code(candidate):
+        return True
+
+    if text and start >= 0:
+        window = text[max(0, start - 80): min(len(text), end + 80)]
+        if _ci_v1531_is_ethics_or_protocol_code(window):
+            return True
+
+    return _CI_V1531_PREV_CITATION_CONTEXT_IS_NON_CITATION(text, start, end, candidate)
+
+
+_CI_V1531_PREV_EXTRACT_AY_CITES = extract_author_year_citations
+
+def extract_author_year_citations(text: str) -> List[str]:
+    found = _CI_V1531_PREV_EXTRACT_AY_CITES(text)
+    out: List[str] = []
+    seen = set()
+    for c in found or []:
+        s = norm_space(c)
+        if not s:
+            continue
+        if _ci_v1531_is_ethics_or_protocol_code(s):
+            continue
+        # Drop chopped Bank, 2022 when World Bank, 2022 is already extracted or nearby.
+        if re.fullmatch(r"Bank,\s*(?:19|20)\d{2}[a-z]?", s, flags=re.I):
+            if any(re.fullmatch(r"World\s+Bank,\s*" + re.escape(_base_year(s.split(",")[-1].strip())) + r"[a-z]?", x, flags=re.I) for x in found):
+                continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+_CI_V1531_PREV_RECONCILE_AY = reconcile_author_year
+
+def reconcile_author_year(citations: List[str], refs: List[RefAY]):
+    c2r, r2c, missing_rows, uncited_refs, total_intext_count = _CI_V1531_PREV_RECONCILE_AY(citations, refs)
+
+    filtered_missing = []
+    removed = 0
+    for row in missing_rows or []:
+        cite = row.get("citation_in_text") or row.get("citation") or row.get("text") or ""
+        if _ci_v1531_is_ethics_or_protocol_code(str(cite)):
+            removed += int(row.get("count_in_text") or row.get("count") or 1)
+            continue
+        if _ci_v1531_missing_is_actually_in_raw_references(str(cite), refs):
+            removed += int(row.get("count_in_text") or row.get("count") or 1)
+            continue
+        # Bank, 2022 is a chopped duplicate of World Bank, 2022 and should not be separately missing.
+        parsed = _parse_author_year_from_cite(str(cite))
+        if parsed and parsed[0] == "bank" and _ci_v1531_missing_is_actually_in_raw_references("World Bank, " + parsed[1], refs):
+            removed += int(row.get("count_in_text") or row.get("count") or 1)
+            continue
+        filtered_missing.append(row)
+
+    if removed:
+        total_intext_count = max(0, int(total_intext_count or 0) - removed)
+
+    return c2r, r2c, filtered_missing, uncited_refs, total_intext_count
