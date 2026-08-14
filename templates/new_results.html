@@ -1967,7 +1967,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-developer-access-levels-v1.8.3";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-approved-source-redlines-v1.8.6";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -1999,6 +1999,7 @@ document.addEventListener("DOMContentLoaded", function () {
     let enrichmentPollCount = 0;
     let resultPollTimer = null;
     let resultPollCount = 0;
+    let activeResultTab = "correctionPane";
     const MAX_ENRICHMENT_POLLS = 80;
     // ================================================================
 
@@ -2095,6 +2096,12 @@ document.addEventListener("DOMContentLoaded", function () {
         return data?.access?.paid === true;
     }
 
+    function shouldHideAccessPanel(data) {
+        return data?.access?.developer_unlocked === true ||
+            data?.access?.global_open_access === true ||
+            data?.global_access_control?.mode === "open_access";
+    }
+
     function getAccessPackage(data) {
         return data?.access?.package || {};
     }
@@ -2154,7 +2161,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const panel = $("paywallPanel");
         if (!panel) return;
 
-        if (DEMO_HIDE_PAYMENT_DETAILS) {
+        if (DEMO_HIDE_PAYMENT_DETAILS || shouldHideAccessPanel(data)) {
             panel.style.display = "none";
             panel.innerHTML = "";
             setPaidOnlyButtons(true);
@@ -3368,10 +3375,13 @@ document.addEventListener("DOMContentLoaded", function () {
                     <p><strong>Evidence:</strong> ${esc(item.evidence || "")}</p>
                     ${item.supporting_metadata && Object.keys(item.supporting_metadata).length ? `<details><summary>Supporting source or metadata</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(item.supporting_metadata, null, 2))}</pre></details>` : ""}
                     ${item.evidence_link ? `<p><a href="${esc(item.evidence_link)}" target="_blank" rel="noopener">Open supporting evidence</a></p>` : ""}
+                    ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>Candidate scholarly sources, open and verify before approval:</strong>${item.source_candidates.map((source, sourceIndex) => `<label style="display:block;margin:8px 0;padding:8px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · relevance ${esc(source.relevance ?? "review")} ${source.url ? `<a href="${esc(source.url)}" target="_blank" rel="noopener">Open source</a>` : ""}</label>`).join("")}</div>` : ""}
                     <p><strong>Confidence:</strong> ${esc(item.confidence ?? "Review required")}</p>
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     <div class="privacy-actions correction-decisions">
-                        <button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted">Accept</button>
+                        ${["citation_needed","missing_reference"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">Find scholarly sources</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}">Approve selected source</button>` : ""}
+                        ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
+                        ${!["citation_needed","missing_reference","uncited_reference"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted">Accept</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
                         ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
@@ -3380,6 +3390,10 @@ document.addEventListener("DOMContentLoaded", function () {
                 </div>`).join("") : `<div class="empty">No correction-plan items are available.</div>`;
             correctionBox.querySelectorAll(".correction-decision").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, btn.dataset.decision, "")));
             correctionBox.querySelectorAll(".correction-feedback").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, "rejected", "User marked this as an incorrect finding.")));
+            correctionBox.querySelectorAll(".find-correction-sources").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id)));
+            correctionBox.querySelectorAll(".approve-correction-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, btn.dataset.category)));
+            correctionBox.querySelectorAll(".delete-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "delete_reference")));
+            correctionBox.querySelectorAll(".cite-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "cite_reference")));
         }
 
         const voice = data.academic_voice_review || {};
@@ -3422,15 +3436,59 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    async function saveCorrectionDecision(itemId, decision, note) {
+    async function saveCorrectionDecision(itemId, decision, note, extra = {}) {
         const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/decision`, {
-            method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, decision, note})
+            method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, decision, note, ...extra})
         });
         const js = await response.json();
         if (!response.ok) { setStatus(js.detail || "Could not save correction decision.", "bad"); return; }
         latestResults.correction_plan = js.correction_plan;
         renderStudentGuidance(latestResults);
         setStatus(`Correction decision saved: ${decision}.`, "good");
+    }
+
+    async function findCorrectionSources(itemId) {
+        setStatus("Searching Crossref and OpenAlex for relevant scholarly sources...", "info");
+        const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/sources/${encodeURIComponent(itemId)}`, {method:"POST"});
+        const js = await response.json();
+        if (!response.ok) { setStatus(js.detail || "Source search failed.", "bad"); return; }
+        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+        if (item) item.source_candidates = js.candidates || [];
+        renderStudentGuidance(latestResults);
+        setStatus((js.candidates || []).length ? "Candidate sources found. Open, verify and select one before approval." : "No sufficiently relevant source was found. Revise or qualify the claim instead of forcing a citation.", (js.candidates || []).length ? "good" : "warn");
+    }
+
+    function approveCorrectionSource(itemId, category) {
+        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+        const selected = document.querySelector(`input[name="source-${itemId}"]:checked`);
+        if (!item || !selected) { setStatus("Select and open a candidate source before approval.", "warn"); return; }
+        const source = item.source_candidates?.[Number(selected.value)];
+        if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
+        if (!confirm("Confirm that you opened this source and it directly supports the claim or citation.")) return;
+        const action = category === "missing_reference" ? "add_reference" : "insert_citation";
+        const proposed = category === "missing_reference" ? source.formatted_reference : source.citation_text;
+        saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, original_text:item.evidence});
+    }
+
+    function citationFromReference(reference) {
+        const year = String(reference || "").match(/\b(19|20)\d{2}[a-z]?\b/i)?.[0] || "n.d.";
+        const author = String(reference || "").trim().split(/[,(]/)[0].trim().split(/\s+/).pop() || "Source";
+        return `(${author}, ${year})`;
+    }
+
+    function approveUncitedReferenceAction(itemId, action) {
+        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+        if (!item) return;
+        if (action === "delete_reference") {
+            if (!confirm("Delete this unused reference with Track Changes? Confirm only after deciding it is not applicable anywhere in the manuscript.")) return;
+            saveCorrectionDecision(itemId, "accepted", "User confirmed deletion of an unused reference.", {action, original_text:item.evidence});
+            return;
+        }
+        const targetClaim = prompt("Paste the exact sentence or claim in the manuscript that this reference supports. CiteIntegrity will insert the citation after that text with Track Changes.");
+        if (!targetClaim?.trim()) return;
+        const citationText = citationFromReference(item.evidence);
+        if (!confirm(`Insert ${citationText} after the selected claim with Track Changes?`)) return;
+        saveCorrectionDecision(itemId, "accepted", "User confirmed that the reference applies to the selected claim.", {action, original_text:targetClaim.trim(), proposed_replacement:citationText});
     }
 
     function fixNextIssue() {
@@ -3498,9 +3556,34 @@ document.addEventListener("DOMContentLoaded", function () {
         if ($("btnDeleteNow")) $("btnDeleteNow").disabled = true;
     }
 
+    function mergeResultPreservingCorrections(previous, incoming) {
+        if (!previous || !incoming) return incoming || previous;
+        const merged = {...previous, ...incoming};
+        ["correction_plan", "academic_voice_review", "citation_improvement_coach", "autofix"].forEach(key => {
+            const value = incoming[key];
+            const hasContent = value && typeof value === "object" && (
+                (Array.isArray(value) && value.length) ||
+                (!Array.isArray(value) && Object.keys(value).length)
+            );
+            if (!hasContent && previous[key]) merged[key] = previous[key];
+        });
+        return merged;
+    }
+
+    function restoreActiveResultTab() {
+        const targetButton = document.querySelector(`.tab-btn[data-tab="${activeResultTab}"]`);
+        const targetPane = $(activeResultTab);
+        if (!targetButton || !targetPane) return;
+        document.querySelectorAll(".tab-btn").forEach(button => button.classList.remove("active"));
+        document.querySelectorAll(".tab-pane").forEach(pane => pane.classList.remove("active"));
+        targetButton.classList.add("active");
+        targetPane.classList.add("active");
+    }
+
     function renderAll(rawData) {
         if (!rawData) return;
-        const data = hydrateFinalDefaults(normalizeData(rawData));
+        const preserved = mergeResultPreservingCorrections(latestResults, normalizeData(rawData));
+        const data = hydrateFinalDefaults(preserved);
         data.job_id = data.job_id || JOB_ID;
         latestResults = data;
         window.latestResults = data;
@@ -3523,6 +3606,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderStudentGuidance(data);
         updateCounts(data);
         maybeStartEnrichmentPolling(data);
+        restoreActiveResultTab();
     }
 
     function renderACII(data) {
@@ -4336,9 +4420,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 const hydrated = hydrateFinalDefaults(result);
                 const rows = hydrated.online_verification.rows || [];
-                latestResults = hydrated;
-                window.latestResults = hydrated;
-
                 if (isFinalReady(hydrated)) {
                     renderAll(hydrated);
                     showProgress(100, `Verification complete. ${rows.length} references verified.`);
@@ -4487,9 +4568,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
                 if (bestResult) {
                     const hydrated = hydrateFinalDefaults(bestResult);
-                    latestResults = hydrated;
-                    window.latestResults = hydrated;
-
                     const rows = hydrated.online_verification?.rows || [];
                     const claimRows = hydrated.claim_support || [];
 
@@ -4633,8 +4711,6 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (!freshResult) return;
 
                 const hydrated = hydrateFinalDefaults(freshResult);
-                latestResults = hydrated;
-                window.latestResults = hydrated;
 
                 const enrichment = hydrated.enrichment || {};
                 const freshState = String(enrichment.state || "").toLowerCase();
@@ -4936,6 +5012,7 @@ ${claimTable}
         document.querySelectorAll(".tab-btn").forEach(btn => {
             btn.addEventListener("click", () => {
                 const target = btn.dataset.tab;
+                activeResultTab = target || "correctionPane";
                 document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
                 document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
                 btn.classList.add("active");
