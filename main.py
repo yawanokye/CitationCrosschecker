@@ -4,6 +4,7 @@
 import io
 import asyncio
 import base64
+import contextvars
 import hashlib
 import hmac
 import os
@@ -727,35 +728,44 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.2").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.3").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
+DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
+DEVELOPER_ACCESS_LEVEL = contextvars.ContextVar("developer_access_level", default="")
 DEVELOPER_SESSION_TTL_SECONDS = max(900, int(os.environ.get("DEVELOPER_SESSION_TTL_SECONDS", "43200")))
 DEVELOPER_SESSION_SECRET = os.environ.get("DEVELOPER_SESSION_SECRET", "").strip() or hashlib.sha256(
     f"{PASSWORD}:citeintegrity-developer-session".encode("utf-8")
 ).hexdigest()
 
 
-def create_developer_session_token() -> str:
+def create_developer_session_token(access_level: str = "full_access") -> str:
+    access_level = access_level if access_level in DEVELOPER_ACCESS_LEVELS else "full_access"
     issued_at = str(int(time.time()))
-    payload = f"{issued_at}:{USERNAME}"
+    payload = f"{issued_at}:{USERNAME}:{access_level}"
     signature = hmac.new(DEVELOPER_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{issued_at}.{signature}"
+    return f"{issued_at}.{access_level}.{signature}"
+
+
+def developer_session_access_level(request: Request) -> str:
+    token = request.cookies.get(DEVELOPER_SESSION_COOKIE, "")
+    try:
+        issued_at_text, access_level, supplied_signature = token.split(".", 2)
+        issued_at = int(issued_at_text)
+    except (TypeError, ValueError):
+        return ""
+    if access_level not in DEVELOPER_ACCESS_LEVELS:
+        return ""
+    age = int(time.time()) - issued_at
+    if age < 0 or age > DEVELOPER_SESSION_TTL_SECONDS:
+        return ""
+    payload = f"{issued_at}:{USERNAME}:{access_level}"
+    expected_signature = hmac.new(DEVELOPER_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return access_level if secrets.compare_digest(supplied_signature, expected_signature) else ""
 
 
 def developer_session_is_authorized(request: Request) -> bool:
-    token = request.cookies.get(DEVELOPER_SESSION_COOKIE, "")
-    try:
-        issued_at_text, supplied_signature = token.split(".", 1)
-        issued_at = int(issued_at_text)
-    except (TypeError, ValueError):
-        return False
-    age = int(time.time()) - issued_at
-    if age < 0 or age > DEVELOPER_SESSION_TTL_SECONDS:
-        return False
-    payload = f"{issued_at}:{USERNAME}"
-    expected_signature = hmac.new(DEVELOPER_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return secrets.compare_digest(supplied_signature, expected_signature)
+    return bool(developer_session_access_level(request))
 
 
 # ===============================
@@ -989,10 +999,16 @@ async def force_single_domain(request: Request, call_next):
 async def maintenance_gate(request: Request, call_next):
     """Block public use during upgrades without restricting authenticated developers."""
     path = request.url.path
-    if path == "/health" or path.startswith("/developer/access") or path.startswith("/api/developer/access"):
+    if path == "/health" or path.startswith("/developer/") or path.startswith("/api/developer/access"):
         return await call_next(request)
-    if developer_request_is_authorized(request) or developer_session_is_authorized(request):
-        return await call_next(request)
+    basic_authorized = developer_request_is_authorized(request)
+    session_level = developer_session_access_level(request)
+    if basic_authorized or session_level:
+        context_token = DEVELOPER_ACCESS_LEVEL.set(session_level or "full_access")
+        try:
+            return await call_next(request)
+        finally:
+            DEVELOPER_ACCESS_LEVEL.reset(context_token)
 
     state = get_access_mode(DATABASE_URL, redis_conn)
     if state.get("mode") != "maintenance":
@@ -3730,7 +3746,7 @@ async def clear_large_worker_autostart_lock_endpoint(_auth: Any = Depends(authen
 
 
 @app.get("/developer/access", response_class=HTMLResponse)
-async def developer_access_page(_auth: Any = Depends(authenticate)):
+async def developer_access_page(request: Request, _auth: Any = Depends(authenticate)):
     state = get_access_mode(DATABASE_URL, redis_conn)
     mode = state.get("mode", "payment_required")
     expiry_text = html.escape(str(state.get("expires_at") or "Not applicable"))
@@ -3743,7 +3759,7 @@ async def developer_access_page(_auth: Any = Depends(authenticate)):
 <style>body{{font-family:Arial,sans-serif;background:#f4f7f6;color:#172033;margin:0}}main{{max-width:760px;margin:50px auto;background:white;padding:32px;border-radius:16px;box-shadow:0 8px 30px #0001}}h1{{margin-top:0}}label{{display:block;border:1px solid #dbe4e0;padding:18px;border-radius:10px;margin:12px 0}}button,.button{{display:inline-block;background:#0f7a4f;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer;text-decoration:none}}.button.secondary{{background:#172033}}.testing{{background:#edf8f2;border:1px solid #b9dfca;padding:18px;border-radius:12px;margin:18px 0}}.warning{{background:#fff7ed;border-left:4px solid #f59e0b;padding:12px}}code{{background:#eef2f1;padding:2px 5px}}</style></head><body><main>
 <h1>Developer Access Control</h1><p>Current mode: <strong id="currentMode">{html.escape(mode.replace('_',' ').title())}</strong><br>Open-access expiry: <strong id="expiryTime">{expiry_text}</strong><br>Maintenance check-back time: <strong id="maintenanceCheck">{maintenance_check_text}</strong></p>
 <p><strong>Deployment under test:</strong> release {html.escape(RELEASE_VERSION)}, slot {html.escape(RELEASE_SLOT)}. Confirm this identity before promoting a preview deployment.</p>
-<div class="testing"><strong>Developer full testing access is active in this browser.</strong><p>Open the normal CiteIntegrity interface to test uploads, analysis, correction packs, downloads and every paid function while public users remain blocked.</p><a class="button" href="/?developer_testing=1">Open Full Developer Testing</a> <a class="button secondary" href="/developer/logout">End Developer Session</a></div>
+<div class="testing"><strong>Choose the developer testing level for this browser.</strong><p><strong>Full Access</strong> opens the whole product testing experience. <strong>Full Review Unlocked</strong> opens paid manuscript review outputs without opening access to public users.</p><a class="button" href="/developer/testing?level=full_access">Open Full Access</a> <a class="button" href="/developer/testing?level=full_review">Open Full Review Unlocked</a> <a class="button secondary" href="/developer/logout">End Developer Session</a></div>
 <form id="accessForm">
 <label><input type="radio" name="mode" value="payment_required" {checked_payment}> <strong>Payment-controlled access</strong><br>Free preview is limited. Full Review requires a successful payment or valid entitlement.</label>
 <label><input type="radio" name="mode" value="open_access" {checked_open}> <strong>Temporarily open Full Review for all users</strong><br>All completed analyses receive Full Review access without payment until the selected period expires.</label>
@@ -3762,9 +3778,16 @@ document.getElementById('accessForm').addEventListener('submit', async (event) =
  if(response.ok) {{ document.getElementById('currentMode').textContent=data.mode.replaceAll('_',' '); document.getElementById('expiryTime').textContent=data.expires_at||'Not applicable'; document.getElementById('maintenanceCheck').textContent=data.maintenance_check_at||'Not applicable'; }}
 }});
 </script></main></body></html>""")
+    return response
+
+
+@app.get("/developer/testing")
+async def developer_testing(level: str = "full_access", _auth: Any = Depends(authenticate)):
+    level = level if level in DEVELOPER_ACCESS_LEVELS else "full_access"
+    response = RedirectResponse(url=f"/?developer_testing={level}", status_code=303)
     response.set_cookie(
         DEVELOPER_SESSION_COOKIE,
-        create_developer_session_token(),
+        create_developer_session_token(level),
         max_age=DEVELOPER_SESSION_TTL_SECONDS,
         httponly=True,
         secure=True,
@@ -5238,6 +5261,34 @@ def _demo_build_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[st
 # RESULT CHECK ENDPOINT
 # ============================================================
 
+def _apply_developer_testing_access(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Unlock paid-style outputs only for the current authenticated developer request."""
+    access_level = DEVELOPER_ACCESS_LEVEL.get()
+    if access_level not in DEVELOPER_ACCESS_LEVELS or not isinstance(result, dict):
+        return result
+    result = _demo_prepare_full_review_result("", result, persist=False)
+    level_name = "Full Access" if access_level == "full_access" else "Full Review Unlocked"
+    result["access"] = {
+        "paid": True,
+        "developer_unlocked": True,
+        "developer_access_level": access_level,
+        "source": "developer_session",
+        "message": f"Developer testing: {level_name}.",
+        "package": {
+            "name": f"Developer Testing - {level_name}",
+            "document_tier_name": level_name,
+            "tier_key": f"developer_{access_level}",
+            "is_paid": True,
+            "analysis_runs": None,
+            "validity_days": None,
+        },
+    }
+    result["payment_required"] = False
+    result["locked"] = False
+    result["developer_full_access"] = access_level == "full_access"
+    return result
+
+
 def _prepare_student_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """Attach explainable, lightweight student guidance to a completed result."""
     result = result or {}
@@ -5258,6 +5309,7 @@ def _prepare_student_result(result: Dict[str, Any]) -> Dict[str, Any]:
     if access_control.get("mode") == "open_access":
         result["access"] = open_access_payload()
         result["payment_required"] = False
+    result = _apply_developer_testing_access(result)
     return attach_privacy_status(result)
 
 
