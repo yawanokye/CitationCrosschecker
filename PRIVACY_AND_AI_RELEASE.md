@@ -90,3 +90,35 @@ Review Unlocked` opens paid manuscript review results, correction outputs and
 downloads without changing public payment access. Both work across the full
 site during maintenance, expire after 12 hours by default and can be ended
 immediately from the developer page.
+
+The results interface suppresses all Free Preview, Full Review locked, Payment
+required and payment-unlock banners during either developer testing level and
+during temporary global open access. Ordinary unpaid public sessions continue
+to see the commercial access panel.
+
+Verification refreshes now merge new reference evidence into the current
+dashboard without discarding the correction plan, autofix suggestions or the
+selected results tab. Academic-voice citation heuristics recognise broader
+author-year formats, inspect citation coverage at paragraph level and exclude
+likely present-study results. These low-confidence writing signals stay in the
+Academic Voice review and are no longer duplicated as critical correction-plan
+items.
+
+## Approval-driven tracked corrections
+
+Citation-needed and missing-reference fixes can search Crossref and OpenAlex
+for context-ranked candidates. Each candidate includes a direct evidence link,
+metadata, relevance details, an author-year citation and a formatted reference.
+The user must open, verify, select and approve a candidate before CiteIntegrity
+may insert it as a tracked change. Missing references are classified as fixes
+and approved full references are added through Track Changes.
+
+Uncited references offer two explicit actions. The user may identify the exact
+claim where the reference applies and approve a tracked citation insertion, or
+confirm that the unused reference should be deleted with Track Changes. All
+decisions, selected sources and operations are retained in the correction plan.
+No source, claim change or deletion is applied silently.
+
+AI remains optional. `/api/ai/status` and the developer console report whether
+`OPENAI_API_KEY` is configured. The key must be stored as a secret server-side
+environment variable and is used only for selected-passage academic rewriting.

@@ -60,12 +60,20 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     manuscript_text = _main_text(result)
     saved_decisions = result.get("correction_decisions") or {}
+    saved_candidates = result.get("correction_source_candidates") or {}
 
     def add(priority: str, category: str, title: str, rows: List[Any], action: str, why: str, confidence: str = "high", limit: int = 200):
         for i, row in enumerate(rows[:limit]):
             item_id = f"{category}-{i + 1}"
             evidence = _text(row)[:900]
             decision = saved_decisions.get(item_id) or {}
+            candidates = saved_candidates.get(item_id) or (row.get("suggestions") if isinstance(row, dict) else []) or (row.get("suggested_sources") if isinstance(row, dict) else []) or []
+            proposed = decision.get("proposed_replacement") or ((row.get("proposed_replacement") or row.get("suggested_reference") or row.get("formatted_reference") or "") if isinstance(row, dict) else "")
+            available_actions = {
+                "missing_reference": ["find_source", "add_reference"],
+                "citation_needed": ["find_source", "insert_citation"],
+                "uncited_reference": ["cite_reference", "delete_reference"],
+            }.get(category, ["accept", "reject", "ignore"])
             items.append({
                 "id": item_id,
                 "priority": priority,
@@ -80,7 +88,13 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "supporting_metadata": _metadata(row),
                 "confidence": (row.get("confidence") or row.get("score") or confidence) if isinstance(row, dict) else confidence,
                 "evidence_link": (row.get("url") or row.get("evidence_url") or row.get("matched_url") or "") if isinstance(row, dict) else "",
-                "proposed_replacement": (row.get("proposed_replacement") or row.get("suggested_reference") or row.get("formatted_reference") or "") if isinstance(row, dict) else "",
+                "proposed_replacement": proposed,
+                "original_text": decision.get("original_text") or evidence,
+                "source_candidates": candidates,
+                "approved_source": decision.get("approved_source") or {},
+                "approved_action": decision.get("action") or "",
+                "track_operation": decision.get("track_operation") or "replace",
+                "available_actions": available_actions,
                 "auto_apply_allowed": bool(isinstance(row, dict) and category in {"reference_metadata", "formatting"} and float(row.get("confidence", 0) or 0) >= .95),
                 "decision": decision.get("decision", "pending"),
                 "decision_note": decision.get("note", ""),
@@ -154,12 +168,20 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         })
 
     voice = result.get("academic_voice_review") or {}
-    for row in _rows(voice.get("signals") if isinstance(voice, dict) else []):
-        item_id = f"voice-{len(items) + 1}"
+    voice_items_added = 0
+    for voice_index, row in enumerate(_rows(voice.get("signals") if isinstance(voice, dict) else [])):
+        # Citation-support questions belong to the dedicated citation-needed and
+        # claim-support checks. Repeating low-confidence voice heuristics in the
+        # correction plan creates duplicate, high-volume false positives.
+        if row.get("signal") in {"claim_without_nearby_citation", "possible_claim_needing_source_review"}:
+            continue
+        if voice_items_added >= 12:
+            break
+        item_id = f"voice-{voice_index + 1}"
         decision = saved_decisions.get(item_id) or {}
         items.append({
             "id": item_id,
-            "priority": row.get("priority", "optional"),
+            "priority": "optional",
             "category": "academic_voice",
             "title": row.get("signal", "Writing pattern requires review").replace("_", " ").title(),
             "what_is_wrong": row.get("why_flagged", "The passage contains a writing pattern that needs review."),
@@ -175,6 +197,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             "decision": decision.get("decision", "pending"),
             "decision_note": decision.get("note", ""),
         })
+        voice_items_added += 1
 
     coach = result.get("citation_improvement_coach") or {}
     for row in _rows(coach.get("lessons") if isinstance(coach, dict) else []):

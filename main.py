@@ -728,7 +728,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.3").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.6").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -3755,10 +3755,12 @@ async def developer_access_page(request: Request, _auth: Any = Depends(authentic
     checked_maintenance = "checked" if mode == "maintenance" else ""
     maintenance_check_text = html.escape(str(state.get("maintenance_check_at") or "Not applicable"))
     maintenance_message_text = html.escape(str(state.get("maintenance_message") or "CiteIntegrity is undergoing scheduled maintenance while an upgrade is tested."))
+    ai_status_text = "Configured" if os.environ.get("OPENAI_API_KEY", "").strip() else "Not configured"
     response = HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>CiteIntegrity Developer Access</title>
 <style>body{{font-family:Arial,sans-serif;background:#f4f7f6;color:#172033;margin:0}}main{{max-width:760px;margin:50px auto;background:white;padding:32px;border-radius:16px;box-shadow:0 8px 30px #0001}}h1{{margin-top:0}}label{{display:block;border:1px solid #dbe4e0;padding:18px;border-radius:10px;margin:12px 0}}button,.button{{display:inline-block;background:#0f7a4f;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer;text-decoration:none}}.button.secondary{{background:#172033}}.testing{{background:#edf8f2;border:1px solid #b9dfca;padding:18px;border-radius:12px;margin:18px 0}}.warning{{background:#fff7ed;border-left:4px solid #f59e0b;padding:12px}}code{{background:#eef2f1;padding:2px 5px}}</style></head><body><main>
 <h1>Developer Access Control</h1><p>Current mode: <strong id="currentMode">{html.escape(mode.replace('_',' ').title())}</strong><br>Open-access expiry: <strong id="expiryTime">{expiry_text}</strong><br>Maintenance check-back time: <strong id="maintenanceCheck">{maintenance_check_text}</strong></p>
 <p><strong>Deployment under test:</strong> release {html.escape(RELEASE_VERSION)}, slot {html.escape(RELEASE_SLOT)}. Confirm this identity before promoting a preview deployment.</p>
+<p><strong>Optional AI academic rewriting:</strong> {ai_status_text}. Citation checking and scholarly source search remain available without an AI key.</p>
 <div class="testing"><strong>Choose the developer testing level for this browser.</strong><p><strong>Full Access</strong> opens the whole product testing experience. <strong>Full Review Unlocked</strong> opens paid manuscript review outputs without opening access to public users.</p><a class="button" href="/developer/testing?level=full_access">Open Full Access</a> <a class="button" href="/developer/testing?level=full_review">Open Full Review Unlocked</a> <a class="button secondary" href="/developer/logout">End Developer Session</a></div>
 <form id="accessForm">
 <label><input type="radio" name="mode" value="payment_required" {checked_payment}> <strong>Payment-controlled access</strong><br>Free preview is limited. Full Review requires a successful payment or valid entitlement.</label>
@@ -5261,9 +5263,11 @@ def _demo_build_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[st
 # RESULT CHECK ENDPOINT
 # ============================================================
 
-def _apply_developer_testing_access(result: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_developer_testing_access(result: Dict[str, Any], request: Optional[Request] = None) -> Dict[str, Any]:
     """Unlock paid-style outputs only for the current authenticated developer request."""
-    access_level = DEVELOPER_ACCESS_LEVEL.get()
+    access_level = developer_session_access_level(request) if request is not None else DEVELOPER_ACCESS_LEVEL.get()
+    if not access_level and request is not None and developer_request_is_authorized(request):
+        access_level = "full_access"
     if access_level not in DEVELOPER_ACCESS_LEVELS or not isinstance(result, dict):
         return result
     result = _demo_prepare_full_review_result("", result, persist=False)
@@ -5289,7 +5293,7 @@ def _apply_developer_testing_access(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _prepare_student_result(result: Dict[str, Any]) -> Dict[str, Any]:
+def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] = None) -> Dict[str, Any]:
     """Attach explainable, lightweight student guidance to a completed result."""
     result = result or {}
     if result.get("result_deleted"):
@@ -5309,7 +5313,7 @@ def _prepare_student_result(result: Dict[str, Any]) -> Dict[str, Any]:
     if access_control.get("mode") == "open_access":
         result["access"] = open_access_payload()
         result["payment_required"] = False
-    result = _apply_developer_testing_access(result)
+    result = _apply_developer_testing_access(result, request)
     return attach_privacy_status(result)
 
 
@@ -5343,7 +5347,7 @@ def _purge_job_content(job_id: str, reason: str = "user_requested") -> Dict[str,
     return {"ok": True, "job_id": job_id, "privacy": minimal.get("privacy")}
 
 @app.get("/result/{job_id}")
-async def get_result(job_id: str, fresh: int = 0):
+async def get_result(request: Request, job_id: str, fresh: int = 0):
     """Get job status and result.
 
     Use fresh=1 when the browser is polling for enrichment updates, so
@@ -5357,7 +5361,7 @@ async def get_result(job_id: str, fresh: int = 0):
             try:
                 cached_result = json.loads(cached)
                 cached_result = _demo_prepare_full_review_result(job_id, cached_result, persist=False)
-                cached_result = _prepare_student_result(cached_result)
+                cached_result = _prepare_student_result(cached_result, request)
                 return {"status": "completed", "data": cached_result}
             except:
                 pass
@@ -5383,7 +5387,7 @@ async def get_result(job_id: str, fresh: int = 0):
                 if isinstance(result, str):
                     result = json.loads(result)
                 result = _demo_prepare_full_review_result(job_id, result, persist=True)
-                result = _prepare_student_result(result)
+                result = _prepare_student_result(result, request)
                 return {"status": "completed", "data": result}
             elif row["status"] == "processing":
                 return {"status": "processing", "message": "Processing in background"}
@@ -5474,17 +5478,100 @@ async def save_correction_decision(job_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Job not found")
     result = job.get("result") or {}
     plan = build_correction_plan(result)
-    if item_id not in {item.get("id") for item in plan.get("items") or []}:
+    selected_item = next((item for item in plan.get("items") or [] if item.get("id") == item_id), None)
+    if not selected_item:
         raise HTTPException(status_code=404, detail="Correction item not found")
+    action = str(payload.get("action") or "").strip().lower()
+    approved_source = payload.get("approved_source") if isinstance(payload.get("approved_source"), dict) else {}
+    proposed_replacement = str(payload.get("proposed_replacement") or "").strip()
+    original_text = str(payload.get("original_text") or selected_item.get("original_text") or selected_item.get("evidence") or "").strip()
+    operation = "replace"
+    category = selected_item.get("category")
+    if decision == "accepted":
+        if category in {"citation_needed", "missing_reference"} and action in {"insert_citation", "add_reference"}:
+            if not approved_source.get("url") or not approved_source.get("title"):
+                raise HTTPException(status_code=400, detail="Select and open a scholarly source before approving this correction.")
+            if not proposed_replacement:
+                raise HTTPException(status_code=400, detail="The approved citation or reference text is missing.")
+            operation = "insert_after" if action == "insert_citation" else "append_reference"
+        elif category == "uncited_reference" and action == "delete_reference":
+            operation = "delete"
+        elif category == "uncited_reference" and action == "cite_reference":
+            if not original_text or not proposed_replacement:
+                raise HTTPException(status_code=400, detail="Select the claim and citation text before approving where to cite this reference.")
+            operation = "insert_after"
     decisions = result.setdefault("correction_decisions", {})
     decisions[item_id] = {
         "decision": decision,
         "note": str(payload.get("note") or "")[:1000],
+        "action": action,
+        "approved_source": approved_source,
+        "proposed_replacement": proposed_replacement,
+        "original_text": original_text,
+        "track_operation": operation,
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
     result["correction_plan"] = build_correction_plan(result)
     _manual_save_result(job_id, result)
     return {"ok": True, "item_id": item_id, "decision": decision, "correction_plan": result["correction_plan"]}
+
+
+def _candidate_citation_text(candidate: Dict[str, Any]) -> str:
+    authors = candidate.get("authors") or []
+    first = str(authors[0] if isinstance(authors, list) and authors else authors or "Source").strip()
+    surname = first.split(",", 1)[0].split()[-1] if first else "Source"
+    year = str(candidate.get("year") or "n.d.")
+    return f"({surname} et al., {year})" if isinstance(authors, list) and len(authors) > 2 else f"({surname}, {year})"
+
+
+def _candidate_reference_text(candidate: Dict[str, Any]) -> str:
+    authors = candidate.get("authors") or []
+    author_text = ", ".join(str(a) for a in authors) if isinstance(authors, list) else str(authors or "")
+    year = candidate.get("year") or "n.d."
+    title = candidate.get("title") or ""
+    doi = candidate.get("doi") or ""
+    url = candidate.get("url") or (f"https://doi.org/{doi}" if doi else "")
+    return f"{author_text} ({year}). {title}. {url}".strip()
+
+
+@app.post("/api/corrections/{job_id}/sources/{item_id}")
+async def find_correction_sources(job_id: str, item_id: str):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = job.get("result") or {}
+    plan = build_correction_plan(result)
+    item = next((row for row in plan.get("items") or [] if row.get("id") == item_id), None)
+    if not item or item.get("category") not in {"citation_needed", "missing_reference"}:
+        raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed and missing-reference fixes.")
+    evidence = str(item.get("evidence") or "")
+    manuscript_text = str(result.get("main_text") or result.get("full_text") or "")
+    context = extract_context(manuscript_text, evidence, window=450) if manuscript_text and evidence else evidence
+    candidates = await run_in_threadpool(
+        suggest_from_context,
+        context or evidence,
+        evidence if item.get("category") == "missing_reference" else "",
+        5,
+        use_citation_hint=item.get("category") == "missing_reference",
+        min_relevance=60,
+    )
+    for candidate in candidates:
+        candidate["citation_text"] = _candidate_citation_text(candidate)
+        candidate["formatted_reference"] = _candidate_reference_text(candidate)
+    result.setdefault("correction_source_candidates", {})[item_id] = candidates
+    result["correction_plan"] = build_correction_plan(result)
+    _manual_save_result(job_id, result)
+    return {"ok": True, "item_id": item_id, "candidates": candidates, "message": "Open and verify a source before approving it."}
+
+
+@app.get("/api/ai/status")
+async def ai_configuration_status():
+    configured = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+    return {
+        "configured": configured,
+        "model": os.environ.get("AI_REWRITE_MODEL", "gpt-5.6-luna") if configured else None,
+        "message": "Optional academic rewriting is configured." if configured else "Add OPENAI_API_KEY to the server environment to enable optional academic rewriting.",
+    }
 
 
 @app.post("/api/academic-voice/rewrite")

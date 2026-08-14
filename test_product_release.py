@@ -10,6 +10,7 @@ from document_correction_pack import build_annotated_document, build_tracked_cha
 from payment_control import default_mode
 from docx import Document
 import io
+import zipfile
 
 
 def sample_result():
@@ -120,3 +121,53 @@ def test_developer_review_entitlement_is_request_scoped():
     assert "_apply_developer_testing_access" in source
     assert '"developer_access_level": access_level' in source
     assert 'result["payment_required"] = False' in source
+
+
+def test_payment_notices_are_hidden_for_developer_and_temporary_open_access():
+    source = open("templates/new_results.html", encoding="utf-8").read()
+    assert "shouldHideAccessPanel" in source
+    assert "developer_unlocked" in source
+    assert "global_open_access" in source
+    assert 'global_access_control?.mode === "open_access"' in source
+
+
+def test_verification_refresh_preserves_correction_guidance_and_active_tab():
+    source = open("templates/new_results.html", encoding="utf-8").read()
+    assert "mergeResultPreservingCorrections" in source
+    assert "restoreActiveResultTab" in source
+    assert 'activeResultTab = target' in source
+
+
+def test_voice_claim_heuristics_are_conservative_and_not_critical_corrections():
+    voice_source = open("academic_voice.py", encoding="utf-8").read()
+    plan_source = open("correction_plan.py", encoding="utf-8").read()
+    assert "paragraph_has_citation" in voice_source
+    assert "PRESENT_STUDY_MARKER" in voice_source
+    assert '"confidence": "low"' in voice_source
+    assert '"possible_claim_needing_source_review"' in plan_source
+    assert "type_limits" in voice_source
+    assert "voice_items_added >= 12" in plan_source
+
+
+def test_approved_citation_reference_addition_and_deletion_become_track_changes():
+    doc = Document()
+    doc.add_paragraph("Digital systems improve transparency.")
+    doc.add_paragraph("Boateng (2020). Unused source.")
+    buf = io.BytesIO(); doc.save(buf)
+    plan = {"items":[
+        {"id":"citation-needed-1", "decision":"accepted", "track_operation":"insert_after", "original_text":"Digital systems improve transparency.", "proposed_replacement":"(Adam, 2024)"},
+        {"id":"uncited-reference-1", "decision":"accepted", "track_operation":"delete", "original_text":"Boateng (2020). Unused source."},
+        {"id":"missing-reference-1", "decision":"accepted", "track_operation":"append_reference", "proposed_replacement":"Adam, A. (2024). Digital transparency. https://doi.org/10.1000/example"},
+    ]}
+    tracked, manifest = build_tracked_changes_document(buf.getvalue(), plan)
+    assert manifest["applied_count"] == 3
+    with zipfile.ZipFile(io.BytesIO(tracked)) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    assert "<w:ins" in xml and "<w:del" in xml
+
+
+def test_source_approval_and_ai_status_endpoints_are_present():
+    source = open("main.py", encoding="utf-8").read()
+    assert '"/api/corrections/{job_id}/sources/{item_id}"' in source
+    assert '"/api/ai/status"' in source
+    assert "Select and open a scholarly source" in source

@@ -114,6 +114,41 @@ def _tracked_replace(paragraph, original: str, replacement: str, change_id: int)
     return True
 
 
+def _tracked_insert_after(paragraph, anchor: str, insertion_text: str, change_id: int) -> bool:
+    full_text = paragraph.text
+    start = full_text.find(anchor)
+    if start < 0:
+        return False
+    split_at = start + len(anchor)
+    before, after = full_text[:split_at], full_text[split_at:]
+    p = paragraph._p
+    for child in list(p):
+        if child.tag != qn("w:pPr"):
+            p.remove(child)
+
+    def normal_run(text: str):
+        if not text:
+            return
+        run = OxmlElement("w:r"); node = OxmlElement("w:t"); node.set(qn("xml:space"), "preserve"); node.text = text; run.append(node); p.append(run)
+
+    normal_run(before)
+    stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    insertion = OxmlElement("w:ins"); insertion.set(qn("w:id"), str(change_id)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
+    ir = OxmlElement("w:r"); it = OxmlElement("w:t"); it.set(qn("xml:space"), "preserve"); it.text = " " + insertion_text.strip(); ir.append(it); insertion.append(ir); p.append(insertion)
+    normal_run(after)
+    return True
+
+
+def _tracked_append_reference(document: Document, reference_text: str, change_id: int) -> bool:
+    if not reference_text.strip():
+        return False
+    paragraph = document.add_paragraph()
+    stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    insertion = OxmlElement("w:ins"); insertion.set(qn("w:id"), str(change_id)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
+    run = OxmlElement("w:r"); text = OxmlElement("w:t"); text.set(qn("xml:space"), "preserve"); text.text = reference_text.strip(); run.append(text); insertion.append(run); paragraph._p.append(insertion)
+    return True
+
+
 def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str, Any], original_name: str = "manuscript.docx") -> Tuple[bytes, Dict[str, Any]]:
     document, copied_original = _load_docx(original_bytes)
     applied: List[str] = []
@@ -128,13 +163,25 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
             replacement = str(item.get("proposed_replacement") or "")
             explicitly_accepted = item.get("decision") == "accepted"
             safe_auto = item.get("auto_apply_allowed") is True and item.get("decision") == "pending"
-            if not replacement or not (explicitly_accepted or safe_auto):
+            operation = str(item.get("track_operation") or "replace")
+            if not (explicitly_accepted or safe_auto):
                 continue
             changed = False
-            for paragraph in document.paragraphs:
-                if _tracked_replace(paragraph, original, replacement, change_id):
-                    changed = True; change_id += 2; break
+            if operation == "append_reference" and replacement:
+                changed = _tracked_append_reference(document, replacement, change_id)
+                if changed: change_id += 1
+            elif operation == "insert_after" and original and replacement:
+                for paragraph in document.paragraphs:
+                    if _tracked_insert_after(paragraph, original, replacement, change_id):
+                        changed = True; change_id += 1; break
+            elif operation == "delete" and original:
+                for paragraph in document.paragraphs:
+                    if _tracked_replace(paragraph, original, "", change_id):
+                        changed = True; change_id += 2; break
+            elif replacement:
+                for paragraph in document.paragraphs:
+                    if _tracked_replace(paragraph, original, replacement, change_id):
+                        changed = True; change_id += 2; break
             (applied if changed else skipped).append(item.get("id"))
-        document.add_paragraph("CiteIntegrity change-control note: Only explicitly accepted corrections and very-high-confidence bibliographic corrections were eligible. Claims, new citations and source replacements were not changed automatically.")
+        document.add_paragraph("CiteIntegrity change-control note: Accepted citations, recovered references and uncited-reference actions were applied as tracked changes only after explicit approval. No new scholarly source or claim change was applied silently.")
     return _docx_bytes(document), {"applied": applied, "skipped": skipped, "applied_count": len(applied)}
-

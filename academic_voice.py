@@ -35,7 +35,15 @@ CLAIM_MARKERS = re.compile(
     re.I,
 )
 CITATION_MARKER = re.compile(
-    r"\([A-Z][A-Za-z'’-]+(?:\s+et\s+al\.)?,?\s+(?:19|20)\d{2}[a-z]?\)|\[\d+(?:[-–,]\s*\d+)*\]|\bdoi:\s*10\.",
+    r"\((?=[^)]{1,180}\b(?:19|20)\d{2}[a-z]?\b)[^)]{1,180}\)|"
+    r"\b[A-Z][A-Za-z&.'’ -]{1,80}\s+\((?:19|20)\d{2}[a-z]?\)|"
+    r"\[\d+(?:[-–,]\s*\d+)*\]|\bdoi:\s*10\.",
+    re.I,
+)
+PRESENT_STUDY_MARKER = re.compile(
+    r"\b(this study|present study|our (?:results|findings|analysis)|the (?:results|findings)|"
+    r"respondents?|sample|table\s+\d|coefficient|p[- ]?value|standard deviation|mean score|"
+    r"cronbach(?:'s)? alpha|research question|hypothesis)\b",
     re.I,
 )
 TRANSITIONS = re.compile(
@@ -73,7 +81,7 @@ def _location(index: int, paragraph: int = 0) -> Dict[str, int]:
     return {"paragraph": paragraph + 1, "sentence": index + 1}
 
 
-def analyse_academic_voice(text: str, max_passages: int = 80) -> Dict[str, Any]:
+def analyse_academic_voice(text: str, max_passages: int = 30) -> Dict[str, Any]:
     """Return explainable style signals without inferring human or AI authorship."""
     paragraphs = _paragraphs(text)
     all_sentences = _sentences(text)
@@ -83,6 +91,7 @@ def analyse_academic_voice(text: str, max_passages: int = 80) -> Dict[str, Any]:
 
     for p_idx, paragraph in enumerate(paragraphs):
         sentences = _sentences(paragraph)
+        paragraph_has_citation = bool(CITATION_MARKER.search(paragraph))
         openings: Counter[str] = Counter()
         for s_idx, sentence in enumerate(sentences):
             lower = sentence.lower()
@@ -111,15 +120,20 @@ def analyse_academic_voice(text: str, max_passages: int = 80) -> Dict[str, Any]:
                     "recommended_action": "Separate the claims and keep each citation close to the statement it supports.",
                     "confidence": "high",
                 })
-            if CLAIM_MARKERS.search(sentence) and not CITATION_MARKER.search(sentence):
+            if (
+                CLAIM_MARKERS.search(sentence)
+                and not CITATION_MARKER.search(sentence)
+                and not paragraph_has_citation
+                and not PRESENT_STUDY_MARKER.search(sentence)
+            ):
                 signals.append({
-                    "priority": "critical",
-                    "signal": "claim_without_nearby_citation",
+                    "priority": "important",
+                    "signal": "possible_claim_needing_source_review",
                     "passage": sentence,
                     "location": _location(s_idx, p_idx),
-                    "why_flagged": "The sentence appears to make an empirical or causal claim without a nearby citation.",
-                    "recommended_action": "Verify the claim, add an appropriate source, qualify it, or identify it as a finding from the present study.",
-                    "confidence": "medium",
+                    "why_flagged": "The paragraph appears to contain an empirical or causal statement and no citation was detected anywhere in that paragraph.",
+                    "recommended_action": "Review the paragraph manually. Add a source only if this is an external claim, or identify it clearly if it reports the present study.",
+                    "confidence": "low",
                 })
         repeated = {opening for opening, count in openings.items() if count >= 2 and opening}
         if repeated:
@@ -147,11 +161,32 @@ def analyse_academic_voice(text: str, max_passages: int = 80) -> Dict[str, Any]:
             "confidence": "medium",
         })
 
+    # A supervisor normally gives representative comments instead of repeating
+    # the same observation dozens of times. Cap each signal type before applying
+    # the overall limit.
+    type_limits = {
+        "very_long_sentence": 10,
+        "formulaic_language": 8,
+        "possible_claim_needing_source_review": 8,
+        "repeated_sentence_opening": 4,
+        "uniform_sentence_rhythm": 1,
+    }
+    limited_signals: List[Dict[str, Any]] = []
+    type_counts: Counter[str] = Counter()
+    for signal in signals:
+        signal_type = signal.get("signal", "other")
+        if type_counts[signal_type] >= type_limits.get(signal_type, 6):
+            continue
+        type_counts[signal_type] += 1
+        limited_signals.append(signal)
+    signals = limited_signals
+
     priority_rank = {"critical": 0, "important": 1, "optional": 2}
     signals.sort(key=lambda item: priority_rank.get(item.get("priority"), 9))
     signals = signals[: max(1, int(max_passages))]
     counts = Counter(item["priority"] for item in signals)
-    score = max(0, 100 - counts["critical"] * 8 - counts["important"] * 3 - counts["optional"])
+    signal_rate = len(signals) / max(len(all_sentences), 1)
+    score = max(0, round(100 - counts["critical"] * 5 - min(35, signal_rate * 220)))
     return {
         "feature": "Authentic Academic Voice Review",
         "method": "explainable_rule_based_diagnostics",
@@ -241,4 +276,3 @@ def rewrite_selected_passage(
         if fallback and fallback != primary:
             return call(fallback)
         raise
-
