@@ -4,6 +4,8 @@
 import io
 import asyncio
 import base64
+import hashlib
+import hmac
 import os
 import re
 import uuid
@@ -725,8 +727,35 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.1").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.2").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
+DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
+DEVELOPER_SESSION_TTL_SECONDS = max(900, int(os.environ.get("DEVELOPER_SESSION_TTL_SECONDS", "43200")))
+DEVELOPER_SESSION_SECRET = os.environ.get("DEVELOPER_SESSION_SECRET", "").strip() or hashlib.sha256(
+    f"{PASSWORD}:citeintegrity-developer-session".encode("utf-8")
+).hexdigest()
+
+
+def create_developer_session_token() -> str:
+    issued_at = str(int(time.time()))
+    payload = f"{issued_at}:{USERNAME}"
+    signature = hmac.new(DEVELOPER_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{issued_at}.{signature}"
+
+
+def developer_session_is_authorized(request: Request) -> bool:
+    token = request.cookies.get(DEVELOPER_SESSION_COOKIE, "")
+    try:
+        issued_at_text, supplied_signature = token.split(".", 1)
+        issued_at = int(issued_at_text)
+    except (TypeError, ValueError):
+        return False
+    age = int(time.time()) - issued_at
+    if age < 0 or age > DEVELOPER_SESSION_TTL_SECONDS:
+        return False
+    payload = f"{issued_at}:{USERNAME}"
+    expected_signature = hmac.new(DEVELOPER_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return secrets.compare_digest(supplied_signature, expected_signature)
 
 
 # ===============================
@@ -962,7 +991,7 @@ async def maintenance_gate(request: Request, call_next):
     path = request.url.path
     if path == "/health" or path.startswith("/developer/access") or path.startswith("/api/developer/access"):
         return await call_next(request)
-    if developer_request_is_authorized(request):
+    if developer_request_is_authorized(request) or developer_session_is_authorized(request):
         return await call_next(request)
 
     state = get_access_mode(DATABASE_URL, redis_conn)
@@ -3710,10 +3739,11 @@ async def developer_access_page(_auth: Any = Depends(authenticate)):
     checked_maintenance = "checked" if mode == "maintenance" else ""
     maintenance_check_text = html.escape(str(state.get("maintenance_check_at") or "Not applicable"))
     maintenance_message_text = html.escape(str(state.get("maintenance_message") or "CiteIntegrity is undergoing scheduled maintenance while an upgrade is tested."))
-    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>CiteIntegrity Developer Access</title>
-<style>body{{font-family:Arial,sans-serif;background:#f4f7f6;color:#172033;margin:0}}main{{max-width:760px;margin:50px auto;background:white;padding:32px;border-radius:16px;box-shadow:0 8px 30px #0001}}h1{{margin-top:0}}label{{display:block;border:1px solid #dbe4e0;padding:18px;border-radius:10px;margin:12px 0}}button{{background:#0f7a4f;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer}}.warning{{background:#fff7ed;border-left:4px solid #f59e0b;padding:12px}}code{{background:#eef2f1;padding:2px 5px}}</style></head><body><main>
+    response = HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>CiteIntegrity Developer Access</title>
+<style>body{{font-family:Arial,sans-serif;background:#f4f7f6;color:#172033;margin:0}}main{{max-width:760px;margin:50px auto;background:white;padding:32px;border-radius:16px;box-shadow:0 8px 30px #0001}}h1{{margin-top:0}}label{{display:block;border:1px solid #dbe4e0;padding:18px;border-radius:10px;margin:12px 0}}button,.button{{display:inline-block;background:#0f7a4f;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer;text-decoration:none}}.button.secondary{{background:#172033}}.testing{{background:#edf8f2;border:1px solid #b9dfca;padding:18px;border-radius:12px;margin:18px 0}}.warning{{background:#fff7ed;border-left:4px solid #f59e0b;padding:12px}}code{{background:#eef2f1;padding:2px 5px}}</style></head><body><main>
 <h1>Developer Access Control</h1><p>Current mode: <strong id="currentMode">{html.escape(mode.replace('_',' ').title())}</strong><br>Open-access expiry: <strong id="expiryTime">{expiry_text}</strong><br>Maintenance check-back time: <strong id="maintenanceCheck">{maintenance_check_text}</strong></p>
 <p><strong>Deployment under test:</strong> release {html.escape(RELEASE_VERSION)}, slot {html.escape(RELEASE_SLOT)}. Confirm this identity before promoting a preview deployment.</p>
+<div class="testing"><strong>Developer full testing access is active in this browser.</strong><p>Open the normal CiteIntegrity interface to test uploads, analysis, correction packs, downloads and every paid function while public users remain blocked.</p><a class="button" href="/?developer_testing=1">Open Full Developer Testing</a> <a class="button secondary" href="/developer/logout">End Developer Session</a></div>
 <form id="accessForm">
 <label><input type="radio" name="mode" value="payment_required" {checked_payment}> <strong>Payment-controlled access</strong><br>Free preview is limited. Full Review requires a successful payment or valid entitlement.</label>
 <label><input type="radio" name="mode" value="open_access" {checked_open}> <strong>Temporarily open Full Review for all users</strong><br>All completed analyses receive Full Review access without payment until the selected period expires.</label>
@@ -3732,6 +3762,23 @@ document.getElementById('accessForm').addEventListener('submit', async (event) =
  if(response.ok) {{ document.getElementById('currentMode').textContent=data.mode.replaceAll('_',' '); document.getElementById('expiryTime').textContent=data.expires_at||'Not applicable'; document.getElementById('maintenanceCheck').textContent=data.maintenance_check_at||'Not applicable'; }}
 }});
 </script></main></body></html>""")
+    response.set_cookie(
+        DEVELOPER_SESSION_COOKIE,
+        create_developer_session_token(),
+        max_age=DEVELOPER_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.get("/developer/logout")
+async def developer_logout():
+    response = HTMLResponse("""<!doctype html><html><head><meta charset="utf-8"><title>Developer session ended</title></head><body style="font-family:Arial,sans-serif;padding:50px"><h1>Developer session ended</h1><p>This browser no longer bypasses maintenance mode.</p><p><a href="/developer/access">Sign in again</a></p></body></html>""")
+    response.delete_cookie(DEVELOPER_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+    return response
 
 
 @app.get("/api/developer/access")

@@ -102,3 +102,12 @@ def test_http_error_handler_preserves_basic_auth_challenge():
     source = open("main.py", encoding="utf-8").read()
     assert "headers=exc.headers" in source
     assert 'WWW-Authenticate' in source
+
+
+def test_developer_full_testing_session_and_button_are_present():
+    source = open("main.py", encoding="utf-8").read()
+    assert "Open Full Developer Testing" in source
+    assert "developer_session_is_authorized(request)" in source
+    assert "create_developer_session_token()" in source
+    assert 'path="/"' in source
+    assert 'httponly=True' in source and 'secure=True' in source

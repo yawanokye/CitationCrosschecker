@@ -83,3 +83,9 @@ monitoring, and document expiry/deletion controls continue operating.
 Developer authentication responses preserve the `WWW-Authenticate` challenge,
 so a browser visiting `/developer/access` opens its username and password prompt
 instead of displaying a raw 401 JSON response.
+
+After authentication, the developer page creates a signed, HTTP-only session
+for the full site and displays an `Open Full Developer Testing` button. This
+allows the developer to test the normal homepage, uploads, paid analysis,
+results and downloads during maintenance. The session expires after 12 hours by
+default and can be ended immediately from the developer page.
