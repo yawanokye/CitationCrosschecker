@@ -1414,11 +1414,13 @@
             }
         }
 
-        /* Demo-safe display: hide payment and pricing surfaces */
-        #paywallPanel,
-        .paywall-panel {
-            display: none !important;
-        }
+        .privacy-panel { border-left: 5px solid #19b36b; }
+        .privacy-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+        .priority-critical { border-left:4px solid #dc2626; }
+        .priority-important { border-left:4px solid #f59e0b; }
+        .priority-optional { border-left:4px solid #3b82f6; }
+        .guidance-item { padding:14px; margin:10px 0; background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(15,23,42,.08); }
+        .guidance-meta { color:#64748b; font-size:12px; margin-bottom:6px; text-transform:uppercase; font-weight:700; }
 
     </style>
 </head>
@@ -1483,6 +1485,19 @@
 
     <section class="paywall-panel" id="paywallPanel"></section>
 
+    <section class="card privacy-panel" id="privacyPanel">
+        <div class="section-title">
+            <div>
+                <h2>Temporary processing and deletion</h2>
+                <p id="privacyMessage">Your manuscript is processed temporarily. Download the complete package, then delete the files.</p>
+            </div>
+        </div>
+        <div class="privacy-actions">
+            <button class="btn btn-green" id="btnDownloadDelete">Download complete package and delete</button>
+            <button class="btn btn-outline" id="btnDeleteNow">Delete my manuscript now</button>
+        </div>
+    </section>
+
     <section class="insights-grid">
         <div class="card acii-card">
             <div class="small-muted" style="color: rgba(255,255,255,0.72);">Academic Citation Integrity Index</div>
@@ -1513,7 +1528,19 @@
                         <p>Open each result area.</p>
                     </div>
                 </div>                <div class="nav-tabs">
-                    <button class="tab-btn active" data-tab="summaryPane">
+                    <button class="tab-btn active" data-tab="correctionPane">
+                        <span class="tab-title">Correction Plan <span class="tab-help" title="Prioritized actions to complete before submission.">?</span></span>
+                        <span class="count-pill" id="countCorrections">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="voicePane">
+                        <span class="tab-title">Academic Voice <span class="tab-help" title="Explainable writing-pattern review. It does not determine authorship.">?</span></span>
+                        <span class="count-pill" id="countVoice">0</span>
+                    </button>
+                    <button class="tab-btn" data-tab="revisionPane">
+                        <span class="tab-title">Revision Journey <span class="tab-help" title="Compare Run 1 with the revised manuscript analysed in Run 2.">?</span></span>
+                        <span class="count-pill">2 runs</span>
+                    </button>
+                    <button class="tab-btn" data-tab="summaryPane">
                         <span class="tab-title">Summary <span class="tab-help" title="Overall citation counts, match rate, ACII summary, and key dashboard interpretation." aria-label="Overall citation counts, match rate, ACII summary, and key dashboard interpretation.">?</span></span>
                         <span class="count-pill" id="countSummary">--</span>
                     </button>
@@ -1567,7 +1594,43 @@
 
         <section class="main-panel">
 
-            <div class="tab-pane active" id="summaryPane">
+            <div class="tab-pane active" id="correctionPane">
+                <div class="card">
+                    <div class="section-title"><div><h2>Prioritized Correction Plan</h2><p id="correctionHeadline">Preparing your action plan...</p></div><button class="btn btn-primary" id="btnFixNext">Fix next issue</button></div>
+                    <div id="correctionContent"></div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="voicePane">
+                <div class="card">
+                    <div class="section-title"><div><h2>Authentic Academic Voice Review</h2><p>Rule-based signals for formulaic, unclear, repetitive, or weakly supported writing. These signals do not prove AI authorship.</p></div></div>
+                    <div id="voiceSummary" class="empty">Preparing writing-pattern review...</div>
+                    <div id="voiceContent"></div>
+                    <div class="card" style="margin-top:16px; background:#f8fafc;">
+                        <h3>Optional AI-assisted revision</h3>
+                        <p class="small-muted">Paste only the selected passage. The model must preserve citations, meaning and numerical findings. Review every suggestion before using it.</p>
+                        <textarea id="rewritePassage" rows="8" style="width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:8px;" placeholder="Selected passage, maximum 500 words"></textarea>
+                        <div class="privacy-actions"><button class="btn btn-primary" id="btnRewritePassage">Suggest natural revision</button></div>
+                        <div id="rewriteResult" class="empty" style="margin-top:12px;display:none;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="revisionPane">
+                <div class="card">
+                    <div class="section-title"><div><h2>Your Revision Journey</h2><p>Run 1 diagnoses the manuscript. Correct it within 90 days, use Run 2 for the revised manuscript, then compare the results.</p></div></div>
+                    <div class="kpi-grid">
+                        <div class="kpi"><span>Run 1</span><strong>Diagnose</strong></div>
+                        <div class="kpi"><span>Correction period</span><strong>Up to 90 days</strong></div>
+                        <div class="kpi"><span>Run 2</span><strong>Verify revision</strong></div>
+                    </div>
+                    <p>After analysing the revised manuscript, paste its result job ID below.</p>
+                    <div class="privacy-actions"><input id="revisedJobId" class="search-input" placeholder="Revised analysis job ID"><button class="btn btn-primary" id="btnCompareRevision">Compare before and after</button></div>
+                    <div id="revisionComparison" class="empty" style="margin-top:14px">No revised analysis compared yet.</div>
+                </div>
+            </div>
+
+            <div class="tab-pane" id="summaryPane">
                 <div class="card">
                     <div class="section-title">
                         <div>
@@ -1899,12 +1962,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
     const JOB_ID = "{{ job_id }}";
     const AUTO_VERIFY = "{{ auto_verify | default('false') }}" === "true";
-    const DEMO_HIDE_PAYMENT_DETAILS = true;
+    const DEMO_HIDE_PAYMENT_DETAILS = "{{ demo_mode | default('false') }}" === "true";
 
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "DEMO_RESULTS-preserve-tabs-enrichment-v1.5.47";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-submission-ready-maintenance-access-v1.8.0";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3286,6 +3349,155 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    function renderStudentGuidance(data) {
+        const plan = data.correction_plan || {};
+        const counts = plan.counts || {};
+        setCount("countCorrections", counts.total || 0);
+        const headline = $("correctionHeadline");
+        if (headline) headline.textContent = plan.headline || "Review the detailed findings before submission.";
+        const correctionBox = $("correctionContent");
+        const items = Array.isArray(plan.items) ? plan.items : [];
+        if (correctionBox) {
+            correctionBox.innerHTML = items.length ? items.map((item, index) => `
+                <div class="guidance-item priority-${esc(item.priority || "optional")}" data-correction-id="${esc(item.id)}" data-decision="${esc(item.decision || "pending")}">
+                    <div class="guidance-meta">${esc(item.priority)} · ${esc(item.category)} · Item ${index + 1} · Decision: ${esc(item.decision || "pending")}</div>
+                    <strong>${esc(item.title)}</strong>
+                    ${item.location ? `<div class="small-muted">Location: ${esc(JSON.stringify(item.location))}</div>` : ""}
+                    <p><strong>What is wrong:</strong> ${esc(item.what_is_wrong || item.title || "")}</p>
+                    <p><strong>Why it matters:</strong> ${esc(item.why_it_matters || "")}</p>
+                    <p><strong>Evidence:</strong> ${esc(item.evidence || "")}</p>
+                    ${item.supporting_metadata && Object.keys(item.supporting_metadata).length ? `<details><summary>Supporting source or metadata</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(item.supporting_metadata, null, 2))}</pre></details>` : ""}
+                    ${item.evidence_link ? `<p><a href="${esc(item.evidence_link)}" target="_blank" rel="noopener">Open supporting evidence</a></p>` : ""}
+                    <p><strong>Confidence:</strong> ${esc(item.confidence ?? "Review required")}</p>
+                    <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
+                    <div class="privacy-actions correction-decisions">
+                        <button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted">Accept</button>
+                        <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
+                        <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
+                        ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
+                        ${item.category === "source_verification" ? `<button class="btn btn-outline correction-feedback" data-id="${esc(item.id)}">Incorrect finding</button>` : ""}
+                    </div>
+                </div>`).join("") : `<div class="empty">No correction-plan items are available.</div>`;
+            correctionBox.querySelectorAll(".correction-decision").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, btn.dataset.decision, "")));
+            correctionBox.querySelectorAll(".correction-feedback").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, "rejected", "User marked this as an incorrect finding.")));
+        }
+
+        const voice = data.academic_voice_review || {};
+        const voiceSignals = Array.isArray(voice.signals) ? voice.signals : [];
+        setCount("countVoice", voiceSignals.length);
+        const voiceSummary = $("voiceSummary");
+        if (voiceSummary) {
+            const summary = voice.summary || {};
+            voiceSummary.innerHTML = `<strong>Voice readiness: ${esc(summary.voice_readiness_score ?? "--")}/100</strong><br>
+                Critical: ${esc(summary.critical || 0)} · Important: ${esc(summary.important || 0)} · Optional: ${esc(summary.optional || 0)}<br>
+                ${esc(voice.disclaimer || "This review identifies writing patterns, not authorship.")}`;
+        }
+        const voiceBox = $("voiceContent");
+        if (voiceBox) {
+            voiceBox.innerHTML = voiceSignals.length ? voiceSignals.map((item, index) => `
+                <div class="guidance-item priority-${esc(item.priority || "optional")}">
+                    <div class="guidance-meta">${esc(item.priority)} · ${esc(item.signal)} · Signal ${index + 1}</div>
+                    <p>${esc(item.passage || "")}</p>
+                    <div><strong>Why flagged:</strong> ${esc(item.why_flagged || "")}</div>
+                    <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
+                    ${item.passage && item.passage !== "Document-level pattern" ? `<button class="btn btn-outline use-voice-passage" data-index="${index}" style="margin-top:10px;">Use passage for revision</button>` : ""}
+                </div>`).join("") : `<div class="empty">No writing-pattern signals were identified.</div>`;
+            voiceBox.querySelectorAll(".use-voice-passage").forEach(btn => btn.addEventListener("click", () => {
+                const signal = voiceSignals[Number(btn.dataset.index)];
+                if ($("rewritePassage") && signal) $("rewritePassage").value = signal.passage || "";
+                $("rewritePassage")?.scrollIntoView({behavior:"smooth", block:"center"});
+            }));
+        }
+
+        const privacy = data.privacy || {};
+        const privacyMessage = $("privacyMessage");
+        if (privacyMessage) {
+            privacyMessage.textContent = privacy.content_deleted
+                ? "Your manuscript content and detailed results have been deleted."
+                : `${privacy.message || "Temporary processing is active."}${privacy.scheduled_deletion_at ? " Automatic deletion deadline: " + new Date(privacy.scheduled_deletion_at).toLocaleString() : ""}`;
+        }
+        if (privacy.content_deleted) {
+            if ($("btnDownloadDelete")) $("btnDownloadDelete").disabled = true;
+            if ($("btnDeleteNow")) $("btnDeleteNow").disabled = true;
+        }
+    }
+
+    async function saveCorrectionDecision(itemId, decision, note) {
+        const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/decision`, {
+            method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, decision, note})
+        });
+        const js = await response.json();
+        if (!response.ok) { setStatus(js.detail || "Could not save correction decision.", "bad"); return; }
+        latestResults.correction_plan = js.correction_plan;
+        renderStudentGuidance(latestResults);
+        setStatus(`Correction decision saved: ${decision}.`, "good");
+    }
+
+    function fixNextIssue() {
+        const next = document.querySelector('#correctionContent .guidance-item[data-decision="pending"]');
+        if (!next) { setStatus("All correction items have a recorded decision.", "good"); return; }
+        next.scrollIntoView({behavior:"smooth", block:"center"});
+        next.style.outline = "3px solid #19b36b";
+        setTimeout(() => next.style.outline = "", 2200);
+    }
+
+    async function rewriteSelectedPassage() {
+        const passage = ($("rewritePassage")?.value || "").trim();
+        if (!passage) { alert("Select or paste a passage first."); return; }
+        const btn = $("btnRewritePassage");
+        const box = $("rewriteResult");
+        if (btn) btn.disabled = true;
+        if (box) { box.style.display = "block"; box.textContent = "Preparing a meaning-preserving revision..."; }
+        try {
+            const response = await fetch("/api/academic-voice/rewrite", {
+                method: "POST", headers: {"Content-Type":"application/json"},
+                body: JSON.stringify({job_id: JOB_ID, passage, spelling:"British English"})
+            });
+            const js = await response.json();
+            if (!response.ok) throw new Error(js.detail || "Revision failed.");
+            const rev = js.revision || {};
+            if (box) box.innerHTML = `<strong>Suggested revision</strong><p>${esc(rev.revised_passage || "")}</p>
+                <p class="small-muted">Meaning changed: ${esc(rev.meaning_changed)} · Citations preserved: ${esc(rev.citations_preserved)} · Confidence: ${esc(rev.confidence)}</p>
+                <p><strong>Review warning:</strong> ${esc(rev.student_review_warning || js.notice || "Review every change.")}</p>`;
+        } catch (error) {
+            if (box) box.textContent = error.message;
+        } finally { if (btn) btn.disabled = false; }
+    }
+
+    async function compareRevisionJourney() {
+        const revisedJobId = ($("revisedJobId")?.value || "").trim();
+        if (!revisedJobId) { alert("Enter the revised analysis job ID."); return; }
+        const response = await fetch("/api/revision-compare", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({original_job_id:JOB_ID, revised_job_id:revisedJobId})});
+        const js = await response.json();
+        if (!response.ok) { setStatus(js.detail || "Comparison failed.", "bad"); return; }
+        const before=js.before||{}, after=js.after||{}, change=js.change||{};
+        $("revisionComparison").innerHTML = `<strong>Revision comparison</strong><table><thead><tr><th>Measure</th><th>Run 1</th><th>Run 2</th><th>Improvement</th></tr></thead><tbody>
+            <tr><td>ACII</td><td>${esc(before.acii ?? "--")}</td><td>${esc(after.acii ?? "--")}</td><td>${esc(change.acii_change ?? "--")}</td></tr>
+            <tr><td>Missing references</td><td>${esc(before.missing_references)}</td><td>${esc(after.missing_references)}</td><td>${esc(change.missing_references_resolved)}</td></tr>
+            <tr><td>Uncited references</td><td>${esc(before.uncited_references)}</td><td>${esc(after.uncited_references)}</td><td>${esc(change.uncited_references_resolved)}</td></tr>
+            <tr><td>Verified sources</td><td>${esc(before.verified_sources)}</td><td>${esc(after.verified_sources)}</td><td>${esc(change.verified_sources_increased)}</td></tr>
+            <tr><td>Unsupported claims</td><td>${esc(before.unsupported_claims)}</td><td>${esc(after.unsupported_claims)}</td><td>${esc(change.unsupported_claims_resolved)}</td></tr>
+            <tr><td>Formatting issues</td><td>${esc(before.formatting_issues)}</td><td>${esc(after.formatting_issues)}</td><td>${esc(change.formatting_errors_resolved)}</td></tr>
+            <tr><td>Remaining submission risks</td><td>${esc(before.remaining_submission_risks)}</td><td>${esc(after.remaining_submission_risks)}</td><td>${esc(change.total_resolved)}</td></tr>
+        </tbody></table><p><strong>Final readiness:</strong> ${esc(js.readiness)}</p>`;
+    }
+
+    function downloadAndDelete() {
+        if (!confirm("Download the complete report package and permanently delete the manuscript content and detailed results after delivery?")) return;
+        window.location.href = `/api/report-package/${encodeURIComponent(JOB_ID)}?delete_after=1`;
+        setTimeout(() => { if ($("privacyMessage")) $("privacyMessage").textContent = "Download started. The server will delete manuscript content after completing delivery."; }, 500);
+    }
+
+    async function deleteNow() {
+        if (!confirm("Permanently delete the manuscript content and detailed results now? This cannot be undone.")) return;
+        const response = await fetch(`/api/privacy/${encodeURIComponent(JOB_ID)}`, {method:"DELETE"});
+        const js = await response.json();
+        if (!response.ok) { alert(js.detail || "Deletion failed."); return; }
+        if ($("privacyMessage")) $("privacyMessage").textContent = "Your manuscript content and detailed results have been deleted.";
+        if ($("btnDownloadDelete")) $("btnDownloadDelete").disabled = true;
+        if ($("btnDeleteNow")) $("btnDeleteNow").disabled = true;
+    }
+
     function renderAll(rawData) {
         if (!rawData) return;
         const data = hydrateFinalDefaults(normalizeData(rawData));
@@ -3308,6 +3520,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderSuggestions(data);
         renderManualVerification(data);
         renderCertificate(data);
+        renderStudentGuidance(data);
         updateCounts(data);
         maybeStartEnrichmentPolling(data);
     }
@@ -4764,6 +4977,11 @@ ${claimTable}
         $("btnExportWord")?.addEventListener("click", exportWord);
         $("btnExportRefsDocx")?.addEventListener("click", () => exportVerifiedReferences("docx"));
         $("btnExportRefsHtml")?.addEventListener("click", () => exportVerifiedReferences("html"));
+        $("btnRewritePassage")?.addEventListener("click", rewriteSelectedPassage);
+        $("btnFixNext")?.addEventListener("click", fixNextIssue);
+        $("btnCompareRevision")?.addEventListener("click", compareRevisionJourney);
+        $("btnDownloadDelete")?.addEventListener("click", downloadAndDelete);
+        $("btnDeleteNow")?.addEventListener("click", deleteNow);
         $("btnDownloadCertificate")?.addEventListener("click", function () {
             if (!hasPaidAccess(latestResults || {})) {
                 renderPaywall(latestResults || {});
