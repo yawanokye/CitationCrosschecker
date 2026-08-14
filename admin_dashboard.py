@@ -710,7 +710,7 @@ async def commercial_dashboard_page(request: Request):
             <h1>CiteIntegrity Commercial Dashboard</h1>
             <div class="sub">Files, emails, payment records, analysis counts and verification statistics.</div>
         </div>
-        <a class="btn primary" id="downloadCsv" href="#">Download CSV</a>
+        <div><a class="btn" href="/developer/access">Developer Access Control</a> <a class="btn primary" id="downloadCsv" href="#">Download CSV</a></div>
     </div>
 </header>
 

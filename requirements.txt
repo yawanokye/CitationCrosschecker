@@ -27,3 +27,4 @@ rq==1.15.1
 
 stripe
 reportlab>=4.0
+openai>=1.68.0

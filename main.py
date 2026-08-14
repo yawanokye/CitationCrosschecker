@@ -2,6 +2,8 @@
 # MAIN_BUILD = "DEMO_MAIN-web-safe-queue-worker-health-2026-06-01-v1.5.44"
 
 import io
+import asyncio
+import base64
 import os
 import re
 import uuid
@@ -57,6 +59,7 @@ except Exception as e:
 # FastAPI and web frameworks
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -81,6 +84,20 @@ from reference_formatter import (
     export_references_to_docx,
     export_references_to_html,
     DOCX_AVAILABLE
+)
+from academic_voice import analyse_academic_voice, rewrite_selected_passage
+from correction_plan import build_correction_plan, compare_revision_results
+from source_risk import assess_source_risks
+from payment_control import get_access_mode, set_access_mode, open_access_payload
+from document_correction_pack import build_annotated_document, build_tracked_changes_document
+from citation_coach import build_citation_coach
+from privacy_lifecycle import (
+    CONTENT_TTL_SECONDS,
+    DELETE_AFTER_PACKAGE_DOWNLOAD,
+    attach_privacy_status,
+    build_report_package,
+    purge_result_content,
+    redis_content_keys,
 )
 
 
@@ -114,10 +131,8 @@ REDIS_URL = os.environ.get("REDIS_URL")
 # ===============================
 # TRAINING / DEMONSTRATION MODE
 # ===============================
-# This build is intended for training and live demonstrations. It does not expose
-# payment details and it grants full-review access to every completed result so
-# certificate, advanced enrichment, citation-needed claims and exports remain open.
-DEMO_UNLOCK_ALL_FEATURES = os.environ.get("DEMO_UNLOCK_ALL_FEATURES", "true").strip().lower() not in {"0", "false", "no"}
+# Production is the safe default. Demonstration access must be explicitly enabled.
+DEMO_UNLOCK_ALL_FEATURES = os.environ.get("DEMO_UNLOCK_ALL_FEATURES", "false").strip().lower() in {"1", "true", "yes", "on"}
 DEMO_ACCESS_EMAIL = os.environ.get("DEMO_ACCESS_EMAIL", "demo@citeintegrity.org")
 
 # Keep the web service responsive. Heavy recovery, claim-support and large-text
@@ -682,8 +697,8 @@ def increment_counter():
 
 security = HTTPBasic()
 
-USERNAME = "admin"
-PASSWORD = "Ano77kye7509#"
+USERNAME = os.environ.get("DEVELOPER_USERNAME", "admin")
+PASSWORD = os.environ.get("DEVELOPER_PASSWORD", "Ano77kye7509#")
 
 def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
     correct_username = secrets.compare_digest(credentials.username, USERNAME)
@@ -696,19 +711,89 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": 'Basic realm="Secure Area"'},
         )
 
+
+def developer_request_is_authorized(request: Request) -> bool:
+    """Allow developers to test the full product while public maintenance mode is active."""
+    authorization = request.headers.get("authorization", "")
+    if not authorization.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(authorization.split(" ", 1)[1], validate=True).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
+
 APP_TITLE = "CitationCrosschecker"
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.0").strip()
+RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 
 
 # ===============================
 # LIFESPAN MANAGER
 # ===============================
 
+def cleanup_expired_manuscript_content(limit: int = 200) -> Dict[str, int]:
+    """Best-effort expiry pass. Safe to run at startup and before new uploads."""
+    if not DATABASE_URL:
+        return {"checked": 0, "deleted": 0}
+    cutoff = datetime.utcnow() - timedelta(seconds=CONTENT_TTL_SECONDS)
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    cursor = conn.cursor()
+    checked = deleted = 0
+    try:
+        cursor.execute(
+            """
+            SELECT job_id, result FROM jobs
+            WHERE created_at < %s
+              AND status IN ('completed', 'failed')
+              AND COALESCE((result->'privacy'->>'content_deleted')::boolean, false) = false
+            ORDER BY created_at ASC LIMIT %s
+            """,
+            (cutoff, int(limit)),
+        )
+        for row in cursor.fetchall():
+            checked += 1
+            result = row.get("result") or {}
+            if isinstance(result, str):
+                result = json.loads(result)
+            minimal = purge_result_content(result, reason="automatic_expiry")
+            cursor.execute("UPDATE jobs SET result = %s::jsonb WHERE job_id = %s", (json.dumps(minimal), row["job_id"]))
+            if redis_conn:
+                redis_conn.delete(*list(redis_content_keys(row["job_id"])))
+            deleted += 1
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        print(f"[PRIVACY] Expiry cleanup failed: {exc}")
+    finally:
+        cursor.close()
+        conn.close()
+    return {"checked": checked, "deleted": deleted}
+
+
+async def _privacy_cleanup_loop():
+    interval = max(300, int(os.environ.get("CONTENT_CLEANUP_INTERVAL_SECONDS", "3600")))
+    while True:
+        await asyncio.sleep(interval)
+        await run_in_threadpool(cleanup_expired_manuscript_content)
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     print("🚀 Starting Citation Crosschecker...")
     stats = stats_tracker.get_stats(detailed=False)
     print(f"📈 Stats tracker loaded: {stats['total_stats']['total_uploads']} total uploads")
-    yield
+    cleanup = cleanup_expired_manuscript_content()
+    print(f"🧹 Temporary-content cleanup: {cleanup}")
+    cleanup_task = asyncio.create_task(_privacy_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
     print("👋 Shutting down...")
 
 app = FastAPI(
@@ -869,6 +954,58 @@ async def force_single_domain(request: Request, call_next):
         )
 
     return await call_next(request)
+
+
+@app.middleware("http")
+async def maintenance_gate(request: Request, call_next):
+    """Block public use during upgrades without restricting authenticated developers."""
+    path = request.url.path
+    if path == "/health" or path.startswith("/developer/access") or path.startswith("/api/developer/access"):
+        return await call_next(request)
+    if developer_request_is_authorized(request):
+        return await call_next(request)
+
+    state = get_access_mode(DATABASE_URL, redis_conn)
+    if state.get("mode") != "maintenance":
+        return await call_next(request)
+
+    message = html.escape(str(state.get("maintenance_message") or "CiteIntegrity is undergoing scheduled maintenance while an upgrade is tested."))
+    check_at = str(state.get("maintenance_check_at") or "")
+    retry_after = "3600"
+    if path.startswith(("/api/", "/verify", "/result", "/analyse")) or request.method not in {"GET", "HEAD"}:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "maintenance": True,
+                "message": html.unescape(message),
+                "check_back_at": check_at or None,
+                "automatic_reopening": False,
+            },
+            headers={"Retry-After": retry_after, "Cache-Control": "no-store"},
+        )
+
+    check_markup = (
+        f'<p class="check">Please check again on or after <time id="checkTime" datetime="{html.escape(check_at)}">{html.escape(check_at)}</time>.</p>'
+        if check_at else '<p class="check">Please check again later.</p>'
+    )
+    localize_script = (
+        "<script>const t=document.getElementById('checkTime');if(t){const d=new Date(t.dateTime);"
+        "if(!Number.isNaN(d.getTime()))t.textContent=d.toLocaleString(undefined,{dateStyle:'full',timeStyle:'short'});}</script>"
+        if check_at else ""
+    )
+    return HTMLResponse(
+        f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CiteIntegrity maintenance</title><style>
+body{{margin:0;background:#f3f7f5;color:#172033;font-family:Arial,sans-serif;display:grid;min-height:100vh;place-items:center}}
+main{{width:min(620px,calc(100% - 40px));background:#fff;border-radius:18px;padding:38px;box-shadow:0 14px 45px #15251d18;border-top:6px solid #0f7a4f}}
+.eyebrow{{color:#0f7a4f;font-weight:800;letter-spacing:.08em;text-transform:uppercase;font-size:.78rem}}h1{{font-size:2rem;margin:.55rem 0 1rem}}p{{line-height:1.6}}.check{{background:#edf8f2;border-radius:10px;padding:14px;font-weight:700}}.privacy{{font-size:.9rem;color:#52605a}}a{{color:#0f6946}}
+</style></head><body><main><div class="eyebrow">Scheduled upgrade</div><h1>CiteIntegrity is temporarily unavailable</h1>
+<p>{message}</p>{check_markup}<p>The check-back time is an estimate. Public access will resume after the developer completes testing and reopens the service.</p>
+<p class="privacy">Uploaded manuscripts and reports continue to follow the configured temporary-storage and deletion schedule.</p>
+<p><a href="/developer/access">Developer testing access</a></p></main>{localize_script}</body></html>""",
+        status_code=503,
+        headers={"Retry-After": retry_after, "Cache-Control": "no-store"},
+    )
 # =========================
 # SECURITY HEADERS (3rd)
 # =========================
@@ -3189,7 +3326,8 @@ async def results_dashboard_page(request: Request, job_id: str, verify: int = 0)
         {
             "request": request,
             "job_id": job_id,
-            "auto_verify": "true" if verify == 1 else "false"
+            "auto_verify": "true" if verify == 1 else "false",
+            "demo_mode": "true" if DEMO_UNLOCK_ALL_FEATURES else "false",
         }
     )
 
@@ -3201,7 +3339,8 @@ async def new_results_dashboard_page(request: Request, job_id: str, verify: int 
         {
             "request": request,
             "job_id": job_id,
-            "auto_verify": "true" if verify == 1 else "false"
+            "auto_verify": "true" if verify == 1 else "false",
+            "demo_mode": "true" if DEMO_UNLOCK_ALL_FEATURES else "false",
         }
     )
 
@@ -3559,6 +3698,57 @@ async def clear_large_worker_autostart_lock_endpoint(_auth: Any = Depends(authen
         return {"ok": False, "message": "Redis not connected"}
     redis_conn.delete("citeintegrity:large-worker:autostart-lock")
     return {"ok": True, "message": "Large-worker autostart lock cleared"}
+
+
+@app.get("/developer/access", response_class=HTMLResponse)
+async def developer_access_page(_auth: Any = Depends(authenticate)):
+    state = get_access_mode(DATABASE_URL, redis_conn)
+    mode = state.get("mode", "payment_required")
+    expiry_text = html.escape(str(state.get("expires_at") or "Not applicable"))
+    checked_payment = "checked" if mode == "payment_required" else ""
+    checked_open = "checked" if mode == "open_access" else ""
+    checked_maintenance = "checked" if mode == "maintenance" else ""
+    maintenance_check_text = html.escape(str(state.get("maintenance_check_at") or "Not applicable"))
+    maintenance_message_text = html.escape(str(state.get("maintenance_message") or "CiteIntegrity is undergoing scheduled maintenance while an upgrade is tested."))
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>CiteIntegrity Developer Access</title>
+<style>body{{font-family:Arial,sans-serif;background:#f4f7f6;color:#172033;margin:0}}main{{max-width:760px;margin:50px auto;background:white;padding:32px;border-radius:16px;box-shadow:0 8px 30px #0001}}h1{{margin-top:0}}label{{display:block;border:1px solid #dbe4e0;padding:18px;border-radius:10px;margin:12px 0}}button{{background:#0f7a4f;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer}}.warning{{background:#fff7ed;border-left:4px solid #f59e0b;padding:12px}}code{{background:#eef2f1;padding:2px 5px}}</style></head><body><main>
+<h1>Developer Access Control</h1><p>Current mode: <strong id="currentMode">{html.escape(mode.replace('_',' ').title())}</strong><br>Open-access expiry: <strong id="expiryTime">{expiry_text}</strong><br>Maintenance check-back time: <strong id="maintenanceCheck">{maintenance_check_text}</strong></p>
+<p><strong>Deployment under test:</strong> release {html.escape(RELEASE_VERSION)}, slot {html.escape(RELEASE_SLOT)}. Confirm this identity before promoting a preview deployment.</p>
+<form id="accessForm">
+<label><input type="radio" name="mode" value="payment_required" {checked_payment}> <strong>Payment-controlled access</strong><br>Free preview is limited. Full Review requires a successful payment or valid entitlement.</label>
+<label><input type="radio" name="mode" value="open_access" {checked_open}> <strong>Temporarily open Full Review for all users</strong><br>All completed analyses receive Full Review access without payment until the selected period expires.</label>
+<label><input type="radio" name="mode" value="maintenance" {checked_maintenance}> <strong>Block public usage for maintenance</strong><br>Public users see a maintenance notice and check-back time. Authenticated developers retain full access for upgrade testing.</label>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0"><label style="margin:0"><strong>Duration or check-back period</strong><br><input type="number" name="duration_value" min="1" max="365" value="1" style="width:90%;padding:10px;margin-top:8px"></label><label style="margin:0"><strong>Period</strong><br><select name="duration_unit" style="width:95%;padding:10px;margin-top:8px"><option value="hours">Hours</option><option value="days">Days</option><option value="weeks">Weeks</option></select></label></div>
+<label><strong>Maintenance notice</strong><br><textarea name="maintenance_message" rows="3" maxlength="500" style="width:95%;padding:10px;margin-top:8px">{maintenance_message_text}</textarea></label>
+<p class="warning">Open access is a global commercial setting. It does not disable document privacy or deletion controls.</p>
+<button type="submit">Save access mode</button> <span id="status"></span>
+</form><script>
+document.getElementById('accessForm').addEventListener('submit', async (event) => {{
+ event.preventDefault(); const form=new FormData(event.target); const mode=form.get('mode'); const duration_value=Number(form.get('duration_value')); const duration_unit=form.get('duration_unit'); const maintenance_message=form.get('maintenance_message');
+ if(mode==='open_access' && !confirm('Open Full Review access to every user without payment?')) return;
+ if(mode==='maintenance' && !confirm('Block all public usage and show the maintenance notice? Developer authentication will still allow testing.')) return;
+ const response=await fetch('/api/developer/access',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{mode,duration_value,duration_unit,maintenance_message}})}});
+ const data=await response.json(); document.getElementById('status').textContent=response.ok?'Saved.':(data.detail||'Failed.');
+ if(response.ok) {{ document.getElementById('currentMode').textContent=data.mode.replaceAll('_',' '); document.getElementById('expiryTime').textContent=data.expires_at||'Not applicable'; document.getElementById('maintenanceCheck').textContent=data.maintenance_check_at||'Not applicable'; }}
+}});
+</script></main></body></html>""")
+
+
+@app.get("/api/developer/access")
+async def developer_access_status(_auth: Any = Depends(authenticate)):
+    return get_access_mode(DATABASE_URL, redis_conn)
+
+
+@app.post("/api/developer/access")
+async def developer_access_update(request: Request, credentials: HTTPBasicCredentials = Depends(security)):
+    authenticate(credentials)
+    payload = await request.json()
+    try:
+        return set_access_mode(str(payload.get("mode") or ""), credentials.username, DATABASE_URL, redis_conn, payload.get("duration_value"), str(payload.get("duration_unit") or "hours"), str(payload.get("maintenance_message") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 # ============================================================
@@ -5001,6 +5191,58 @@ def _demo_build_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[st
 # RESULT CHECK ENDPOINT
 # ============================================================
 
+def _prepare_student_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach explainable, lightweight student guidance to a completed result."""
+    result = result or {}
+    if result.get("result_deleted"):
+        return attach_privacy_status(result)
+    if not result.get("academic_voice_review"):
+        manuscript_text = (
+            result.get("main_text") or result.get("full_text") or
+            result.get("document_text") or result.get("text") or ""
+        )
+        if manuscript_text:
+            result["academic_voice_review"] = analyse_academic_voice(manuscript_text)
+    result["source_risk_review"] = assess_source_risks(result)
+    result["citation_improvement_coach"] = build_citation_coach(result)
+    result["correction_plan"] = build_correction_plan(result)
+    access_control = get_access_mode(DATABASE_URL, redis_conn)
+    result["global_access_control"] = access_control
+    if access_control.get("mode") == "open_access":
+        result["access"] = open_access_payload()
+        result["payment_required"] = False
+    return attach_privacy_status(result)
+
+
+def _purge_job_content(job_id: str, reason: str = "user_requested") -> Dict[str, Any]:
+    """Remove manuscript content while retaining minimal transaction/job metadata."""
+    job = load_job_record_fresh(job_id)
+    if not job:
+        return {"ok": False, "message": "Job not found"}
+    minimal = purge_result_content(job.get("result") or {}, reason=reason)
+    if DATABASE_URL:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE jobs SET result = %s::jsonb WHERE job_id = %s",
+                (json.dumps(minimal), job_id),
+            )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+    if redis_conn:
+        try:
+            redis_conn.delete(*list(redis_content_keys(job_id)))
+        except Exception as exc:
+            print(f"[PRIVACY] Redis deletion failed for {job_id}: {exc}")
+    with _lock:
+        if job_id in _store:
+            _store[job_id]["result"] = minimal
+            _store[job_id].pop("fixed_document", None)
+    return {"ok": True, "job_id": job_id, "privacy": minimal.get("privacy")}
+
 @app.get("/result/{job_id}")
 async def get_result(job_id: str, fresh: int = 0):
     """Get job status and result.
@@ -5016,6 +5258,7 @@ async def get_result(job_id: str, fresh: int = 0):
             try:
                 cached_result = json.loads(cached)
                 cached_result = _demo_prepare_full_review_result(job_id, cached_result, persist=False)
+                cached_result = _prepare_student_result(cached_result)
                 return {"status": "completed", "data": cached_result}
             except:
                 pass
@@ -5041,6 +5284,7 @@ async def get_result(job_id: str, fresh: int = 0):
                 if isinstance(result, str):
                     result = json.loads(result)
                 result = _demo_prepare_full_review_result(job_id, result, persist=True)
+                result = _prepare_student_result(result)
                 return {"status": "completed", "data": result}
             elif row["status"] == "processing":
                 return {"status": "processing", "message": "Processing in background"}
@@ -5054,6 +5298,131 @@ async def get_result(job_id: str, fresh: int = 0):
             return {"status": "error", "error": str(e)}
     
     return {"status": "pending", "message": "Job not found"}
+
+
+@app.get("/api/privacy/{job_id}")
+async def get_privacy_status(job_id: str):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = attach_privacy_status(job.get("result") or {})
+    return {"job_id": job_id, "privacy": result.get("privacy")}
+
+
+@app.delete("/api/privacy/{job_id}")
+async def delete_job_content(job_id: str):
+    outcome = _purge_job_content(job_id, reason="user_requested")
+    if not outcome.get("ok"):
+        raise HTTPException(status_code=404, detail=outcome.get("message"))
+    return outcome
+
+
+@app.get("/api/report-package/{job_id}")
+async def download_complete_report_package(job_id: str, delete_after: int = 1):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = _prepare_student_result(job.get("result") or {})
+    if result.get("result_deleted"):
+        raise HTTPException(status_code=410, detail="Manuscript content and detailed results have already been deleted.")
+    original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
+    file_name = str(job.get("file_name") or result.get("file_name") or "manuscript.docx")
+    annotated = build_annotated_document(original_bytes, result.get("correction_plan") or {}, file_name)
+    tracked, change_manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, file_name)
+    package = build_report_package(job_id, result, extra_files={
+        "CiteIntegrity_Annotated_Manuscript.docx": annotated,
+        "CiteIntegrity_Track_Changes.docx": tracked,
+        "track_changes_manifest.json": json.dumps(change_manifest, indent=2).encode("utf-8"),
+    })
+    should_delete = bool(delete_after) and DELETE_AFTER_PACKAGE_DOWNLOAD
+    background = BackgroundTask(_purge_job_content, job_id, "download_completed") if should_delete else None
+    return Response(
+        content=package,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="CiteIntegrity_Report_{job_id[:8]}.zip"',
+            "Cache-Control": "no-store, max-age=0",
+            "X-Content-Deletion": "after-download" if should_delete else "scheduled-expiry",
+        },
+        background=background,
+    )
+
+
+@app.get("/api/academic-voice/{job_id}")
+async def get_academic_voice_review(job_id: str):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = _prepare_student_result(job.get("result") or {})
+    if result.get("result_deleted"):
+        raise HTTPException(status_code=410, detail="Manuscript content has been deleted.")
+    return result.get("academic_voice_review") or {
+        "feature": "Authentic Academic Voice Review",
+        "signals": [],
+        "message": "No extractable manuscript text was available for this review.",
+    }
+
+
+@app.post("/api/corrections/{job_id}/decision")
+async def save_correction_decision(job_id: str, request: Request):
+    payload = await request.json()
+    item_id = str(payload.get("item_id") or "").strip()
+    decision = str(payload.get("decision") or "").strip().lower()
+    if decision not in {"accepted", "rejected", "ignored", "resolved", "pending"}:
+        raise HTTPException(status_code=400, detail="Decision must be accepted, rejected, ignored, resolved, or pending.")
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = job.get("result") or {}
+    plan = build_correction_plan(result)
+    if item_id not in {item.get("id") for item in plan.get("items") or []}:
+        raise HTTPException(status_code=404, detail="Correction item not found")
+    decisions = result.setdefault("correction_decisions", {})
+    decisions[item_id] = {
+        "decision": decision,
+        "note": str(payload.get("note") or "")[:1000],
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    result["correction_plan"] = build_correction_plan(result)
+    _manual_save_result(job_id, result)
+    return {"ok": True, "item_id": item_id, "decision": decision, "correction_plan": result["correction_plan"]}
+
+
+@app.post("/api/academic-voice/rewrite")
+async def rewrite_academic_voice(request: Request):
+    payload = await request.json()
+    passage = str(payload.get("passage") or "")
+    if not passage.strip():
+        raise HTTPException(status_code=400, detail="Select a passage to revise.")
+    try:
+        revision = await run_in_threadpool(
+            rewrite_selected_passage,
+            passage,
+            str(payload.get("context") or ""),
+            str(payload.get("discipline") or ""),
+            str(payload.get("spelling") or "British English"),
+            None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {
+        "revision": revision,
+        "notice": "Review every change. CiteIntegrity does not guarantee AI-detector outcomes and never replaces responsible authorship.",
+    }
+
+
+@app.post("/api/revision-compare")
+async def compare_revision(request: Request):
+    payload = await request.json()
+    original_id = str(payload.get("original_job_id") or "")
+    revised_id = str(payload.get("revised_job_id") or "")
+    original = load_job_record_fresh(original_id) if original_id else None
+    revised = load_job_record_fresh(revised_id) if revised_id else None
+    if not original or not revised:
+        raise HTTPException(status_code=404, detail="Both completed analysis job IDs are required.")
+    return compare_revision_results(original.get("result") or {}, revised.get("result") or {})
 
 @app.get("/job/{job_id}")
 def get_job_endpoint(job_id: str, include_result: int = 0):
@@ -6703,7 +7072,9 @@ def health():
         "queue": queue_stats,
         "server_busy": queue_stats.get("is_busy", False),
         "redis_connected": redis_conn is not None,
-        "postgresql_connected": DATABASE_URL is not None
+        "postgresql_connected": DATABASE_URL is not None,
+        "release_version": RELEASE_VERSION,
+        "release_slot": RELEASE_SLOT,
     }
 @app.get("/debug/verification-health/{job_id}")
 async def verification_health(job_id: str):

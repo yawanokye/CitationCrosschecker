@@ -4019,6 +4019,10 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
             ttl = max(1, int(RESULT_CACHE_TTL or 900))
             redis_conn.setex(f"result:{job_id}", ttl, json.dumps(result))
 
+        # Retain the original only for the temporary correction-pack window.
+        # It is deleted after package download or by Redis expiry.
+        original_ttl = max(300, int(os.getenv("ORIGINAL_FILE_TTL_SECONDS", "86400")))
+        redis_conn.setex(f"original:{job_id}", original_ttl, file_content)
         if DELETE_FILE_AFTER_PROCESSING:
             redis_conn.delete(f"file:{job_id}")
         
