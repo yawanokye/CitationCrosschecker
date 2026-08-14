@@ -725,7 +725,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.0").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.1").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 
 
@@ -7117,7 +7117,11 @@ async def verification_health(job_id: str):
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": exc.detail, "status_code": exc.status_code, "timestamp": now()}
+        content={"error": exc.detail, "status_code": exc.status_code, "timestamp": now()},
+        # Preserve authentication challenges and any other endpoint-specific
+        # headers. Without WWW-Authenticate, browsers show raw 401 JSON instead
+        # of opening the developer sign-in prompt.
+        headers=exc.headers,
     )
 
 @app.exception_handler(Exception)

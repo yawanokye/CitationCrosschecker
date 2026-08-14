@@ -96,3 +96,9 @@ def test_maintenance_gate_and_developer_bypass_are_present():
     assert "developer_request_is_authorized(request)" in source
     assert 'status_code=503' in source
     assert 'automatic_reopening' in source
+
+
+def test_http_error_handler_preserves_basic_auth_challenge():
+    source = open("main.py", encoding="utf-8").read()
+    assert "headers=exc.headers" in source
+    assert 'WWW-Authenticate' in source

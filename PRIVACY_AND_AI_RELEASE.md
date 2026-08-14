@@ -79,3 +79,7 @@ check-back time is an estimate and does not reopen the service automatically.
 After testing, the developer must explicitly select payment-controlled or
 temporary open access. The health endpoint remains available for deployment
 monitoring, and document expiry/deletion controls continue operating.
+
+Developer authentication responses preserve the `WWW-Authenticate` challenge,
+so a browser visiting `/developer/access` opens its username and password prompt
+instead of displaying a raw 401 JSON response.
