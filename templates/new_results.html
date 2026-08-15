@@ -1499,6 +1499,7 @@
             <span class="output-feature-tip" tabindex="0" data-tooltip="Formats an approved reference in the style detected from the uploaded manuscript.">Style-aware reference ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Shows a clearer academic rewrite. Nothing is inserted until you approve it.">Academic-voice review ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Searches for evidence, lets you open and verify the candidate, then inserts the citation and reference after approval.">Fix claim support ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Audits every reference against the detected style, flags incomplete entries, and places approved corrections in the Track Changes document.">Reference-list style audit ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Downloads four student-ready files and excludes internal JSON and system files.">Clean report package ⓘ</span>
         </div>
     </section>
@@ -1616,7 +1617,7 @@
 
             <div class="tab-pane active" id="correctionPane">
                 <div class="card">
-                    <div class="section-title"><div><h2>Prioritized Correction Plan</h2><p id="correctionHeadline">Preparing your action plan...</p></div><button class="btn btn-primary" id="btnFixNext">Fix next issue</button></div>
+                    <div class="section-title"><div><h2>Prioritized Correction Plan</h2><p id="correctionHeadline">Preparing your action plan...</p></div><div class="actions"><button class="btn btn-green" id="btnApproveReferenceFormatting" title="Approve all complete reference entries that only need style formatting. Incomplete references remain flagged for source verification.">Approve all reference formatting</button><button class="btn btn-primary" id="btnFixNext">Fix next issue</button></div></div>
                     <div id="correctionContent"></div>
                 </div>
             </div>
@@ -1850,7 +1851,7 @@
                     </div>
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th></tr></thead>
+                            <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th><th>Direct correction</th></tr></thead>
                             <tbody id="claimBody"></tbody>
                         </table>
                     </div>
@@ -1987,7 +1988,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-style-aware-claim-track-changes-v1.8.7.4";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-reference-style-audit-v1.8.8.1";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3400,10 +3401,10 @@ document.addEventListener("DOMContentLoaded", function () {
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ Action recorded: ${esc(item.decision)}</strong>${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
                     <div class="privacy-actions correction-decisions">
-                        ${["citation_needed","missing_reference","source_verification","claim_support"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${item.category === "source_verification" ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : "Approve selected source"}</button>` : ""}
+                        ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : (item.category === "reference_incomplete" ? "Replace incomplete reference" : "Approve selected source")}</button>` : ""}
                         ${item.category === "claim_support" ? `<button class="btn btn-outline revise-claim-support" data-id="${esc(item.id)}">Revise or qualify claim</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
-                        ${!["citation_needed","missing_reference","uncited_reference","claim_support"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
+                        ${!["citation_needed","missing_reference","uncited_reference","claim_support","reference_incomplete"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
                         ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
@@ -3475,6 +3476,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!response.ok) throw new Error(js.detail || "Could not save correction decision.");
             latestResults.correction_plan = js.correction_plan;
             renderStudentGuidance(latestResults);
+            renderClaimSupport(latestResults);
             setStatus(`✅ Correction marked ${decision}. The approved change will appear in the Track Changes document.`, "good");
         } catch (error) {
             console.error(error);
@@ -3483,7 +3485,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     async function findCorrectionSources(itemId) {
-        const button = document.querySelector(`.find-correction-sources[data-id="${CSS.escape(itemId)}"]`);
+        const button = document.querySelector(`.find-correction-sources[data-id="${CSS.escape(itemId)}"], .claim-find-source[data-id="${CSS.escape(itemId)}"]`);
         const oldLabel = button?.textContent;
         if (button) { button.disabled = true; button.textContent = "Searching..."; }
         setStatus("Searching Crossref, OpenAlex and other scholarly indexes...", "info");
@@ -3494,6 +3496,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
             if (item) item.source_candidates = js.candidates || [];
             renderStudentGuidance(latestResults);
+            renderClaimSupport(latestResults);
             setStatus((js.candidates || []).length ? `✅ ${(js.candidates || []).length} candidate sources found. Open, verify and select one.` : "No suitable indexed source was found. Revise the claim or search manually instead of forcing a citation.", (js.candidates || []).length ? "good" : "warn");
         } catch (error) {
             console.error(error);
@@ -3511,9 +3514,27 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
         if (!source.opened_by_user) { setStatus("Open the candidate source link before approving it.", "warn"); return; }
         if (!confirm("Confirm that you opened this source and it directly supports the claim or citation.")) return;
-        const action = category === "missing_reference" ? "add_reference" : (category === "source_verification" ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
-        const proposed = ["missing_reference","source_verification"].includes(category) ? source.formatted_reference : source.citation_text;
+        const action = category === "missing_reference" ? "add_reference" : (["source_verification","reference_incomplete"].includes(category) ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
+        const proposed = ["missing_reference","source_verification","reference_incomplete"].includes(category) ? source.formatted_reference : source.citation_text;
         saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, secondary_replacement:source.formatted_reference || "", original_text:item.evidence});
+    }
+
+    async function approveAllReferenceFormatting() {
+        const pending = (latestResults?.correction_plan?.items || []).filter(item => item.category === "reference_style" && item.decision === "pending" && item.confidence === "high");
+        if (!pending.length) { setStatus("No pending complete reference-style corrections were found. Incomplete references still require individual verification.", "warn"); return; }
+        if (!confirm(`Approve ${pending.length} reference-style correction(s) for insertion with Track Changes? Incomplete references will not be approved.`)) return;
+        const btn = $("btnApproveReferenceFormatting");
+        if (btn) btn.disabled = true;
+        try {
+            const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/approve-reference-formatting`, {method:"POST"});
+            const js = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(js.detail || "Could not approve reference formatting.");
+            latestResults.correction_plan = js.correction_plan;
+            renderStudentGuidance(latestResults);
+            setStatus(`✅ ${js.approved_count || 0} reference entries approved. They will appear as Track Changes in the downloadable manuscript.`, "good");
+        } catch (error) {
+            setStatus("Reference-format approval failed: " + error.message, "bad");
+        } finally { if (btn) btn.disabled = false; }
     }
 
     function approveClaimRevision(itemId) {
@@ -4344,13 +4365,13 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!body) return;
 
         if (isLockedPayload(data.claim_support)) {
-            body.innerHTML = lockRow(6, data.claim_support.feature || "Claim Support", data.claim_support.message);
+            body.innerHTML = lockRow(7, data.claim_support.feature || "Claim Support", data.claim_support.message);
             return;
         }
 
         const rows = getSafeRows(data.claim_support);
         if (!rows.length) {
-            body.innerHTML = `<tr><td colspan="6"><div class="empty">No claim-support rows available yet.</div></td></tr>`;
+            body.innerHTML = `<tr><td colspan="7"><div class="empty">No claim-support rows available yet.</div></td></tr>`;
             return;
         }
 
@@ -4363,12 +4384,37 @@ document.addEventListener("DOMContentLoaded", function () {
             const alternatives = renderAlternativeSources(row);
             const score = getSupportScore(row);
             const status = getSupportStatus(row);
-            return `<tr data-status="${esc(status)}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(getClaimText(row))}</td><td>${esc(sourceTitle)}${doiHtml}${note}${alternatives}</td><td>${formatBadge(status)}</td><td>${esc(score)}</td></tr>`;
+            const claimText = getClaimText(row);
+            const correction = (data.correction_plan?.items || []).find(item => item.category === "claim_support" && (item.evidence === claimText || item.supporting_metadata?.citation === row.citation));
+            let directAction = `<div class="small-muted">No linked correction was generated for this row.</div>`;
+            if (correction) {
+                const candidates = Array.isArray(correction.source_candidates) ? correction.source_candidates : [];
+                const candidateList = candidates.length ? `<div style="margin-top:8px"><strong>Select and verify a source:</strong>${candidates.map((source, sourceIndex) => `<label style="display:block;margin-top:7px;padding:7px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(correction.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")}${source.year ? ` (${esc(source.year)})` : ""}${source.url ? `<br><a class="claim-candidate-source-link" data-item-id="${esc(correction.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener" style="color:#075e45;text-decoration:underline;font-weight:800">🔗 Open and verify source</a>` : `<br><span class="small-muted">No evidence link. Do not approve.</span>`}</label>`).join("")}</div>` : "";
+                directAction = correction.decision && correction.decision !== "pending"
+                    ? `<div style="padding:8px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ ${esc(correction.decision)}</strong><br>${esc((correction.approved_action || "Action recorded").replaceAll("_", " "))}</div>`
+                    : `<div class="claim-direct-actions" data-id="${esc(correction.id)}">
+                        <button class="btn btn-outline claim-find-source" data-id="${esc(correction.id)}" title="Search scholarly indexes for a source that directly supports this claim.">Find supporting source</button>
+                        ${candidateList}
+                        <button class="btn btn-green claim-approve-source" data-id="${esc(correction.id)}" data-category="claim_support" ${candidates.length ? "" : "disabled title=\"Find and select a source first\""}>Add selected citation</button>
+                        <button class="btn btn-outline claim-revise" data-id="${esc(correction.id)}" title="Revise or qualify the claim and insert the approved wording with Track Changes.">Revise or qualify claim</button>
+                    </div>`;
+            }
+            return `<tr data-status="${esc(status)}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(claimText)}</td><td>${esc(sourceTitle)}${doiHtml}${note}${alternatives}</td><td>${formatBadge(status)}</td><td>${esc(score)}</td><td style="min-width:260px">${directAction}</td></tr>`;
         }).join("");
 
         if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) {
-            body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
+            body.innerHTML += `<tr><td colspan="7"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
         }
+
+        body.querySelectorAll(".claim-find-source").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id)));
+        body.querySelectorAll(".claim-approve-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, "claim_support")));
+        body.querySelectorAll(".claim-revise").forEach(btn => btn.addEventListener("click", () => approveClaimRevision(btn.dataset.id)));
+        body.querySelectorAll(".claim-candidate-source-link").forEach(link => link.addEventListener("click", () => {
+            const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
+            const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
+            if (source) source.opened_by_user = true;
+            setStatus("✅ Source opened. Confirm that it supports the claim, select it, then click Add selected citation.", "good");
+        }));
     }
 
     function getSuggestions(data) {
@@ -5139,6 +5185,7 @@ ${claimTable}
         $("btnExportRefsHtml")?.addEventListener("click", () => exportVerifiedReferences("html"));
         $("btnRewritePassage")?.addEventListener("click", rewriteSelectedPassage);
         $("btnFixNext")?.addEventListener("click", fixNextIssue);
+        $("btnApproveReferenceFormatting")?.addEventListener("click", approveAllReferenceFormatting);
         $("btnCompareRevision")?.addEventListener("click", compareRevisionJourney);
         $("btnDownloadDelete")?.addEventListener("click", downloadAndDelete);
         $("btnDeleteNow")?.addEventListener("click", deleteNow);
