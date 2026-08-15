@@ -1846,7 +1846,9 @@
                             <option value="moderate_support">Moderate support</option>
                             <option value="related_evidence">Related evidence</option>
                             <option value="weak_or_unclear">Weak or unclear</option>
+                            <option value="weak">Weak support</option>
                             <option value="insufficient_evidence">Insufficient evidence</option>
+                            <option value="mapping_incomplete">Mapping incomplete</option>
                         </select>
                     </div>
                     <div class="table-wrap">
@@ -1988,7 +1990,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-reference-style-audit-v1.8.8.1";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-identity-safe-reference-aware-v1.8.8.2";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3401,10 +3403,10 @@ document.addEventListener("DOMContentLoaded", function () {
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ Action recorded: ${esc(item.decision)}</strong>${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
                     <div class="privacy-actions correction-decisions">
-                        ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : (item.category === "reference_incomplete" ? "Replace incomplete reference" : "Approve selected source")}</button>` : ""}
+                        ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : (["reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Replace verified reference" : "Approve selected source")}</button>` : ""}
                         ${item.category === "claim_support" ? `<button class="btn btn-outline revise-claim-support" data-id="${esc(item.id)}">Revise or qualify claim</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
-                        ${!["citation_needed","missing_reference","uncited_reference","claim_support","reference_incomplete"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
+                        ${!["citation_needed","missing_reference","uncited_reference","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
                         ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
@@ -3514,8 +3516,8 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
         if (!source.opened_by_user) { setStatus("Open the candidate source link before approving it.", "warn"); return; }
         if (!confirm("Confirm that you opened this source and it directly supports the claim or citation.")) return;
-        const action = category === "missing_reference" ? "add_reference" : (["source_verification","reference_incomplete"].includes(category) ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
-        const proposed = ["missing_reference","source_verification","reference_incomplete"].includes(category) ? source.formatted_reference : source.citation_text;
+        const action = category === "missing_reference" ? "add_reference" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
+        const proposed = ["missing_reference","source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? source.formatted_reference : source.citation_text;
         saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, secondary_replacement:source.formatted_reference || "", original_text:item.evidence});
     }
 
