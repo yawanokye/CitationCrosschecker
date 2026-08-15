@@ -5432,11 +5432,10 @@ async def download_complete_report_package(job_id: str, delete_after: int = 1):
     original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
     file_name = str(job.get("file_name") or result.get("file_name") or "manuscript.docx")
     annotated = build_annotated_document(original_bytes, result.get("correction_plan") or {}, file_name)
-    tracked, change_manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, file_name)
+    tracked, _change_manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, file_name)
     package = build_report_package(job_id, result, extra_files={
         "CiteIntegrity_Annotated_Manuscript.docx": annotated,
         "CiteIntegrity_Track_Changes.docx": tracked,
-        "track_changes_manifest.json": json.dumps(change_manifest, indent=2).encode("utf-8"),
     })
     should_delete = bool(delete_after) and DELETE_AFTER_PACKAGE_DOWNLOAD
     background = BackgroundTask(_purge_job_content, job_id, "download_completed") if should_delete else None

@@ -124,12 +124,6 @@ def build_report_package(job_id: str, result: Dict[str, Any], extra_files: Dict[
         "claim_support": result.get("claim_support") or [],
         "citation_needed_claims": result.get("citation_needed_claims") or [],
     }
-    readme = (
-        "CiteIntegrity complete report package\n\n"
-        "The JSON file contains the full structured review available at download time.\n"
-        "The correction plan is intended for human review. A source marked not found is not automatically fabricated.\n"
-        "If delete-after-download is enabled, manuscript content and detailed results are removed after this package is delivered.\n"
-    )
     csv_buffer = io.StringIO()
     writer = csv.writer(csv_buffer)
     writer.writerow(["Priority", "Category", "Title", "Location", "Evidence", "Recommended action", "Decision"])
@@ -151,12 +145,8 @@ def build_report_package(job_id: str, result: Dict[str, Any], extra_files: Dict[
 </tbody></table><h2>Important qualification</h2><p>A source marked not found is not automatically fabricated. All findings require human review.</p></body></html>"""
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("README.txt", readme)
         zf.writestr("submission_readiness_report.html", report_html)
-        zf.writestr("citeintegrity_report.json", json.dumps(manifest, ensure_ascii=False, indent=2, default=str))
-        zf.writestr("correction_plan.json", json.dumps(plan, ensure_ascii=False, indent=2, default=str))
         zf.writestr("correction_plan.csv", csv_buffer.getvalue())
-        zf.writestr("academic_voice_review.json", json.dumps(voice, ensure_ascii=False, indent=2, default=str))
         for file_name, file_bytes in (extra_files or {}).items():
             if file_name and isinstance(file_bytes, (bytes, bytearray)):
                 zf.writestr(_safe_name(file_name), bytes(file_bytes))

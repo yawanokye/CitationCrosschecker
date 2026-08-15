@@ -46,8 +46,18 @@ def test_purge_removes_content_but_keeps_summary():
 
 
 def test_report_package_is_zip():
-    data = build_report_package("job-123", sample_result())
+    data = build_report_package("job-123", sample_result(), extra_files={
+        "CiteIntegrity_Annotated_Manuscript.docx": b"annotated",
+        "CiteIntegrity_Track_Changes.docx": b"tracked",
+    })
     assert data[:2] == b"PK"
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        assert set(archive.namelist()) == {
+            "CiteIntegrity_Annotated_Manuscript.docx",
+            "CiteIntegrity_Track_Changes.docx",
+            "correction_plan.csv",
+            "submission_readiness_report.html",
+        }
 
 
 def test_revision_comparison():
