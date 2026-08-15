@@ -7,10 +7,12 @@ from correction_plan import build_correction_plan, compare_revision_results
 from privacy_lifecycle import build_report_package, purge_result_content
 from source_risk import assess_source_risks
 from document_correction_pack import build_annotated_document, build_tracked_changes_document
+from reference_formatter import format_reference
 from payment_control import default_mode
 from docx import Document
 import io
 import zipfile
+from pathlib import Path
 
 
 def sample_result():
@@ -58,6 +60,15 @@ def test_report_package_is_zip():
             "correction_plan.csv",
             "submission_readiness_report.html",
         }
+
+
+def test_claim_support_table_has_direct_correction_controls():
+    html = Path("templates/new_results.html").read_text(encoding="utf-8")
+    assert "Direct correction" in html
+    assert "claim-find-source" in html
+    assert "claim-approve-source" in html
+    assert "claim-revise" in html
+    assert "Add selected citation" in html
 
 
 def test_revision_comparison():
@@ -240,3 +251,42 @@ def test_style_aware_references_voice_redlines_and_claim_support_actions():
     assert "Suggested academic-voice revision" in ui_source
     assert '"claim_support": ["find_source", "add_supporting_citation", "revise_claim"]' in plan_source
     assert 'return f"{formatted[0]}, & {formatted[1]}"' in formatter
+
+
+def test_v188_reference_style_audit_and_tracked_replacement():
+    result = sample_result()
+    result["selected_style"] = "apa7"
+    result["online_verification"] = {"rows": [{
+        "status": "verified", "reference": "Adam A 2024 Digital integrity Journal 2 1 1-9",
+        "matched_authors_full": ["Adam, Anokye Mohammed"], "matched_year": "2024",
+        "matched_title": "Digital integrity", "matched_container_title": "Journal of Integrity",
+        "matched_volume": "2", "matched_issue": "1", "matched_pages": "1-9",
+        "doi": "10.1000/example",
+    }]}
+    plan = build_correction_plan(result)
+    item = next(row for row in plan["items"] if row["category"] == "reference_style")
+    assert "https://doi.org/10.1000/example" in item["proposed_replacement"]
+    doc = Document(); doc.add_paragraph(item["original_text"])
+    buf = io.BytesIO(); doc.save(buf)
+    item["decision"] = "accepted"
+    tracked, manifest = build_tracked_changes_document(buf.getvalue(), {"items": [item]})
+    assert manifest["applied_count"] == 1
+    with zipfile.ZipFile(io.BytesIO(tracked)) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    assert "<w:del" in xml and "<w:ins" in xml
+
+
+def test_v188_incomplete_reference_is_flagged_not_silently_formatted():
+    result = sample_result()
+    result["selected_style"] = "harvard"
+    result["online_verification"] = {"rows": [{"status": "needs_review", "reference": "Unknown source 2020"}]}
+    plan = build_correction_plan(result)
+    item = next(row for row in plan["items"] if row["category"] == "reference_incomplete")
+    assert item["proposed_replacement"] == ""
+    assert item["auto_apply_allowed"] is False
+    assert "missing_fields" in item["supporting_metadata"]
+
+
+def test_numeric_reference_formatter_uses_numbered_list_order():
+    formatted = format_reference({"authors":["Adam, Anokye"], "year":"2024", "title":"Digital integrity", "source":"Journal", "volume":"2", "issue":"1", "pages":"1-9"}, "numeric_square")
+    assert "Digital integrity." in formatted and "2024;2(1):1-9" in formatted

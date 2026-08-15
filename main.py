@@ -729,7 +729,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.7").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.8").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -5510,6 +5510,12 @@ async def save_correction_decision(job_id: str, request: Request):
             if not original_text or not proposed_replacement or original_text == proposed_replacement:
                 raise HTTPException(status_code=400, detail="Enter revised claim wording before approval.")
             operation = "replace"
+        elif category == "reference_incomplete" and action == "replace_reference":
+            if not approved_source.get("url") or not approved_source.get("title"):
+                raise HTTPException(status_code=400, detail="Open and verify a complete scholarly source before replacing this reference.")
+            if not original_text or not proposed_replacement:
+                raise HTTPException(status_code=400, detail="The original or completed reference text is missing.")
+            operation = "replace"
         elif category == "uncited_reference" and action == "delete_reference":
             operation = "delete"
         elif category == "uncited_reference" and action == "cite_reference":
@@ -5534,6 +5540,32 @@ async def save_correction_decision(job_id: str, request: Request):
     result["correction_plan"] = build_correction_plan(result)
     _manual_save_result(job_id, result)
     return {"ok": True, "item_id": item_id, "decision": decision, "correction_plan": result["correction_plan"]}
+
+
+@app.post("/api/corrections/{job_id}/approve-reference-formatting")
+async def approve_all_reference_formatting(job_id: str):
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = job.get("result") or {}
+    plan = build_correction_plan(result)
+    decisions = result.setdefault("correction_decisions", {})
+    approved = 0
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    for item in plan.get("items") or []:
+        if item.get("category") != "reference_style" or item.get("confidence") != "high" or not item.get("proposed_replacement") or item.get("decision") != "pending":
+            continue
+        decisions[item["id"]] = {
+            "decision": "accepted", "note": "User approved all detected reference-style corrections.",
+            "action": "format_reference", "approved_source": {},
+            "proposed_replacement": item["proposed_replacement"], "secondary_replacement": "",
+            "original_text": item.get("original_text") or item.get("evidence") or "",
+            "track_operation": "replace", "updated_at": timestamp,
+        }
+        approved += 1
+    result["correction_plan"] = build_correction_plan(result)
+    _manual_save_result(job_id, result)
+    return {"ok": True, "approved_count": approved, "correction_plan": result["correction_plan"]}
 
 
 def _candidate_citation_text(candidate: Dict[str, Any]) -> str:
@@ -5657,18 +5689,18 @@ async def find_correction_sources(job_id: str, item_id: str):
     result = job.get("result") or {}
     plan = build_correction_plan(result)
     item = next((row for row in plan.get("items") or [] if row.get("id") == item_id), None)
-    allowed_categories = {"citation_needed", "missing_reference", "source_verification", "claim_support"}
+    allowed_categories = {"citation_needed", "missing_reference", "source_verification", "claim_support", "reference_incomplete"}
     if not item or item.get("category") not in allowed_categories:
-        raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed, missing-reference, claim-support and unverified-reference fixes.")
+        raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed, missing-reference, claim-support, incomplete-reference and unverified-reference fixes.")
     evidence = str(item.get("evidence") or "")
     manuscript_text = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or result.get("text") or "")
     category = item.get("category")
     context = extract_context(manuscript_text, evidence, window=600) if manuscript_text and evidence else ""
-    if category == "source_verification":
+    if category in {"source_verification", "reference_incomplete"}:
         context = _reference_citation_context(manuscript_text, evidence, window=600) or context
     context = context or str((item.get("supporting_metadata") or {}).get("claim") or "") or evidence
     try:
-        if category == "source_verification":
+        if category in {"source_verification", "reference_incomplete"}:
             candidates = await run_in_threadpool(suggest_for_unverified, evidence, 5, "apa", True)
             # If strict metadata recovery finds nothing, use manuscript context
             # as a review-only discovery fallback. It must not silently replace

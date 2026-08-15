@@ -38,6 +38,38 @@ REFERENCE_STYLES = {
     }
 }
 
+
+def format_reference_numeric(reference: Dict[str, Any]) -> str:
+    """Format a numbered-list entry in a conservative Vancouver-like order."""
+    authors = parse_authors(reference.get("authors"))
+    author_text = ", ".join(author.replace(", ", " ") for author in authors)
+    title = str(reference.get("title") or "").strip().rstrip(".")
+    source = str(reference.get("source") or reference.get("publisher") or "").strip().rstrip(".")
+    year = str(reference.get("year") or "").strip()
+    volume = str(reference.get("volume") or "").strip()
+    issue = str(reference.get("issue") or "").strip()
+    pages = str(reference.get("pages") or reference.get("article_number") or "").strip()
+    doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", str(reference.get("doi") or "").strip(), flags=re.I)
+    parts = []
+    if author_text:
+        parts.append(author_text.rstrip(".") + ".")
+    if title:
+        parts.append(title + ".")
+    publication = source
+    if year:
+        publication += (". " if publication else "") + year
+    if volume:
+        publication += (";" if year else ";") + volume
+    if issue:
+        publication += f"({issue})"
+    if pages:
+        publication += f":{pages}"
+    if publication:
+        parts.append(publication.rstrip(".") + ".")
+    if doi:
+        parts.append(f"doi:{doi}")
+    return " ".join(parts).strip()
+
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
@@ -466,6 +498,8 @@ def format_reference(reference: Dict[str, Any], style: str = "apa7") -> str:
     """
     style_lower = style.lower()
     
+    if style_lower.startswith("numeric_") or style_lower in {"vancouver", "ieee", "ama", "nature"}:
+        return format_reference_numeric(reference)
     if style_lower == "apa6":
         return format_reference_apa6(reference)
     elif style_lower == "harvard":

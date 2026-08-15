@@ -6,6 +6,8 @@ from collections import Counter
 from typing import Any, Dict, List
 import re
 
+from reference_formatter import format_reference, validate_reference
+
 
 def _rows(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
@@ -54,6 +56,77 @@ def _metadata(row: Any) -> Dict[str, Any]:
         return {}
     keys = ("source", "status", "support_status", "citation", "source_title", "doi", "matched_doi", "matched_title", "matched_authors", "matched_year", "matched_journal", "matched_volume", "matched_issue", "matched_pages", "url", "evidence_url", "confidence_reason", "score", "support_score")
     return {key: row.get(key) for key in keys if row.get(key) not in (None, "", [])}
+
+
+def _detected_reference_style(result: Dict[str, Any]) -> str:
+    summary = result.get("summary") or {}
+    raw = " ".join(str(value or "").lower() for value in (
+        result.get("selected_style"), result.get("style"), result.get("style_family"), result.get("citation_style"),
+        summary.get("selected_style"), summary.get("style"), summary.get("style_family"), summary.get("citation_style"),
+    ))
+    if "apa6" in raw or "apa 6" in raw:
+        return "apa6"
+    if "harvard" in raw:
+        return "harvard"
+    if "superscript" in raw or any(name in raw for name in ("ama", "nature", "rsc", "acs")):
+        return "numeric_superscript"
+    if "round" in raw:
+        return "numeric_round"
+    if "numeric" in raw or any(name in raw for name in ("vancouver", "ieee", "nlm")):
+        return "numeric_square"
+    return "apa7"
+
+
+def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    verification = result.get("online_verification") or {}
+    rows = _rows(verification.get("rows") if isinstance(verification, dict) else verification)
+    style = _detected_reference_style(result)
+    audited = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        original = str(row.get("reference") or row.get("original_reference") or "").strip()
+        if not original:
+            continue
+        ref = {
+            "authors": row.get("matched_authors_full") or row.get("matched_authors") or row.get("authors") or [],
+            "year": row.get("matched_year") or row.get("year") or "",
+            "title": row.get("matched_title") or row.get("title") or "",
+            "source": row.get("matched_container_title") or row.get("matched_journal") or row.get("journal") or row.get("source") or "",
+            "volume": row.get("matched_volume") or row.get("volume") or "",
+            "issue": row.get("matched_issue") or row.get("issue") or "",
+            "pages": row.get("matched_pages") or row.get("pages") or "",
+            "article_number": row.get("article_number") or "",
+            "doi": row.get("matched_doi") or row.get("doi") or "",
+            "publisher": row.get("publisher") or "",
+            "type": row.get("type") or row.get("publication_type") or "article",
+        }
+        missing = validate_reference(ref)
+        if not ref.get("authors"):
+            missing.append("author information")
+        if not ref.get("title"):
+            missing.append("title")
+        missing = list(dict.fromkeys(missing))
+        formatted = re.sub(r"\s+", " ", re.sub(r"\*", "", format_reference(ref, style))).strip()
+        number_match = re.match(r"^\s*(?:\[(\d+)\]|\((\d+)\)|(\d+)[.)])\s*", original)
+        if style.startswith("numeric_") and number_match:
+            number = next(group for group in number_match.groups() if group)
+            marker = f"[{number}]" if style == "numeric_square" else (f"({number})" if style == "numeric_round" else number.translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")))
+            formatted = f"{marker} {formatted}".strip()
+        comparable_original = re.sub(r"\s+", " ", original).strip().rstrip(".")
+        comparable_formatted = re.sub(r"\s+", " ", formatted).strip().rstrip(".")
+        audited.append({
+            "index": index + 1,
+            "original": original,
+            "formatted": formatted,
+            "missing": missing,
+            "needs_formatting": bool(formatted and comparable_original.casefold() != comparable_formatted.casefold()),
+            "style": style,
+            "status": row.get("status") or "needs_review",
+            "url": row.get("matched_url") or row.get("evidence_url") or row.get("url") or (f"https://doi.org/{ref['doi']}" if ref.get("doi") else ""),
+            "metadata": ref,
+        })
+    return audited
 
 
 def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,6 +190,44 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     weak_claims = [r for r in claim_rows if str((r or {}).get("support_status", (r or {}).get("status", ""))).lower() in {"weak_or_unclear", "insufficient_evidence", "no_support", "source_needs_review"}]
     add("critical", "claim_support", "Claim has weak or unclear support", weak_claims, "Revise or qualify the claim, and confirm that the cited source directly supports it.", "A citation must support the specific claim beside it, not merely discuss a related topic.", "medium")
     add("critical", "citation_needed", "Claim may require a citation", _rows(result.get("citation_needed_claims")), "Add an appropriate source, qualify the statement, or identify it as a result of the present study.", "Unsupported factual, empirical or causal claims reduce scholarly credibility.", "medium")
+
+    for audit in _reference_audit(result):
+        item_id = f"reference-incomplete-{audit['index']}" if audit["missing"] else f"reference-style-{audit['index']}"
+        decision = saved_decisions.get(item_id) or {}
+        if audit["missing"]:
+            items.append({
+                "id": item_id, "priority": "important", "category": "reference_incomplete",
+                "title": "Reference metadata is incomplete",
+                "what_is_wrong": "Missing: " + ", ".join(audit["missing"]),
+                "why_it_matters": "A complete reference allows readers to identify and retrieve the source.",
+                "evidence": audit["original"], "original_text": audit["original"],
+                "location": _locate(manuscript_text, audit["original"]),
+                "recommended_action": "Find and verify the complete source metadata before replacing this reference.",
+                "coach_explanation": "Do not guess missing bibliographic fields. Open and verify a candidate source before approval.",
+                "supporting_metadata": {"detected_style": audit["style"], "missing_fields": audit["missing"], "verification_status": audit["status"]},
+                "confidence": "high", "evidence_link": audit["url"], "proposed_replacement": "",
+                "source_candidates": saved_candidates.get(item_id) or [], "approved_source": decision.get("approved_source") or {},
+                "approved_action": decision.get("action") or "", "track_operation": decision.get("track_operation") or "replace",
+                "available_actions": ["find_source", "replace_reference", "reject", "ignore"], "auto_apply_allowed": False,
+                "decision": decision.get("decision", "pending"), "decision_note": decision.get("note", ""),
+            })
+        elif audit["needs_formatting"]:
+            items.append({
+                "id": item_id, "priority": "important", "category": "reference_style",
+                "title": "Reference does not follow the detected style",
+                "what_is_wrong": f"The entry differs from the detected {audit['style']} reference-list format.",
+                "why_it_matters": "A consistent reference list improves readability and submission readiness.",
+                "evidence": audit["original"], "original_text": audit["original"],
+                "location": _locate(manuscript_text, audit["original"]),
+                "recommended_action": "Replace with: " + audit["formatted"],
+                "coach_explanation": "Confirm that the formatted entry preserves the intended source, then approve it for Track Changes.",
+                "supporting_metadata": {"detected_style": audit["style"], "verification_status": audit["status"]},
+                "confidence": "high" if str(audit["status"]).lower() in {"verified", "likely"} else "medium",
+                "evidence_link": audit["url"], "proposed_replacement": audit["formatted"],
+                "secondary_replacement": "", "approved_action": decision.get("action") or "",
+                "track_operation": decision.get("track_operation") or "replace", "available_actions": ["accept", "reject", "ignore"],
+                "auto_apply_allowed": False, "decision": decision.get("decision", "pending"), "decision_note": decision.get("note", ""),
+            })
 
     autofix = result.get("autofix") or {}
     suggestions = autofix.get("suggestions") or {}
