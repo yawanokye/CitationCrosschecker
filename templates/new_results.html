@@ -1967,7 +1967,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-context-source-recovery-v1.8.7.2";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-action-feedback-false-positive-filters-v1.8.7.3";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3375,13 +3375,14 @@ document.addEventListener("DOMContentLoaded", function () {
                     <p><strong>Evidence:</strong> ${esc(item.evidence || "")}</p>
                     ${item.supporting_metadata && Object.keys(item.supporting_metadata).length ? `<details><summary>Supporting source or metadata</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(item.supporting_metadata, null, 2))}</pre></details>` : ""}
                     ${item.evidence_link ? `<p><a href="${esc(item.evidence_link)}" target="_blank" rel="noopener">Open supporting evidence</a></p>` : ""}
-                    ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>✅ Candidate sources found. Select one, open it, then approve:</strong>${item.source_candidates.map((source, sourceIndex) => `<label style="display:block;margin:8px 0;padding:8px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${source.url ? `<a class="candidate-source-link" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">Open source</a>` : ""}</label>`).join("")}</div>` : ""}
+                    ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>✅ Candidate sources found. Select one, open it, then approve:</strong>${item.source_candidates.map((source, sourceIndex) => `<label style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${source.url ? `<a class="candidate-source-link btn btn-outline" style="margin-left:10px;color:#075e45;text-decoration:underline;font-weight:800" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">🔗 Open candidate source</a><div class="small-muted" style="margin:6px 0 0 28px;word-break:break-all">${esc(source.url)}</div>` : `<span class="small-muted" style="margin-left:8px">No direct source URL supplied. Do not approve.</span>`}</label>`).join("")}</div>` : ""}
                     <p><strong>Confidence:</strong> ${esc(item.confidence ?? "Review required")}</p>
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
+                    ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ Action recorded: ${esc(item.decision)}</strong>${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
                     <div class="privacy-actions correction-decisions">
                         ${["citation_needed","missing_reference","source_verification"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${item.category === "source_verification" ? "Find and verify reference" : "Find scholarly sources"}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>Approve selected source</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
-                        ${!["citation_needed","missing_reference","uncited_reference"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted">Accept</button>` : ""}
+                        ${!["citation_needed","missing_reference","uncited_reference"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
                         ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
@@ -3486,6 +3487,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!selected) { setStatus("Select one candidate source before approval.", "warn"); return; }
         const source = item.source_candidates?.[Number(selected.value)];
         if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
+        if (!source.opened_by_user) { setStatus("Open the candidate source link before approving it.", "warn"); return; }
         if (!confirm("Confirm that you opened this source and it directly supports the claim or citation.")) return;
         const action = category === "missing_reference" ? "add_reference" : (category === "source_verification" ? "replace_reference" : "insert_citation");
         const proposed = ["missing_reference","source_verification"].includes(category) ? source.formatted_reference : source.citation_text;
