@@ -1,5 +1,6 @@
 # citation_suggester.py
 
+import json
 import re
 from typing import List, Dict, Any, Tuple
 
@@ -658,6 +659,7 @@ def suggest_from_context(
     *,
     use_citation_hint: bool = True,
     min_relevance: int = 55,
+    strict_citation_identity: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Suggest review-only scholarly sources from a claim/context.
@@ -719,7 +721,11 @@ def suggest_from_context(
 
         # Conservative gate: do not return candidates with no concept signal unless author+year is strong.
         has_concept_signal = bool(title_score["overlap_terms"] or title_score["phrase_hits"])
-        strong_citation_signal = bool(author_boost >= 10 and year_boost > 0)
+        raw_metadata = json.dumps(cand.get("item") or cand, ensure_ascii=False).lower()
+        identity_author_match = any(author.lower() in raw_metadata for author in citation_authors if author)
+        strong_citation_signal = bool((author_boost >= 10 or identity_author_match) and year_boost > 0)
+        if strict_citation_identity and not strong_citation_signal:
+            continue
         if relevance < min_relevance or not (has_concept_signal or strong_citation_signal):
             continue
 

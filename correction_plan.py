@@ -115,13 +115,30 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
 
     autofix = result.get("autofix") or {}
     suggestions = autofix.get("suggestions") or {}
+    seen_autofixes = set()
     for kind, category in (("citations", "citation_formatting"), ("references", "reference_metadata")):
         for i, row in enumerate(_rows(suggestions.get(kind))):
             if not isinstance(row, dict) or not row.get("original") or not row.get("suggested"):
                 continue
+            original = re.sub(r"\s+", " ", str(row.get("original") or "")).strip()
+            suggested = re.sub(r"\s+", " ", str(row.get("suggested") or "")).strip()
+            confidence_value = float(row.get("confidence", 0) or 0)
+            reason_lower = str(row.get("reason") or "").lower()
+            speculative = any(marker in reason_lower for marker in (
+                "may be a typo", "possible author-name variation", "unique reference year",
+                "review before changing", "citation was not matched", "similar author",
+            ))
+            # Do not turn fuzzy author/year guesses into correction actions.
+            # They belong in manual verification only after external metadata
+            # confirms that both forms identify the same source.
+            if original.lower() == suggested.lower() or confidence_value < .80 or speculative:
+                continue
+            dedupe_key = (category, original.lower(), suggested.lower())
+            if dedupe_key in seen_autofixes:
+                continue
+            seen_autofixes.add(dedupe_key)
             item_id = f"{category}-{i + 1}"
             decision = saved_decisions.get(item_id) or {}
-            confidence_value = float(row.get("confidence", 0) or 0)
             bibliographic_safe = category == "reference_metadata" and confidence_value >= .95 and row.get("fix_type") not in {"review_required", "source_replacement", "new_citation"}
             items.append({
                 "id": item_id,
@@ -130,15 +147,17 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "title": "High-confidence bibliographic correction" if bibliographic_safe else "Formatting correction requires review",
                 "what_is_wrong": row.get("reason") or row.get("issue_type") or "The citation or reference differs from the recommended form.",
                 "why_it_matters": "Accurate and consistent bibliographic details help readers retrieve the intended source.",
-                "evidence": str(row.get("original"))[:900],
-                "location": _locate(manuscript_text, str(row.get("original"))),
+                "evidence": original[:900],
+                "location": _locate(manuscript_text, original),
                 "recommended_action": f"Replace with: {row.get('suggested')}",
                 "coach_explanation": "Compare the original and suggested forms. Accept only when they refer to the same source and preserve the author's intended citation.",
                 "supporting_metadata": _metadata(row),
                 "confidence": confidence_value,
                 "evidence_link": row.get("url") or "",
-                "proposed_replacement": str(row.get("suggested")),
-                "original_text": str(row.get("original")),
+                "proposed_replacement": suggested,
+                "original_text": original,
+                "approved_action": decision.get("action") or "",
+                "track_operation": decision.get("track_operation") or "replace",
                 "auto_apply_allowed": bibliographic_safe,
                 "decision": decision.get("decision", "pending"),
                 "decision_note": decision.get("note", ""),

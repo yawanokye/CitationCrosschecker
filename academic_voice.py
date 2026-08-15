@@ -78,6 +78,22 @@ def _is_non_prose(sentence: str) -> bool:
     # reference-list record, not a prose sentence requiring voice revision.
     if len(clean.split()) < 45 and re.search(r"\((?:19|20)\d{2}[a-z]?\)", clean) and clean.count(".") >= 2:
         return True
+    lower = clean.lower()
+    if re.search(
+        r"\b(table\s*\d+|as shown in table|the results? (?:show|indicate|reveal|demonstrate)|"
+        r"the findings? (?:show|indicate|reveal|suggest)|respondents?|mean score|standard deviation|"
+        r"coefficient|correlation|regression|p\s*[<=>]|r\s*=|r[²2]\s*=|beta|β|t-value|f-value)\b",
+        lower,
+    ):
+        return True
+    if (
+        re.search(r"\b[A-Za-z][A-Za-z0-9_]*\s*=\s*[-+]?\d", clean)
+        or (clean.count("=") >= 1 and len(re.findall(r"\d", clean)) >= 2)
+    ):
+        return True
+    numeric_density = len(re.findall(r"\b\d+(?:\.\d+)?\b", clean)) / max(len(clean.split()), 1)
+    if clean.count("|") >= 3 or numeric_density >= .20:
+        return True
     return False
 
 

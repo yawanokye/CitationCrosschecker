@@ -5483,7 +5483,7 @@ async def save_correction_decision(job_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Correction item not found")
     action = str(payload.get("action") or "").strip().lower()
     approved_source = payload.get("approved_source") if isinstance(payload.get("approved_source"), dict) else {}
-    proposed_replacement = str(payload.get("proposed_replacement") or "").strip()
+    proposed_replacement = str(payload.get("proposed_replacement") or selected_item.get("proposed_replacement") or "").strip()
     original_text = str(payload.get("original_text") or selected_item.get("original_text") or selected_item.get("evidence") or "").strip()
     operation = "replace"
     category = selected_item.get("category")
@@ -5500,6 +5500,9 @@ async def save_correction_decision(job_id: str, request: Request):
             if not original_text or not proposed_replacement:
                 raise HTTPException(status_code=400, detail="Select the claim and citation text before approving where to cite this reference.")
             operation = "insert_after"
+        elif proposed_replacement:
+            action = action or "replace_text"
+            operation = "replace"
     decisions = result.setdefault("correction_decisions", {})
     decisions[item_id] = {
         "decision": decision,
@@ -5603,6 +5606,7 @@ async def find_correction_sources(job_id: str, item_id: str):
                 5,
                 use_citation_hint=category == "missing_reference",
                 min_relevance=35,
+                strict_citation_identity=category == "missing_reference",
             )
     except Exception as exc:
         print(f"[SOURCE DISCOVERY] {job_id} {item_id} failed: {type(exc).__name__}: {exc}")

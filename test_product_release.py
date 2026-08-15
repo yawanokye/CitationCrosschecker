@@ -195,3 +195,19 @@ def test_context_source_search_handles_current_candidate_metadata_and_unverified
     assert "suggest_for_unverified" in main_source
     assert "_reference_citation_context" in main_source
     assert "Find and verify reference" in ui_source
+
+
+def test_candidate_links_actions_and_non_prose_false_positive_filters():
+    ui_source = open("templates/new_results.html", encoding="utf-8").read()
+    plan_source = open("correction_plan.py", encoding="utf-8").read()
+    worker_source = open("worker.py", encoding="utf-8").read()
+    voice_source = open("academic_voice.py", encoding="utf-8").read()
+    suggester = open("citation_suggester.py", encoding="utf-8").read()
+    assert "Open candidate source" in ui_source
+    assert "correction-action-status" in ui_source
+    assert "Action recorded" in ui_source
+    assert "Open the candidate source link before approving it" in ui_source
+    assert "speculative" in plan_source and "unique reference year" in plan_source
+    assert "table_or_result" in worker_source and "equation_like" in worker_source
+    assert "numeric_density" in voice_source
+    assert "strict_citation_identity" in suggester

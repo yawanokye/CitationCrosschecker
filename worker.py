@@ -2030,6 +2030,23 @@ def _is_low_value_citation_needed_sentence(sentence):
     if re.search(r"\bdoi\b|https?://|retrieved from|journal of|vol\.|pp\.", lower):
         return True
 
+    # Tables, equations, and the manuscript's own results do not require an
+    # external citation merely because they contain numbers or effect words.
+    table_or_result = re.search(
+        r"\b(table\s*\d+|as shown in table|the results? (?:show|indicate|reveal|demonstrate)|"
+        r"the findings? (?:show|indicate|reveal|suggest)|respondents?|mean score|standard deviation|"
+        r"coefficient|correlation|regression|p\s*[<=>]|r\s*=|r[²2]\s*=|beta|β|t-value|f-value)\b",
+        lower,
+    )
+    equation_like = bool(
+        re.search(r"\b[A-Za-z][A-Za-z0-9_]*\s*=\s*[-+]?\d", text)
+        or re.search(r"[=+*/^]\s*[-+]?\d+(?:\.\d+)?", text)
+        or (text.count("=") >= 1 and len(re.findall(r"\d", text)) >= 2)
+    )
+    numeric_density = len(re.findall(r"\b\d+(?:\.\d+)?\b", text)) / max(len(text.split()), 1)
+    if table_or_result or equation_like or numeric_density >= .22:
+        return True
+
     return False
 
 
