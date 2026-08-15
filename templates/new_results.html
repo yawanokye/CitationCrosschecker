@@ -1967,7 +1967,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-approved-source-redlines-v1.8.6";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-source-actions-v1.8.7";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3367,7 +3367,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (correctionBox) {
             correctionBox.innerHTML = items.length ? items.map((item, index) => `
                 <div class="guidance-item priority-${esc(item.priority || "optional")}" data-correction-id="${esc(item.id)}" data-decision="${esc(item.decision || "pending")}">
-                    <div class="guidance-meta">${esc(item.priority)} · ${esc(item.category)} · Item ${index + 1} · Decision: ${esc(item.decision || "pending")}</div>
+                    <div class="guidance-meta">${item.decision && item.decision !== "pending" ? "✅" : "⏳"} ${esc(item.priority)} · ${esc(item.category)} · Item ${index + 1} · Decision: ${esc(item.decision || "pending")}</div>
                     <strong>${esc(item.title)}</strong>
                     ${item.location ? `<div class="small-muted">Location: ${esc(JSON.stringify(item.location))}</div>` : ""}
                     <p><strong>What is wrong:</strong> ${esc(item.what_is_wrong || item.title || "")}</p>
@@ -3375,11 +3375,11 @@ document.addEventListener("DOMContentLoaded", function () {
                     <p><strong>Evidence:</strong> ${esc(item.evidence || "")}</p>
                     ${item.supporting_metadata && Object.keys(item.supporting_metadata).length ? `<details><summary>Supporting source or metadata</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(item.supporting_metadata, null, 2))}</pre></details>` : ""}
                     ${item.evidence_link ? `<p><a href="${esc(item.evidence_link)}" target="_blank" rel="noopener">Open supporting evidence</a></p>` : ""}
-                    ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>Candidate scholarly sources, open and verify before approval:</strong>${item.source_candidates.map((source, sourceIndex) => `<label style="display:block;margin:8px 0;padding:8px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · relevance ${esc(source.relevance ?? "review")} ${source.url ? `<a href="${esc(source.url)}" target="_blank" rel="noopener">Open source</a>` : ""}</label>`).join("")}</div>` : ""}
+                    ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>✅ Candidate sources found. Select one, open it, then approve:</strong>${item.source_candidates.map((source, sourceIndex) => `<label style="display:block;margin:8px 0;padding:8px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${source.url ? `<a class="candidate-source-link" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">Open source</a>` : ""}</label>`).join("")}</div>` : ""}
                     <p><strong>Confidence:</strong> ${esc(item.confidence ?? "Review required")}</p>
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     <div class="privacy-actions correction-decisions">
-                        ${["citation_needed","missing_reference"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">Find scholarly sources</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}">Approve selected source</button>` : ""}
+                        ${["citation_needed","missing_reference"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">Find scholarly sources</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>Approve selected source</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
                         ${!["citation_needed","missing_reference","uncited_reference"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted">Accept</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
@@ -3392,6 +3392,12 @@ document.addEventListener("DOMContentLoaded", function () {
             correctionBox.querySelectorAll(".correction-feedback").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, "rejected", "User marked this as an incorrect finding.")));
             correctionBox.querySelectorAll(".find-correction-sources").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id)));
             correctionBox.querySelectorAll(".approve-correction-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, btn.dataset.category)));
+            correctionBox.querySelectorAll(".candidate-source-link").forEach(link => link.addEventListener("click", () => {
+                const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
+                const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
+                if (source) source.opened_by_user = true;
+                setStatus("✅ Source opened. Verify that it supports the manuscript text, select it, then click Approve selected source.", "good");
+            }));
             correctionBox.querySelectorAll(".delete-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "delete_reference")));
             correctionBox.querySelectorAll(".cite-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "cite_reference")));
         }
@@ -3437,31 +3443,47 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     async function saveCorrectionDecision(itemId, decision, note, extra = {}) {
-        const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/decision`, {
-            method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, decision, note, ...extra})
-        });
-        const js = await response.json();
-        if (!response.ok) { setStatus(js.detail || "Could not save correction decision.", "bad"); return; }
-        latestResults.correction_plan = js.correction_plan;
-        renderStudentGuidance(latestResults);
-        setStatus(`Correction decision saved: ${decision}.`, "good");
+        try {
+            setStatus("Saving your correction decision...", "info");
+            const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/decision`, {
+                method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, decision, note, ...extra})
+            });
+            const js = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(js.detail || "Could not save correction decision.");
+            latestResults.correction_plan = js.correction_plan;
+            renderStudentGuidance(latestResults);
+            setStatus(`✅ Correction marked ${decision}. The approved change will appear in the Track Changes document.`, "good");
+        } catch (error) {
+            console.error(error);
+            setStatus("Correction decision failed: " + error.message, "bad");
+        }
     }
 
     async function findCorrectionSources(itemId) {
-        setStatus("Searching Crossref and OpenAlex for relevant scholarly sources...", "info");
-        const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/sources/${encodeURIComponent(itemId)}`, {method:"POST"});
-        const js = await response.json();
-        if (!response.ok) { setStatus(js.detail || "Source search failed.", "bad"); return; }
-        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
-        if (item) item.source_candidates = js.candidates || [];
-        renderStudentGuidance(latestResults);
-        setStatus((js.candidates || []).length ? "Candidate sources found. Open, verify and select one before approval." : "No sufficiently relevant source was found. Revise or qualify the claim instead of forcing a citation.", (js.candidates || []).length ? "good" : "warn");
+        const button = document.querySelector(`.find-correction-sources[data-id="${CSS.escape(itemId)}"]`);
+        const oldLabel = button?.textContent;
+        if (button) { button.disabled = true; button.textContent = "Searching..."; }
+        setStatus("Searching Crossref, OpenAlex and other scholarly indexes...", "info");
+        try {
+            const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/sources/${encodeURIComponent(itemId)}`, {method:"POST"});
+            const js = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(js.detail || "Source search failed.");
+            const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+            if (item) item.source_candidates = js.candidates || [];
+            renderStudentGuidance(latestResults);
+            setStatus((js.candidates || []).length ? `✅ ${(js.candidates || []).length} candidate sources found. Open, verify and select one.` : "No suitable indexed source was found. Revise the claim or search manually instead of forcing a citation.", (js.candidates || []).length ? "good" : "warn");
+        } catch (error) {
+            console.error(error);
+            setStatus("Source search failed: " + error.message + " Check that the web service has outbound access to scholarly indexes.", "bad");
+            if (button) { button.disabled = false; button.textContent = oldLabel || "Find scholarly sources"; }
+        }
     }
 
     function approveCorrectionSource(itemId, category) {
         const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
         const selected = document.querySelector(`input[name="source-${itemId}"]:checked`);
-        if (!item || !selected) { setStatus("Select and open a candidate source before approval.", "warn"); return; }
+        if (!item?.source_candidates?.length) { setStatus("Click Find scholarly sources first.", "warn"); return; }
+        if (!selected) { setStatus("Select one candidate source before approval.", "warn"); return; }
         const source = item.source_candidates?.[Number(selected.value)];
         if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
         if (!confirm("Confirm that you opened this source and it directly supports the claim or citation.")) return;
@@ -3516,10 +3538,36 @@ document.addEventListener("DOMContentLoaded", function () {
             const rev = js.revision || {};
             if (box) box.innerHTML = `<strong>Suggested revision</strong><p>${esc(rev.revised_passage || "")}</p>
                 <p class="small-muted">Meaning changed: ${esc(rev.meaning_changed)} · Citations preserved: ${esc(rev.citations_preserved)} · Confidence: ${esc(rev.confidence)}</p>
-                <p><strong>Review warning:</strong> ${esc(rev.student_review_warning || js.notice || "Review every change.")}</p>`;
+                <p><strong>Review warning:</strong> ${esc(rev.student_review_warning || js.notice || "Review every change.")}</p>
+                <div class="privacy-actions"><button class="btn btn-green" id="btnApproveVoiceRevision">Approve revision for Track Changes</button></div>`;
+            $("btnApproveVoiceRevision")?.addEventListener("click", () => approveVoiceRevision(passage, rev));
         } catch (error) {
             if (box) box.textContent = error.message;
         } finally { if (btn) btn.disabled = false; }
+    }
+
+    async function approveVoiceRevision(original, revision) {
+        const revised = String(revision?.revised_passage || "").trim();
+        if (!revised) { setStatus("No suggested revision is available to approve.", "warn"); return; }
+        if (revision?.meaning_changed === true) { setStatus("This revision reports a meaning change and cannot be approved automatically.", "bad"); return; }
+        const btn = $("btnApproveVoiceRevision");
+        if (btn) { btn.disabled = true; btn.textContent = "Saving approval..."; }
+        try {
+            const response = await fetch(`/api/academic-voice/${encodeURIComponent(JOB_ID)}/approve`, {
+                method:"POST", headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({original_text:original, proposed_replacement:revised, reason:"Student approved the suggested academic voice revision.", model:revision.model, confidence:revision.confidence})
+            });
+            const js = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(js.detail || "The revision could not be approved.");
+            latestResults.correction_plan = js.correction_plan;
+            latestResults.academic_voice_revisions = js.academic_voice_revisions;
+            renderStudentGuidance(latestResults);
+            if (btn) { btn.textContent = "✅ Approved for Track Changes"; btn.disabled = true; }
+            setStatus("✅ Revision approved. It will be inserted into the manuscript as a tracked change when the report package is downloaded.", "good");
+        } catch (error) {
+            if (btn) { btn.disabled = false; btn.textContent = "Approve revision for Track Changes"; }
+            setStatus("Revision approval failed: " + error.message, "bad");
+        }
     }
 
     async function compareRevisionJourney() {
