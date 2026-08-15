@@ -1422,6 +1422,12 @@
         .guidance-item { padding:14px; margin:10px 0; background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(15,23,42,.08); }
         .guidance-meta { color:#64748b; font-size:12px; margin-bottom:6px; text-transform:uppercase; font-weight:700; }
 
+        .output-feature-notice { border:1px solid #a7f3d0; border-left:6px solid var(--green); background:linear-gradient(135deg,#ecfdf5,#fff); }
+        .output-feature-list { display:flex; flex-wrap:wrap; gap:9px; margin-top:12px; }
+        .output-feature-tip { position:relative; display:inline-flex; align-items:center; gap:5px; padding:7px 11px; border:1px solid #bbf7d0; border-radius:999px; background:#fff; color:var(--navy); font-size:12px; font-weight:800; cursor:help; }
+        .output-feature-tip::after { content:attr(data-tooltip); position:absolute; left:50%; bottom:calc(100% + 9px); transform:translateX(-50%); width:260px; padding:10px 12px; border-radius:10px; background:var(--navy); color:#fff; font-size:12px; font-weight:600; line-height:1.4; opacity:0; visibility:hidden; pointer-events:none; z-index:80; box-shadow:var(--shadow); transition:opacity .15s ease; }
+        .output-feature-tip:hover::after, .output-feature-tip:focus::after { opacity:1; visibility:visible; }
+
     </style>
 </head>
 
@@ -1481,6 +1487,20 @@
             <div class="progress-bar" id="progressBar"></div>
         </div>
         <div class="progress-text" id="progressText">Preparing...</div>
+    </section>
+
+    <section class="card output-feature-notice" aria-labelledby="outputFeaturesTitle">
+        <div class="section-title">
+            <div><h2 id="outputFeaturesTitle">New tools in your Full Review</h2><p>Point to or focus on any feature to see what it does.</p></div>
+        </div>
+        <div class="output-feature-list">
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Takes you through critical, important and optional corrections one issue at a time.">Fix next issue ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Adds an approved change to the downloadable Word manuscript with Track Changes.">Approve revision ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Formats an approved reference in the style detected from the uploaded manuscript.">Style-aware reference ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Shows a clearer academic rewrite. Nothing is inserted until you approve it.">Academic-voice review ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Searches for evidence, lets you open and verify the candidate, then inserts the citation and reference after approval.">Fix claim support ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Downloads four student-ready files and excludes internal JSON and system files.">Clean report package ⓘ</span>
+        </div>
     </section>
 
     <section class="paywall-panel" id="paywallPanel"></section>
