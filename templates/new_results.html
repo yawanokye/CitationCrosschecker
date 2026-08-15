@@ -793,6 +793,8 @@
                 width: 100%;
             }
 
+            #btnDownloadDelete { width:100%; white-space:normal; }
+
             .search-input, select {
                 min-width: 100%;
             }
@@ -1416,6 +1418,21 @@
 
         .privacy-panel { border-left: 5px solid #19b36b; }
         .privacy-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+        #btnDownloadDelete {
+            min-height: 54px;
+            padding: 14px 24px;
+            border: 3px solid #064e3b;
+            border-radius: 16px;
+            background: linear-gradient(135deg, #16a34a, #047857);
+            color: #fff;
+            font-size: 15px;
+            font-weight: 900;
+            letter-spacing: .1px;
+            box-shadow: 0 8px 0 #064e3b, 0 16px 30px rgba(4,120,87,.28);
+        }
+        #btnDownloadDelete:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 10px 0 #064e3b, 0 18px 34px rgba(4,120,87,.34); }
+        #btnDownloadDelete:focus-visible { outline: 4px solid #fbbf24; outline-offset: 4px; }
+        #btnDownloadDelete:disabled { opacity:.55; box-shadow:none; }
         .priority-critical { border-left:4px solid #dc2626; }
         .priority-important { border-left:4px solid #f59e0b; }
         .priority-optional { border-left:4px solid #3b82f6; }
@@ -1514,7 +1531,7 @@
             </div>
         </div>
         <div class="privacy-actions">
-            <button class="btn btn-green" id="btnDownloadDelete">Download complete package and delete</button>
+            <button class="btn btn-green" id="btnDownloadDelete" title="Download the modified manuscript and user reports, then permanently delete the temporarily stored manuscript data.">⬇ Download the modified document/manuscript and delete</button>
             <button class="btn btn-outline" id="btnDeleteNow">Delete my manuscript now</button>
         </div>
     </section>
@@ -3647,7 +3664,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function downloadAndDelete() {
-        if (!confirm("Download the complete report package and permanently delete the manuscript content and detailed results after delivery?")) return;
+        if (!confirm("Download the modified document/manuscript and reports, then permanently delete the manuscript content and detailed results after delivery?")) return;
         window.location.href = `/api/report-package/${encodeURIComponent(JOB_ID)}?delete_after=1`;
         setTimeout(() => { if ($("privacyMessage")) $("privacyMessage").textContent = "Download started. The server will delete manuscript content after completing delivery."; }, 500);
     }
