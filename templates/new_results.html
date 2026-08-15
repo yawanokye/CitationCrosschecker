@@ -1967,7 +1967,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-action-feedback-false-positive-filters-v1.8.7.3";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-style-aware-claim-track-changes-v1.8.7.4";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3380,9 +3380,10 @@ document.addEventListener("DOMContentLoaded", function () {
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ Action recorded: ${esc(item.decision)}</strong>${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
                     <div class="privacy-actions correction-decisions">
-                        ${["citation_needed","missing_reference","source_verification"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${item.category === "source_verification" ? "Find and verify reference" : "Find scholarly sources"}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>Approve selected source</button>` : ""}
+                        ${["citation_needed","missing_reference","source_verification","claim_support"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${item.category === "source_verification" ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : "Approve selected source"}</button>` : ""}
+                        ${item.category === "claim_support" ? `<button class="btn btn-outline revise-claim-support" data-id="${esc(item.id)}">Revise or qualify claim</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
-                        ${!["citation_needed","missing_reference","uncited_reference"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
+                        ${!["citation_needed","missing_reference","uncited_reference","claim_support"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
                         ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
@@ -3401,6 +3402,7 @@ document.addEventListener("DOMContentLoaded", function () {
             }));
             correctionBox.querySelectorAll(".delete-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "delete_reference")));
             correctionBox.querySelectorAll(".cite-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "cite_reference")));
+            correctionBox.querySelectorAll(".revise-claim-support").forEach(btn => btn.addEventListener("click", () => approveClaimRevision(btn.dataset.id)));
         }
 
         const voice = data.academic_voice_review || {};
@@ -3489,9 +3491,20 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
         if (!source.opened_by_user) { setStatus("Open the candidate source link before approving it.", "warn"); return; }
         if (!confirm("Confirm that you opened this source and it directly supports the claim or citation.")) return;
-        const action = category === "missing_reference" ? "add_reference" : (category === "source_verification" ? "replace_reference" : "insert_citation");
+        const action = category === "missing_reference" ? "add_reference" : (category === "source_verification" ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
         const proposed = ["missing_reference","source_verification"].includes(category) ? source.formatted_reference : source.citation_text;
-        saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, original_text:item.evidence});
+        saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, secondary_replacement:source.formatted_reference || "", original_text:item.evidence});
+    }
+
+    function approveClaimRevision(itemId) {
+        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+        if (!item?.evidence) { setStatus("The original claim text was not recovered.", "bad"); return; }
+        const revised = prompt("Revise or qualify this claim. Keep the meaning accurate and preserve any valid citation. The approved wording will replace the original through Track Changes.", item.evidence);
+        if (!revised?.trim() || revised.trim() === item.evidence.trim()) return;
+        if (!confirm("Approve this revised claim for insertion as a tracked replacement?")) return;
+        saveCorrectionDecision(itemId, "accepted", "Student approved revised or qualified claim wording.", {
+            action:"revise_claim", original_text:item.evidence, proposed_replacement:revised.trim()
+        });
     }
 
     function citationFromReference(reference) {
@@ -3538,10 +3551,10 @@ document.addEventListener("DOMContentLoaded", function () {
             const js = await response.json();
             if (!response.ok) throw new Error(js.detail || "Revision failed.");
             const rev = js.revision || {};
-            if (box) box.innerHTML = `<strong>Suggested revision</strong><p>${esc(rev.revised_passage || "")}</p>
+            if (box) box.innerHTML = `<div style="background:#ffffff;border:2px solid #0f766e;border-left:7px solid #0f766e;border-radius:12px;padding:18px;box-shadow:0 8px 24px rgba(15,23,42,.10);color:#0f172a"><strong style="display:block;font-size:1.1rem;margin-bottom:10px">Suggested academic-voice revision</strong><div style="font-size:1.04rem;line-height:1.7;white-space:pre-wrap">${esc(rev.revised_passage || "")}</div>
                 <p class="small-muted">Meaning changed: ${esc(rev.meaning_changed)} · Citations preserved: ${esc(rev.citations_preserved)} · Confidence: ${esc(rev.confidence)}</p>
                 <p><strong>Review warning:</strong> ${esc(rev.student_review_warning || js.notice || "Review every change.")}</p>
-                <div class="privacy-actions"><button class="btn btn-green" id="btnApproveVoiceRevision">Approve revision for Track Changes</button></div>`;
+                <div class="privacy-actions"><button class="btn btn-green" id="btnApproveVoiceRevision">Approve revision for Track Changes</button></div></div>`;
             $("btnApproveVoiceRevision")?.addEventListener("click", () => approveVoiceRevision(passage, rev));
         } catch (error) {
             if (box) box.textContent = error.message;
