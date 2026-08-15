@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("CONTENT_TTL_SECONDS", "86400")
 
 from academic_voice import analyse_academic_voice
-from correction_plan import build_correction_plan, compare_revision_results
+from correction_plan import build_correction_plan, compare_revision_results, _reference_audit
 from privacy_lifecycle import build_report_package, purge_result_content
 from source_risk import assess_source_risks
 from document_correction_pack import build_annotated_document, build_tracked_changes_document
@@ -257,7 +257,7 @@ def test_v188_reference_style_audit_and_tracked_replacement():
     result = sample_result()
     result["selected_style"] = "apa7"
     result["online_verification"] = {"rows": [{
-        "status": "verified", "reference": "Adam A 2024 Digital integrity Journal 2 1 1-9",
+        "status": "verified", "reference": "Adam, A. (2024). digital integrity. Journal of Integrity, 2(1), 1-9. https://doi.org/10.1000/example",
         "matched_authors_full": ["Adam, Anokye Mohammed"], "matched_year": "2024",
         "matched_title": "Digital integrity", "matched_container_title": "Journal of Integrity",
         "matched_volume": "2", "matched_issue": "1", "matched_pages": "1-9",
@@ -273,7 +273,7 @@ def test_v188_reference_style_audit_and_tracked_replacement():
     assert manifest["applied_count"] == 1
     with zipfile.ZipFile(io.BytesIO(tracked)) as archive:
         xml = archive.read("word/document.xml").decode("utf-8")
-    assert "<w:del" in xml and "<w:ins" in xml
+    assert "<w:del" in xml and "<w:ins" in xml and "<w:i" in xml
 
 
 def test_v188_incomplete_reference_is_flagged_not_silently_formatted():
@@ -290,3 +290,46 @@ def test_v188_incomplete_reference_is_flagged_not_silently_formatted():
 def test_numeric_reference_formatter_uses_numbered_list_order():
     formatted = format_reference({"authors":["Adam, Anokye"], "year":"2024", "title":"Digital integrity", "source":"Journal", "volume":"2", "issue":"1", "pages":"1-9"}, "numeric_square")
     assert "Digital integrity." in formatted and "2024;2(1):1-9" in formatted
+
+
+def test_reference_identity_gate_rejects_different_publication_and_preserves_original():
+    result = sample_result()
+    result["selected_style"] = "apa7"
+    result["online_verification"] = {"rows": [{
+        "status":"verified",
+        "reference":"Babbie, E. (2021). The practice of social research (15th ed.). Cengage Learning.",
+        "matched_authors":["dooly", "vinagre"], "matched_year":"2021",
+        "matched_title":"Research into practice: Virtual exchange in language teaching and learning",
+        "matched_journal":"Language Teaching", "matched_volume":"55", "matched_issue":"3", "matched_pages":"392",
+        "matched_doi":"10.1017/example",
+    }]}
+    audit = _reference_audit(result)[0]
+    assert "Babbie, E." in audit["formatted"]
+    assert "Dooly" not in audit["formatted"]
+    assert audit["identity"]["accepted"] is False
+    plan = build_correction_plan(result)
+    conflict = next(row for row in plan["items"] if row["category"] == "reference_identity_conflict")
+    assert conflict["proposed_replacement"] == ""
+    assert "different publication" in conflict["title"].lower()
+
+
+def test_corporate_authors_are_not_marked_missing():
+    result = sample_result()
+    result["selected_style"] = "apa7"
+    result["online_verification"] = {"rows": [{"status":"needs_review", "reference":"World Bank. (2020). Justice sector reform and digitization in developing countries. World Bank."}]}
+    plan = build_correction_plan(result)
+    assert not any(row["category"] == "reference_incomplete" for row in plan["items"])
+    audit = _reference_audit(result)[0]
+    assert audit["formatted"].startswith("World Bank. (2020).")
+
+
+def test_mapping_incomplete_and_weak_claims_receive_direct_corrections():
+    result = sample_result()
+    result["claim_support"] = [
+        {"citation":"Judicial Service, 2019", "claim":"Claim one", "support_status":"mapping_incomplete"},
+        {"citation":"World Bank, 2020", "claim":"Claim two", "support_status":"weak"},
+    ]
+    plan = build_correction_plan(result)
+    claim_items = [row for row in plan["items"] if row["category"] == "claim_support"]
+    assert len(claim_items) == 2
+    assert all("find_source" in row["available_actions"] for row in claim_items)

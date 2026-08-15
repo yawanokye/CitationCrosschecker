@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any, Dict, List
 import re
 
@@ -77,6 +78,73 @@ def _detected_reference_style(result: Dict[str, Any]) -> str:
     return "apa7"
 
 
+def _normalise_identity(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+
+def _parse_original_reference(original: str) -> Dict[str, Any]:
+    """Conservatively recover display metadata without replacing source identity."""
+    text = re.sub(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])\s*", "", str(original or "")).strip()
+    doi_match = re.search(r"(?:https?://(?:dx\.)?doi\.org/|doi:\s*)(10\.\d{4,9}/\S+)", text, re.I)
+    doi = doi_match.group(1).rstrip(".,;\u2060") if doi_match else ""
+    isbn_match = re.search(r"\bISBN(?:-1[03])?\s*:?\s*([0-9Xx-]{10,20})", text, re.I)
+    isbn = re.sub(r"[^0-9Xx]", "", isbn_match.group(1)) if isbn_match else ""
+    url_match = re.search(r"https?://\S+", text, re.I)
+    url = url_match.group(0).rstrip(".,;\u2060") if url_match else ""
+    clean = text
+    if isbn_match:
+        clean = clean.replace(isbn_match.group(0), "").strip()
+    if url:
+        clean = clean.replace(url_match.group(0), "").strip()
+    clean = re.sub(r"\s*doi:\s*10\.\S+", "", clean, flags=re.I).strip()
+    match = re.match(r"^(.*?)\s*\((\d{4}[a-z]?|n\.d\.)\)\.\s*(.+)$", clean, re.I)
+    if not match:
+        numeric = re.match(r"^(.*?)\.\s+(.+?)\.\s+(.+?)\.\s+(\d{4});\s*([^(:\s]+)(?:\(([^)]+)\))?\s*:\s*([^.;]+)", clean)
+        if numeric:
+            return {"authors": numeric.group(1).strip(), "year": numeric.group(4), "title": numeric.group(2).strip(), "source": numeric.group(3).strip(), "volume": numeric.group(5), "issue": numeric.group(6) or "", "pages": numeric.group(7).strip(), "publisher": "", "edition": "", "doi": doi, "isbn": isbn, "url": url, "type": "article", "parse_confidence": "high"}
+        return {"authors": [], "year": "", "title": "", "source": "", "publisher": "", "doi": doi, "isbn": isbn, "url": url, "type": "unknown", "parse_confidence": "low"}
+    author_block, year, remainder = (part.strip() for part in match.groups())
+    segments = re.split(r"\.\s+", remainder, maxsplit=1)
+    title_part = segments[0].strip().rstrip(".")
+    publication = segments[1].strip().rstrip(".") if len(segments) > 1 else ""
+    edition_match = re.search(r"\(([^()]*(?:ed\.|edition))\)\s*$", title_part, re.I)
+    edition = edition_match.group(1).strip() if edition_match else ""
+    if edition_match:
+        title_part = title_part[:edition_match.start()].strip()
+    article = re.match(r"^(.+?),\s*(\d+)(?:\(([^)]+)\))?(?:,\s*|:\s*)([A-Za-z0-9]+(?:\s*[–—-]\s*[A-Za-z0-9]+)?)", publication)
+    ref = {"authors": author_block, "year": year, "title": title_part, "source": "", "volume": "", "issue": "", "pages": "", "publisher": "", "edition": edition, "doi": doi, "isbn": isbn, "url": url}
+    if article:
+        ref.update({"source": article.group(1).strip(), "volume": article.group(2), "issue": article.group(3) or "", "pages": article.group(4), "type": "article", "parse_confidence": "high"})
+    else:
+        ref.update({"publisher": publication, "type": "book" if edition or publication else "report", "parse_confidence": "high" if publication else "medium"})
+    return ref
+
+
+def _reference_identity_gate(original_ref: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
+    original_doi = _normalise_identity(original_ref.get("doi"))
+    matched_doi = _normalise_identity(row.get("matched_doi") or row.get("doi"))
+    original_isbn = re.sub(r"[^0-9x]", "", str(original_ref.get("isbn") or "").casefold())
+    matched_isbn_raw = row.get("matched_isbn") or row.get("isbn") or ""
+    if isinstance(matched_isbn_raw, list):
+        matched_isbn_raw = matched_isbn_raw[0] if matched_isbn_raw else ""
+    matched_isbn = re.sub(r"[^0-9x]", "", str(matched_isbn_raw).casefold())
+    original_title = _normalise_identity(original_ref.get("title"))
+    matched_title = _normalise_identity(row.get("matched_title") or row.get("title"))
+    original_year = _normalise_identity(original_ref.get("year"))
+    matched_year = _normalise_identity(row.get("matched_year") or row.get("year"))
+    original_author = _normalise_identity(original_ref.get("authors")).split(" ")[0] if original_ref.get("authors") else ""
+    matched_authors = row.get("matched_authors_full") or row.get("matched_authors") or row.get("authors") or []
+    matched_author_text = " ".join(str(value) for value in matched_authors) if isinstance(matched_authors, list) else str(matched_authors or "")
+    author_match = bool(original_author and original_author in _normalise_identity(matched_author_text).split())
+    title_score = SequenceMatcher(None, original_title, matched_title).ratio() if original_title and matched_title else 0.0
+    doi_exact = bool(original_doi and matched_doi and original_doi == matched_doi)
+    isbn_exact = bool(original_isbn and matched_isbn and original_isbn == matched_isbn)
+    year_match = bool(original_year and matched_year and original_year == matched_year)
+    accepted = doi_exact or isbn_exact or (title_score >= .95 and author_match and year_match)
+    reason = "Exact DOI" if doi_exact else ("Exact ISBN" if isbn_exact else ("Title, author and year agree" if accepted else "External record may represent a different publication"))
+    return {"accepted": accepted, "doi_exact": doi_exact, "isbn_exact": isbn_exact, "title_similarity": round(title_score, 3), "author_match": author_match, "year_match": year_match, "reason": reason}
+
+
 def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     verification = result.get("online_verification") or {}
     rows = _rows(verification.get("rows") if isinstance(verification, dict) else verification)
@@ -88,31 +156,42 @@ def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         original = str(row.get("reference") or row.get("original_reference") or "").strip()
         if not original:
             continue
-        ref = {
-            "authors": row.get("matched_authors_full") or row.get("matched_authors") or row.get("authors") or [],
-            "year": row.get("matched_year") or row.get("year") or "",
-            "title": row.get("matched_title") or row.get("title") or "",
-            "source": row.get("matched_container_title") or row.get("matched_journal") or row.get("journal") or row.get("source") or "",
-            "volume": row.get("matched_volume") or row.get("volume") or "",
-            "issue": row.get("matched_issue") or row.get("issue") or "",
-            "pages": row.get("matched_pages") or row.get("pages") or "",
-            "article_number": row.get("article_number") or "",
-            "doi": row.get("matched_doi") or row.get("doi") or "",
-            "publisher": row.get("publisher") or "",
-            "type": row.get("type") or row.get("publication_type") or "article",
-        }
+        original_ref = _parse_original_reference(original)
+        identity = _reference_identity_gate(original_ref, row)
+        # Preserve author, year and title from the manuscript. External metadata
+        # may fill publication fields only after the source identity gate passes.
+        ref = dict(original_ref)
+        if identity["accepted"]:
+            ref["source"] = ref.get("source") or row.get("matched_container_title") or row.get("matched_journal") or row.get("journal") or row.get("source") or ""
+            ref["volume"] = ref.get("volume") or row.get("matched_volume") or row.get("volume") or ""
+            ref["issue"] = ref.get("issue") or row.get("matched_issue") or row.get("issue") or ""
+            ref["pages"] = ref.get("pages") or row.get("matched_pages") or row.get("pages") or ""
+            ref["doi"] = ref.get("doi") or row.get("matched_doi") or row.get("doi") or ""
+            ref["publisher"] = ref.get("publisher") or row.get("publisher") or ""
         missing = validate_reference(ref)
         if not ref.get("authors"):
             missing.append("author information")
         if not ref.get("title"):
             missing.append("title")
         missing = list(dict.fromkeys(missing))
-        formatted = re.sub(r"\s+", " ", re.sub(r"\*", "", format_reference(ref, style))).strip()
+        formatted_markup = re.sub(r"\s+", " ", format_reference(ref, style)).strip()
+        segments = []
+        for segment_index, segment in enumerate(re.split(r"(\*[^*]+\*)", formatted_markup)):
+            if not segment:
+                continue
+            italic = segment.startswith("*") and segment.endswith("*")
+            segments.append({"text": segment[1:-1] if italic else segment, "italic": italic})
+        formatted = re.sub(r"\*", "", formatted_markup).strip()
         number_match = re.match(r"^\s*(?:\[(\d+)\]|\((\d+)\)|(\d+)[.)])\s*", original)
         if style.startswith("numeric_") and number_match:
             number = next(group for group in number_match.groups() if group)
-            marker = f"[{number}]" if style == "numeric_square" else (f"({number})" if style == "numeric_round" else number.translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")))
+            marker = f"[{number}]" if style == "numeric_square" else (f"({number})" if style == "numeric_round" else f"{number}.")
             formatted = f"{marker} {formatted}".strip()
+            segments.insert(0, {"text": marker + " ", "italic": False})
+        elif style.startswith("numeric_"):
+            marker = f"[{index + 1}]" if style == "numeric_square" else (f"({index + 1})" if style == "numeric_round" else f"{index + 1}.")
+            formatted = f"{marker} {formatted}".strip()
+            segments.insert(0, {"text": marker + " ", "italic": False})
         comparable_original = re.sub(r"\s+", " ", original).strip().rstrip(".")
         comparable_formatted = re.sub(r"\s+", " ", formatted).strip().rstrip(".")
         audited.append({
@@ -120,11 +199,13 @@ def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             "original": original,
             "formatted": formatted,
             "missing": missing,
-            "needs_formatting": bool(formatted and comparable_original.casefold() != comparable_formatted.casefold()),
+            "needs_formatting": bool(formatted and comparable_original != comparable_formatted),
             "style": style,
             "status": row.get("status") or "needs_review",
-            "url": row.get("matched_url") or row.get("evidence_url") or row.get("url") or (f"https://doi.org/{ref['doi']}" if ref.get("doi") else ""),
+            "identity": identity,
+            "url": (row.get("matched_url") or row.get("evidence_url") or row.get("url") or (f"https://doi.org/{ref['doi']}" if ref.get("doi") else "")) if identity["accepted"] else (ref.get("url") or (f"https://doi.org/{ref['doi']}" if ref.get("doi") else "")),
             "metadata": ref,
+            "format_segments": segments,
         })
     return audited
 
@@ -187,13 +268,36 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     add("critical", "source_verification", "Reference requires source verification", risky, "Check the DOI, title, authors, year, journal, volume and pages against the linked evidence.", "Incorrect bibliographic metadata can prevent readers from locating the source. Not found does not automatically mean fabricated.", "medium")
 
     claim_rows = _rows(result.get("claim_support"))
-    weak_claims = [r for r in claim_rows if str((r or {}).get("support_status", (r or {}).get("status", ""))).lower() in {"weak_or_unclear", "insufficient_evidence", "no_support", "source_needs_review"}]
+    weak_claim_statuses = {
+        "weak", "weak_support", "weak_or_unclear", "unclear", "insufficient_evidence", "insufficient",
+        "mapping_incomplete", "incomplete_mapping", "no_mapping", "no_source", "not_mapped", "unmapped",
+        "no_support", "source_needs_review", "unverified", "failed",
+    }
+    weak_claims = [r for r in claim_rows if str((r or {}).get("support_status", (r or {}).get("status", ""))).strip().lower() in weak_claim_statuses]
     add("critical", "claim_support", "Claim has weak or unclear support", weak_claims, "Revise or qualify the claim, and confirm that the cited source directly supports it.", "A citation must support the specific claim beside it, not merely discuss a related topic.", "medium")
     add("critical", "citation_needed", "Claim may require a citation", _rows(result.get("citation_needed_claims")), "Add an appropriate source, qualify the statement, or identify it as a result of the present study.", "Unsupported factual, empirical or causal claims reduce scholarly credibility.", "medium")
 
     for audit in _reference_audit(result):
         item_id = f"reference-incomplete-{audit['index']}" if audit["missing"] else f"reference-style-{audit['index']}"
         decision = saved_decisions.get(item_id) or {}
+        if not audit["identity"].get("accepted") and audit["identity"].get("title_similarity", 0) > 0:
+            conflict_id = f"reference-identity-conflict-{audit['index']}"
+            conflict_decision = saved_decisions.get(conflict_id) or {}
+            items.append({
+                "id": conflict_id, "priority": "critical", "category": "reference_identity_conflict",
+                "title": "Online metadata appears to describe a different publication",
+                "what_is_wrong": audit["identity"].get("reason"),
+                "why_it_matters": "Using this metadata could replace the intended source with an unrelated article, review, book or report.",
+                "evidence": audit["original"], "original_text": audit["original"], "location": _locate(manuscript_text, audit["original"]),
+                "recommended_action": "Keep the original source identity. Find and verify an exact DOI, ISBN or matching title-author-year record before replacement.",
+                "coach_explanation": "Formatting and source replacement are separate. A style correction must never change the cited work.",
+                "supporting_metadata": {"detected_style": audit["style"], "source_identity_check": audit["identity"]},
+                "confidence": "high", "evidence_link": audit["url"], "proposed_replacement": "",
+                "source_candidates": saved_candidates.get(conflict_id) or [], "approved_source": conflict_decision.get("approved_source") or {},
+                "approved_action": conflict_decision.get("action") or "", "track_operation": conflict_decision.get("track_operation") or "replace",
+                "available_actions": ["find_source", "replace_reference", "reject", "ignore"], "auto_apply_allowed": False,
+                "decision": conflict_decision.get("decision", "pending"), "decision_note": conflict_decision.get("note", ""),
+            })
         if audit["missing"]:
             items.append({
                 "id": item_id, "priority": "important", "category": "reference_incomplete",
@@ -204,7 +308,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "location": _locate(manuscript_text, audit["original"]),
                 "recommended_action": "Find and verify the complete source metadata before replacing this reference.",
                 "coach_explanation": "Do not guess missing bibliographic fields. Open and verify a candidate source before approval.",
-                "supporting_metadata": {"detected_style": audit["style"], "missing_fields": audit["missing"], "verification_status": audit["status"]},
+                "supporting_metadata": {"detected_style": audit["style"], "missing_fields": audit["missing"], "verification_status": audit["status"], "source_identity_check": audit["identity"]},
                 "confidence": "high", "evidence_link": audit["url"], "proposed_replacement": "",
                 "source_candidates": saved_candidates.get(item_id) or [], "approved_source": decision.get("approved_source") or {},
                 "approved_action": decision.get("action") or "", "track_operation": decision.get("track_operation") or "replace",
@@ -221,7 +325,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "location": _locate(manuscript_text, audit["original"]),
                 "recommended_action": "Replace with: " + audit["formatted"],
                 "coach_explanation": "Confirm that the formatted entry preserves the intended source, then approve it for Track Changes.",
-                "supporting_metadata": {"detected_style": audit["style"], "verification_status": audit["status"]},
+                "supporting_metadata": {"detected_style": audit["style"], "verification_status": audit["status"], "source_identity_check": audit["identity"], "external_metadata_used": bool(audit["identity"].get("accepted")), "reference_format_segments": audit["format_segments"]},
                 "confidence": "high" if str(audit["status"]).lower() in {"verified", "likely"} else "medium",
                 "evidence_link": audit["url"], "proposed_replacement": audit["formatted"],
                 "secondary_replacement": "", "approved_action": decision.get("action") or "",

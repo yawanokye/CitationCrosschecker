@@ -5510,7 +5510,7 @@ async def save_correction_decision(job_id: str, request: Request):
             if not original_text or not proposed_replacement or original_text == proposed_replacement:
                 raise HTTPException(status_code=400, detail="Enter revised claim wording before approval.")
             operation = "replace"
-        elif category == "reference_incomplete" and action == "replace_reference":
+        elif category in {"reference_incomplete", "reference_identity_conflict"} and action == "replace_reference":
             if not approved_source.get("url") or not approved_source.get("title"):
                 raise HTTPException(status_code=400, detail="Open and verify a complete scholarly source before replacing this reference.")
             if not original_text or not proposed_replacement:
@@ -5689,18 +5689,18 @@ async def find_correction_sources(job_id: str, item_id: str):
     result = job.get("result") or {}
     plan = build_correction_plan(result)
     item = next((row for row in plan.get("items") or [] if row.get("id") == item_id), None)
-    allowed_categories = {"citation_needed", "missing_reference", "source_verification", "claim_support", "reference_incomplete"}
+    allowed_categories = {"citation_needed", "missing_reference", "source_verification", "claim_support", "reference_incomplete", "reference_identity_conflict"}
     if not item or item.get("category") not in allowed_categories:
         raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed, missing-reference, claim-support, incomplete-reference and unverified-reference fixes.")
     evidence = str(item.get("evidence") or "")
     manuscript_text = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or result.get("text") or "")
     category = item.get("category")
     context = extract_context(manuscript_text, evidence, window=600) if manuscript_text and evidence else ""
-    if category in {"source_verification", "reference_incomplete"}:
+    if category in {"source_verification", "reference_incomplete", "reference_identity_conflict"}:
         context = _reference_citation_context(manuscript_text, evidence, window=600) or context
     context = context or str((item.get("supporting_metadata") or {}).get("claim") or "") or evidence
     try:
-        if category in {"source_verification", "reference_incomplete"}:
+        if category in {"source_verification", "reference_incomplete", "reference_identity_conflict"}:
             candidates = await run_in_threadpool(suggest_for_unverified, evidence, 5, "apa", True)
             # If strict metadata recovery finds nothing, use manuscript context
             # as a review-only discovery fallback. It must not silently replace
@@ -6165,6 +6165,10 @@ def online_status(job_id: str):
             or result.get("final_tables_ready") is True
             or bool(result.get("verification_completed_at"))
         )
+        if final_tables_ready:
+            # Rebuild after Claim Support is finalised so mapping-incomplete and
+            # weak rows receive their direct correction actions immediately.
+            result["correction_plan"] = build_correction_plan(result)
 
         response = {
             "job_id": job_id,

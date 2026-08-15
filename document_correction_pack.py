@@ -118,7 +118,7 @@ def _normalised_raw_span(raw_text: str, target_text: str):
     return raw_positions[start], raw_positions[end_index] + 1
 
 
-def _tracked_replace(paragraph, original: str, replacement: str, change_id: int) -> bool:
+def _tracked_replace(paragraph, original: str, replacement: str, change_id: int, replacement_segments=None) -> bool:
     full_text = paragraph.text
     start = full_text.find(original)
     if start < 0:
@@ -143,7 +143,16 @@ def _tracked_replace(paragraph, original: str, replacement: str, change_id: int)
     deletion = OxmlElement("w:del"); deletion.set(qn("w:id"), str(change_id)); deletion.set(qn("w:author"), "CiteIntegrity"); deletion.set(qn("w:date"), stamp)
     dr = OxmlElement("w:r"); dt = OxmlElement("w:delText"); dt.set(qn("xml:space"), "preserve"); dt.text = matched_original; dr.append(dt); deletion.append(dr); p.append(deletion)
     insertion = OxmlElement("w:ins"); insertion.set(qn("w:id"), str(change_id + 1)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
-    ir = OxmlElement("w:r"); it = OxmlElement("w:t"); it.set(qn("xml:space"), "preserve"); it.text = replacement; ir.append(it); insertion.append(ir); p.append(insertion)
+    segments = replacement_segments if isinstance(replacement_segments, list) and replacement_segments else [{"text": replacement}]
+    for segment in segments:
+        segment_text = str((segment or {}).get("text") or "")
+        if not segment_text:
+            continue
+        ir = OxmlElement("w:r")
+        if (segment or {}).get("italic"):
+            rpr = OxmlElement("w:rPr"); italic = OxmlElement("w:i"); italic_cs = OxmlElement("w:iCs"); rpr.append(italic); rpr.append(italic_cs); ir.append(rpr)
+        it = OxmlElement("w:t"); it.set(qn("xml:space"), "preserve"); it.text = segment_text; ir.append(it); insertion.append(ir)
+    p.append(insertion)
     normal_run(after)
     return True
 
@@ -227,8 +236,9 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
                     if _tracked_replace(paragraph, original, "", change_id):
                         changed = True; change_id += 2; break
             elif replacement:
+                replacement_segments = ((item.get("supporting_metadata") or {}).get("reference_format_segments") if item.get("category") == "reference_style" else None)
                 for paragraph in document.paragraphs:
-                    if _tracked_replace(paragraph, original, replacement, change_id):
+                    if _tracked_replace(paragraph, original, replacement, change_id, replacement_segments):
                         changed = True; change_id += 2; break
             (applied if changed else skipped).append(item.get("id"))
         document.add_paragraph("CiteIntegrity change-control note: Accepted citations, recovered references, claim revisions, academic-voice revisions and uncited-reference actions were applied as tracked changes only after explicit approval. No scholarly source or claim change was applied silently.")

@@ -87,14 +87,14 @@ def parse_author(author: Union[str, Dict]) -> str:
     """
     # Handle dict input
     if isinstance(author, dict):
-        last = author.get("last", "")
-        first = author.get("first", "")
+        last = author.get("last", "") or author.get("family", "")
+        first = author.get("first", "") or author.get("given", "")
         if last:
             if first:
                 # Extract initials
                 initials = ''.join([name[0].upper() + '.' for name in first.split() if name[0].isalpha()])
-                return f"{last}, {initials}"
-            return last
+                return f"{_name_case(last)}, {initials}"
+            return _name_case(last)
         return ""
     
     # Handle string input
@@ -102,11 +102,13 @@ def parse_author(author: Union[str, Dict]) -> str:
         return ""
     
     author = author.strip()
+    if _is_corporate_author(author):
+        return _name_case(author)
     
     # Already formatted as "Last, F." or "Last, F. M."
     if ',' in author:
         parts = author.split(',', 1)
-        last = parts[0].strip()
+        last = _name_case(parts[0].strip())
         first_part = parts[1].strip() if len(parts) > 1 else ""
         
         # Extract initials from first part
@@ -122,12 +124,33 @@ def parse_author(author: Union[str, Dict]) -> str:
     # "First Last" or "First Middle Last" format
     parts = author.split()
     if len(parts) >= 2:
-        last = parts[-1]
+        last = _name_case(parts[-1])
         initials = [p[0].upper() + '.' for p in parts[:-1] if p and p[0].isalpha()]
         return f"{last}, {' '.join(initials)}"
     
     # Single name
-    return author
+    return _name_case(author)
+
+
+def _name_case(value: str) -> str:
+    """Restore display capitalisation without altering already mixed-case names."""
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not value or not (value.islower() or value.isupper()):
+        return value
+    def cap_piece(piece: str) -> str:
+        return "-".join("'".join(part[:1].upper() + part[1:].lower() for part in bit.split("'")) for bit in piece.split("-"))
+    return " ".join(cap_piece(piece) for piece in value.split())
+
+
+def _is_corporate_author(value: str) -> bool:
+    text = str(value or "").strip()
+    markers = (
+        "bank", "commission", "committee", "department", "directorate", "government", "institute",
+        "ministry", "organisation", "organization", "project", "service", "university", "programme",
+        "agency", "authority", "council", "office", "oecd", "undp", "unesco", "united nations",
+    )
+    lower = text.casefold()
+    return "," not in text and any(marker in lower for marker in markers)
 
 
 def parse_authors(authors: Union[List, str, None]) -> List[str]:
@@ -139,64 +162,31 @@ def parse_authors(authors: Union[List, str, None]) -> List[str]:
         return [parse_author(a) for a in authors if a]
     
     if isinstance(authors, str):
-        # Split by "and", "&", or comma
-        author_list = re.split(r'\s+and\s+|\s*&\s*|,\s*(?![^()]*\))', authors)
+        text = authors.strip()
+        # APA-style personal-author strings contain repeating "Surname, initials"
+        # groups. A plain organisation name must remain one author.
+        personal = re.findall(r"([^,;&]+,\s*(?:[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*\.?\s*){1,4})(?=,\s*(?:&\s*)?[^,;&]+,|\s*&\s*|\s+and\s+|$)", text)
+        if personal:
+            return [parse_author(value.strip(" ,")) for value in personal]
+        author_list = re.split(r'\s+and\s+|\s*&\s*|;\s*', text)
         return [parse_author(a.strip()) for a in author_list if a.strip()]
     
     return []
 
 
 def sentence_case(text: str) -> str:
+    """Preserve display spelling while capitalising the title and subtitle starts.
+
+    Blind lowercasing corrupts proper nouns, acronyms and author-supplied names.
+    The identity-safe audit uses the manuscript title, so this function makes
+    only the deterministic changes that do not require semantic guessing.
     """
-    Convert to sentence case, preserving proper nouns and acronyms.
-    
-    Rules:
-    - First letter of first word capitalized
-    - Words that are ALL CAPS (acronyms) preserved
-    - Words that start with capital and rest lowercase preserved (proper nouns)
-    - All other words lowercased
-    """
-    if not text:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
         return ""
-    
-    # Split into sentences (simplified)
-    sentences = re.split(r'([.!?:;])', text)
-    result = []
-    capitalize_next = True
-    
-    for part in sentences:
-        if not part:
-            continue
-            
-        if part in '.!?:;':
-            result.append(part)
-            capitalize_next = True
-            continue
-        
-        if capitalize_next and part and part[0].isalpha():
-            part = part[0].upper() + part[1:]
-            capitalize_next = False
-        
-        # Process each word while preserving proper nouns and acronyms
-        words = part.split()
-        processed_words = []
-        
-        for word in words:
-            # Preserve words that are ALL CAPS (acronyms like APA, DNA, HIV)
-            if word.isupper() and len(word) > 1:
-                processed_words.append(word)
-            # Preserve words that start with capital and rest lowercase (proper nouns)
-            elif word and word[0].isupper() and word[1:].islower() and len(word) > 1:
-                processed_words.append(word)
-            # Preserve Roman numerals (I, II, III, IV, etc.)
-            elif word.upper() in ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']:
-                processed_words.append(word.upper())
-            else:
-                processed_words.append(word.lower())
-        
-        result.append(' '.join(processed_words))
-    
-    return ''.join(result)
+    value = re.sub(r"^([^A-Za-zÀ-ÖØ-öø-ÿ]*)([A-Za-zÀ-ÖØ-öø-ÿ])", lambda m: m.group(1) + m.group(2).upper(), value)
+    value = re.sub(r":\s*([A-Za-zÀ-ÖØ-öø-ÿ])", lambda m: ": " + m.group(1).upper(), value)
+    return value
 
 
 def format_doi(doi: str, style: str = "apa7") -> str:
@@ -210,13 +200,13 @@ def format_doi(doi: str, style: str = "apa7") -> str:
     doi = re.sub(r'^doi:', '', doi, flags=re.IGNORECASE)
     
     if style == "apa6":
-        return f" doi:{doi}"
+        return f"doi:{doi}"
     elif style == "apa7":
-        return f" https://doi.org/{doi}"
+        return f"https://doi.org/{doi}"
     elif style == "harvard":
-        return f" doi:{doi}"
+        return f"doi:{doi}"
     else:
-        return f" https://doi.org/{doi}"
+        return f"https://doi.org/{doi}"
 
 
 # ============================================================
@@ -375,10 +365,16 @@ def format_reference_apa7(reference: Dict[str, Any]) -> str:
         # Book format
         edition = reference.get("edition", "") or ""
         
-        book_info = sentence_case(title_str)
+        book_info = f"*{sentence_case(title)}*"
         if edition:
-            book_info += f" ({edition} ed.)"
-        book_info += f" {publisher}"
+            edition_text = str(edition).strip()
+            if not re.search(r"\bed\.?$", edition_text, re.I):
+                edition_text += " ed."
+            book_info += f" ({edition_text})"
+        author_identity = re.sub(r"[^a-z0-9]", "", authors_str.casefold())
+        publisher_identity = re.sub(r"[^a-z0-9]", "", str(publisher).casefold())
+        if publisher and author_identity != publisher_identity:
+            book_info += f". {publisher}"
         
         parts = [f"{authors_str} {year_str}.", f"{book_info}."]
         if doi:
@@ -445,6 +441,7 @@ def format_reference_harvard(reference: Dict[str, Any]) -> str:
     issue = reference.get("issue", "") or ""
     pages = reference.get("pages", "") or ""
     doi = reference.get("doi", "") or ""
+    publisher = reference.get("publisher", "") or ""
     
     # Handle missing data
     if not authors and not title:
@@ -456,6 +453,13 @@ def format_reference_harvard(reference: Dict[str, Any]) -> str:
     # Sentence case - Harvard uses single quotes around article titles
     title_str = sentence_case(title) if title else "[No title]"
     
+    if publisher and not source:
+        edition = str(reference.get("edition") or "").strip()
+        book = f"*{title_str}*"
+        if edition:
+            book += f" ({edition})"
+        return " ".join(filter(None, [f"{authors_str} {year_str}.", f"{book}.", f"{publisher}.", doi_str])).strip()
+
     # Journal name in italics
     source_str = f"*{source}*" if source else ""
     
