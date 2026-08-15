@@ -52,6 +52,34 @@ TRANSITIONS = re.compile(
     re.I,
 )
 
+NON_PROSE_MARKERS = re.compile(
+    r"\b(university of cape coast|dissertation submitted|candidate[’']s declaration|"
+    r"list of tables|list of figures|acronyms?|abbreviation meaning|table\s+1\s+distribution|"
+    r"partial fulfilment|award of master|statistical package for the social sciences|"
+    r"participants were required to meet the following criteria)\b",
+    re.I,
+)
+
+
+def _is_non_prose(sentence: str) -> bool:
+    """Exclude front matter, inventories, headings and other extraction artefacts."""
+    clean = _normalise(sentence)
+    if NON_PROSE_MARKERS.search(clean):
+        return True
+    letters = [char for char in clean if char.isalpha()]
+    upper_ratio = sum(char.isupper() for char in letters) / max(len(letters), 1)
+    if len(clean.split()) >= 12 and upper_ratio > 0.72:
+        return True
+    # Objectives, recommendations and similar colon-led semicolon lists are
+    # intentionally long enumerations, not evidence of artificial voice.
+    if ":" in clean and clean.count(";") >= 2:
+        return True
+    # A short author-year entry containing title-like full stops is normally a
+    # reference-list record, not a prose sentence requiring voice revision.
+    if len(clean.split()) < 45 and re.search(r"\((?:19|20)\d{2}[a-z]?\)", clean) and clean.count(".") >= 2:
+        return True
+    return False
+
 
 def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
@@ -88,55 +116,47 @@ def analyse_academic_voice(text: str, max_passages: int = 30) -> Dict[str, Any]:
     sentence_lengths = [len(s.split()) for s in all_sentences]
     paragraph_lengths = [len(p.split()) for p in paragraphs]
     signals: List[Dict[str, Any]] = []
+    formulaic_counts = Counter(
+        phrase for sentence in all_sentences for phrase in FORMULAIC_PHRASES
+        if phrase in sentence.lower() and not _is_non_prose(sentence)
+    )
 
     for p_idx, paragraph in enumerate(paragraphs):
         sentences = _sentences(paragraph)
         paragraph_has_citation = bool(CITATION_MARKER.search(paragraph))
         openings: Counter[str] = Counter()
         for s_idx, sentence in enumerate(sentences):
+            if _is_non_prose(sentence):
+                continue
             lower = sentence.lower()
             opening = " ".join(re.findall(r"[a-z']+", lower)[:3])
             if opening:
                 openings[opening] += 1
             found = [phrase for phrase in FORMULAIC_PHRASES if phrase in lower]
-            if found:
+            if found and (found[0] not in {"furthermore", "moreover"} or formulaic_counts[found[0]] >= 4):
                 phrase = found[0]
                 signals.append({
-                    "priority": "important",
+                    "priority": "optional",
                     "signal": "formulaic_language",
                     "passage": sentence,
                     "location": _location(s_idx, p_idx),
                     "why_flagged": f"Contains the formulaic phrase ‘{phrase}’.",
                     "recommended_action": FORMULAIC_PHRASES[phrase],
-                    "confidence": "high",
+                    "confidence": "medium",
                 })
-            if len(sentence.split()) > 38:
+            word_count = len(sentence.split())
+            if word_count > 55:
                 signals.append({
-                    "priority": "important",
+                    "priority": "important" if word_count > 80 else "optional",
                     "signal": "very_long_sentence",
                     "passage": sentence,
                     "location": _location(s_idx, p_idx),
-                    "why_flagged": f"The sentence contains {len(sentence.split())} words and may combine several claims.",
+                    "why_flagged": f"The sentence contains {word_count} words and may combine several claims.",
                     "recommended_action": "Separate the claims and keep each citation close to the statement it supports.",
-                    "confidence": "high",
-                })
-            if (
-                CLAIM_MARKERS.search(sentence)
-                and not CITATION_MARKER.search(sentence)
-                and not paragraph_has_citation
-                and not PRESENT_STUDY_MARKER.search(sentence)
-            ):
-                signals.append({
-                    "priority": "important",
-                    "signal": "possible_claim_needing_source_review",
-                    "passage": sentence,
-                    "location": _location(s_idx, p_idx),
-                    "why_flagged": "The paragraph appears to contain an empirical or causal statement and no citation was detected anywhere in that paragraph.",
-                    "recommended_action": "Review the paragraph manually. Add a source only if this is an external claim, or identify it clearly if it reports the present study.",
-                    "confidence": "low",
+                    "confidence": "high" if word_count > 80 else "medium",
                 })
         repeated = {opening for opening, count in openings.items() if count >= 2 and opening}
-        if repeated:
+        if repeated and not _is_non_prose(paragraph):
             signals.append({
                 "priority": "optional",
                 "signal": "repeated_sentence_opening",
@@ -166,8 +186,7 @@ def analyse_academic_voice(text: str, max_passages: int = 30) -> Dict[str, Any]:
     # the overall limit.
     type_limits = {
         "very_long_sentence": 10,
-        "formulaic_language": 8,
-        "possible_claim_needing_source_review": 8,
+        "formulaic_language": 3,
         "repeated_sentence_opening": 4,
         "uniform_sentence_rhythm": 1,
     }

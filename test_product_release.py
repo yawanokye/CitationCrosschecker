@@ -143,10 +143,22 @@ def test_voice_claim_heuristics_are_conservative_and_not_critical_corrections():
     plan_source = open("correction_plan.py", encoding="utf-8").read()
     assert "paragraph_has_citation" in voice_source
     assert "PRESENT_STUDY_MARKER" in voice_source
-    assert '"confidence": "low"' in voice_source
+    assert "NON_PROSE_MARKERS" in voice_source
+    assert '"priority": "optional"' in voice_source
+    assert "possible_claim_needing_source_review" not in voice_source
     assert '"possible_claim_needing_source_review"' in plan_source
     assert "type_limits" in voice_source
     assert "voice_items_added >= 12" in plan_source
+
+
+def test_academic_voice_revision_requires_approval_and_becomes_track_change():
+    main_source = open("main.py", encoding="utf-8").read()
+    ui_source = open("templates/new_results.html", encoding="utf-8").read()
+    plan_source = open("correction_plan.py", encoding="utf-8").read()
+    assert '"/api/academic-voice/{job_id}/approve"' in main_source
+    assert "Approve revision for Track Changes" in ui_source
+    assert '"track_operation": "replace"' in plan_source
+    assert '"decision": "accepted"' in plan_source
 
 
 def test_approved_citation_reference_addition_and_deletion_become_track_changes():

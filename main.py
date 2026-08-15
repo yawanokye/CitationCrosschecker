@@ -728,7 +728,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.6").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.7").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -5553,7 +5553,7 @@ async def find_correction_sources(job_id: str, item_id: str):
         evidence if item.get("category") == "missing_reference" else "",
         5,
         use_citation_hint=item.get("category") == "missing_reference",
-        min_relevance=60,
+        min_relevance=35,
     )
     for candidate in candidates:
         candidate["citation_text"] = _candidate_citation_text(candidate)
@@ -5597,6 +5597,35 @@ async def rewrite_academic_voice(request: Request):
         "revision": revision,
         "notice": "Review every change. CiteIntegrity does not guarantee AI-detector outcomes and never replaces responsible authorship.",
     }
+
+
+@app.post("/api/academic-voice/{job_id}/approve")
+async def approve_academic_voice_revision(job_id: str, request: Request):
+    payload = await request.json()
+    original = str(payload.get("original_text") or "").strip()
+    revised = str(payload.get("proposed_replacement") or "").strip()
+    if not original or not revised:
+        raise HTTPException(status_code=400, detail="Both the original passage and revised passage are required.")
+    if original == revised:
+        raise HTTPException(status_code=400, detail="The revision is identical to the original passage.")
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = job.get("result") or {}
+    import hashlib
+    revision_id = "voice-revision-" + hashlib.sha256(original.encode("utf-8")).hexdigest()[:12]
+    revisions = result.setdefault("academic_voice_revisions", {})
+    revisions[revision_id] = {
+        "original_text": original,
+        "proposed_replacement": revised,
+        "reason": str(payload.get("reason") or "Approved AI-assisted academic voice revision")[:500],
+        "model": str(payload.get("model") or "")[:120],
+        "confidence": str(payload.get("confidence") or "reviewed")[:40],
+        "approved_at": datetime.utcnow().isoformat() + "Z",
+    }
+    result["correction_plan"] = build_correction_plan(result)
+    _manual_save_result(job_id, result)
+    return {"ok": True, "revision_id": revision_id, "correction_plan": result["correction_plan"], "academic_voice_revisions": revisions}
 
 
 @app.post("/api/revision-compare")

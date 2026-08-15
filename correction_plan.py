@@ -199,6 +199,33 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         })
         voice_items_added += 1
 
+    # Every student-approved voice revision becomes a first-class correction
+    # item so the existing Track Changes generator can apply it safely.
+    for revision_id, revision in (result.get("academic_voice_revisions") or {}).items():
+        if not isinstance(revision, dict) or not revision.get("original_text") or not revision.get("proposed_replacement"):
+            continue
+        items.append({
+            "id": revision_id,
+            "priority": "optional",
+            "category": "academic_voice_revision",
+            "title": "Approved academic voice revision",
+            "what_is_wrong": revision.get("reason") or "The passage was selected for clarity and natural-voice revision.",
+            "why_it_matters": "The student reviewed and approved this wording change.",
+            "evidence": revision.get("original_text"),
+            "location": _locate(manuscript_text, revision.get("original_text")),
+            "recommended_action": "Replace with the approved revision using Track Changes.",
+            "coach_explanation": "This revision was approved explicitly and must remain reviewable in Word.",
+            "supporting_metadata": {"model": revision.get("model"), "confidence": revision.get("confidence")},
+            "confidence": revision.get("confidence", "reviewed"),
+            "evidence_link": "",
+            "original_text": revision.get("original_text"),
+            "proposed_replacement": revision.get("proposed_replacement"),
+            "track_operation": "replace",
+            "auto_apply_allowed": False,
+            "decision": "accepted",
+            "decision_note": "Student approved this revision for insertion with Track Changes.",
+        })
+
     coach = result.get("citation_improvement_coach") or {}
     for row in _rows(coach.get("lessons") if isinstance(coach, dict) else []):
         item_id = f"coach-{len(items) + 1}"
