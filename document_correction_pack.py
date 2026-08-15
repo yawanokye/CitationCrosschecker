@@ -90,12 +90,46 @@ def build_annotated_document(original_bytes: bytes | None, plan: Dict[str, Any],
     return _docx_bytes(document)
 
 
+def _normalised_raw_span(raw_text: str, target_text: str):
+    """Map a whitespace-normalised target back to its exact Word text span."""
+    target = " ".join(str(target_text or "").split())
+    if not raw_text or not target:
+        return None
+    normalised_chars = []
+    raw_positions = []
+    in_space = False
+    for raw_index, char in enumerate(raw_text):
+        if char.isspace():
+            if not in_space:
+                normalised_chars.append(" ")
+                raw_positions.append(raw_index)
+            in_space = True
+        else:
+            normalised_chars.append(char)
+            raw_positions.append(raw_index)
+            in_space = False
+    normalised = "".join(normalised_chars)
+    start = normalised.find(target)
+    if start < 0:
+        return None
+    end_index = start + len(target) - 1
+    if end_index >= len(raw_positions):
+        return None
+    return raw_positions[start], raw_positions[end_index] + 1
+
+
 def _tracked_replace(paragraph, original: str, replacement: str, change_id: int) -> bool:
     full_text = paragraph.text
     start = full_text.find(original)
     if start < 0:
-        return False
-    before, after = full_text[:start], full_text[start + len(original):]
+        span = _normalised_raw_span(full_text, original)
+        if not span:
+            return False
+        start, end = span
+    else:
+        end = start + len(original)
+    matched_original = full_text[start:end]
+    before, after = full_text[:start], full_text[end:]
     p = paragraph._p
     for child in list(p):
         if child.tag != qn("w:pPr"):
@@ -107,7 +141,7 @@ def _tracked_replace(paragraph, original: str, replacement: str, change_id: int)
     normal_run(before)
     stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     deletion = OxmlElement("w:del"); deletion.set(qn("w:id"), str(change_id)); deletion.set(qn("w:author"), "CiteIntegrity"); deletion.set(qn("w:date"), stamp)
-    dr = OxmlElement("w:r"); dt = OxmlElement("w:delText"); dt.set(qn("xml:space"), "preserve"); dt.text = original; dr.append(dt); deletion.append(dr); p.append(deletion)
+    dr = OxmlElement("w:r"); dt = OxmlElement("w:delText"); dt.set(qn("xml:space"), "preserve"); dt.text = matched_original; dr.append(dt); deletion.append(dr); p.append(deletion)
     insertion = OxmlElement("w:ins"); insertion.set(qn("w:id"), str(change_id + 1)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
     ir = OxmlElement("w:r"); it = OxmlElement("w:t"); it.set(qn("xml:space"), "preserve"); it.text = replacement; ir.append(it); insertion.append(ir); p.append(insertion)
     normal_run(after)
@@ -118,8 +152,12 @@ def _tracked_insert_after(paragraph, anchor: str, insertion_text: str, change_id
     full_text = paragraph.text
     start = full_text.find(anchor)
     if start < 0:
-        return False
-    split_at = start + len(anchor)
+        span = _normalised_raw_span(full_text, anchor)
+        if not span:
+            return False
+        start, split_at = span
+    else:
+        split_at = start + len(anchor)
     before, after = full_text[:split_at], full_text[split_at:]
     p = paragraph._p
     for child in list(p):
@@ -167,7 +205,17 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
             if not (explicitly_accepted or safe_auto):
                 continue
             changed = False
-            if operation == "append_reference" and replacement:
+            if operation == "insert_after_and_append_reference" and original and replacement:
+                for paragraph in document.paragraphs:
+                    if _tracked_insert_after(paragraph, original, replacement, change_id):
+                        changed = True; change_id += 1; break
+                secondary = str(item.get("secondary_replacement") or "")
+                if changed and secondary:
+                    if _tracked_append_reference(document, secondary, change_id):
+                        change_id += 1
+                    else:
+                        changed = False
+            elif operation == "append_reference" and replacement:
                 changed = _tracked_append_reference(document, replacement, change_id)
                 if changed: change_id += 1
             elif operation == "insert_after" and original and replacement:
@@ -183,5 +231,5 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
                     if _tracked_replace(paragraph, original, replacement, change_id):
                         changed = True; change_id += 2; break
             (applied if changed else skipped).append(item.get("id"))
-        document.add_paragraph("CiteIntegrity change-control note: Accepted citations, recovered references and uncited-reference actions were applied as tracked changes only after explicit approval. No new scholarly source or claim change was applied silently.")
+        document.add_paragraph("CiteIntegrity change-control note: Accepted citations, recovered references, claim revisions, academic-voice revisions and uncited-reference actions were applied as tracked changes only after explicit approval. No scholarly source or claim change was applied silently.")
     return _docx_bytes(document), {"applied": applied, "skipped": skipped, "applied_count": len(applied)}

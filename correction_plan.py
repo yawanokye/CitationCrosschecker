@@ -52,7 +52,7 @@ def _locate(text: str, needle: str, supplied: Any = None) -> Dict[str, Any]:
 def _metadata(row: Any) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
-    keys = ("source", "status", "doi", "matched_doi", "matched_title", "matched_authors", "matched_year", "matched_journal", "matched_volume", "matched_issue", "matched_pages", "url", "evidence_url", "confidence_reason", "score")
+    keys = ("source", "status", "support_status", "citation", "source_title", "doi", "matched_doi", "matched_title", "matched_authors", "matched_year", "matched_journal", "matched_volume", "matched_issue", "matched_pages", "url", "evidence_url", "confidence_reason", "score", "support_score")
     return {key: row.get(key) for key in keys if row.get(key) not in (None, "", [])}
 
 
@@ -65,7 +65,10 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     def add(priority: str, category: str, title: str, rows: List[Any], action: str, why: str, confidence: str = "high", limit: int = 200):
         for i, row in enumerate(rows[:limit]):
             item_id = f"{category}-{i + 1}"
-            evidence = _text(row)[:900]
+            if category == "claim_support" and isinstance(row, dict):
+                evidence = str(row.get("claim") or row.get("claim_text") or row.get("context") or row.get("sentence") or "")[:900]
+            else:
+                evidence = _text(row)[:900]
             decision = saved_decisions.get(item_id) or {}
             candidates = saved_candidates.get(item_id) or (row.get("suggestions") if isinstance(row, dict) else []) or (row.get("suggested_sources") if isinstance(row, dict) else []) or []
             proposed = decision.get("proposed_replacement") or ((row.get("proposed_replacement") or row.get("suggested_reference") or row.get("formatted_reference") or "") if isinstance(row, dict) else "")
@@ -73,6 +76,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "missing_reference": ["find_source", "add_reference"],
                 "citation_needed": ["find_source", "insert_citation"],
                 "uncited_reference": ["cite_reference", "delete_reference"],
+                "claim_support": ["find_source", "add_supporting_citation", "revise_claim"],
             }.get(category, ["accept", "reject", "ignore"])
             items.append({
                 "id": item_id,
@@ -89,6 +93,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "confidence": (row.get("confidence") or row.get("score") or confidence) if isinstance(row, dict) else confidence,
                 "evidence_link": (row.get("url") or row.get("evidence_url") or row.get("matched_url") or "") if isinstance(row, dict) else "",
                 "proposed_replacement": proposed,
+                "secondary_replacement": decision.get("secondary_replacement") or "",
                 "original_text": decision.get("original_text") or evidence,
                 "source_candidates": candidates,
                 "approved_source": decision.get("approved_source") or {},
@@ -155,6 +160,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "confidence": confidence_value,
                 "evidence_link": row.get("url") or "",
                 "proposed_replacement": suggested,
+                "secondary_replacement": decision.get("secondary_replacement") or "",
                 "original_text": original,
                 "approved_action": decision.get("action") or "",
                 "track_operation": decision.get("track_operation") or "replace",
@@ -239,6 +245,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             "evidence_link": "",
             "original_text": revision.get("original_text"),
             "proposed_replacement": revision.get("proposed_replacement"),
+            "secondary_replacement": "",
             "track_operation": "replace",
             "auto_apply_allowed": False,
             "decision": "accepted",

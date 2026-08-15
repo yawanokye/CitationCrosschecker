@@ -84,6 +84,7 @@ from citation_suggester import extract_context, suggest_from_context, suggest_fo
 from claim_checker import build_claim_support_rows
 from reference_formatter import (
     format_verified_reference_list,
+    format_reference,
     export_references_to_docx,
     export_references_to_html,
     DOCX_AVAILABLE
@@ -5484,6 +5485,7 @@ async def save_correction_decision(job_id: str, request: Request):
     action = str(payload.get("action") or "").strip().lower()
     approved_source = payload.get("approved_source") if isinstance(payload.get("approved_source"), dict) else {}
     proposed_replacement = str(payload.get("proposed_replacement") or selected_item.get("proposed_replacement") or "").strip()
+    secondary_replacement = str(payload.get("secondary_replacement") or "").strip()
     original_text = str(payload.get("original_text") or selected_item.get("original_text") or selected_item.get("evidence") or "").strip()
     operation = "replace"
     category = selected_item.get("category")
@@ -5493,7 +5495,22 @@ async def save_correction_decision(job_id: str, request: Request):
                 raise HTTPException(status_code=400, detail="Select and open a scholarly source before approving this correction.")
             if not proposed_replacement:
                 raise HTTPException(status_code=400, detail="The approved citation or reference text is missing.")
-            operation = "insert_after" if action == "insert_citation" else "append_reference"
+            if action == "insert_citation":
+                secondary_replacement = secondary_replacement or str(approved_source.get("formatted_reference") or "").strip()
+                operation = "insert_after_and_append_reference" if secondary_replacement else "insert_after"
+            else:
+                operation = "append_reference"
+        elif category == "claim_support" and action == "add_supporting_citation":
+            if not approved_source.get("url") or not approved_source.get("title"):
+                raise HTTPException(status_code=400, detail="Open and verify a scholarly source before adding it to the claim.")
+            if not original_text or not proposed_replacement:
+                raise HTTPException(status_code=400, detail="The claim text or approved citation text is missing.")
+            secondary_replacement = secondary_replacement or str(approved_source.get("formatted_reference") or "").strip()
+            operation = "insert_after_and_append_reference" if secondary_replacement else "insert_after"
+        elif category == "claim_support" and action == "revise_claim":
+            if not original_text or not proposed_replacement or original_text == proposed_replacement:
+                raise HTTPException(status_code=400, detail="Enter revised claim wording before approval.")
+            operation = "replace"
         elif category == "uncited_reference" and action == "delete_reference":
             operation = "delete"
         elif category == "uncited_reference" and action == "cite_reference":
@@ -5510,6 +5527,7 @@ async def save_correction_decision(job_id: str, request: Request):
         "action": action,
         "approved_source": approved_source,
         "proposed_replacement": proposed_replacement,
+        "secondary_replacement": secondary_replacement,
         "original_text": original_text,
         "track_operation": operation,
         "updated_at": datetime.utcnow().isoformat() + "Z",
@@ -5535,6 +5553,69 @@ def _candidate_reference_text(candidate: Dict[str, Any]) -> str:
     doi = candidate.get("doi") or ""
     url = candidate.get("url") or (f"https://doi.org/{doi}" if doi else "")
     return f"{author_text} ({year}). {title}. {url}".strip()
+
+
+def _reference_style_for_result(result: Dict[str, Any]) -> str:
+    """Keep the manuscript's exact author-year style for inserted references."""
+    summary = result.get("summary") or {}
+    values = [
+        result.get("selected_style"), result.get("style"), result.get("citation_style"),
+        summary.get("selected_style"), summary.get("style"), summary.get("citation_style"),
+    ]
+    raw = " ".join(str(value or "").lower() for value in values)
+    if "apa6" in raw or "apa 6" in raw:
+        return "apa6"
+    if "harvard" in raw:
+        return "harvard"
+    if any(token in raw for token in ("numeric", "ieee", "vancouver", "ama", "nature")):
+        return _style_for_job_result(result)
+    return "apa7"
+
+
+def _numeric_reference_number(result: Dict[str, Any], evidence: str = "") -> int:
+    match = re.match(r"\s*[\[(]?\s*(\d{1,4})", str(evidence or ""))
+    if match:
+        return int(match.group(1))
+    references = result.get("references_raw") or result.get("references") or result.get("reference_list") or []
+    return len(references) + 1 if isinstance(references, list) else 1
+
+
+def _numeric_marker(number: int, style: str) -> str:
+    if style == "numeric_round":
+        return f"({number})"
+    if style == "numeric_superscript":
+        return str(number).translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
+    return f"[{number}]"
+
+
+def _style_aware_candidate_citation(candidate: Dict[str, Any], result: Dict[str, Any], evidence: str = "") -> str:
+    style = _reference_style_for_result(result)
+    if style.startswith("numeric_"):
+        return _numeric_marker(_numeric_reference_number(result, evidence), style)
+    return _candidate_citation_text(candidate)
+
+
+def _style_aware_candidate_text(candidate: Dict[str, Any], result: Dict[str, Any], evidence: str = "") -> str:
+    style = _reference_style_for_result(result)
+    if style.startswith("numeric_"):
+        marker = _numeric_marker(_numeric_reference_number(result, evidence), style)
+        return f"{marker} {_candidate_reference_text(candidate)}".strip()
+    ref = {
+        "authors": candidate.get("authors") or [],
+        "year": candidate.get("year") or "",
+        "title": candidate.get("title") or "",
+        "source": candidate.get("journal") or "",
+        "volume": candidate.get("volume") or "",
+        "issue": candidate.get("issue") or "",
+        "pages": candidate.get("pages") or "",
+        "doi": candidate.get("doi") or "",
+        "publisher": candidate.get("publisher") or "",
+        "type": candidate.get("publication_type") or "article",
+    }
+    formatted = format_reference(ref, style=style)
+    # Word Track Changes receives plain text. Markdown italics markers must not
+    # appear in the manuscript.
+    return re.sub(r"\s+", " ", re.sub(r"\*", "", formatted)).strip()
 
 
 def _reference_citation_context(manuscript_text: str, reference: str, window: int = 600) -> str:
@@ -5577,9 +5658,9 @@ async def find_correction_sources(job_id: str, item_id: str):
     result = job.get("result") or {}
     plan = build_correction_plan(result)
     item = next((row for row in plan.get("items") or [] if row.get("id") == item_id), None)
-    allowed_categories = {"citation_needed", "missing_reference", "source_verification"}
+    allowed_categories = {"citation_needed", "missing_reference", "source_verification", "claim_support"}
     if not item or item.get("category") not in allowed_categories:
-        raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed, missing-reference and unverified-reference fixes.")
+        raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed, missing-reference, claim-support and unverified-reference fixes.")
     evidence = str(item.get("evidence") or "")
     manuscript_text = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or result.get("text") or "")
     category = item.get("category")
@@ -5613,8 +5694,9 @@ async def find_correction_sources(job_id: str, item_id: str):
         raise HTTPException(status_code=502, detail=f"Scholarly source lookup failed safely: {type(exc).__name__}. Try again or use the manual evidence links.")
     candidates = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
     for candidate in candidates:
-        candidate["citation_text"] = _candidate_citation_text(candidate)
-        candidate["formatted_reference"] = _candidate_reference_text(candidate)
+        candidate["citation_text"] = _style_aware_candidate_citation(candidate, result, evidence)
+        candidate["formatted_reference"] = _style_aware_candidate_text(candidate, result, evidence)
+        candidate["reference_style"] = _reference_style_for_result(result)
         candidate["context_used"] = context[:700]
         candidate["approval_warning"] = "Open and verify the source. Context ranking is a discovery aid, not proof that the source supports the claim."
     result.setdefault("correction_source_candidates", {})[item_id] = candidates

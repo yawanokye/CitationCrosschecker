@@ -205,7 +205,7 @@ def _format_authors_apa6(authors: List[str], max_authors: int = 7) -> str:
     if len(formatted) == 1:
         return formatted[0]
     elif len(formatted) == 2:
-        return f"{formatted[0]} & {formatted[1]}"
+        return f"{formatted[0]}, & {formatted[1]}"
     else:
         return ", ".join(formatted[:-1]) + ", & " + formatted[-1]
 
@@ -233,7 +233,7 @@ def format_reference_apa6(reference: Dict[str, Any]) -> str:
     title_str = sentence_case(title) if title else "[No title]"
     
     # Journal/source name in italics
-    source_str = f" *{source}*" if source else ""
+    source_str = f"*{source}*" if source else ""
     
     # Volume, issue, pages
     vol_issue_pages = ""
@@ -248,7 +248,7 @@ def format_reference_apa6(reference: Dict[str, Any]) -> str:
     doi_str = format_doi(doi, "apa6")
     
     # Build reference
-    parts = [authors_str, year_str, f"{title_str}."]
+    parts = [f"{authors_str} {year_str}.", f"{title_str}."]
     if source_str:
         parts.append(source_str + vol_issue_pages + ".")
     if doi_str:
@@ -275,7 +275,7 @@ def _format_authors_apa7(authors: List[str], max_authors: int = 20) -> str:
     if len(formatted) == 1:
         return formatted[0]
     elif len(formatted) == 2:
-        return f"{formatted[0]} & {formatted[1]}"
+        return f"{formatted[0]}, & {formatted[1]}"
     else:
         return ", ".join(formatted[:-1]) + ", & " + formatted[-1]
 
@@ -331,7 +331,7 @@ def format_reference_apa7(reference: Dict[str, Any]) -> str:
         if pages:
             book_info += f" (pp. {pages})"
         
-        parts = [authors_str, year_str, f"{title_str}."]
+        parts = [f"{authors_str} {year_str}.", f"{title_str}."]
         if book_info:
             parts.append(book_info + ".")
         if doi:
@@ -348,7 +348,7 @@ def format_reference_apa7(reference: Dict[str, Any]) -> str:
             book_info += f" ({edition} ed.)"
         book_info += f" {publisher}"
         
-        parts = [authors_str, year_str, f"{book_info}."]
+        parts = [f"{authors_str} {year_str}.", f"{book_info}."]
         if doi:
             parts.append(format_doi(doi, "apa7"))
         
@@ -357,13 +357,13 @@ def format_reference_apa7(reference: Dict[str, Any]) -> str:
     else:
         # Journal article format
         # Journal name in italics
-        source_str = f" *{source}*" if source else ""
+        source_str = f"*{source}*" if source else ""
         
         # Volume, issue, pages (APA 7th uses no comma before volume)
         vol_issue_pages = ""
         if volume:
             if source_str:
-                vol_issue_pages = f" *{volume}*"
+                vol_issue_pages = f", *{volume}*"
             else:
                 vol_issue_pages = f" {volume}"
             if issue and issue != volume:
@@ -371,7 +371,7 @@ def format_reference_apa7(reference: Dict[str, Any]) -> str:
             if pages:
                 vol_issue_pages += f", {pages}"
         
-        parts = [authors_str, year_str, f"{title_str}."]
+        parts = [f"{authors_str} {year_str}.", f"{title_str}."]
         if source_str:
             parts.append(source_str + vol_issue_pages + ".")
         if doi:
@@ -425,7 +425,7 @@ def format_reference_harvard(reference: Dict[str, Any]) -> str:
     title_str = sentence_case(title) if title else "[No title]"
     
     # Journal name in italics
-    source_str = f" *{source}*" if source else ""
+    source_str = f"*{source}*" if source else ""
     
     # Volume, issue, pages
     vol_issue_pages = ""
@@ -440,7 +440,7 @@ def format_reference_harvard(reference: Dict[str, Any]) -> str:
     doi_str = format_doi(doi, "harvard")
     
     # Build reference - note: no quotes around title in Harvard for journals
-    parts = [authors_str, year_str, f"{title_str}."]
+    parts = [f"{authors_str} {year_str}.", f"'{title_str}'."]
     if source_str:
         parts.append(source_str + vol_issue_pages + ".")
     if doi_str:

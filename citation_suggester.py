@@ -576,7 +576,21 @@ def _safe_candidate_fields(cand: Any) -> Tuple[str, str, str, List[str]]:
     except Exception:
         return "", "", "", []
     if isinstance(fields, dict):
-        authors = fields.get("authors") or []
+        item = cand.get("item") or {}
+        authors = []
+        if cand.get("source") == "crossref":
+            for author in item.get("author") or []:
+                if isinstance(author, dict):
+                    family, given = str(author.get("family") or "").strip(), str(author.get("given") or "").strip()
+                    full = f"{family}, {given}".strip(" ,")
+                    if full:
+                        authors.append(full)
+        elif cand.get("source") == "openalex":
+            for authorship in item.get("authorships") or []:
+                name = str(((authorship or {}).get("author") or {}).get("display_name") or "").strip()
+                if name:
+                    authors.append(name)
+        authors = authors or fields.get("authors") or []
         if not isinstance(authors, list):
             authors = [str(authors)] if authors else []
         return (
@@ -589,6 +603,33 @@ def _safe_candidate_fields(cand: Any) -> Tuple[str, str, str, List[str]]:
         doi, title, year, authors = fields[:4]
         return str(doi or ""), str(title or ""), str(year or ""), list(authors or [])
     return "", "", "", []
+
+
+def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, str]:
+    item = cand.get("item") or {}
+    if cand.get("source") == "crossref":
+        container = item.get("container-title") or item.get("short-container-title") or []
+        return {
+            "journal": str(container[0] if container else ""),
+            "volume": str(item.get("volume") or ""),
+            "issue": str(item.get("issue") or ""),
+            "pages": str(item.get("page") or item.get("article-number") or ""),
+            "publisher": str(item.get("publisher") or ""),
+            "publication_type": str(item.get("type") or "article"),
+        }
+    if cand.get("source") == "openalex":
+        primary = item.get("primary_location") or {}
+        source = primary.get("source") or {} if isinstance(primary, dict) else {}
+        biblio = item.get("biblio") or {}
+        return {
+            "journal": str(source.get("display_name") or ""),
+            "volume": str(biblio.get("volume") or ""),
+            "issue": str(biblio.get("issue") or ""),
+            "pages": str(biblio.get("first_page") or "") + (("-" + str(biblio.get("last_page"))) if biblio.get("last_page") else ""),
+            "publisher": "",
+            "publication_type": str(item.get("type") or "article"),
+        }
+    return {}
 
 def _author_match_score(query_authors: List[str], candidate_authors: List[str]) -> int:
     if not query_authors or not candidate_authors:
@@ -752,6 +793,7 @@ def suggest_from_context(
             "suggestion_type": "context_specific_source",
             "reason": "Ranked by claim-title concept overlap and citation metadata. Review before using.",
             "review_required": True,
+            **_candidate_publication_metadata(cand),
         })
 
     suggestions.sort(key=lambda x: (x.get("relevance", 0), bool(x.get("doi"))), reverse=True)
@@ -939,6 +981,7 @@ def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa", strict_
             "manual_verify_available": True,
             "review_required": True,
             "is_real_source": True,
+            **_candidate_publication_metadata(cand),
         })
 
     suggestions.sort(key=lambda x: (x.get("doi_match", False), x.get("score", 0), x.get("title_score", 0)), reverse=True)

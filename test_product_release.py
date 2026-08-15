@@ -211,3 +211,22 @@ def test_candidate_links_actions_and_non_prose_false_positive_filters():
     assert "table_or_result" in worker_source and "equation_like" in worker_source
     assert "numeric_density" in voice_source
     assert "strict_citation_identity" in suggester
+
+
+def test_style_aware_references_voice_redlines_and_claim_support_actions():
+    main_source = open("main.py", encoding="utf-8").read()
+    ui_source = open("templates/new_results.html", encoding="utf-8").read()
+    doc_source = open("document_correction_pack.py", encoding="utf-8").read()
+    plan_source = open("correction_plan.py", encoding="utf-8").read()
+    formatter = open("reference_formatter.py", encoding="utf-8").read()
+    assert "_reference_style_for_result" in main_source
+    assert "_style_aware_candidate_text" in main_source
+    assert "_style_aware_candidate_citation" in main_source
+    assert "insert_after_and_append_reference" in main_source
+    assert "_normalised_raw_span" in doc_source
+    assert "insert_after_and_append_reference" in doc_source
+    assert "Revise or qualify claim" in ui_source
+    assert "Find supporting source" in ui_source
+    assert "Suggested academic-voice revision" in ui_source
+    assert '"claim_support": ["find_source", "add_supporting_citation", "revise_claim"]' in plan_source
+    assert 'return f"{formatted[0]}, & {formatted[1]}"' in formatter
