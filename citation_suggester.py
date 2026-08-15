@@ -565,6 +565,30 @@ def _candidate_url(cand: Dict[str, Any], doi: str = "") -> str:
         return item.get("id")
     return f"https://doi.org/{doi}" if doi else ""
 
+
+def _safe_candidate_fields(cand: Any) -> Tuple[str, str, str, List[str]]:
+    """Normalise verification candidates across legacy tuple and current dict APIs."""
+    if not isinstance(cand, dict):
+        return "", "", "", []
+    try:
+        fields = _candidate_fields(cand)
+    except Exception:
+        return "", "", "", []
+    if isinstance(fields, dict):
+        authors = fields.get("authors") or []
+        if not isinstance(authors, list):
+            authors = [str(authors)] if authors else []
+        return (
+            str(fields.get("doi") or ""),
+            str(fields.get("title") or ""),
+            str(fields.get("year") or ""),
+            [str(author) for author in authors if author],
+        )
+    if isinstance(fields, (tuple, list)) and len(fields) >= 4:
+        doi, title, year, authors = fields[:4]
+        return str(doi or ""), str(title or ""), str(year or ""), list(authors or [])
+    return "", "", "", []
+
 def _author_match_score(query_authors: List[str], candidate_authors: List[str]) -> int:
     if not query_authors or not candidate_authors:
         return 0
@@ -674,7 +698,9 @@ def suggest_from_context(
     seen = set()
     suggestions = []
     for cand in candidates:
-        doi, title, cand_year, authors_list = _candidate_fields(cand)
+        if not isinstance(cand, dict):
+            continue
+        doi, title, cand_year, authors_list = _safe_candidate_fields(cand)
         title = (title or "").strip()
         if not title:
             continue
@@ -841,7 +867,9 @@ def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa", strict_
     seen = set()
     suggestions = []
     for cand in candidates:
-        cand_doi, cand_title, cand_year, cand_authors = _candidate_fields(cand)
+        if not isinstance(cand, dict):
+            continue
+        cand_doi, cand_title, cand_year, cand_authors = _safe_candidate_fields(cand)
         if not cand_title:
             continue
 

@@ -183,3 +183,15 @@ def test_source_approval_and_ai_status_endpoints_are_present():
     assert '"/api/corrections/{job_id}/sources/{item_id}"' in source
     assert '"/api/ai/status"' in source
     assert "Select and open a scholarly source" in source
+
+
+def test_context_source_search_handles_current_candidate_metadata_and_unverified_references():
+    suggester = open("citation_suggester.py", encoding="utf-8").read()
+    main_source = open("main.py", encoding="utf-8").read()
+    ui_source = open("templates/new_results.html", encoding="utf-8").read()
+    assert "def _safe_candidate_fields" in suggester
+    assert 'isinstance(fields, dict)' in suggester
+    assert '"source_verification"' in main_source
+    assert "suggest_for_unverified" in main_source
+    assert "_reference_citation_context" in main_source
+    assert "Find and verify reference" in ui_source

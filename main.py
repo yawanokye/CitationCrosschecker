@@ -80,7 +80,7 @@ from verify import (
     clear_verification_results
 )
 from acii import compute_acii
-from citation_suggester import extract_context, suggest_from_context
+from citation_suggester import extract_context, suggest_from_context, suggest_for_unverified
 from claim_checker import build_claim_support_rows
 from reference_formatter import (
     format_verified_reference_list,
@@ -5534,6 +5534,38 @@ def _candidate_reference_text(candidate: Dict[str, Any]) -> str:
     return f"{author_text} ({year}). {title}. {url}".strip()
 
 
+def _reference_citation_context(manuscript_text: str, reference: str, window: int = 600) -> str:
+    """Recover claim context from an author-year reference without using AI."""
+    text = str(manuscript_text or "")
+    ref = str(reference or "")
+    if not text or not ref:
+        return ""
+    year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", ref, re.I)
+    author_part = re.split(r"\s*[,(]", ref, maxsplit=1)[0].strip()
+    surname = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]{2,}", author_part)
+    surname = surname[-1] if surname else ""
+    year = year_match.group(0) if year_match else ""
+    if not surname:
+        return ""
+    patterns = []
+    if year:
+        patterns.extend([
+            rf"\b{re.escape(surname)}\b[^\n.]{{0,100}}\b{re.escape(year)}\b",
+            rf"\b{re.escape(surname)}\b\s*\(\s*{re.escape(year)}\s*\)",
+        ])
+    patterns.append(rf"\b{re.escape(surname)}\b")
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            start = max(0, match.start() - window)
+            end = min(len(text), match.end() + window)
+            candidate = text[start:end]
+            # Skip the full reference-list entry when possible.
+            if ref[:100].lower() in candidate.lower() and candidate.lower().count(surname.lower()) == 1:
+                continue
+            return re.sub(r"\s+", " ", candidate).strip()
+    return ""
+
+
 @app.post("/api/corrections/{job_id}/sources/{item_id}")
 async def find_correction_sources(job_id: str, item_id: str):
     job = load_job_record_fresh(job_id)
@@ -5542,22 +5574,45 @@ async def find_correction_sources(job_id: str, item_id: str):
     result = job.get("result") or {}
     plan = build_correction_plan(result)
     item = next((row for row in plan.get("items") or [] if row.get("id") == item_id), None)
-    if not item or item.get("category") not in {"citation_needed", "missing_reference"}:
-        raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed and missing-reference fixes.")
+    allowed_categories = {"citation_needed", "missing_reference", "source_verification"}
+    if not item or item.get("category") not in allowed_categories:
+        raise HTTPException(status_code=400, detail="Source discovery is available for citation-needed, missing-reference and unverified-reference fixes.")
     evidence = str(item.get("evidence") or "")
-    manuscript_text = str(result.get("main_text") or result.get("full_text") or "")
-    context = extract_context(manuscript_text, evidence, window=450) if manuscript_text and evidence else evidence
-    candidates = await run_in_threadpool(
-        suggest_from_context,
-        context or evidence,
-        evidence if item.get("category") == "missing_reference" else "",
-        5,
-        use_citation_hint=item.get("category") == "missing_reference",
-        min_relevance=35,
-    )
+    manuscript_text = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or result.get("text") or "")
+    category = item.get("category")
+    context = extract_context(manuscript_text, evidence, window=600) if manuscript_text and evidence else ""
+    if category == "source_verification":
+        context = _reference_citation_context(manuscript_text, evidence, window=600) or context
+    context = context or str((item.get("supporting_metadata") or {}).get("claim") or "") or evidence
+    try:
+        if category == "source_verification":
+            candidates = await run_in_threadpool(suggest_for_unverified, evidence, 5, "apa", True)
+            # If strict metadata recovery finds nothing, use manuscript context
+            # as a review-only discovery fallback. It must not silently replace
+            # the original reference.
+            if not candidates:
+                candidates = await run_in_threadpool(
+                    suggest_from_context, context, evidence, 5,
+                    use_citation_hint=True, min_relevance=35,
+                )
+        else:
+            candidates = await run_in_threadpool(
+                suggest_from_context,
+                context,
+                evidence if category == "missing_reference" else "",
+                5,
+                use_citation_hint=category == "missing_reference",
+                min_relevance=35,
+            )
+    except Exception as exc:
+        print(f"[SOURCE DISCOVERY] {job_id} {item_id} failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=502, detail=f"Scholarly source lookup failed safely: {type(exc).__name__}. Try again or use the manual evidence links.")
+    candidates = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
     for candidate in candidates:
         candidate["citation_text"] = _candidate_citation_text(candidate)
         candidate["formatted_reference"] = _candidate_reference_text(candidate)
+        candidate["context_used"] = context[:700]
+        candidate["approval_warning"] = "Open and verify the source. Context ranking is a discovery aid, not proof that the source supports the claim."
     result.setdefault("correction_source_candidates", {})[item_id] = candidates
     result["correction_plan"] = build_correction_plan(result)
     _manual_save_result(job_id, result)
