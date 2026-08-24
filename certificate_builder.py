@@ -1425,6 +1425,64 @@ def _risk_counts(summary: Dict[str, int], verify: Dict[str, int], claim: Dict[st
     }
 
 
+def _new_feature_counts(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarise the approval-driven work now covered by the certificate."""
+    result = result or {}
+    plan = _dict(result.get("correction_plan"))
+    if not plan:
+        try:
+            # Older saved jobs may not yet contain the derived correction plan.
+            from correction_plan import build_correction_plan
+            plan = build_correction_plan(result)
+        except Exception:
+            plan = {}
+
+    workspace = _dict(
+        plan.get("evidence_resolution_workspace")
+        or result.get("evidence_resolution_workspace")
+    )
+    workspace_counts = _dict(workspace.get("counts"))
+    plan_counts = _dict(plan.get("counts"))
+    items = _list(plan.get("items"))
+    approved_tracked = sum(
+        1 for item in items
+        if isinstance(item, dict)
+        and str(item.get("decision") or "").lower() == "accepted"
+        and str(item.get("track_operation") or "replace").lower() in {
+            "replace", "delete", "insert_after", "append_reference",
+            "insert_after_and_append_reference",
+        }
+    )
+
+    voice_settings = _dict(result.get("academic_voice_settings"))
+    voice_enabled = voice_settings.get("enabled") is True
+    voice_review = _dict(result.get("academic_voice_review")) if voice_enabled else {}
+    voice_signals = _list(voice_review.get("signals"))
+    voice_revisions = result.get("academic_voice_revisions")
+    if isinstance(voice_revisions, dict):
+        approved_voice_revisions = len([
+            row for row in voice_revisions.values()
+            if isinstance(row, dict) and row.get("proposed_replacement")
+        ])
+    else:
+        approved_voice_revisions = 0
+
+    return {
+        "evidence_total": _safe_int(workspace_counts.get("total")),
+        "evidence_pending": _safe_int(workspace_counts.get("pending")),
+        "evidence_resolved": _safe_int(workspace_counts.get("resolved")),
+        "evidence_groups": _list(workspace.get("groups")),
+        "pending_critical": _safe_int(plan_counts.get("critical")),
+        "pending_important": _safe_int(plan_counts.get("important")),
+        "pending_optional": _safe_int(plan_counts.get("optional")),
+        "approved_tracked_corrections": approved_tracked,
+        "academic_voice_enabled": voice_enabled,
+        "academic_voice_status": "Enabled for this analysis" if voice_enabled else "Not enabled (optional)",
+        "academic_voice_signals": len(voice_signals),
+        "approved_voice_revisions": approved_voice_revisions,
+    }
+
+
 
 def _acii_recency_score(result: Dict[str, Any], component_rows: List[Dict[str, Any]] | None = None) -> float:
     """Return the ACII recency component as a 0-100 percentage score where available."""
@@ -1550,8 +1608,16 @@ def build_citation_integrity_certificate(
     score, rating = _acii(result)
     acii_component_rows = _acii_components(result)
     recency_score = _acii_recency_score(result, acii_component_rows)
+    feature_counts = _new_feature_counts(result)
     risk = _risk_counts(summary, verify, claim, cite_needed)
+    risk["critical"] = max(risk["critical"], feature_counts["pending_critical"])
+    risk["moderate"] = max(risk["moderate"], feature_counts["pending_important"])
+    risk["minor"] = max(risk["minor"], feature_counts["pending_optional"])
     status = _clearance_status(score, summary, verify, claim, cite_needed, recency_score)
+    if feature_counts["pending_critical"]:
+        status = "Revision Required"
+    elif feature_counts["evidence_pending"] and status in {"Provisional clearance", "Clearance Recommended"}:
+        status = "Conditional Clearance"
     captured_document_title = _extract_document_title(result, document_title)
 
     purchase = access.get("purchase") if isinstance(access.get("purchase"), dict) else {}
@@ -1571,7 +1637,7 @@ def build_citation_integrity_certificate(
         "logo_png_base64": CITEINTEGRITY_LOGO_PNG_BASE64,
         "logo_svg": CITEINTEGRITY_LOGO_SVG,
         "brand_name": "CiteIntegrity",
-        "certificate_title": "Citation Integrity Certificate",
+        "certificate_title": "CiteIntegrity Submission-Readiness Certificate",
         "document_title": captured_document_title,
         "certificate_id": _certificate_id(job_id),
         "generated_at": generated_at,
@@ -1588,7 +1654,11 @@ def build_citation_integrity_certificate(
         "acii_rating": rating,
         "acii_components": acii_component_rows,
         "clearance_status": status,
-        "verified_stamp": "VERIFIED REVIEW",
+        "verified_stamp": (
+            "REVIEW COMPLETE"
+            if feature_counts["evidence_pending"] == 0 and feature_counts["pending_critical"] == 0
+            else "REVIEW RECORDED"
+        ),
         "download_format": "PDF",
         "summary": {
             **summary,
@@ -1601,9 +1671,29 @@ def build_citation_integrity_certificate(
             "provisional_clearance_recency_threshold": 60,
             "clearance_status": status,
             "document_title": captured_document_title,
+            **feature_counts,
+        },
+        "evidence_resolution": {
+            "total": feature_counts["evidence_total"],
+            "pending": feature_counts["evidence_pending"],
+            "resolved": feature_counts["evidence_resolved"],
+            "groups": feature_counts["evidence_groups"],
+        },
+        "feature_coverage": {
+            "evidence_resolution_workspace": True,
+            "approved_tracked_corrections": feature_counts["approved_tracked_corrections"],
+            "academic_voice_and_writing_signals": feature_counts["academic_voice_status"],
+            "academic_voice_signals": feature_counts["academic_voice_signals"],
+            "approved_voice_revisions": feature_counts["approved_voice_revisions"],
         },
         "risk_counts": risk,
-        "clearance_requirements": _requirements(summary, verify, claim, cite_needed, recency_score),
+        "clearance_requirements": (
+            ([
+                f"Resolve {feature_counts['evidence_pending']} pending Evidence Resolution item(s), including "
+                f"{feature_counts['pending_critical']} critical and {feature_counts['pending_important']} important item(s)."
+            ] if feature_counts["evidence_pending"] else [])
+            + _requirements(summary, verify, claim, cite_needed, recency_score)
+        ),
         "coverage_note": (
             "References not found in Crossref, OpenAlex, Semantic Scholar, DataCite, or related discovery sources are not automatically invalid. "
             "They are reported for manual review unless other evidence indicates a higher citation integrity risk."
@@ -1611,6 +1701,10 @@ def build_citation_integrity_certificate(
         "validity_note": (
             "This certificate summarises automated and user-recorded manual citation integrity review in CiteIntegrity. "
             "It does not replace academic supervision, institutional examination, journal peer review, plagiarism screening, or independent source verification."
+        ),
+        "writing_signals_note": (
+            "Academic Voice and Writing Signals is optional and off by default. When enabled, it reports explainable writing patterns only; "
+            "it does not determine authorship or prove that AI was used."
         ),
         "manual_verification_integrity_note": (
             "Manual verification entries are user-attested decisions. They show that a user reviewed or supplied evidence for a reference. "
@@ -1645,6 +1739,13 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
         ("Manual-required references", s.get("manual_required_references", 0)),
         ("Manual-required verified with evidence", s.get("manual_required_verified_with_evidence", 0)),
         ("Manual-required unresolved", s.get("manual_required_unresolved", 0)),
+        ("Evidence issues identified", s.get("evidence_total", 0)),
+        ("Evidence resolutions completed", s.get("evidence_resolved", 0)),
+        ("Evidence resolutions pending", s.get("evidence_pending", 0)),
+        ("Approved tracked corrections", s.get("approved_tracked_corrections", 0)),
+        ("Academic Voice module", s.get("academic_voice_status", "Not enabled (optional)")),
+        ("Writing signals reviewed", s.get("academic_voice_signals", 0)),
+        ("Approved writing revisions", s.get("approved_voice_revisions", 0)),
         ("Clearance status", c.get("clearance_status", "")),
         ("System-verified references", s.get("automatically_verified_references", 0)),
         ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
@@ -1694,11 +1795,13 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
     </table>
         """
 
+    stamp_label = "<br>".join(_html(c.get("verified_stamp", "REVIEW RECORDED")).split())
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Citation Integrity Certificate</title>
+<title>{_html(c.get("certificate_title", "CiteIntegrity Submission-Readiness Certificate"))}</title>
 <style>
     @page {{ size: A4; margin: 18mm; }}
     body {{ font-family: Arial, sans-serif; color: #0f172a; margin: 0; line-height: 1.5; background: #f8fafc; }}
@@ -1726,13 +1829,13 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
 </head>
 <body>
 <div class="cert">
-    <div class="stamp">VERIFIED<br>REVIEW<span>CITEINTEGRITY</span></div>
+    <div class="stamp">{stamp_label}<span>CITEINTEGRITY</span></div>
     <div class="header">
         <div class="logo-wrap">
             <img class="ci-logo" src="{_html(logo_data_uri)}" alt="CiteIntegrity logo">
         </div>
-        <div class="title">Citation Integrity Certificate</div>
-        <div class="subtitle">Automated and manually recorded citation integrity review</div>
+        <div class="title">{_html(c.get("certificate_title", "CiteIntegrity Submission-Readiness Certificate"))}</div>
+        <div class="subtitle">Evidence resolution, approved tracked corrections and citation-integrity review</div>
         <div class="doc-title"><strong>Document reviewed:</strong> {_html(c.get("document_title", "Not available"))}</div>
         <div class="timestamp">Generated: {_html(c.get("generated_at_display") or c.get("generated_at") or "")}</div>
         <div class="status">{_html(c.get("clearance_status", ""))}</div>
@@ -1777,6 +1880,7 @@ def render_certificate_html(certificate: Dict[str, Any]) -> str:
     <ol>{requirements_html}</ol>
 
     <div class="note"><strong>Manual verification integrity note:</strong> {_html(c.get("manual_verification_integrity_note", ""))}</div>
+    <div class="note"><strong>Writing-signals note:</strong> {_html(c.get("writing_signals_note", ""))}</div>
     <div class="note"><strong>Coverage note:</strong> {_html(c.get("coverage_note", ""))}</div>
     <div class="note"><strong>Validity note:</strong> {_html(c.get("validity_note", ""))}</div>
 </div>
@@ -1961,8 +2065,8 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         story.append(logo)
         story.append(Spacer(1, 6))
 
-    story.append(Paragraph("Citation Integrity Certificate", title_style))
-    story.append(Paragraph("Automated and manually recorded citation integrity review", subtitle_style))
+    story.append(Paragraph(_html(c.get("certificate_title", "CiteIntegrity Submission-Readiness Certificate")), title_style))
+    story.append(Paragraph("Evidence resolution, approved tracked corrections and citation-integrity review", subtitle_style))
     story.append(Paragraph(f"<b>Document reviewed:</b> {_html(c.get('document_title', 'Not available'))}", doc_title_style))
     story.append(Paragraph(f"Generated: {_html(c.get('generated_at_display') or c.get('generated_at') or '')}", subtitle_style))
     story.append(Spacer(1, 10))
@@ -2015,6 +2119,13 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         ("Manual-required references", s.get("manual_required_references", 0)),
         ("Manual-required verified with evidence", s.get("manual_required_verified_with_evidence", 0)),
         ("Manual-required unresolved", s.get("manual_required_unresolved", 0)),
+        ("Evidence issues identified", s.get("evidence_total", 0)),
+        ("Evidence resolutions completed", s.get("evidence_resolved", 0)),
+        ("Evidence resolutions pending", s.get("evidence_pending", 0)),
+        ("Approved tracked corrections", s.get("approved_tracked_corrections", 0)),
+        ("Academic Voice module", s.get("academic_voice_status", "Not enabled (optional)")),
+        ("Writing signals reviewed", s.get("academic_voice_signals", 0)),
+        ("Approved writing revisions", s.get("approved_voice_revisions", 0)),
         ("Clearance status", c.get("clearance_status", "")),
         ("System-verified references", s.get("automatically_verified_references", 0)),
         ("User-attested manual verification with evidence", s.get("user_attested_manual_verification_with_evidence", 0)),
@@ -2112,6 +2223,8 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 8))
     story.append(Paragraph(f"<b>Manual verification integrity note:</b> {_html(c.get('manual_verification_integrity_note', ''))}", small))
     story.append(Spacer(1, 4))
+    story.append(Paragraph(f"<b>Writing-signals note:</b> {_html(c.get('writing_signals_note', ''))}", small))
+    story.append(Spacer(1, 4))
     story.append(Paragraph(f"<b>Coverage note:</b> {_html(c.get('coverage_note', ''))}", small))
     story.append(Spacer(1, 4))
     story.append(Paragraph(f"<b>Validity note:</b> {_html(c.get('validity_note', ''))}", small))
@@ -2124,7 +2237,8 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         canvas.setLineWidth(2)
         canvas.rect(26, 26, width - 52, height - 52, stroke=1, fill=0)
 
-        # Verified review stamp.
+        # Review-status stamp. It must not imply that unresolved findings were
+        # independently verified.
         stamp_x = width - 92
         stamp_y = height - 92
         canvas.translate(stamp_x, stamp_y)
@@ -2133,10 +2247,13 @@ def render_certificate_pdf_bytes(certificate: Dict[str, Any]) -> bytes:
         canvas.setFillColor(colors.HexColor("#16a34a"))
         canvas.setLineWidth(2.3)
         canvas.circle(0, 0, 38, stroke=1, fill=0)
-        canvas.setFont("Helvetica-Bold", 12)
-        canvas.drawCentredString(0, 6, "VERIFIED")
+        stamp_words = str(c.get("verified_stamp") or "REVIEW RECORDED").upper().split()
+        stamp_line_one = stamp_words[0] if stamp_words else "REVIEW"
+        stamp_line_two = " ".join(stamp_words[1:]) if len(stamp_words) > 1 else "RECORDED"
+        canvas.setFont("Helvetica-Bold", 10.5)
+        canvas.drawCentredString(0, 6, stamp_line_one)
         canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawCentredString(0, -8, "REVIEW")
+        canvas.drawCentredString(0, -8, stamp_line_two)
         canvas.setFont("Helvetica-Bold", 5.7)
         canvas.drawCentredString(0, -22, "CITEINTEGRITY")
         canvas.restoreState()

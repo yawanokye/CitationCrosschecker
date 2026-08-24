@@ -605,10 +605,30 @@ def _safe_candidate_fields(cand: Any) -> Tuple[str, str, str, List[str]]:
     return "", "", "", []
 
 
-def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, str]:
-    item = cand.get("item") or {}
+def _openalex_abstract(item: Dict[str, Any], max_words: int = 180) -> str:
+    inverted = item.get("abstract_inverted_index") or {}
+    if not isinstance(inverted, dict):
+        return ""
+    positions = []
+    for word, indexes in inverted.items():
+        for position in indexes or []:
+            if isinstance(position, int):
+                positions.append((position, str(word)))
+    positions.sort(key=lambda pair: pair[0])
+    return " ".join(word for _position, word in positions[:max_words])
+
+
+def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, Any]:
+    item_value = cand.get("item") if isinstance(cand, dict) else {}
+    item = item_value if isinstance(item_value, dict) else {}
     if cand.get("source") == "crossref":
         container = item.get("container-title") or item.get("short-container-title") or []
+        if isinstance(container, str):
+            container = [container]
+        elif not isinstance(container, list):
+            container = []
+        abstract = re.sub(r"<[^>]+>", " ", str(item.get("abstract") or ""))
+        abstract = _norm_ws(abstract)[:1800]
         return {
             "journal": str(container[0] if container else ""),
             "volume": str(item.get("volume") or ""),
@@ -616,11 +636,21 @@ def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, str]:
             "pages": str(item.get("page") or item.get("article-number") or ""),
             "publisher": str(item.get("publisher") or ""),
             "publication_type": str(item.get("type") or "article"),
+            "abstract_excerpt": abstract,
+            "concepts": [],
         }
     if cand.get("source") == "openalex":
         primary = item.get("primary_location") or {}
-        source = primary.get("source") or {} if isinstance(primary, dict) else {}
+        source_value = primary.get("source") if isinstance(primary, dict) else {}
+        source = source_value if isinstance(source_value, dict) else {}
         biblio = item.get("biblio") or {}
+        if not isinstance(biblio, dict):
+            biblio = {}
+        concepts = [
+            str((concept or {}).get("display_name") or "")
+            for concept in (item.get("concepts") or [])[:12]
+            if isinstance(concept, dict) and (concept or {}).get("display_name")
+        ]
         return {
             "journal": str(source.get("display_name") or ""),
             "volume": str(biblio.get("volume") or ""),
@@ -628,6 +658,8 @@ def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, str]:
             "pages": str(biblio.get("first_page") or "") + (("-" + str(biblio.get("last_page"))) if biblio.get("last_page") else ""),
             "publisher": "",
             "publication_type": str(item.get("type") or "article"),
+            "abstract_excerpt": _openalex_abstract(item)[:1800],
+            "concepts": concepts,
         }
     return {}
 

@@ -24,6 +24,8 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from verify import verify_references_batch
 from acii import compute_acii
+from academic_voice import analyse_academic_voice
+from correction_plan import build_correction_plan
 from claim_checker import (
     build_claim_support_rows,
     suggest_alternative_sources_for_claim,
@@ -31,8 +33,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "1.5.31"
-WORKER_BUILD = "commercial-2026-06-01-large-queue-worker-health"
+__version__ = "1.9.0"
+WORKER_BUILD = "commercial-2026-08-24-evidence-resolution-optional-writing-signals"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -2537,9 +2539,9 @@ def _apply_verification_gate_to_claim_row(row):
     if not isinstance(row, dict):
         return row
 
-    trusted_statuses = {"verified", "likely"}
+    trusted_statuses = {"verified"}
     weak_verify_statuses = {
-        "needs_review", "not_found", "offline", "error", "failed",
+        "likely", "needs_review", "not_found", "offline", "error", "failed",
         "unverified", "unknown", "", "none"
     }
 
@@ -3821,12 +3823,13 @@ def dedupe_suggestions_by_priority(suggestions):
 # MAIN PROCESS_DOCUMENT FUNCTION
 # ============================================================
 
-def process_document(job_id, filename, style="apa", enable_autofix=False):
+def process_document(job_id, filename, style="apa", enable_autofix=False, enable_academic_voice=False):
     """Process a document - runs in background"""
     print(f"🔥 Processing job {job_id}: {filename}")
     print(f"📋 enable_autofix flag received: {enable_autofix}")
     
     enable_autofix = bool(enable_autofix)
+    enable_academic_voice = bool(enable_academic_voice)
     print(f"📋 Using enable_autofix: {enable_autofix}")
     
     # Load file from Redis
@@ -3862,6 +3865,28 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
         result.setdefault("style_family", _worker_style_family(style))
         result.setdefault("style_label", _worker_style_label(style))
         result.setdefault("style_sample", _worker_style_sample(style))
+        result["analysis_options"] = {
+            **(result.get("analysis_options") if isinstance(result.get("analysis_options"), dict) else {}),
+            "academic_voice_enabled": enable_academic_voice,
+        }
+        result["academic_voice_settings"] = {
+            "enabled": enable_academic_voice,
+            "available": True,
+            "default_enabled": False,
+            "module_name": "Academic Voice and Writing Signals",
+            "authorship_inference": False,
+        }
+        if enable_academic_voice:
+            manuscript_text = str(
+                result.get("main_text") or result.get("full_text") or
+                result.get("document_text") or result.get("text") or ""
+            )
+            if manuscript_text.strip():
+                try:
+                    result["academic_voice_review"] = analyse_academic_voice(manuscript_text)
+                    print("✅ Optional Academic Voice and Writing Signals completed in the background worker")
+                except Exception as voice_error:
+                    print(f"⚠️ Optional writing-signal review failed safely: {voice_error}")
 
         print("🔍 === RESULT DEBUG ===")
         print("🔍 'autofix' in result:", "autofix" in result)
@@ -4018,6 +4043,17 @@ def process_document(job_id, filename, style="apa", enable_autofix=False):
             "style_family": _worker_style_family(style),
             "style_label": _worker_style_label(style),
         }
+
+        # Persist the privacy-safe Evidence Resolution summary with every new
+        # analysis so the protected statistics dashboard can report feature
+        # coverage even before the student takes a correction action.
+        try:
+            result["correction_plan"] = build_correction_plan(result)
+            result["evidence_resolution_workspace"] = (
+                result["correction_plan"].get("evidence_resolution_workspace") or {}
+            )
+        except Exception as workspace_error:
+            print(f"⚠️ Evidence Resolution summary could not be prepared: {workspace_error}")
 
         print(f"✅ Suggestions preserved/merged: {len(citation_suggestions)} citation + {len(reference_suggestions)} reference suggestions")
         

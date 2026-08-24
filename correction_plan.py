@@ -8,6 +8,14 @@ from typing import Any, Dict, List
 import re
 
 from reference_formatter import format_reference, validate_reference
+from evidence_resolution import (
+    build_evidence_resolution_workspace,
+    claim_requires_resolution,
+    normalise_claim_support_status,
+    normalise_verification_status,
+    verification_requires_resolution,
+    verification_status_explanation,
+)
 
 
 def _rows(value: Any) -> List[Any]:
@@ -55,7 +63,7 @@ def _locate(text: str, needle: str, supplied: Any = None) -> Dict[str, Any]:
 def _metadata(row: Any) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return {}
-    keys = ("source", "status", "support_status", "citation", "source_title", "doi", "matched_doi", "matched_title", "matched_authors", "matched_year", "matched_journal", "matched_volume", "matched_issue", "matched_pages", "url", "evidence_url", "confidence_reason", "score", "support_score")
+    keys = ("source", "status", "canonical_status", "support_status", "canonical_support_status", "citation", "claim", "claim_text", "source_title", "doi", "matched_doi", "matched_title", "matched_authors", "matched_year", "matched_journal", "matched_volume", "matched_issue", "matched_pages", "url", "evidence_url", "confidence_reason", "score", "support_score")
     return {key: row.get(key) for key in keys if row.get(key) not in (None, "", [])}
 
 
@@ -216,9 +224,19 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     saved_decisions = result.get("correction_decisions") or {}
     saved_candidates = result.get("correction_source_candidates") or {}
 
-    def add(priority: str, category: str, title: str, rows: List[Any], action: str, why: str, confidence: str = "high", limit: int = 200):
+    def add(
+        priority: str,
+        category: str,
+        title: str,
+        rows: List[Any],
+        action: str,
+        why: str,
+        confidence: str = "high",
+        limit: int = 200,
+        id_prefix: str = "",
+    ):
         for i, row in enumerate(rows[:limit]):
-            item_id = f"{category}-{i + 1}"
+            item_id = f"{id_prefix or category}-{i + 1}"
             if category == "claim_support" and isinstance(row, dict):
                 evidence = str(row.get("claim") or row.get("claim_text") or row.get("context") or row.get("sentence") or "")[:900]
             else:
@@ -231,10 +249,13 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "citation_needed": ["find_source", "insert_citation"],
                 "uncited_reference": ["cite_reference", "delete_reference"],
                 "claim_support": ["find_source", "add_supporting_citation", "revise_claim"],
+                "source_verification": ["find_source", "replace_reference", "mark_valid_not_indexed"],
+                "reference_incomplete": ["find_source", "replace_reference"],
+                "reference_identity_conflict": ["find_source", "replace_reference"],
             }.get(category, ["accept", "reject", "ignore"])
             items.append({
                 "id": item_id,
-                "priority": priority,
+                "priority": (row.get("_priority_override") or priority) if isinstance(row, dict) else priority,
                 "category": category,
                 "title": title,
                 "what_is_wrong": title,
@@ -264,17 +285,62 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
 
     verification = result.get("online_verification") or {}
     verification_rows = _rows(verification.get("rows") if isinstance(verification, dict) else verification)
-    risky = [r for r in verification_rows if str((r or {}).get("status", "")).lower() in {"not_found", "unverified", "failed", "needs_review", "possible"}]
-    add("critical", "source_verification", "Reference requires source verification", risky, "Check the DOI, title, authors, year, journal, volume and pages against the linked evidence.", "Incorrect bibliographic metadata can prevent readers from locating the source. Not found does not automatically mean fabricated.", "medium")
+    risky = []
+    for row in verification_rows:
+        if not isinstance(row, dict) or not verification_requires_resolution(row):
+            continue
+        enriched = dict(row)
+        enriched["canonical_status"] = normalise_verification_status(row)
+        enriched["confidence_reason"] = enriched.get("confidence_reason") or verification_status_explanation(row)
+        enriched["_priority_override"] = (
+            "critical"
+            if enriched["canonical_status"] in {"not_found", "lookup_failed", "serious_identity_conflict"}
+            else "important"
+        )
+        risky.append(enriched)
+    add(
+        "critical", "source_verification", "Reference requires evidence resolution", risky,
+        "Search the exact bibliographic identity first, open the candidate, and verify title, authors, year, journal, volume, pages and DOI before approval.",
+        "Readers must be able to identify the intended source. A failed lookup or not-found result does not mean the source is fabricated.",
+        "medium",
+    )
 
     claim_rows = _rows(result.get("claim_support"))
-    weak_claim_statuses = {
-        "weak", "weak_support", "weak_or_unclear", "unclear", "insufficient_evidence", "insufficient",
-        "mapping_incomplete", "incomplete_mapping", "no_mapping", "no_source", "not_mapped", "unmapped",
-        "no_support", "source_needs_review", "unverified", "failed",
+    claim_groups = {
+        "mapping_incomplete": [],
+        "weak_or_unclear": [],
+        "insufficient_evidence": [],
     }
-    weak_claims = [r for r in claim_rows if str((r or {}).get("support_status", (r or {}).get("status", ""))).strip().lower() in weak_claim_statuses]
-    add("critical", "claim_support", "Claim has weak or unclear support", weak_claims, "Revise or qualify the claim, and confirm that the cited source directly supports it.", "A citation must support the specific claim beside it, not merely discuss a related topic.", "medium")
+    for row in claim_rows:
+        if not isinstance(row, dict) or not claim_requires_resolution(row):
+            continue
+        enriched = dict(row)
+        enriched["canonical_support_status"] = normalise_claim_support_status(row)
+        claim_groups.setdefault(enriched["canonical_support_status"], []).append(enriched)
+    add(
+        "critical", "claim_support", "Claim-to-source mapping is incomplete",
+        claim_groups["mapping_incomplete"],
+        "Find the intended source or a suitable supporting source, open it, and confirm the exact claim before approval.",
+        "Without a completed mapping, CiteIntegrity cannot determine which publication should be checked against the claim.",
+        "medium",
+        id_prefix="claim-mapping-incomplete",
+    )
+    add(
+        "important", "claim_support", "Claim has weak or unclear support",
+        claim_groups["weak_or_unclear"],
+        "Revise or qualify the claim, or find a stronger source and confirm that it directly supports the wording.",
+        "A source on the same topic may not support the specific strength, scope or causal wording of the claim.",
+        "medium",
+        id_prefix="claim-weak-support",
+    )
+    add(
+        "critical", "claim_support", "Claim has insufficient supporting evidence",
+        claim_groups["insufficient_evidence"],
+        "Add a verified supporting source, narrow the claim, or remove unsupported wording after review.",
+        "Unsupported factual, empirical or causal claims create a direct submission risk.",
+        "medium",
+        id_prefix="claim-insufficient-evidence",
+    )
     add("critical", "citation_needed", "Claim may require a citation", _rows(result.get("citation_needed_claims")), "Add an appropriate source, qualify the statement, or identify it as a result of the present study.", "Unsupported factual, empirical or causal claims reduce scholarly credibility.", "medium")
 
     for audit in _reference_audit(result):
@@ -407,9 +473,11 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             "decision_note": decision.get("note", ""),
         })
 
+    voice_settings = result.get("academic_voice_settings") or {}
+    voice_enabled = voice_settings.get("enabled") is True
     voice = result.get("academic_voice_review") or {}
     voice_items_added = 0
-    for voice_index, row in enumerate(_rows(voice.get("signals") if isinstance(voice, dict) else [])):
+    for voice_index, row in enumerate(_rows(voice.get("signals") if voice_enabled and isinstance(voice, dict) else [])):
         # Citation-support questions belong to the dedicated citation-needed and
         # claim-support checks. Repeating low-confidence voice heuristics in the
         # correction plan creates duplicate, high-volume false positives.
@@ -486,6 +554,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     pending_items = [item for item in items if item.get("decision") not in {"accepted", "rejected", "ignored", "resolved"}]
     counts = Counter(item["priority"] for item in pending_items)
     status = "ready" if not counts["critical"] and counts["important"] <= 2 else "not_ready"
+    workspace = build_evidence_resolution_workspace(items)
     return {
         "readiness": status,
         "headline": (
@@ -495,6 +564,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "counts": {"critical": counts["critical"], "important": counts["important"], "optional": counts["optional"], "total": len(pending_items), "all_items": len(items), "decided": len(items) - len(pending_items)},
         "items": items,
+        "evidence_resolution_workspace": workspace,
         "human_review_required": True,
     }
 
@@ -513,8 +583,8 @@ def compare_revision_results(original: Dict[str, Any], revised: Dict[str, Any]) 
         return {
             "missing_references": len(_rows(data.get("missing_in_references"))),
             "uncited_references": len(_rows(data.get("uncited_references"))),
-            "verified_sources": sum(str((row or {}).get("status", "")).lower() in {"verified", "matched", "valid"} for row in verification_rows),
-            "unsupported_claims": sum(str((row or {}).get("support_status", (row or {}).get("status", ""))).lower() in {"weak_or_unclear", "insufficient_evidence", "no_support", "source_needs_review"} for row in claim_rows),
+            "verified_sources": sum(normalise_verification_status(row) == "verified" for row in verification_rows),
+            "unsupported_claims": sum(claim_requires_resolution(row) for row in claim_rows),
             "formatting_issues": sum(item.get("category") in {"citation_formatting", "reference_metadata"} and item.get("decision") not in {"resolved", "accepted"} for item in plan.get("items") or []),
             "remaining_submission_risks": plan.get("counts", {}).get("critical", 0) + plan.get("counts", {}).get("important", 0),
         }

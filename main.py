@@ -91,6 +91,11 @@ from reference_formatter import (
 )
 from academic_voice import analyse_academic_voice, rewrite_selected_passage
 from correction_plan import build_correction_plan, compare_revision_results
+from evidence_resolution import (
+    assess_candidate_context_fit,
+    build_claim_fingerprint,
+    build_document_topic_profile,
+)
 from source_risk import assess_source_risks
 from payment_control import get_access_mode, set_access_mode, open_access_payload
 from document_correction_pack import build_annotated_document, build_tracked_changes_document
@@ -729,7 +734,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.8.8").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.9.0").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -797,6 +802,10 @@ def cleanup_expired_manuscript_content(limit: int = 200) -> Dict[str, int]:
             result = row.get("result") or {}
             if isinstance(result, str):
                 result = json.loads(result)
+            try:
+                _snapshot_feature_usage(result)
+            except Exception as snapshot_error:
+                print(f"[PRIVACY] Count-only expiry snapshot failed safely for {row['job_id']}: {snapshot_error}")
             minimal = purge_result_content(result, reason="automatic_expiry")
             cursor.execute("UPDATE jobs SET result = %s::jsonb WHERE job_id = %s", (json.dumps(minimal), row["job_id"]))
             if redis_conn:
@@ -3500,16 +3509,19 @@ async def verify(
     style: str = Form("auto"),
     enable_autofix: str = Form("false"),  # CHANGE: Use str instead of bool
     enable_online_verification: str = Form("false"),  # CHANGE: Use str instead of bool
+    enable_academic_voice: str = Form("false"),
     request: Request = None
 ):
     # Convert string to boolean
     autofix_enabled = enable_autofix.lower() == "true"
     online_verify_enabled = enable_online_verification.lower() == "true"
+    academic_voice_enabled = enable_academic_voice.lower() == "true"
     
     print(f"📚 Received citation style: {style}")
     print(f"📋 Received enable_autofix string: {enable_autofix}")
     print(f"📋 Converted to bool: {autofix_enabled}")
     print(f"📋 Received enable_online_verification: {online_verify_enabled}")
+    print(f"📋 Academic Voice and Writing Signals enabled: {academic_voice_enabled}")
     
     # =========================
     # 1. VALIDATION
@@ -3597,7 +3609,10 @@ async def verify(
             preflight_payload = {
                 "preflight": load_info,
                 "queue_name": queue_name,
-                "large_file": is_large_file
+                "large_file": is_large_file,
+                "analysis_options": {
+                    "academic_voice_enabled": academic_voice_enabled,
+                },
             }
 
             cursor.execute("""
@@ -3639,6 +3654,7 @@ async def verify(
             file.filename,
             style,
             autofix_enabled,  # CHANGE: Use the variable, not hardcoded True
+            academic_voice_enabled,
             job_timeout=job_timeout,
             result_ttl=86400,
             failure_ttl=86400
@@ -3713,6 +3729,7 @@ async def verify(
             if is_pdf else ""
         ),
         "autofix_enabled": autofix_enabled,  # Include for debugging
+        "academic_voice_enabled": academic_voice_enabled,
         "selected_style": _main_style_token(style),
         "large_worker_autostart": large_worker_autostart,
         "large_worker_autostart_enabled": os.environ.get("LARGE_WORKER_AUTOSTART_ENABLED", "false"),
@@ -3863,6 +3880,48 @@ def _manual_save_result(job_id: str, result: Dict[str, Any]):
             redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
         except Exception as e:
             print(f"[MANUAL VERIFY] Redis refresh failed: {e}")
+
+
+def _bump_feature_usage(result: Dict[str, Any], **increments: int) -> Dict[str, Any]:
+    """Record count-only product telemetry inside the temporary job result.
+
+    The values are deliberately limited to feature names and integer counters.
+    No manuscript passage, citation, candidate title, DOI, author or search query
+    is stored here, so the counters may safely remain after content deletion and
+    feed the password-protected aggregate statistics dashboard.
+    """
+    usage = result.setdefault("feature_usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+        result["feature_usage"] = usage
+    usage["schema_version"] = 1
+    for key, amount in increments.items():
+        clean_key = re.sub(r"[^a-z0-9_]+", "_", str(key or "").strip().lower()).strip("_")
+        if not clean_key:
+            continue
+        usage[clean_key] = max(0, _safe_int(usage.get(clean_key))) + max(0, _safe_int(amount))
+    usage["last_activity_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return usage
+
+
+def _snapshot_feature_usage(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Freeze current count-only outcomes before detailed job content is purged."""
+    metrics = _extract_feature_metrics(result)
+    usage = result.setdefault("feature_usage", {})
+    if not isinstance(usage, dict):
+        usage = {}
+        result["feature_usage"] = usage
+    for key in (
+        "evidence_workspace_analyses", "evidence_issues_generated",
+        "evidence_issues_pending", "evidence_issues_resolved",
+        "tracked_approvals_current", "academic_voice_enabled_analyses",
+        "academic_voice_completed_analyses", "academic_voice_signals",
+        "academic_voice_approved_revisions",
+    ):
+        usage[key] = _safe_int(metrics.get(key))
+    usage["schema_version"] = 1
+    usage["snapshot_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return usage
 
 
 def _manual_norm(s: str) -> str:
@@ -5203,7 +5262,7 @@ def _demo_certificate_fallback(result: Dict[str, Any], job_id: str = "") -> Dict
     generated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     return {
         "brand_name": "CiteIntegrity",
-        "certificate_title": "Citation Integrity Certificate",
+        "certificate_title": "CiteIntegrity Submission-Readiness Certificate",
         "certificate_id": certificate_id,
         "generated_at": generated_at,
         "generated_at_display": generated_at.replace("T", " ").replace("Z", " UTC"),
@@ -5214,7 +5273,8 @@ def _demo_certificate_fallback(result: Dict[str, Any], job_id: str = "") -> Dict
         "total_references": summary.get("reference_entries_found") or len(refs),
         "acii_score": ((result.get("acii") or {}).get("ACII") if isinstance(result.get("acii"), dict) else None) or ((result.get("acii") or {}).get("score") if isinstance(result.get("acii"), dict) else None),
         "acii_rating": "Demo review",
-        "clearance_status": "Citation Integrity Review Completed",
+        "clearance_status": "Review Recorded",
+        "verified_stamp": "REVIEW RECORDED",
         "summary": {
             "automatically_verified_references": verified,
             "user_attested_manual_verification_with_evidence": 0,
@@ -5299,7 +5359,18 @@ def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] =
     result = result or {}
     if result.get("result_deleted"):
         return attach_privacy_status(result)
-    if not result.get("academic_voice_review"):
+    analysis_options = result.get("analysis_options") if isinstance(result.get("analysis_options"), dict) else {}
+    voice_settings = result.get("academic_voice_settings") if isinstance(result.get("academic_voice_settings"), dict) else {}
+    if "enabled" not in voice_settings:
+        voice_settings["enabled"] = bool(analysis_options.get("academic_voice_enabled", False))
+    voice_settings.update({
+        "available": True,
+        "default_enabled": False,
+        "module_name": "Academic Voice and Writing Signals",
+        "authorship_inference": False,
+    })
+    result["academic_voice_settings"] = voice_settings
+    if voice_settings.get("enabled") is True and not result.get("academic_voice_review"):
         manuscript_text = (
             result.get("main_text") or result.get("full_text") or
             result.get("document_text") or result.get("text") or ""
@@ -5309,6 +5380,7 @@ def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] =
     result["source_risk_review"] = assess_source_risks(result)
     result["citation_improvement_coach"] = build_citation_coach(result)
     result["correction_plan"] = build_correction_plan(result)
+    result["evidence_resolution_workspace"] = result["correction_plan"].get("evidence_resolution_workspace") or {}
     access_control = get_access_mode(DATABASE_URL, redis_conn)
     result["global_access_control"] = access_control
     if access_control.get("mode") == "open_access":
@@ -5323,7 +5395,12 @@ def _purge_job_content(job_id: str, reason: str = "user_requested") -> Dict[str,
     job = load_job_record_fresh(job_id)
     if not job:
         return {"ok": False, "message": "Job not found"}
-    minimal = purge_result_content(job.get("result") or {}, reason=reason)
+    result_for_purge = job.get("result") or {}
+    try:
+        _snapshot_feature_usage(result_for_purge)
+    except Exception as snapshot_error:
+        print(f"[PRIVACY] Count-only feature snapshot failed safely for {job_id}: {snapshot_error}")
+    minimal = purge_result_content(result_for_purge, reason=reason)
     if DATABASE_URL:
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
@@ -5459,10 +5536,66 @@ async def get_academic_voice_review(job_id: str):
     result = _prepare_student_result(job.get("result") or {})
     if result.get("result_deleted"):
         raise HTTPException(status_code=410, detail="Manuscript content has been deleted.")
-    return result.get("academic_voice_review") or {
-        "feature": "Authentic Academic Voice Review",
+    settings = result.get("academic_voice_settings") or {}
+    if settings.get("enabled") is not True:
+        return {
+            "feature": "Academic Voice and Writing Signals",
+            "enabled": False,
+            "settings": settings,
+            "signals": [],
+            "message": "This optional module is off for this analysis. Enable it to review explainable writing patterns.",
+        }
+    review = result.get("academic_voice_review") or {
+        "feature": "Academic Voice and Writing Signals",
         "signals": [],
         "message": "No extractable manuscript text was available for this review.",
+    }
+    review["enabled"] = True
+    review["settings"] = settings
+    return review
+
+
+@app.post("/api/academic-voice/{job_id}/settings")
+async def update_academic_voice_settings(job_id: str, request: Request):
+    """Enable or disable the optional writing-signal review for one analysis."""
+    payload = await request.json()
+    enabled = payload.get("enabled") is True
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = job.get("result") or {}
+    if result.get("result_deleted"):
+        raise HTTPException(status_code=410, detail="Manuscript content has been deleted.")
+    settings = result.setdefault("academic_voice_settings", {})
+    was_enabled = settings.get("enabled") is True
+    settings.update({
+        "enabled": enabled,
+        "available": True,
+        "default_enabled": False,
+        "module_name": "Academic Voice and Writing Signals",
+        "authorship_inference": False,
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    })
+    if enabled:
+        manuscript_text = str(
+            result.get("main_text") or result.get("full_text") or
+            result.get("document_text") or result.get("text") or ""
+        )
+        if not manuscript_text.strip():
+            raise HTTPException(status_code=422, detail="No extractable manuscript text is available for writing-signal review.")
+        result["academic_voice_review"] = analyse_academic_voice(manuscript_text)
+    if enabled and not was_enabled:
+        _bump_feature_usage(result, academic_voice_enable_events=1)
+    elif not enabled and was_enabled:
+        _bump_feature_usage(result, academic_voice_disable_events=1)
+    result["correction_plan"] = build_correction_plan(result)
+    result["evidence_resolution_workspace"] = result["correction_plan"].get("evidence_resolution_workspace") or {}
+    _manual_save_result(job_id, result)
+    return {
+        "ok": True,
+        "settings": settings,
+        "academic_voice_review": result.get("academic_voice_review") if enabled else {},
+        "correction_plan": result["correction_plan"],
     }
 
 
@@ -5492,6 +5625,12 @@ async def save_correction_decision(job_id: str, request: Request):
         if category in {"citation_needed", "missing_reference"} and action in {"insert_citation", "add_reference"}:
             if not approved_source.get("url") or not approved_source.get("title"):
                 raise HTTPException(status_code=400, detail="Select and open a scholarly source before approving this correction.")
+            if approved_source.get("opened_by_user") is not True:
+                raise HTTPException(status_code=400, detail="Open the candidate source before approving it.")
+            if category == "citation_needed" and approved_source.get("context_fit_confirmed") is not True:
+                raise HTTPException(status_code=400, detail="Confirm that the source supports the exact claim and fits the manuscript topic.")
+            if category == "missing_reference" and approved_source.get("identity_confirmed") is not True:
+                raise HTTPException(status_code=400, detail="Confirm that the candidate is the publication intended by the in-text citation.")
             if not proposed_replacement:
                 raise HTTPException(status_code=400, detail="The approved citation or reference text is missing.")
             if action == "insert_citation":
@@ -5502,6 +5641,8 @@ async def save_correction_decision(job_id: str, request: Request):
         elif category == "claim_support" and action == "add_supporting_citation":
             if not approved_source.get("url") or not approved_source.get("title"):
                 raise HTTPException(status_code=400, detail="Open and verify a scholarly source before adding it to the claim.")
+            if approved_source.get("opened_by_user") is not True or approved_source.get("context_fit_confirmed") is not True:
+                raise HTTPException(status_code=400, detail="Open the source and confirm that it supports the exact claim and fits the manuscript topic before approval.")
             if not original_text or not proposed_replacement:
                 raise HTTPException(status_code=400, detail="The claim text or approved citation text is missing.")
             secondary_replacement = secondary_replacement or str(approved_source.get("formatted_reference") or "").strip()
@@ -5510,9 +5651,11 @@ async def save_correction_decision(job_id: str, request: Request):
             if not original_text or not proposed_replacement or original_text == proposed_replacement:
                 raise HTTPException(status_code=400, detail="Enter revised claim wording before approval.")
             operation = "replace"
-        elif category in {"reference_incomplete", "reference_identity_conflict"} and action == "replace_reference":
+        elif category in {"source_verification", "reference_incomplete", "reference_identity_conflict"} and action == "replace_reference":
             if not approved_source.get("url") or not approved_source.get("title"):
                 raise HTTPException(status_code=400, detail="Open and verify a complete scholarly source before replacing this reference.")
+            if approved_source.get("opened_by_user") is not True or approved_source.get("identity_confirmed") is not True:
+                raise HTTPException(status_code=400, detail="Open the candidate and confirm that it is the same publication before replacing the reference.")
             if not original_text or not proposed_replacement:
                 raise HTTPException(status_code=400, detail="The original or completed reference text is missing.")
             operation = "replace"
@@ -5537,6 +5680,12 @@ async def save_correction_decision(job_id: str, request: Request):
         "track_operation": operation,
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
+    usage_increments = {"correction_decision_events": 1}
+    if decision == "accepted":
+        usage_increments["tracked_approval_events"] = 1
+        if approved_source:
+            usage_increments["source_approval_events"] = 1
+    _bump_feature_usage(result, **usage_increments)
     result["correction_plan"] = build_correction_plan(result)
     _manual_save_result(job_id, result)
     return {"ok": True, "item_id": item_id, "decision": decision, "correction_plan": result["correction_plan"]}
@@ -5564,6 +5713,13 @@ async def approve_all_reference_formatting(job_id: str):
         }
         approved += 1
     result["correction_plan"] = build_correction_plan(result)
+    if approved:
+        _bump_feature_usage(
+            result,
+            correction_decision_events=approved,
+            tracked_approval_events=approved,
+            reference_style_approval_events=approved,
+        )
     _manual_save_result(job_id, result)
     return {"ok": True, "approved_count": approved, "correction_plan": result["correction_plan"]}
 
@@ -5681,6 +5837,24 @@ def _reference_citation_context(manuscript_text: str, reference: str, window: in
     return ""
 
 
+def _claim_context_window(manuscript_text: str, claim: str, window: int = 900) -> str:
+    """Return the claim plus nearby prose for topic-aware source discovery."""
+    text = str(manuscript_text or "")
+    needle = re.sub(r"\s+", " ", str(claim or "")).strip()
+    if not text or not needle:
+        return needle
+    position = text.casefold().find(needle.casefold())
+    if position < 0:
+        probe = needle[:120]
+        position = text.casefold().find(probe.casefold()) if probe else -1
+    if position < 0:
+        return needle
+    start = max(0, position - window)
+    end = min(len(text), position + len(needle) + window)
+    nearby = re.sub(r"\s+", " ", text[start:end]).strip()
+    return re.sub(r"\s+", " ", f"{needle} {nearby}").strip()[:2400]
+
+
 @app.post("/api/corrections/{job_id}/sources/{item_id}")
 async def find_correction_sources(job_id: str, item_id: str):
     job = load_job_record_fresh(job_id)
@@ -5696,9 +5870,23 @@ async def find_correction_sources(job_id: str, item_id: str):
     manuscript_text = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or result.get("text") or "")
     category = item.get("category")
     context = extract_context(manuscript_text, evidence, window=600) if manuscript_text and evidence else ""
+    if category in {"claim_support", "citation_needed"}:
+        context = _claim_context_window(manuscript_text, evidence, window=900) or context
     if category in {"source_verification", "reference_incomplete", "reference_identity_conflict"}:
         context = _reference_citation_context(manuscript_text, evidence, window=600) or context
     context = context or str((item.get("supporting_metadata") or {}).get("claim") or "") or evidence
+    topic_profile = build_document_topic_profile(manuscript_text, result)
+    claim_fingerprint: Dict[str, Any] = {}
+    discovery_context = context
+    if category in {"claim_support", "citation_needed"}:
+        location = item.get("location") if isinstance(item.get("location"), dict) else {}
+        claim_fingerprint = build_claim_fingerprint(
+            evidence,
+            context,
+            topic_profile,
+            str(location.get("section") or ""),
+        )
+        discovery_context = str(claim_fingerprint.get("search_query") or context)
     try:
         if category in {"source_verification", "reference_incomplete", "reference_identity_conflict"}:
             candidates = await run_in_threadpool(suggest_for_unverified, evidence, 5, "apa", True)
@@ -5707,33 +5895,91 @@ async def find_correction_sources(job_id: str, item_id: str):
             # the original reference.
             if not candidates:
                 candidates = await run_in_threadpool(
-                    suggest_from_context, context, evidence, 5,
-                    use_citation_hint=True, min_relevance=35,
+                    suggest_from_context, discovery_context, evidence, 5,
+                    use_citation_hint=True, min_relevance=70,
                 )
         else:
+            discovery_limit = 12 if category in {"claim_support", "citation_needed"} else 5
+            discovery_min_relevance = 45 if category in {"claim_support", "citation_needed"} else 70
             candidates = await run_in_threadpool(
                 suggest_from_context,
-                context,
+                discovery_context,
                 evidence if category == "missing_reference" else "",
-                5,
+                discovery_limit,
                 use_citation_hint=category == "missing_reference",
-                min_relevance=35,
+                min_relevance=discovery_min_relevance,
                 strict_citation_identity=category == "missing_reference",
             )
     except Exception as exc:
         print(f"[SOURCE DISCOVERY] {job_id} {item_id} failed: {type(exc).__name__}: {exc}")
+        try:
+            _bump_feature_usage(
+                result,
+                source_search_requests=1,
+                context_aware_search_requests=1 if category in {"claim_support", "citation_needed"} else 0,
+                reference_identity_search_requests=1 if category not in {"claim_support", "citation_needed"} else 0,
+                source_search_failures=1,
+            )
+            _manual_save_result(job_id, result)
+        except Exception as telemetry_error:
+            print(f"[SOURCE DISCOVERY] Could not persist count-only failure telemetry: {telemetry_error}")
         raise HTTPException(status_code=502, detail=f"Scholarly source lookup failed safely: {type(exc).__name__}. Try again or use the manual evidence links.")
     candidates = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
+    context_checked_candidates = []
+    withheld_count = 0
     for candidate in candidates:
+        if category in {"claim_support", "citation_needed"}:
+            candidate["context_fit"] = assess_candidate_context_fit(
+                evidence,
+                context,
+                candidate,
+                topic_profile,
+                claim_fingerprint,
+            )
+            if (candidate.get("context_fit") or {}).get("passes_context_gate") is not True:
+                withheld_count += 1
+                continue
+            candidate["approval_confirmation_type"] = "claim_support_and_topic_fit"
+        elif category in {"source_verification", "reference_incomplete", "reference_identity_conflict", "missing_reference"}:
+            match_basis = candidate.get("match_basis") if isinstance(candidate.get("match_basis"), dict) else {}
+            candidate["identity_fit"] = {
+                "status": "exact_or_strong_identity_candidate" if (
+                    candidate.get("doi_match") is True or
+                    int(match_basis.get("reference_title_similarity") or 0) >= 82 or
+                    int(match_basis.get("reference_fit_score") or 0) >= 82
+                ) else "identity_requires_manual_confirmation",
+                "title_similarity": match_basis.get("reference_title_similarity"),
+                "doi_match": bool(candidate.get("doi_match") or match_basis.get("reference_doi_match")),
+                "warning": "Confirm that this is the same publication, not merely a source on a similar topic.",
+            }
+            candidate["approval_confirmation_type"] = "same_publication_identity"
         candidate["citation_text"] = _style_aware_candidate_citation(candidate, result, evidence)
         candidate["formatted_reference"] = _style_aware_candidate_text(candidate, result, evidence)
         candidate["reference_style"] = _reference_style_for_result(result)
         candidate["context_used"] = context[:700]
         candidate["approval_warning"] = "Open and verify the source. Context ranking is a discovery aid, not proof that the source supports the claim."
+        context_checked_candidates.append(candidate)
+    candidates = context_checked_candidates[:5]
     result.setdefault("correction_source_candidates", {})[item_id] = candidates
+    _bump_feature_usage(
+        result,
+        source_search_requests=1,
+        context_aware_search_requests=1 if category in {"claim_support", "citation_needed"} else 0,
+        reference_identity_search_requests=1 if category not in {"claim_support", "citation_needed"} else 0,
+        candidate_sources_returned=len(candidates),
+        candidates_withheld_by_context=withheld_count,
+        searches_with_candidates=1 if candidates else 0,
+    )
     result["correction_plan"] = build_correction_plan(result)
     _manual_save_result(job_id, result)
-    return {"ok": True, "item_id": item_id, "candidates": candidates, "message": "Open and verify a source before approving it."}
+    return {
+        "ok": True,
+        "item_id": item_id,
+        "candidates": candidates,
+        "withheld_candidate_count": withheld_count,
+        "claim_fingerprint": claim_fingerprint if category in {"claim_support", "citation_needed"} else {},
+        "message": "Open and verify a source before approving it. Candidates based only on general keywords are withheld.",
+    }
 
 
 @app.get("/api/ai/status")
@@ -5749,6 +5995,15 @@ async def ai_configuration_status():
 @app.post("/api/academic-voice/rewrite")
 async def rewrite_academic_voice(request: Request):
     payload = await request.json()
+    job_id = str(payload.get("job_id") or "").strip()
+    if not job_id:
+        raise HTTPException(status_code=400, detail="The analysis job ID is required.")
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_result = job.get("result") or {}
+    if (job_result.get("academic_voice_settings") or {}).get("enabled") is not True:
+        raise HTTPException(status_code=409, detail="Academic Voice and Writing Signals is off for this analysis. Enable it before requesting a revision.")
     passage = str(payload.get("passage") or "")
     if not passage.strip():
         raise HTTPException(status_code=400, detail="Select a passage to revise.")
@@ -5765,6 +6020,8 @@ async def rewrite_academic_voice(request: Request):
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    _bump_feature_usage(job_result, academic_voice_rewrite_requests=1)
+    _manual_save_result(job_id, job_result)
     return {
         "revision": revision,
         "notice": "Review every change. CiteIntegrity does not guarantee AI-detector outcomes and never replaces responsible authorship.",
@@ -5784,6 +6041,8 @@ async def approve_academic_voice_revision(job_id: str, request: Request):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     result = job.get("result") or {}
+    if (result.get("academic_voice_settings") or {}).get("enabled") is not True:
+        raise HTTPException(status_code=409, detail="Academic Voice and Writing Signals is off for this analysis.")
     import hashlib
     revision_id = "voice-revision-" + hashlib.sha256(original.encode("utf-8")).hexdigest()[:12]
     revisions = result.setdefault("academic_voice_revisions", {})
@@ -5795,6 +6054,12 @@ async def approve_academic_voice_revision(job_id: str, request: Request):
         "confidence": str(payload.get("confidence") or "reviewed")[:40],
         "approved_at": datetime.utcnow().isoformat() + "Z",
     }
+    _bump_feature_usage(
+        result,
+        academic_voice_approval_events=1,
+        correction_decision_events=1,
+        tracked_approval_events=1,
+    )
     result["correction_plan"] = build_correction_plan(result)
     _manual_save_result(job_id, result)
     return {"ok": True, "revision_id": revision_id, "correction_plan": result["correction_plan"], "academic_voice_revisions": revisions}
@@ -6617,6 +6882,102 @@ def _extract_acii_score(result: Dict[str, Any]):
     return None
 
 
+FEATURE_METRIC_KEYS = (
+    "evidence_workspace_analyses",
+    "evidence_issues_generated",
+    "evidence_issues_pending",
+    "evidence_issues_resolved",
+    "tracked_approvals_current",
+    "source_search_requests",
+    "context_aware_search_requests",
+    "reference_identity_search_requests",
+    "source_search_failures",
+    "searches_with_candidates",
+    "candidate_sources_returned",
+    "candidates_withheld_by_context",
+    "correction_decision_events",
+    "source_approval_events",
+    "reference_style_approval_events",
+    "academic_voice_enabled_analyses",
+    "academic_voice_completed_analyses",
+    "academic_voice_signals",
+    "academic_voice_rewrite_requests",
+    "academic_voice_approved_revisions",
+)
+
+
+def _empty_feature_metrics() -> Dict[str, int]:
+    return {key: 0 for key in FEATURE_METRIC_KEYS}
+
+
+def _extract_feature_metrics(result: Dict[str, Any]) -> Dict[str, int]:
+    """Extract count-only metrics for the post-1.8.8 product features."""
+    result = result or {}
+    metrics = _empty_feature_metrics()
+    usage = result.get("feature_usage") if isinstance(result.get("feature_usage"), dict) else {}
+    plan = result.get("correction_plan") if isinstance(result.get("correction_plan"), dict) else {}
+    workspace = result.get("evidence_resolution_workspace")
+    if not isinstance(workspace, dict):
+        workspace = plan.get("evidence_resolution_workspace") if isinstance(plan.get("evidence_resolution_workspace"), dict) else {}
+    counts = workspace.get("counts") if isinstance(workspace.get("counts"), dict) else {}
+    if workspace:
+        metrics["evidence_workspace_analyses"] = 1
+    else:
+        metrics["evidence_workspace_analyses"] = _safe_int(usage.get("evidence_workspace_analyses"))
+    metrics["evidence_issues_generated"] = _safe_int(
+        counts.get("total") if workspace else usage.get("evidence_issues_generated")
+    )
+    metrics["evidence_issues_pending"] = _safe_int(
+        counts.get("pending") if workspace else usage.get("evidence_issues_pending")
+    )
+    metrics["evidence_issues_resolved"] = _safe_int(
+        counts.get("resolved") if workspace else usage.get("evidence_issues_resolved")
+    )
+
+    decisions = result.get("correction_decisions") if isinstance(result.get("correction_decisions"), dict) else {}
+    metrics["tracked_approvals_current"] = (
+        sum(
+            1 for decision in decisions.values()
+            if isinstance(decision, dict)
+            and str(decision.get("decision") or "").lower() == "accepted"
+            and str(decision.get("track_operation") or "").lower() in {
+                "replace", "delete", "insert_after", "append_reference",
+                "insert_after_and_append_reference",
+            }
+        )
+        if decisions else _safe_int(usage.get("tracked_approvals_current"))
+    )
+
+    for key in (
+        "source_search_requests", "context_aware_search_requests",
+        "reference_identity_search_requests", "source_search_failures",
+        "searches_with_candidates", "candidate_sources_returned",
+        "candidates_withheld_by_context", "correction_decision_events",
+        "source_approval_events", "reference_style_approval_events",
+        "academic_voice_rewrite_requests",
+    ):
+        metrics[key] = _safe_int(usage.get(key))
+
+    settings = result.get("academic_voice_settings") if isinstance(result.get("academic_voice_settings"), dict) else {}
+    review = result.get("academic_voice_review") if isinstance(result.get("academic_voice_review"), dict) else {}
+    signals = review.get("signals") if isinstance(review.get("signals"), list) else []
+    revisions = result.get("academic_voice_revisions") if isinstance(result.get("academic_voice_revisions"), dict) else {}
+    metrics["academic_voice_enabled_analyses"] = (
+        1 if settings.get("enabled") is True
+        else _safe_int(usage.get("academic_voice_enabled_analyses"))
+    )
+    metrics["academic_voice_completed_analyses"] = (
+        1 if review else _safe_int(usage.get("academic_voice_completed_analyses"))
+    )
+    metrics["academic_voice_signals"] = (
+        len(signals) if review else _safe_int(usage.get("academic_voice_signals"))
+    )
+    metrics["academic_voice_approved_revisions"] = (
+        len(revisions) if revisions else _safe_int(usage.get("academic_voice_approved_revisions"))
+    )
+    return metrics
+
+
 def _extract_job_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract dashboard-safe metrics from a job result.
@@ -6701,6 +7062,7 @@ def _extract_job_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
         "not_found": not_found,
         "offline": offline,
         "acii_score": _extract_acii_score(result),
+        **_extract_feature_metrics(result),
     }
 
 
@@ -6724,7 +7086,22 @@ def _empty_dashboard_payload(days: int, message: str = "No data available yet.")
             "persistent_storage": stats_tracker.db_type == "postgresql",
             "storage_message": message,
         },
-        "dashboard_metrics": {},
+        "dashboard_metrics": {
+            **_empty_feature_metrics(),
+            "completed_jobs": 0,
+            "failed_jobs": 0,
+            "running_jobs": 0,
+            "queued_jobs": 0,
+            "total_jobs": 0,
+            "verified": 0,
+            "likely": 0,
+            "needs_review": 0,
+            "not_found": 0,
+            "offline": 0,
+            "claim_rows": 0,
+            "recovery_rows": 0,
+            "suggestions_count": 0,
+        },
         "daily_stats": {},
         "recent_uploads": [],
         "system_info": {
@@ -6787,6 +7164,7 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
         "average_processing_time": 0,
         "error": None,
     }
+    advanced.update(_empty_feature_metrics())
 
     completed_statuses = "('completed','complete','done','success','finished')"
     failed_statuses = "('failed','error','cancelled','canceled')"
@@ -6911,6 +7289,90 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
         END
     """
 
+    def feature_usage_expr(key: str) -> str:
+        path = "{feature_usage," + key + "}"
+        return f"""
+            CASE WHEN COALESCE(result #>> '{path}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{path}')::int ELSE 0 END
+        """
+
+    evidence_total_expr = """
+        CASE
+            WHEN COALESCE(result #>> '{evidence_resolution_workspace,counts,total}', result #>> '{correction_plan,evidence_resolution_workspace,counts,total}', result #>> '{feature_usage,evidence_issues_generated}', '') ~ '^[0-9]+$'
+                THEN COALESCE(result #>> '{evidence_resolution_workspace,counts,total}', result #>> '{correction_plan,evidence_resolution_workspace,counts,total}', result #>> '{feature_usage,evidence_issues_generated}')::int
+            ELSE 0
+        END
+    """
+    evidence_pending_expr = """
+        CASE
+            WHEN COALESCE(result #>> '{evidence_resolution_workspace,counts,pending}', result #>> '{correction_plan,evidence_resolution_workspace,counts,pending}', result #>> '{feature_usage,evidence_issues_pending}', '') ~ '^[0-9]+$'
+                THEN COALESCE(result #>> '{evidence_resolution_workspace,counts,pending}', result #>> '{correction_plan,evidence_resolution_workspace,counts,pending}', result #>> '{feature_usage,evidence_issues_pending}')::int
+            ELSE 0
+        END
+    """
+    evidence_resolved_expr = """
+        CASE
+            WHEN COALESCE(result #>> '{evidence_resolution_workspace,counts,resolved}', result #>> '{correction_plan,evidence_resolution_workspace,counts,resolved}', result #>> '{feature_usage,evidence_issues_resolved}', '') ~ '^[0-9]+$'
+                THEN COALESCE(result #>> '{evidence_resolution_workspace,counts,resolved}', result #>> '{correction_plan,evidence_resolution_workspace,counts,resolved}', result #>> '{feature_usage,evidence_issues_resolved}')::int
+            ELSE 0
+        END
+    """
+    evidence_analysis_expr = """
+        CASE WHEN jsonb_typeof(result->'evidence_resolution_workspace') = 'object'
+               OR jsonb_typeof(result->'correction_plan'->'evidence_resolution_workspace') = 'object'
+            THEN 1
+            WHEN COALESCE(result #>> '{feature_usage,evidence_workspace_analyses}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{feature_usage,evidence_workspace_analyses}')::int
+            ELSE 0 END
+    """
+    tracked_approvals_expr = """
+        CASE WHEN jsonb_typeof(result->'correction_decisions') = 'object' THEN
+            (
+                SELECT COUNT(*)
+                FROM jsonb_each(result->'correction_decisions') AS decision_entry(key, value)
+                WHERE lower(COALESCE(value->>'decision', '')) = 'accepted'
+                  AND lower(COALESCE(value->>'track_operation', '')) IN (
+                      'replace', 'delete', 'insert_after', 'append_reference',
+                      'insert_after_and_append_reference'
+                  )
+            )
+        WHEN COALESCE(result #>> '{feature_usage,tracked_approvals_current}', '') ~ '^[0-9]+$'
+            THEN (result #>> '{feature_usage,tracked_approvals_current}')::int
+        ELSE 0 END
+    """
+    academic_voice_enabled_expr = """
+        CASE
+            WHEN lower(COALESCE(result #>> '{academic_voice_settings,enabled}', '')) = 'true' THEN 1
+            WHEN lower(COALESCE(result #>> '{academic_voice_settings,enabled}', '')) = 'false' THEN 0
+            WHEN COALESCE(result #>> '{feature_usage,academic_voice_enabled_analyses}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{feature_usage,academic_voice_enabled_analyses}')::int
+            ELSE 0
+        END
+    """
+    academic_voice_completed_expr = """
+        CASE WHEN jsonb_typeof(result->'academic_voice_review') = 'object' THEN 1
+            WHEN COALESCE(result #>> '{feature_usage,academic_voice_completed_analyses}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{feature_usage,academic_voice_completed_analyses}')::int
+            ELSE 0 END
+    """
+    academic_voice_signals_expr = """
+        CASE WHEN jsonb_typeof(result->'academic_voice_review'->'signals') = 'array'
+            THEN jsonb_array_length(result->'academic_voice_review'->'signals')
+            WHEN COALESCE(result #>> '{feature_usage,academic_voice_signals}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{feature_usage,academic_voice_signals}')::int
+            ELSE 0 END
+    """
+    academic_voice_revisions_expr = """
+        CASE WHEN jsonb_typeof(result->'academic_voice_revisions') = 'object'
+            THEN (
+                SELECT COUNT(*)
+                FROM jsonb_object_keys(result->'academic_voice_revisions') AS revision_key
+            )
+            WHEN COALESCE(result #>> '{feature_usage,academic_voice_approved_revisions}', '') ~ '^[0-9]+$'
+                THEN (result #>> '{feature_usage,academic_voice_approved_revisions}')::int
+            ELSE 0 END
+    """
+
     # ------------------------------------------------------------------
     # 1) Relational totals and basic recent uploads.
     # ------------------------------------------------------------------
@@ -6991,6 +7453,26 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
                         COALESCE(SUM({needs_review_expr}), 0) AS needs_review,
                         COALESCE(SUM({not_found_expr}), 0) AS not_found,
                         COALESCE(SUM({offline_expr}), 0) AS offline,
+                        COALESCE(SUM({evidence_analysis_expr}), 0) AS evidence_workspace_analyses,
+                        COALESCE(SUM({evidence_total_expr}), 0) AS evidence_issues_generated,
+                        COALESCE(SUM({evidence_pending_expr}), 0) AS evidence_issues_pending,
+                        COALESCE(SUM({evidence_resolved_expr}), 0) AS evidence_issues_resolved,
+                        COALESCE(SUM({tracked_approvals_expr}), 0) AS tracked_approvals_current,
+                        COALESCE(SUM({feature_usage_expr('source_search_requests')}), 0) AS source_search_requests,
+                        COALESCE(SUM({feature_usage_expr('context_aware_search_requests')}), 0) AS context_aware_search_requests,
+                        COALESCE(SUM({feature_usage_expr('reference_identity_search_requests')}), 0) AS reference_identity_search_requests,
+                        COALESCE(SUM({feature_usage_expr('source_search_failures')}), 0) AS source_search_failures,
+                        COALESCE(SUM({feature_usage_expr('searches_with_candidates')}), 0) AS searches_with_candidates,
+                        COALESCE(SUM({feature_usage_expr('candidate_sources_returned')}), 0) AS candidate_sources_returned,
+                        COALESCE(SUM({feature_usage_expr('candidates_withheld_by_context')}), 0) AS candidates_withheld_by_context,
+                        COALESCE(SUM({feature_usage_expr('correction_decision_events')}), 0) AS correction_decision_events,
+                        COALESCE(SUM({feature_usage_expr('source_approval_events')}), 0) AS source_approval_events,
+                        COALESCE(SUM({feature_usage_expr('reference_style_approval_events')}), 0) AS reference_style_approval_events,
+                        COALESCE(SUM({academic_voice_enabled_expr}), 0) AS academic_voice_enabled_analyses,
+                        COALESCE(SUM({academic_voice_completed_expr}), 0) AS academic_voice_completed_analyses,
+                        COALESCE(SUM({academic_voice_signals_expr}), 0) AS academic_voice_signals,
+                        COALESCE(SUM({feature_usage_expr('academic_voice_rewrite_requests')}), 0) AS academic_voice_rewrite_requests,
+                        COALESCE(SUM({academic_voice_revisions_expr}), 0) AS academic_voice_approved_revisions,
                         AVG({acii_expr}) AS average_acii_score
                     FROM jobs
                     WHERE result IS NOT NULL
@@ -7002,7 +7484,7 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
                     "references_count", "citations_count", "missing_citations_count",
                     "uncited_references_count", "claim_rows", "recovery_rows", "suggestions_count",
                     "verification_rows", "verified", "likely", "needs_review", "not_found", "offline"
-                ]:
+                ] + list(FEATURE_METRIC_KEYS):
                     advanced[key] = _safe_int(row.get(key))
 
                 if row.get("average_acii_score") is not None:
@@ -7192,6 +7674,7 @@ def _build_postgres_dashboard_stats(days: int = 30) -> Dict[str, Any]:
             "claim_rows": advanced["claim_rows"],
             "recovery_rows": advanced["recovery_rows"],
             "suggestions_count": advanced["suggestions_count"],
+            **{key: advanced[key] for key in FEATURE_METRIC_KEYS},
         },
         "daily_stats": daily_stats,
         "recent_uploads": recent_uploads,
@@ -7251,6 +7734,22 @@ def _build_sqlite_dashboard_stats(days: int = 30) -> Dict[str, Any]:
             payload["recent_uploads"] = recent
     except Exception as e:
         print(f"[STATS] SQLite detail fallback failed: {e}")
+    # Development jobs may live only in the in-process store. Aggregate only
+    # count fields from those results; never expose their text in /private-stats.
+    local_feature_totals = _empty_feature_metrics()
+    try:
+        with _lock:
+            local_jobs = list(_store.values())
+        for local_job in local_jobs:
+            result = local_job.get("result") if isinstance(local_job, dict) else {}
+            if not isinstance(result, dict):
+                continue
+            feature_metrics = _extract_feature_metrics(result)
+            for key in FEATURE_METRIC_KEYS:
+                local_feature_totals[key] += _safe_int(feature_metrics.get(key))
+        payload["dashboard_metrics"].update(local_feature_totals)
+    except Exception as e:
+        print(f"[STATS] SQLite count-only feature aggregation failed: {e}")
     return payload
 
 

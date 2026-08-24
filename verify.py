@@ -155,10 +155,6 @@ _verification_results_lock = threading.Lock()
 
 def store_verification_results(job_id: str, results: List[Dict[str, Any]]):
     """Store completed verification results in memory and Redis."""
-    if isinstance(results, list):
-        for row in results:
-            if isinstance(row, dict) and row.get("status") == "likely":
-                row["status"] = "verified"
     with _verification_results_lock:
         _verification_results[job_id] = results
     _persist_job_results(job_id, results or [])
@@ -174,9 +170,6 @@ def get_verification_results(job_id: str) -> Optional[List[Dict[str, Any]]]:
         rows = _redis_get_json(_verify_results_key(job_id))
 
     if isinstance(rows, list):
-        for row in rows:
-            if isinstance(row, dict) and row.get("status") == "likely":
-                row["status"] = "verified"
         return rows
 
     return None
@@ -653,14 +646,12 @@ _STYLE_ALIASES = {
 
 def _normalize_verify_status(s: str) -> str:
     """
-    Normalise verification status.
+    Normalise verification status without promoting uncertain matches.
 
-    Policy update:
-    any reference classified as "likely" is promoted to "verified".
+    A likely match remains distinct from a verified match so the results page
+    can show it as verified with metadata differences or human review needed.
     """
     st = (s or "").strip().lower().replace(" ", "_")
-    if st == "likely":
-        return "verified"
     if st not in _ALLOWED_VERIFY_STATUSES:
         st = "needs_review"
     return st
@@ -1833,15 +1824,10 @@ def verify_references_batch(
             except Exception as e:
                 print(f"[DEBUG] Retry failed: {e}")
     
-    # Final results
-    # Final status policy: likely is promoted to verified before reporting/storing.
-    for r in all_rows:
-        if r and r.get("status") == "likely":
-            r["status"] = "verified"
-
+    # Final results preserve uncertainty rather than promoting likely matches.
     result_counts = {
         "verified": sum(1 for r in all_rows if r and r.get("status") == "verified"),
-        "likely": 0,
+        "likely": sum(1 for r in all_rows if r and r.get("status") == "likely"),
         "needs_review": sum(1 for r in all_rows if r and r.get("status") == "needs_review"),
         "not_found": sum(1 for r in all_rows if r and r.get("status") == "not_found"),
     }
@@ -1954,14 +1940,11 @@ def submit_verification(references: List[str], style: str = "apa", enrich_metada
             print(f"[DEBUG] Time elapsed: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
             print(f"[DEBUG] Results count: {len(results)}")
 
-            for r in results:
-                if r.get("status") == "likely":
-                    r["status"] = "verified"
             store_verification_results(job_id, results)
             update_job_progress(job_id, len(results))
 
             verified = sum(1 for r in results if r.get("status") == "verified")
-            likely = 0
+            likely = sum(1 for r in results if r.get("status") == "likely")
             needs_review = sum(1 for r in results if r.get("status") == "needs_review")
             not_found = sum(1 for r in results if r.get("status") == "not_found")
             print(f"[DEBUG] Final: Verified={verified}, Likely={likely}, NeedsReview={needs_review}, NotFound={not_found}")
@@ -7773,12 +7756,10 @@ def _candidate_is_strong_enough(fields: Dict[str, Any], candidates: List[Dict[st
 
 
 def _v1532_promote_legacy_status_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Keep final output compatible with the no-Likely UI policy."""
+    """Normalise legacy rows while preserving uncertain candidate states."""
     for row in rows or []:
         if isinstance(row, dict):
             row["status"] = _normalize_verify_status(row.get("status"))
-            if row.get("candidate_status") == "likely":
-                row["candidate_status"] = "verified"
     return rows
 
 

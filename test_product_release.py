@@ -9,6 +9,13 @@ from source_risk import assess_source_risks
 from document_correction_pack import build_annotated_document, build_tracked_changes_document
 from reference_formatter import format_reference
 from payment_control import default_mode
+from evidence_resolution import (
+    assess_candidate_context_fit,
+    build_claim_fingerprint,
+    build_document_topic_profile,
+    normalise_verification_status,
+)
+from certificate_builder import build_citation_integrity_certificate
 from docx import Document
 import io
 import zipfile
@@ -64,7 +71,7 @@ def test_report_package_is_zip():
 
 def test_claim_support_table_has_direct_correction_controls():
     html = Path("templates/new_results.html").read_text(encoding="utf-8")
-    assert "Direct correction" in html
+    assert "Evidence Resolution Workspace" in html
     assert "claim-find-source" in html
     assert "claim-approve-source" in html
     assert "claim-revise" in html
@@ -332,4 +339,189 @@ def test_mapping_incomplete_and_weak_claims_receive_direct_corrections():
     plan = build_correction_plan(result)
     claim_items = [row for row in plan["items"] if row["category"] == "claim_support"]
     assert len(claim_items) == 2
+    assert len({row["id"] for row in claim_items}) == 2
     assert all("find_source" in row["available_actions"] for row in claim_items)
+    titles = {row["title"] for row in claim_items}
+    assert "Claim-to-source mapping is incomplete" in titles
+    assert "Claim has weak or unclear support" in titles
+
+
+def test_evidence_resolution_workspace_unifies_all_unresolved_evidence_groups():
+    result = sample_result()
+    result["claim_support"] = [
+        {"citation": "Judicial Service, 2019", "claim": "Claim one", "support_status": "mapping_incomplete"},
+        {"citation": "World Bank, 2020", "claim": "Claim two", "support_status": "weak"},
+        {"citation": "OECD, 2022", "claim": "Claim three", "support_status": "insufficient_evidence"},
+    ]
+    result["online_verification"] = {"rows": [
+        {"status": "verified", "reference": "Verified source"},
+        {"status": "not_found", "reference": "Unresolved source"},
+        {"status": "lookup_failed", "reference": "Lookup failed source"},
+    ]}
+    plan = build_correction_plan(result)
+    workspace = plan["evidence_resolution_workspace"]
+    groups = {row["key"] for row in workspace["groups"]}
+    assert {
+        "unsupported_claims", "incomplete_mappings", "weak_support",
+        "missing_references", "uncited_references", "unresolved_verification",
+    }.issubset(groups)
+    assert workspace["counts"]["total"] >= 7
+
+
+def test_verification_statuses_are_fair_and_all_unresolved_results_enter_plan():
+    assert normalise_verification_status("not_found") == "not_found"
+    assert normalise_verification_status("timeout") == "lookup_failed"
+    assert normalise_verification_status("metadata_mismatch") == "verified_with_metadata_differences"
+    result = sample_result()
+    result["online_verification"] = {"rows": [
+        {"status": "verified", "reference": "A"},
+        {"status": "valid_not_indexed", "reference": "B"},
+        {"status": "metadata_mismatch", "reference": "C"},
+        {"status": "not_found", "reference": "D"},
+        {"status": "timeout", "reference": "E"},
+    ]}
+    plan = build_correction_plan(result)
+    rows = [row for row in plan["items"] if row["category"] == "source_verification"]
+    assert len(rows) == 3
+    assert all("does not mean" in row["why_it_matters"] for row in rows)
+    verify_source = Path("verify.py").read_text(encoding="utf-8")
+    worker_source = Path("worker.py").read_text(encoding="utf-8")
+    assert 'if st == "likely":\n        return "verified"' not in verify_source
+    assert 'trusted_statuses = {"verified"}' in worker_source
+
+
+def test_context_fit_withholds_out_of_topic_candidates_and_preserves_disclaimer():
+    manuscript = "Judicial reform in Ghana concerns court delay, case management, access to justice and public confidence."
+    profile = build_document_topic_profile(manuscript)
+    unrelated = assess_candidate_context_fit(
+        "Digital case management may reduce court delay.",
+        manuscript,
+        {"title": "Cancer and depression treatment outcomes", "abstract_excerpt": "Clinical oncology trial."},
+        profile,
+    )
+    related = assess_candidate_context_fit(
+        "Digital case management may reduce court delay.",
+        manuscript,
+        {"title": "Digital case management and court delay in judicial reform", "abstract_excerpt": manuscript, "relevance": 90},
+        profile,
+    )
+    assert unrelated["score"] < 70
+    assert related["score"] >= 70
+    assert related["support_decision"] == "not_assessed_from_metadata"
+    assert "not proof" in related["warning"].lower()
+
+
+def test_structured_profile_and_claim_fingerprint_use_full_manuscript_context():
+    manuscript = """Digital Justice Reform in Ghana
+
+Abstract
+This study examines digital case management and court delay among judges and lawyers in Ghana using survey and administrative data.
+
+Keywords: judicial reform; digital case management; Ghana; court delay
+
+Research Objectives
+To assess whether digital case management reduces court delay in Ghana.
+
+Research Questions
+Does digital case management reduce court delay among judges in Ghana?
+
+1. Introduction
+Digital case management may reduce court delay in Ghana (World Bank, 2020).
+"""
+    profile = build_document_topic_profile(manuscript)
+    fingerprint = build_claim_fingerprint(
+        "Digital case management may reduce court delay in Ghana (World Bank, 2020).",
+        manuscript,
+        profile,
+        "1. Introduction",
+    )
+    assert profile["title"] == "Digital Justice Reform in Ghana"
+    assert "digital case management" in profile["keywords"]
+    assert "ghana" in profile["geography"]
+    assert {"judges", "lawyers"}.issubset(set(profile["population_terms"]))
+    assert "law and justice" in profile["disciplines"]
+    assert fingerprint["claimed_relationship"] == "causal_or_effect"
+    assert fingerprint["location"] == ["ghana"]
+    assert fingerprint["required_evidence_type"].startswith("causal")
+    assert fingerprint["nearby_citations"] == ["(World Bank, 2020)"]
+    assert fingerprint["current_section"] == "1. Introduction"
+    assert fingerprint["ai_api_required"] is False
+
+
+def test_academic_voice_is_optional_and_off_by_default():
+    result = sample_result()
+    result["academic_voice_review"] = analyse_academic_voice(result["main_text"])
+    plan = build_correction_plan(result)
+    assert not any(row["category"] == "academic_voice" for row in plan["items"])
+    result["academic_voice_settings"] = {"enabled": True}
+    enabled_plan = build_correction_plan(result)
+    assert any(row["category"] == "academic_voice" for row in enabled_plan["items"])
+    upload_html = Path("templates/new_analyse.html").read_text(encoding="utf-8")
+    assert 'id="academicVoice"' in upload_html
+    assert 'id="academicVoice" checked' not in upload_html
+
+
+def test_missing_and_uncited_tabs_are_permanent_standalone_views():
+    html = Path("templates/new_results.html").read_text(encoding="utf-8")
+    assert 'class="tab-btn permanent-result-tab" data-tab="missingPane"' in html
+    assert 'class="tab-btn permanent-result-tab" data-tab="uncitedPane"' in html
+    assert 'id="missingPane"' in html and 'id="uncitedPane"' in html
+    assert "Missing Citations remain visible" in html or "Missing Citations and Uncited References remain visible" in html
+    for removed_tab in ("recoveryPane", "claimPane", "citationNeededPane", "enrichmentPane", "suggestionsPane"):
+        assert f'data-tab="{removed_tab}"' not in html
+        assert f'id="{removed_tab}"' not in html
+
+
+def test_certificate_reports_evidence_resolution_and_optional_voice_state():
+    result = sample_result()
+    result["academic_voice_settings"] = {"enabled": False}
+    certificate = build_citation_integrity_certificate(result, job_id="job-123")
+    summary = certificate["summary"]
+    assert certificate["certificate_title"] == "CiteIntegrity Submission-Readiness Certificate"
+    assert summary["evidence_total"] >= 2
+    assert summary["evidence_pending"] >= 2
+    assert summary["academic_voice_status"] == "Not enabled (optional)"
+    assert certificate["verified_stamp"] == "REVIEW RECORDED"
+    assert certificate["clearance_status"] == "Revision Required"
+
+
+def test_v190_release_identity_and_homepage_feature_notice():
+    env = Path(".env.example").read_text(encoding="utf-8")
+    home = Path("templates/new_index.html").read_text(encoding="utf-8")
+    output = Path("templates/new_results.html").read_text(encoding="utf-8")
+    assert "RELEASE_VERSION=1.9.0" in env
+    assert "Evidence Resolution Workspace" in home
+    assert "Academic Voice and Writing Signals" in home
+    assert "Evidence Resolution Workspace" in output
+    assert "PRODUCTION_RESULTS-evidence-resolution-v1.9.0" in output
+
+
+def test_stats_reports_new_feature_use_without_manuscript_content():
+    main_source = Path("main.py").read_text(encoding="utf-8")
+    stats_html = Path("templates/stats.html").read_text(encoding="utf-8")
+    assert "FEATURE_METRIC_KEYS" in main_source
+    assert "context_aware_search_requests" in main_source
+    assert "candidates_withheld_by_context" in main_source
+    assert "academic_voice_approved_revisions" in main_source
+    assert "tracked_approvals_current" in main_source
+    assert "Evidence Resolution Workspace" in stats_html
+    assert "Context-aware source discovery" in stats_html
+    assert "Academic Voice and Writing Signals" in stats_html
+    assert "Feature statistics contain aggregate counters only" in stats_html
+    assert "Missing citations" in stats_html
+    assert "Uncited references" in stats_html
+
+
+def test_content_purge_retains_only_count_telemetry_for_new_features():
+    result = sample_result()
+    result.update({
+        "feature_usage": {"context_aware_search_requests": 2},
+        "correction_source_candidates": {"item-1": [{"title": "Private candidate"}]},
+        "academic_voice_revisions": {"revision-1": {"original_text": "Private passage"}},
+        "evidence_resolution_workspace": {"counts": {"total": 3}},
+    })
+    purged = purge_result_content(result)
+    assert purged["feature_usage"]["context_aware_search_requests"] == 2
+    assert "correction_source_candidates" not in purged
+    assert "academic_voice_revisions" not in purged
+    assert "evidence_resolution_workspace" not in purged
