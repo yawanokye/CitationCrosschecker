@@ -33,8 +33,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "1.9.0"
-WORKER_BUILD = "commercial-2026-08-24-evidence-resolution-optional-writing-signals"
+__version__ = "1.9.1"
+WORKER_BUILD = "commercial-2026-08-24-evidence-resolution-visible-source-search-reporting"
 
 try:
     from claim_support_scorer import score_claim_support

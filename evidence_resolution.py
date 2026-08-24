@@ -557,9 +557,13 @@ def assess_candidate_context_fit(
     specific_overlap = [term for term in concept_overlap if term not in _GENERIC_OVERLAP_TERMS]
     claim_relationship = str(fingerprint.get("claimed_relationship") or "descriptive_or_unspecified")
     candidate_relationship = _relationship_family(candidate_text)
+    candidate_relationship_known = candidate_relationship != "descriptive_or_unspecified"
     relationship_match = (
         claim_relationship == "descriptive_or_unspecified"
         or claim_relationship == candidate_relationship
+    )
+    relationship_compatible_for_review = bool(
+        relationship_match or not candidate_relationship_known
     )
     evidence_type_match = _candidate_evidence_type_matches(
         fingerprint.get("required_evidence_type") or "",
@@ -573,7 +577,7 @@ def assess_candidate_context_fit(
     score = round(min(100,
         concept_ratio * 40
         + subject_ratio * 12
-        + (16 if relationship_match else 0)
+        + (16 if relationship_match else (7 if relationship_compatible_for_review else 0))
         + (12 if not location_terms or location_overlap else 0)
         + (8 if evidence_type_match else 0)
         + topic_ratio * 7
@@ -592,16 +596,36 @@ def assess_candidate_context_fit(
     if location_terms and not location_overlap:
         rejection_reasons.append("The claim's geographical scope was not found in the candidate metadata or abstract.")
     if not relationship_match:
-        rejection_reasons.append("The candidate does not describe the same claimed relationship.")
+        rejection_reasons.append(
+            "The candidate appears to describe a different claimed relationship."
+            if candidate_relationship_known else
+            "The claimed relationship could not be confirmed from the indexed title or abstract."
+        )
     if not abstract_usable:
         rejection_reasons.append("No usable abstract was available for structured claim comparison.")
     if score < 70:
         rejection_reasons.append("The structured context-fit score is below 70/100.")
     passes_gate = not rejection_reasons
+    # Many otherwise useful records, especially books, reports and regional
+    # publications, do not expose an indexed abstract. Keep these visible as
+    # review-only leads only when the title/metadata still match at least two
+    # specific claim concepts, the geography is compatible and no explicit
+    # relationship conflict was detected. The student must open the full text
+    # and confirm exact support before approval.
+    display_for_manual_review = bool(
+        not passes_gate
+        and len(specific_overlap) >= 2
+        and not general_keyword_only
+        and (not location_terms or bool(location_overlap))
+        and relationship_compatible_for_review
+        and score >= 60
+    )
     if score >= 85 and passes_gate:
         label = "strong_structured_context_fit"
     elif passes_gate:
         label = "possible_structured_context_fit"
+    elif display_for_manual_review:
+        label = "manual_full_text_review_required"
     elif score >= 55:
         label = "weak_or_incomplete_context_fit"
     else:
@@ -610,6 +634,8 @@ def assess_candidate_context_fit(
         "score": score,
         "label": label,
         "passes_context_gate": passes_gate,
+        "display_for_manual_review": display_for_manual_review,
+        "review_tier": "recommended_candidate" if passes_gate else ("manual_review_candidate" if display_for_manual_review else "withheld_candidate"),
         "general_keyword_only": general_keyword_only,
         "claim_overlap_terms": concept_overlap[:14],
         "specific_claim_overlap_terms": specific_overlap[:12],
@@ -635,6 +661,8 @@ def assess_candidate_context_fit(
         "explanation": (
             "The candidate passed the structured topic, population, relationship and scope screen. Open the full source and confirm the exact evidence."
             if passes_gate else
+            "The title and metadata are sufficiently relevant to show this as a manual-review lead, but the indexed evidence is incomplete. Open the full source and confirm exact support before using it."
+            if display_for_manual_review else
             "The candidate was withheld because it did not satisfy the structured claim-context gate."
         ),
         "warning": "Context fit is a discovery screen, not proof that the source supports the claim.",

@@ -485,15 +485,16 @@ def test_certificate_reports_evidence_resolution_and_optional_voice_state():
     assert certificate["clearance_status"] == "Revision Required"
 
 
-def test_v190_release_identity_and_homepage_feature_notice():
+def test_v191_release_identity_and_homepage_feature_notice():
     env = Path(".env.example").read_text(encoding="utf-8")
     home = Path("templates/new_index.html").read_text(encoding="utf-8")
     output = Path("templates/new_results.html").read_text(encoding="utf-8")
-    assert "RELEASE_VERSION=1.9.0" in env
+    assert "RELEASE_VERSION=1.9.1" in env
     assert "Evidence Resolution Workspace" in home
     assert "Academic Voice and Writing Signals" in home
     assert "Evidence Resolution Workspace" in output
-    assert "PRODUCTION_RESULTS-evidence-resolution-v1.9.0" in output
+    assert "PRODUCTION_RESULTS-evidence-resolution-v1.9.1" in output
+    assert "every supporting-source search now reports" in home
 
 
 def test_stats_reports_new_feature_use_without_manuscript_content():
@@ -517,11 +518,103 @@ def test_content_purge_retains_only_count_telemetry_for_new_features():
     result.update({
         "feature_usage": {"context_aware_search_requests": 2},
         "correction_source_candidates": {"item-1": [{"title": "Private candidate"}]},
+        "correction_source_search_reports": {"item-1": {"message": "Private search query"}},
         "academic_voice_revisions": {"revision-1": {"original_text": "Private passage"}},
         "evidence_resolution_workspace": {"counts": {"total": 3}},
     })
     purged = purge_result_content(result)
     assert purged["feature_usage"]["context_aware_search_requests"] == 2
     assert "correction_source_candidates" not in purged
+    assert "correction_source_search_reports" not in purged
     assert "academic_voice_revisions" not in purged
     assert "evidence_resolution_workspace" not in purged
+
+
+def test_no_abstract_candidate_can_be_shown_only_for_manual_full_text_review():
+    manuscript = (
+        "Digital justice reform in Ghana examines digital case management, court delay, "
+        "judges and lawyers. The study asks whether digital case management reduces court delay."
+    )
+    claim = "Digital case management may reduce court delay among judges in Ghana."
+    profile = build_document_topic_profile(manuscript)
+    fingerprint = build_claim_fingerprint(claim, manuscript, profile, "Results")
+    candidate = assess_candidate_context_fit(
+        claim,
+        manuscript,
+        {
+            "title": "Digital case management and court delay among judges in Ghana",
+            "abstract_excerpt": "",
+            "relevance": 85,
+        },
+        profile,
+        fingerprint,
+    )
+    assert candidate["passes_context_gate"] is False
+    assert candidate["display_for_manual_review"] is True
+    assert candidate["review_tier"] == "manual_review_candidate"
+    assert candidate["support_decision"] == "not_assessed_from_metadata"
+
+
+def test_source_search_report_is_preserved_on_the_correction_item():
+    result = sample_result()
+    result["correction_source_search_reports"] = {
+        "missing_reference-1": {
+            "state": "completed_no_candidates",
+            "message": "No safe candidate was found.",
+            "manual_search_links": [{"label": "Search Crossref", "url": "https://search.crossref.org/"}],
+        }
+    }
+    item = next(row for row in build_correction_plan(result)["items"] if row["id"] == "missing_reference-1")
+    assert item["source_search_report"]["state"] == "completed_no_candidates"
+    assert item["source_search_report"]["manual_search_links"]
+
+
+def test_find_supporting_source_has_inline_feedback_and_uses_clicked_button():
+    html = Path("templates/new_results.html").read_text(encoding="utf-8")
+    assert "renderSourceSearchReport" in html
+    assert "source-search-feedback" in html
+    assert "Why records were withheld" in html
+    assert "Continue manually" in html
+    assert "findCorrectionSources(btn.dataset.id, btn)" in html
+    assert "renderEvidenceCandidate(correction, source, sourceIndex)" in html
+    assert "Manual full-text review required" in html
+    assert "actionScope.querySelector" in html
+
+
+def test_source_discovery_collects_provider_diagnostics_without_network():
+    import importlib.util
+    import sys
+    import types
+    from urllib.parse import quote
+
+    if importlib.util.find_spec("requests") is None:
+        requests_stub = types.ModuleType("requests")
+        requests_stub.get = lambda *_args, **_kwargs: None
+        requests_stub.exceptions = types.SimpleNamespace(Timeout=TimeoutError)
+        requests_stub.utils = types.SimpleNamespace(quote=quote)
+        sys.modules["requests"] = requests_stub
+    if importlib.util.find_spec("rapidfuzz") is None:
+        rapidfuzz_stub = types.ModuleType("rapidfuzz")
+        rapidfuzz_stub.fuzz = types.SimpleNamespace(ratio=lambda *_args: 0, token_set_ratio=lambda *_args: 0)
+        sys.modules["rapidfuzz"] = rapidfuzz_stub
+    import citation_suggester as suggester
+
+    original_openalex = suggester._query_openalex
+    original_crossref = suggester._query_crossref
+    try:
+        suggester._query_openalex = lambda _query, _rows: []
+        suggester._query_crossref = lambda _query, _rows: []
+        diagnostics = {}
+        suggestions = suggester.suggest_from_context(
+            "digital case management court delay Ghana judges",
+            top_k=3,
+            diagnostics=diagnostics,
+        )
+    finally:
+        suggester._query_openalex = original_openalex
+        suggester._query_crossref = original_crossref
+    assert suggestions == []
+    assert set(diagnostics["providers_attempted"]) == {"openalex", "crossref"}
+    assert diagnostics["query_count"] >= 1
+    assert diagnostics["provider_result_counts"] == {"openalex": 0, "crossref": 0}
+    assert diagnostics["outcome"] == "providers_returned_no_records_or_records_failed_relevance_screen"

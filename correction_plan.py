@@ -223,6 +223,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     manuscript_text = _main_text(result)
     saved_decisions = result.get("correction_decisions") or {}
     saved_candidates = result.get("correction_source_candidates") or {}
+    saved_search_reports = result.get("correction_source_search_reports") or {}
 
     def add(
         priority: str,
@@ -548,6 +549,9 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             "supporting_metadata":{}, "confidence":"medium", "evidence_link":"", "auto_apply_allowed":False,
             "decision":decision.get("decision","pending"), "decision_note":decision.get("note","")
         })
+
+    for item in items:
+        item["source_search_report"] = saved_search_reports.get(item.get("id")) or {}
 
     rank = {"critical": 0, "important": 1, "optional": 2}
     items.sort(key=lambda item: (rank.get(item["priority"], 9), item["category"]))

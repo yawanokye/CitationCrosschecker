@@ -29,7 +29,7 @@ SENSITIVE_TOP_LEVEL_KEYS = {
     "reconciliation_reference_to_intext", "claim_support", "citation_needed_claims",
     "recovery", "advanced_enrichment", "academic_voice_review", "correction_plan",
     "source_risk_review", "citation_improvement_coach", "correction_decisions",
-    "correction_source_candidates", "academic_voice_revisions",
+    "correction_source_candidates", "correction_source_search_reports", "academic_voice_revisions",
     "document_topic_profile", "claim_fingerprints", "evidence_resolution_workspace",
     "autofix", "fixed_document", "extracted_text", "document_bytes",
 }

@@ -1,7 +1,9 @@
 # citation_suggester.py
 
 import json
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple
 
 from verify import (
@@ -733,6 +735,7 @@ def suggest_from_context(
     use_citation_hint: bool = True,
     min_relevance: int = 55,
     strict_citation_identity: bool = False,
+    diagnostics: Dict[str, Any] = None,
 ) -> List[Dict[str, Any]]:
     """
     Suggest review-only scholarly sources from a claim/context.
@@ -742,33 +745,62 @@ def suggest_from_context(
     and candidate title, with only small boosts for author/year. This reduces
     attractive but weak alternatives.
     """
+    diag = diagnostics if isinstance(diagnostics, dict) else {}
+    diag.update({
+        "providers_attempted": ["openalex", "crossref"],
+        "provider_result_counts": {"openalex": 0, "crossref": 0},
+        "query_count": 0,
+        "query_strategies": [],
+        "raw_candidate_count": 0,
+        "ranked_candidate_count": 0,
+        "returned_candidate_count": 0,
+        "errors": [],
+    })
     context = _clean_search_text(context, max_len=500)
     if not context or len(_significant_terms(context, limit=4)) < 2:
+        diag["outcome"] = "insufficient_search_context"
         return []
 
     citation_authors, citation_year = extract_citation_author_year(citation)
     queries = _build_context_queries(context, citation, use_citation_hint=use_citation_hint)
     if not queries:
+        diag["outcome"] = "no_search_query_generated"
         return []
+    diag["query_count"] = len(queries)
+    diag["query_strategies"] = [q.get("strategy") for q in queries if q.get("strategy")]
 
     candidates = []
-    for q in queries:
-        query = q["query"]
-        strategy = q["strategy"]
-        try:
-            for cand in _query_openalex(query, rows=8) or []:
-                cand["_query_used"] = query
-                cand["_query_strategy"] = strategy
-                candidates.append(cand)
-        except Exception:
-            pass
-        try:
-            for cand in _query_crossref(query, rows=8) or []:
-                cand["_query_used"] = query
-                cand["_query_strategy"] = strategy
-                candidates.append(cand)
-        except Exception:
-            pass
+    lookup_jobs = []
+    for query_spec in queries:
+        lookup_jobs.extend([
+            ("openalex", _query_openalex, query_spec),
+            ("crossref", _query_crossref, query_spec),
+        ])
+    try:
+        requested_workers = int(os.getenv("SOURCE_SEARCH_PARALLEL_REQUESTS", "4") or "4")
+    except (TypeError, ValueError):
+        requested_workers = 4
+    max_workers = max(1, min(requested_workers, len(lookup_jobs)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(func, query_spec["query"], 8): (provider, query_spec)
+            for provider, func, query_spec in lookup_jobs
+        }
+        for future in as_completed(futures):
+            provider, query_spec = futures[future]
+            try:
+                rows = future.result() or []
+                diag["provider_result_counts"][provider] += len(rows)
+                for cand in rows:
+                    if not isinstance(cand, dict):
+                        continue
+                    cand["_query_used"] = query_spec["query"]
+                    cand["_query_strategy"] = query_spec["strategy"]
+                    candidates.append(cand)
+            except Exception as exc:
+                diag["errors"].append({"provider": provider, "error_type": type(exc).__name__})
+
+    diag["raw_candidate_count"] = len(candidates)
 
     seen = set()
     suggestions = []
@@ -829,7 +861,14 @@ def suggest_from_context(
         })
 
     suggestions.sort(key=lambda x: (x.get("relevance", 0), bool(x.get("doi"))), reverse=True)
-    return suggestions[:top_k]
+    diag["ranked_candidate_count"] = len(suggestions)
+    returned = suggestions[:top_k]
+    diag["returned_candidate_count"] = len(returned)
+    diag["outcome"] = (
+        "candidates_returned" if returned
+        else "providers_returned_no_records_or_records_failed_relevance_screen"
+    )
+    return returned
 
 def _extract_fields_multi_style(ref: str, style: str = "apa") -> Dict[str, Any]:
     styles = []
@@ -907,13 +946,29 @@ def _strict_reference_candidate_pass(fields: Dict[str, Any], cand_title: str, ca
         "reference_fit_score": min(100, fit_score),
     }
 
-def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa", strict_reference: bool = True) -> List[Dict[str, Any]]:
+def suggest_for_unverified(
+    ref: str,
+    top_k: int = 3,
+    style: str = "apa",
+    strict_reference: bool = True,
+    diagnostics: Dict[str, Any] = None,
+) -> List[Dict[str, Any]]:
     """
     Suggest corrected references for unverified/needs_review references.
 
     This version is style-aware and requires strong title/metadata evidence.
     It is intended for Deep Recovery, not automatic replacement.
     """
+    diag = diagnostics if isinstance(diagnostics, dict) else {}
+    diag.update({
+        "providers_attempted": ["crossref", "openalex"],
+        "provider_result_counts": {"crossref": 0, "openalex": 0},
+        "query_count": 1,
+        "raw_candidate_count": 0,
+        "ranked_candidate_count": 0,
+        "returned_candidate_count": 0,
+        "errors": [],
+    })
     fields = _extract_fields_multi_style(ref, style=style)
     title = fields.get("title", "") or ""
     authors = fields.get("authors", []) or []
@@ -932,17 +987,23 @@ def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa", strict_
 
     query = _clean_search_text(" ".join(query_parts), max_len=260)
     if not query:
+        diag["outcome"] = "no_reference_identity_query_generated"
         return []
 
     candidates = []
     try:
-        candidates.extend(_query_crossref(query, rows=10) or [])
-    except Exception:
-        pass
+        crossref_rows = _query_crossref(query, rows=10) or []
+        diag["provider_result_counts"]["crossref"] = len(crossref_rows)
+        candidates.extend(crossref_rows)
+    except Exception as exc:
+        diag["errors"].append({"provider": "crossref", "error_type": type(exc).__name__})
     try:
-        candidates.extend(_query_openalex(query, rows=10) or [])
-    except Exception:
-        pass
+        openalex_rows = _query_openalex(query, rows=10) or []
+        diag["provider_result_counts"]["openalex"] = len(openalex_rows)
+        candidates.extend(openalex_rows)
+    except Exception as exc:
+        diag["errors"].append({"provider": "openalex", "error_type": type(exc).__name__})
+    diag["raw_candidate_count"] = len(candidates)
 
     seen = set()
     suggestions = []
@@ -1017,7 +1078,11 @@ def suggest_for_unverified(ref: str, top_k: int = 3, style: str = "apa", strict_
         })
 
     suggestions.sort(key=lambda x: (x.get("doi_match", False), x.get("score", 0), x.get("title_score", 0)), reverse=True)
-    return suggestions[:top_k]
+    diag["ranked_candidate_count"] = len(suggestions)
+    returned = suggestions[:top_k]
+    diag["returned_candidate_count"] = len(returned)
+    diag["outcome"] = "candidates_returned" if returned else "no_strong_identity_candidate_returned"
+    return returned
 
 def build_claim_validation_queries(claim: str, source_title: str = "", doi: str = "", citation: str = "") -> List[Dict[str, str]]:
     """

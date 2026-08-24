@@ -734,7 +734,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.9.0").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.9.1").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -5855,6 +5855,98 @@ def _claim_context_window(manuscript_text: str, claim: str, window: int = 900) -
     return re.sub(r"\s+", " ", f"{needle} {nearby}").strip()[:2400]
 
 
+def _merge_source_search_diagnostics(*diagnostics: Dict[str, Any]) -> Dict[str, Any]:
+    merged = {
+        "providers_attempted": [],
+        "provider_result_counts": {"crossref": 0, "openalex": 0},
+        "query_count": 0,
+        "raw_candidate_count": 0,
+        "ranked_candidate_count": 0,
+        "returned_candidate_count": 0,
+        "errors": [],
+        "outcomes": [],
+    }
+    for diagnostic in diagnostics:
+        if not isinstance(diagnostic, dict):
+            continue
+        for provider in diagnostic.get("providers_attempted") or []:
+            if provider not in merged["providers_attempted"]:
+                merged["providers_attempted"].append(provider)
+        for provider, count in (diagnostic.get("provider_result_counts") or {}).items():
+            merged["provider_result_counts"][provider] = _safe_int(merged["provider_result_counts"].get(provider)) + _safe_int(count)
+        for key in ("query_count", "raw_candidate_count", "ranked_candidate_count", "returned_candidate_count"):
+            merged[key] += _safe_int(diagnostic.get(key))
+        merged["errors"].extend((diagnostic.get("errors") or [])[:6])
+        if diagnostic.get("outcome"):
+            merged["outcomes"].append(str(diagnostic.get("outcome")))
+    return merged
+
+
+def _manual_scholarly_search_links(query: str) -> List[Dict[str, str]]:
+    encoded = quote_plus(re.sub(r"\s+", " ", str(query or "")).strip()[:500])
+    if not encoded:
+        return []
+    return [
+        {"label": "Search Google Scholar", "url": f"https://scholar.google.com/scholar?q={encoded}"},
+        {"label": "Search Semantic Scholar", "url": f"https://www.semanticscholar.org/search?q={encoded}"},
+        {"label": "Search Crossref", "url": f"https://search.crossref.org/?q={encoded}"},
+        {"label": "Search OpenAlex", "url": f"https://openalex.org/works?search={encoded}"},
+    ]
+
+
+def _build_source_search_report(
+    *,
+    state: str,
+    message: str,
+    query: str,
+    diagnostics: Dict[str, Any],
+    strict_count: int = 0,
+    manual_review_count: int = 0,
+    withheld_count: int = 0,
+    rejection_reason_counts: Dict[str, int] = None,
+) -> Dict[str, Any]:
+    provider_counts = (diagnostics or {}).get("provider_result_counts") or {}
+    returned_count = _safe_int(strict_count) + _safe_int(manual_review_count)
+    if returned_count:
+        next_steps = [
+            "Open a candidate source and read the relevant passage.",
+            "Confirm that it supports the exact claim, population, setting and strength of wording.",
+            "Select it and approve the citation only after that check.",
+        ]
+    else:
+        next_steps = [
+            "Open one of the manual scholarly-search links below.",
+            "If no source supports the wording, narrow or qualify the claim instead of forcing a citation.",
+            "Use Revise or qualify claim to place approved wording into Track Changes.",
+        ]
+    return {
+        "state": state,
+        "message": message,
+        "strict_candidate_count": _safe_int(strict_count),
+        "manual_review_candidate_count": _safe_int(manual_review_count),
+        "withheld_candidate_count": _safe_int(withheld_count),
+        "providers_attempted": list((diagnostics or {}).get("providers_attempted") or []),
+        "provider_result_counts": {
+            "crossref": _safe_int(provider_counts.get("crossref")),
+            "openalex": _safe_int(provider_counts.get("openalex")),
+        },
+        "query_count": _safe_int((diagnostics or {}).get("query_count")),
+        "raw_candidate_count": _safe_int((diagnostics or {}).get("raw_candidate_count")),
+        "provider_errors": [
+            {
+                "provider": str((row or {}).get("provider") or "scholarly index"),
+                "error_type": str((row or {}).get("error_type") or "lookup_error"),
+            }
+            for row in ((diagnostics or {}).get("errors") or [])[:6]
+            if isinstance(row, dict)
+        ],
+        "rejection_reason_counts": rejection_reason_counts or {},
+        "manual_search_links": _manual_scholarly_search_links(query),
+        "next_steps": next_steps,
+        "updated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+
+
 @app.post("/api/corrections/{job_id}/sources/{item_id}")
 async def find_correction_sources(job_id: str, item_id: str):
     job = load_job_record_fresh(job_id)
@@ -5887,20 +5979,27 @@ async def find_correction_sources(job_id: str, item_id: str):
             str(location.get("section") or ""),
         )
         discovery_context = str(claim_fingerprint.get("search_query") or context)
+    lookup_diagnostics: Dict[str, Any] = {}
     try:
         if category in {"source_verification", "reference_incomplete", "reference_identity_conflict"}:
-            candidates = await run_in_threadpool(suggest_for_unverified, evidence, 5, "apa", True)
+            strict_diagnostics: Dict[str, Any] = {}
+            candidates = await run_in_threadpool(suggest_for_unverified, evidence, 5, "apa", True, strict_diagnostics)
             # If strict metadata recovery finds nothing, use manuscript context
             # as a review-only discovery fallback. It must not silently replace
             # the original reference.
             if not candidates:
+                fallback_diagnostics: Dict[str, Any] = {}
                 candidates = await run_in_threadpool(
                     suggest_from_context, discovery_context, evidence, 5,
                     use_citation_hint=True, min_relevance=70,
+                    diagnostics=fallback_diagnostics,
                 )
+                lookup_diagnostics = _merge_source_search_diagnostics(strict_diagnostics, fallback_diagnostics)
+            else:
+                lookup_diagnostics = _merge_source_search_diagnostics(strict_diagnostics)
         else:
             discovery_limit = 12 if category in {"claim_support", "citation_needed"} else 5
-            discovery_min_relevance = 45 if category in {"claim_support", "citation_needed"} else 70
+            discovery_min_relevance = 35 if category in {"claim_support", "citation_needed"} else 70
             candidates = await run_in_threadpool(
                 suggest_from_context,
                 discovery_context,
@@ -5909,10 +6008,19 @@ async def find_correction_sources(job_id: str, item_id: str):
                 use_citation_hint=category == "missing_reference",
                 min_relevance=discovery_min_relevance,
                 strict_citation_identity=category == "missing_reference",
+                diagnostics=lookup_diagnostics,
             )
+            lookup_diagnostics = _merge_source_search_diagnostics(lookup_diagnostics)
     except Exception as exc:
         print(f"[SOURCE DISCOVERY] {job_id} {item_id} failed: {type(exc).__name__}: {exc}")
+        failure_report = _build_source_search_report(
+            state="failed",
+            message="The automatic scholarly-index lookup did not complete. Use the links below or revise the claim while the service connection is checked.",
+            query=discovery_context,
+            diagnostics=lookup_diagnostics,
+        )
         try:
+            result.setdefault("correction_source_search_reports", {})[item_id] = failure_report
             _bump_feature_usage(
                 result,
                 source_search_requests=1,
@@ -5923,10 +6031,28 @@ async def find_correction_sources(job_id: str, item_id: str):
             _manual_save_result(job_id, result)
         except Exception as telemetry_error:
             print(f"[SOURCE DISCOVERY] Could not persist count-only failure telemetry: {telemetry_error}")
-        raise HTTPException(status_code=502, detail=f"Scholarly source lookup failed safely: {type(exc).__name__}. Try again or use the manual evidence links.")
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "detail": f"Scholarly source lookup failed safely: {type(exc).__name__}.",
+                "item_id": item_id,
+                "candidates": [],
+                "search_report": failure_report,
+            },
+        )
     candidates = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
+    raw_screened_count = len(candidates)
+    provider_raw_count = _safe_int(lookup_diagnostics.get("raw_candidate_count"))
     context_checked_candidates = []
-    withheld_count = 0
+    manual_review_candidates = []
+    preliminary_withheld_count = max(0, provider_raw_count - raw_screened_count)
+    withheld_count = preliminary_withheld_count
+    rejection_reason_counts: Dict[str, int] = {}
+    if preliminary_withheld_count:
+        rejection_reason_counts[
+            "The record did not pass the preliminary title, citation-identity or metadata relevance screen."
+        ] = preliminary_withheld_count
     for candidate in candidates:
         if category in {"claim_support", "citation_needed"}:
             candidate["context_fit"] = assess_candidate_context_fit(
@@ -5936,10 +6062,18 @@ async def find_correction_sources(job_id: str, item_id: str):
                 topic_profile,
                 claim_fingerprint,
             )
-            if (candidate.get("context_fit") or {}).get("passes_context_gate") is not True:
+            context_fit = candidate.get("context_fit") or {}
+            if context_fit.get("passes_context_gate") is True:
+                candidate["approval_confirmation_type"] = "claim_support_and_topic_fit"
+                candidate["manual_review_only"] = False
+            elif context_fit.get("display_for_manual_review") is True:
+                candidate["approval_confirmation_type"] = "manual_full_text_claim_support_confirmation"
+                candidate["manual_review_only"] = True
+            else:
                 withheld_count += 1
+                for reason in context_fit.get("rejection_reasons") or ["Did not pass the structured context screen."]:
+                    rejection_reason_counts[reason] = rejection_reason_counts.get(reason, 0) + 1
                 continue
-            candidate["approval_confirmation_type"] = "claim_support_and_topic_fit"
         elif category in {"source_verification", "reference_incomplete", "reference_identity_conflict", "missing_reference"}:
             match_basis = candidate.get("match_basis") if isinstance(candidate.get("match_basis"), dict) else {}
             candidate["identity_fit"] = {
@@ -5957,10 +6091,46 @@ async def find_correction_sources(job_id: str, item_id: str):
         candidate["formatted_reference"] = _style_aware_candidate_text(candidate, result, evidence)
         candidate["reference_style"] = _reference_style_for_result(result)
         candidate["context_used"] = context[:700]
-        candidate["approval_warning"] = "Open and verify the source. Context ranking is a discovery aid, not proof that the source supports the claim."
-        context_checked_candidates.append(candidate)
-    candidates = context_checked_candidates[:5]
+        candidate["approval_warning"] = (
+            "This is a manual-review lead because indexed evidence was incomplete. Read the full source and confirm exact support before approval."
+            if candidate.get("manual_review_only") else
+            "Open and verify the source. Context ranking is a discovery aid, not proof that the source supports the claim."
+        )
+        if candidate.get("manual_review_only"):
+            manual_review_candidates.append(candidate)
+        else:
+            context_checked_candidates.append(candidate)
+    strict_candidate_count = len(context_checked_candidates)
+    manual_review_count = len(manual_review_candidates)
+    candidates = (context_checked_candidates + manual_review_candidates)[:5]
+    # Provider diagnostics count records before CiteIntegrity's own relevance
+    # and context screens. Preserve that distinction in the student report.
+    if not lookup_diagnostics.get("raw_candidate_count"):
+        lookup_diagnostics["raw_candidate_count"] = raw_screened_count
+    if candidates:
+        report_message = (
+            f"{strict_candidate_count} candidate(s) passed the structured context screen and "
+            f"{manual_review_count} additional candidate(s) require full-text review."
+        )
+        report_state = "completed_with_candidates"
+    elif raw_screened_count or provider_raw_count:
+        report_message = "Scholarly records were found, but none was safe to recommend. The out-of-context matches were withheld."
+        report_state = "completed_all_withheld"
+    else:
+        report_message = "The indexes returned no usable candidate for this claim. This may reflect a narrow query, an unindexed source or temporary provider availability."
+        report_state = "completed_no_candidates"
+    search_report = _build_source_search_report(
+        state=report_state,
+        message=report_message,
+        query=discovery_context,
+        diagnostics=lookup_diagnostics,
+        strict_count=strict_candidate_count,
+        manual_review_count=manual_review_count,
+        withheld_count=withheld_count,
+        rejection_reason_counts=rejection_reason_counts,
+    )
     result.setdefault("correction_source_candidates", {})[item_id] = candidates
+    result.setdefault("correction_source_search_reports", {})[item_id] = search_report
     _bump_feature_usage(
         result,
         source_search_requests=1,
@@ -5977,8 +6147,10 @@ async def find_correction_sources(job_id: str, item_id: str):
         "item_id": item_id,
         "candidates": candidates,
         "withheld_candidate_count": withheld_count,
+        "manual_review_candidate_count": manual_review_count,
         "claim_fingerprint": claim_fingerprint if category in {"claim_support", "citation_needed"} else {},
-        "message": "Open and verify a source before approving it. Candidates based only on general keywords are withheld.",
+        "search_report": search_report,
+        "message": report_message,
     }
 
 
