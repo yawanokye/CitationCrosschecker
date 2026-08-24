@@ -240,6 +240,15 @@
             gap: 18px;
             margin-bottom: 18px;
         }
+        .feature-usage-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 18px;
+            margin-bottom: 18px;
+        }
+        .feature-usage-grid .verification-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
 
         .panel {
             background: rgba(255,255,255,.94);
@@ -346,6 +355,7 @@
         @media (max-width: 1120px) {
             .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .panel-grid { grid-template-columns: 1fr; }
+            .feature-usage-grid { grid-template-columns: 1fr; }
             .verification-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         }
         @media (max-width: 720px) {
@@ -368,7 +378,7 @@
                 </svg>
                 <div class="brand-copy">
                     <h1>CiteIntegrity Dashboard</h1>
-                    <p>Persistent usage analytics for uploads, verification, ACII scores and citation integrity checks.</p>
+                    <p>Persistent, count-only analytics for core checks and the newest evidence-resolution features.</p>
                 </div>
             </div>
             <div class="actions">
@@ -618,6 +628,51 @@
                         </div>
                     </div>
                 </section>
+
+                <section class="feature-usage-grid" aria-label="New feature usage">
+                    <div class="panel">
+                        <h2>Evidence Resolution Workspace</h2>
+                        <p class="panel-copy">Workspace coverage, issue outcomes and approved changes currently queued for Track Changes.</p>
+                        <div class="verification-grid">
+                            ${miniCard('Analyses', metrics.evidence_workspace_analyses || 0, 'info')}
+                            ${miniCard('Issues generated', metrics.evidence_issues_generated || 0, 'info')}
+                            ${miniCard('Resolved', metrics.evidence_issues_resolved || 0, 'green')}
+                            ${miniCard('Pending', metrics.evidence_issues_pending || 0, 'warn')}
+                            ${miniCard('Tracked approvals', metrics.tracked_approvals_current || 0, 'green')}
+                            ${miniCard('Decision actions', metrics.correction_decision_events || 0, 'info')}
+                            ${miniCard('Reference-style approvals', metrics.reference_style_approval_events || 0, 'green')}
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h2>Context-aware source discovery</h2>
+                        <p class="panel-copy">Search activity and safety filtering. Withheld candidates failed the structured topic-and-claim context gate.</p>
+                        <div class="verification-grid">
+                            ${miniCard('All searches', metrics.source_search_requests || 0, 'info')}
+                            ${miniCard('Claim-context searches', metrics.context_aware_search_requests || 0, 'info')}
+                            ${miniCard('Identity searches', metrics.reference_identity_search_requests || 0, 'info')}
+                            ${miniCard('Returned candidates', metrics.candidate_sources_returned || 0, 'green')}
+                            ${miniCard('Withheld candidates', metrics.candidates_withheld_by_context || 0, 'warn')}
+                            ${miniCard('Search failures', metrics.source_search_failures || 0, Number(metrics.source_search_failures || 0) ? 'danger' : 'green')}
+                            ${miniCard('Searches with results', metrics.searches_with_candidates || 0, 'green')}
+                            ${miniCard('Source approvals', metrics.source_approval_events || 0, 'green')}
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h2>Academic Voice and Writing Signals</h2>
+                        <p class="panel-copy">Optional-module adoption and reviewed revisions. These are writing signals, never AI-authorship determinations.</p>
+                        <div class="verification-grid">
+                            ${miniCard('Enabled analyses', metrics.academic_voice_enabled_analyses || 0, 'info')}
+                            ${miniCard('Completed reviews', metrics.academic_voice_completed_analyses || 0, 'info')}
+                            ${miniCard('Signals shown', metrics.academic_voice_signals || 0, 'warn')}
+                            ${miniCard('Rewrite requests', metrics.academic_voice_rewrite_requests || 0, 'info')}
+                            ${miniCard('Approved revisions', metrics.academic_voice_approved_revisions || 0, 'green')}
+                        </div>
+                    </div>
+                </section>
+
+                <p class="small-note" style="margin:-4px 0 18px;">Feature statistics contain aggregate counters only. Manuscript text, search queries, candidate titles and source metadata are not included.</p>
 
                 <section class="table-panel">
                     <div class="table-head">

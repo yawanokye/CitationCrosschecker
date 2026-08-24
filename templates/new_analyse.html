@@ -759,6 +759,14 @@
                             <span>Start verification after analysis and open the results dashboard with verification mode.</span>
                         </span>
                     </label>
+
+                    <label class="option-card">
+                        <input type="checkbox" id="academicVoice">
+                        <span>
+                            <strong>Academic Voice and Writing Signals, optional</strong>
+                            <span>Review explainable writing patterns. It is off by default and does not determine whether AI wrote the manuscript.</span>
+                        </span>
+                    </label>
                 </div>
 
                 <div class="progress-panel">
@@ -1118,6 +1126,7 @@ document.addEventListener("DOMContentLoaded", function () {
         formData.append("style", selectedStyle);
         formData.append("enable_autofix", $("autofix")?.checked ? "true" : "false");
         formData.append("enable_online_verification", $("onlineVerify")?.checked ? "true" : "false");
+        formData.append("enable_academic_voice", $("academicVoice")?.checked ? "true" : "false");
         console.log("[CiteIntegrity] Selected citation style:", selectedStyle);
 
         try {

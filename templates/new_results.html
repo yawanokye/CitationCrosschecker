@@ -457,6 +457,12 @@
             border-color: var(--navy);
         }
 
+        .tab-btn.permanent-result-tab:not(.active) {
+            border-color: #93c5fd;
+            background: #eff6ff;
+            color: #1e3a8a;
+        }
+
         .count-pill {
             background: rgba(100, 116, 139, 0.14);
             color: inherit;
@@ -1444,6 +1450,21 @@
         .output-feature-tip { position:relative; display:inline-flex; align-items:center; gap:5px; padding:7px 11px; border:1px solid #bbf7d0; border-radius:999px; background:#fff; color:var(--navy); font-size:12px; font-weight:800; cursor:help; }
         .output-feature-tip::after { content:attr(data-tooltip); position:absolute; left:50%; bottom:calc(100% + 9px); transform:translateX(-50%); width:260px; padding:10px 12px; border-radius:10px; background:var(--navy); color:#fff; font-size:12px; font-weight:600; line-height:1.4; opacity:0; visibility:hidden; pointer-events:none; z-index:80; box-shadow:var(--shadow); transition:opacity .15s ease; }
         .output-feature-tip:hover::after, .output-feature-tip:focus::after { opacity:1; visibility:visible; }
+        .resolution-overview { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:14px 0; }
+        .resolution-card { appearance:none; text-align:left; border:2px solid #dbe4e0; border-radius:14px; background:#fff; padding:12px; color:var(--navy); cursor:pointer; transition:.16s ease; }
+        .resolution-card:hover, .resolution-card.active { border-color:#047857; background:#ecfdf5; transform:translateY(-1px); }
+        .resolution-card strong { display:block; font-size:1.35rem; line-height:1; margin-bottom:6px; }
+        .resolution-card span { display:block; font-size:12px; font-weight:800; }
+        .resolution-workflow { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 16px; }
+        .resolution-step { padding:7px 10px; border-radius:999px; background:#eff6ff; border:1px solid #bfdbfe; color:#1e3a8a; font-size:12px; font-weight:800; }
+        .candidate-fit { margin:8px 0 4px 28px; padding:9px 10px; border-radius:9px; background:#f8fafc; border-left:4px solid #2563eb; font-size:12px; }
+        .candidate-confirm { display:flex; align-items:flex-start; gap:7px; margin:9px 0 0 28px; padding:8px 10px; background:#fffbeb; border:1px solid #fde68a; border-radius:9px; font-size:12px; font-weight:750; }
+        .optional-module-gate { border:2px dashed #94a3b8; border-radius:16px; background:#f8fafc; padding:18px; margin-bottom:16px; }
+        .optional-module-gate.enabled { border-style:solid; border-color:#86efac; background:#f0fdf4; }
+        .module-status { display:inline-flex; align-items:center; padding:5px 9px; border-radius:999px; background:#e2e8f0; font-size:12px; font-weight:900; margin-bottom:8px; }
+        .module-status.on { background:#dcfce7; color:#166534; }
+        .consolidated-section { margin-top:18px; }
+        .consolidated-section + .consolidated-section { padding-top:18px; border-top:1px solid var(--line); }
 
     </style>
 </head>
@@ -1511,11 +1532,12 @@
             <div><h2 id="outputFeaturesTitle">New tools in your Full Review</h2><p>Point to or focus on any feature to see what it does.</p></div>
         </div>
         <div class="output-feature-list">
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Brings unsupported claims, incomplete or weak mappings, missing references, metadata conflicts and every unresolved verification result into one correction workflow.">Evidence Resolution Workspace ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="An optional, off-by-default review of explainable writing patterns. It does not determine authorship or prove AI use.">Academic Voice and Writing Signals ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Takes you through critical, important and optional corrections one issue at a time.">Fix next issue ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Adds an approved change to the downloadable Word manuscript with Track Changes.">Approve revision ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Formats an approved reference in the style detected from the uploaded manuscript.">Style-aware reference ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Shows a clearer academic rewrite. Nothing is inserted until you approve it.">Academic-voice review ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Searches for evidence, lets you open and verify the candidate, then inserts the citation and reference after approval.">Fix claim support ⓘ</span>
+            <span class="output-feature-tip" tabindex="0" data-tooltip="Builds a manuscript profile and claim fingerprint, compares candidate abstracts by population, concepts, relationship, geography, time and evidence type, and withholds general-keyword-only matches.">Context-aware source resolution ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Audits every reference against the detected style, flags incomplete entries, and places approved corrections in the Track Changes document.">Reference-list style audit ⓘ</span>
             <span class="output-feature-tip" tabindex="0" data-tooltip="Downloads four student-ready files and excludes internal JSON and system files.">Clean report package ⓘ</span>
         </div>
@@ -1565,14 +1587,15 @@
                         <h2>Sections</h2>
                         <p>Open each result area.</p>
                     </div>
-                </div>                <div class="nav-tabs">
+                </div>
+                <div class="nav-tabs">
                     <button class="tab-btn active" data-tab="correctionPane">
-                        <span class="tab-title">Correction Plan <span class="tab-help" title="Prioritized actions to complete before submission.">?</span></span>
+                        <span class="tab-title">Evidence Resolution <span class="tab-help" title="One workspace for unsupported claims, weak or incomplete mappings, missing references, metadata conflicts and unresolved source verification.">?</span></span>
                         <span class="count-pill" id="countCorrections">0</span>
                     </button>
                     <button class="tab-btn" data-tab="voicePane">
-                        <span class="tab-title">Academic Voice <span class="tab-help" title="Explainable writing-pattern review. It does not determine authorship.">?</span></span>
-                        <span class="count-pill" id="countVoice">0</span>
+                        <span class="tab-title">Academic Voice <span class="tab-help" title="Optional writing-pattern review, off by default. It does not determine authorship.">?</span></span>
+                        <span class="count-pill" id="countVoice">Off</span>
                     </button>
                     <button class="tab-btn" data-tab="revisionPane">
                         <span class="tab-title">Revision Journey <span class="tab-help" title="Compare Run 1 with the revised manuscript analysed in Run 2.">?</span></span>
@@ -1582,48 +1605,24 @@
                         <span class="tab-title">Summary <span class="tab-help" title="Overall citation counts, match rate, ACII summary, and key dashboard interpretation." aria-label="Overall citation counts, match rate, ACII summary, and key dashboard interpretation.">?</span></span>
                         <span class="count-pill" id="countSummary">--</span>
                     </button>
-                    <button class="tab-btn" data-tab="missingPane">
-                        <span class="tab-title">Missing Citations <span class="tab-help" title="In-text citations found in the manuscript but not found in the reference list." aria-label="In-text citations found in the manuscript but not found in the reference list.">?</span></span>
+                    <button class="tab-btn permanent-result-tab" data-tab="missingPane">
+                        <span class="tab-title">Missing Citations <span class="tab-help" title="In-text citations found in the manuscript but not found in the reference list.">?</span></span>
                         <span class="count-pill" id="countMissing">0</span>
                     </button>
-                    <button class="tab-btn" data-tab="uncitedPane">
-                        <span class="tab-title">Uncited References <span class="tab-help" title="References listed in the reference section but not cited in the manuscript body." aria-label="References listed in the reference section but not cited in the manuscript body.">?</span></span>
+                    <button class="tab-btn permanent-result-tab" data-tab="uncitedPane">
+                        <span class="tab-title">Uncited References <span class="tab-help" title="References listed in the reference section but not cited in the manuscript body.">?</span></span>
                         <span class="count-pill" id="countUncited">0</span>
                     </button>
                     <button class="tab-btn" data-tab="c2rPane">
-                        <span class="tab-title">Citations → References <span class="tab-help" title="Shows how each in-text citation maps to a matching reference entry." aria-label="Shows how each in-text citation maps to a matching reference entry.">?</span></span>
+                        <span class="tab-title">Citation Mapping <span class="tab-help" title="Combines citations-to-references and references-to-citations in one audit view.">?</span></span>
                         <span class="count-pill" id="countC2R">0</span>
                     </button>
-                    <button class="tab-btn" data-tab="r2cPane">
-                        <span class="tab-title">References → Citations <span class="tab-help" title="Shows how often each reference is cited and which citations point to it." aria-label="Shows how often each reference is cited and which citations point to it.">?</span></span>
-                        <span class="count-pill" id="countR2C">0</span>
-                    </button>
                     <button class="tab-btn" data-tab="verifyPane">
-                        <span class="tab-title">Verification <span class="tab-help" title="Online metadata verification results, including DOI, title, author, year, and confidence status." aria-label="Online metadata verification results, including DOI, title, author, year, and confidence status.">?</span></span>
+                        <span class="tab-title">Source Verification <span class="tab-help" title="Complete online and manual reference-verification evidence. Unresolved rows also appear in Evidence Resolution.">?</span></span>
                         <span class="count-pill" id="countVerify">0</span>
                     </button>
-                    <button class="tab-btn" data-tab="recoveryPane">
-                        <span class="tab-title">Recovery <span class="tab-help" title="Context-specific recovery suggestions for missing citations and references needing review." aria-label="Context-specific recovery suggestions for missing citations and references needing review.">?</span></span>
-                        <span class="count-pill" id="countRecovery">0</span>
-                    </button>
-                    <button class="tab-btn" data-tab="claimPane">
-                        <span class="tab-title">Claim Support <span class="tab-help" title="Checks whether the cited source appears to support the claim around each citation." aria-label="Checks whether the cited source appears to support the claim around each citation.">?</span></span>
-                        <span class="count-pill" id="countClaim">0</span>
-                    </button>
-                    <button class="tab-btn" data-tab="citationNeededPane">
-                        <span class="tab-title">Citation Needed <span class="tab-help" title="Potential factual, empirical, statistical or interpretive claims that may need a supporting citation." aria-label="Potential factual, empirical, statistical or interpretive claims that may need a supporting citation.">?</span></span>
-                        <span class="count-pill" id="countCitationNeeded">0</span>
-                    </button>
-                    <button class="tab-btn" data-tab="enrichmentPane">
-                        <span class="tab-title">Advanced Enrichment <span class="tab-help" title="Deeper source suggestions for weak claim-support, citation-needed, and recovery cases." aria-label="Deeper source suggestions for weak claim-support, citation-needed, and recovery cases.">?</span></span>
-                        <span class="count-pill" id="countEnrichment">Optional</span>
-                    </button>
-                    <button class="tab-btn" data-tab="suggestionsPane">
-                        <span class="tab-title">Suggestions <span class="tab-help" title="Non-invasive citation and reference improvement suggestions for user review." aria-label="Non-invasive citation and reference improvement suggestions for user review.">?</span></span>
-                        <span class="count-pill" id="countSuggestions">0</span>
-                    </button>
                     <button class="tab-btn" data-tab="certificatePane">
-                        <span class="tab-title">Certificate <span class="tab-help" title="Citation integrity certificate summary for the completed review." aria-label="Citation integrity certificate summary for the completed review.">?</span></span>
+                        <span class="tab-title">Readiness Certificate <span class="tab-help" title="Summarises evidence-resolution progress, source verification, ACII and the optional writing-signals module.">?</span></span>
                         <span class="count-pill" id="countCertificate">Optional</span>
                     </button>
                 </div>
@@ -1634,14 +1633,24 @@
 
             <div class="tab-pane active" id="correctionPane">
                 <div class="card">
-                    <div class="section-title"><div><h2>Prioritized Correction Plan</h2><p id="correctionHeadline">Preparing your action plan...</p></div><div class="actions"><button class="btn btn-green" id="btnApproveReferenceFormatting" title="Approve all complete reference entries that only need style formatting. Incomplete references remain flagged for source verification.">Approve all reference formatting</button><button class="btn btn-primary" id="btnFixNext">Fix next issue</button></div></div>
+                    <div class="section-title"><div><h2>Evidence Resolution Workspace</h2><p id="correctionHeadline">Preparing your evidence action plan...</p></div><div class="actions"><button class="btn btn-green" id="btnApproveReferenceFormatting" title="Approve all complete reference entries that only need style formatting. Incomplete references remain flagged for source verification.">Approve reference formatting</button><button class="btn btn-primary" id="btnFixNext">Fix next issue</button></div></div>
+                    <div class="empty" style="border-left:5px solid #2563eb;background:#eff6ff;color:#1e3a8a;margin-bottom:12px"><strong>One correction journey.</strong> Unsupported claims, incomplete mappings, weak support, missing references, unresolved verification and metadata conflicts are handled here. Not found does not mean fabricated, and no source is inserted without your approval.</div>
+                    <div class="resolution-overview" id="resolutionOverview"></div>
+                    <div class="resolution-workflow" id="resolutionWorkflow"></div>
                     <div id="correctionContent"></div>
                 </div>
             </div>
 
             <div class="tab-pane" id="voicePane">
                 <div class="card">
-                    <div class="section-title"><div><h2>Authentic Academic Voice Review</h2><p>Rule-based signals for formulaic, unclear, repetitive, or weakly supported writing. These signals do not prove AI authorship.</p></div></div>
+                    <div class="section-title"><div><h2>Academic Voice and Writing Signals</h2><p>Optional review of formulaic, unclear, repetitive or inconsistent writing patterns. It does not prove AI authorship.</p></div></div>
+                    <div class="optional-module-gate" id="voiceModuleGate">
+                        <div class="module-status" id="voiceModuleStatus">Off by default</div>
+                        <h3 id="voiceModuleHeading">This optional module is off</h3>
+                        <p class="small-muted" id="voiceModuleMessage">Enable it only if you want explainable writing-pattern signals. Tables, equations, reference entries and statistical result statements are excluded where detected.</p>
+                        <button class="btn btn-primary" id="btnToggleVoiceModule">Enable Academic Voice and Writing Signals</button>
+                    </div>
+                    <div id="voiceModuleContent" style="display:none">
                     <div id="voiceSummary" class="empty">Preparing writing-pattern review...</div>
                     <div id="voiceContent"></div>
                     <div class="card" style="margin-top:16px; background:#f8fafc;">
@@ -1650,6 +1659,7 @@
                         <textarea id="rewritePassage" rows="8" style="width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:8px;" placeholder="Selected passage, maximum 500 words"></textarea>
                         <div class="privacy-actions"><button class="btn btn-primary" id="btnRewritePassage">Suggest natural revision</button></div>
                         <div id="rewriteResult" class="empty" style="margin-top:12px;display:none;"></div>
+                    </div>
                     </div>
                 </div>
             </div>
@@ -1711,7 +1721,7 @@
                     <div class="section-title">
                         <div>
                             <h2>Missing Citations</h2>
-                            <p>In-text citations that do not appear in the reference list.</p>
+                            <p>In-text citations that do not have matching entries in the reference list. Each actionable row also appears in Evidence Resolution.</p>
                         </div>
                     </div>
                     <div class="filters">
@@ -1731,7 +1741,7 @@
                     <div class="section-title">
                         <div>
                             <h2>Uncited References</h2>
-                            <p>References listed in the reference section but not cited in the manuscript body.</p>
+                            <p>References listed but not cited in the manuscript. Cite or delete actions remain available in Evidence Resolution.</p>
                         </div>
                     </div>
                     <div class="filters">
@@ -1750,8 +1760,8 @@
                 <div class="card">
                     <div class="section-title">
                         <div>
-                            <h2>Citations → References</h2>
-                            <p>Mapping of in-text citations to their matched reference entries.</p>
+                            <h2>Citation Mapping</h2>
+                            <p>Both directions of the citation-reference audit are combined here.</p>
                         </div>
                     </div>
                     <div class="filters">
@@ -1764,10 +1774,7 @@
                         </table>
                     </div>
                 </div>
-            </div>
-
-            <div class="tab-pane" id="r2cPane">
-                <div class="card">
+                <div class="card consolidated-section">
                     <div class="section-title">
                         <div>
                             <h2>References → Citations</h2>
@@ -1791,7 +1798,7 @@
                     <div class="section-title">
                         <div>
                             <h2>Online & Manual Verification</h2>
-                            <p>Reference verification results, scholarly metadata matches, and manual decisions for unresolved references.</p>
+                            <p>Reference verification results, scholarly metadata matches, and manual decisions for unresolved references. “Not found” means no suitable indexed record was found; it does not mean the source is fabricated.</p>
                         </div>
                     </div>
 
@@ -1802,8 +1809,8 @@
                         <select id="verifyFilter">
                             <option value="">All statuses</option>
                             <option value="verified">Verified</option>
-                            <option value="likely">Likely</option>
-                            <option value="needs_review">Needs review</option>
+                            <option value="likely">Verified with metadata differences</option>
+                            <option value="needs_review">Possible match, human review</option>
                             <option value="not_found">Not found</option>
                             <option value="offline">Offline</option>
                         </select>
@@ -1820,146 +1827,12 @@
                 </div>
             </div>
 
-            <div class="tab-pane" id="recoveryPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Recovery</h2>
-                            <p>Review guidance for missing citations and references that need manual verification or strict metadata recovery.</p>
-                        </div>
-                    </div>
-
-                    <h3 style="margin-bottom:10px;">Missing Citation Recovery</h3>
-                    <div class="table-wrap" style="margin-bottom:20px;">
-                        <table>
-                            <thead><tr><th>No.</th><th>Citation</th><th>Count</th><th>Suggestions</th></tr></thead>
-                            <tbody id="recoveryMissingBody"></tbody>
-                        </table>
-                    </div>
-
-                    <h3 style="margin-bottom:10px;">Needs Review / Not Found Recovery</h3>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Status</th><th>Citation</th><th>Reference</th><th>Recovery Guidance</th></tr></thead>
-                            <tbody id="recoveryVerifyBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="claimPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Claim Support</h2>
-                            <p>Claim-to-source support review for cited statements.</p>
-                        </div>
-                    </div>
-                    <div class="filters">
-                        <input class="search-input" id="claimSearch" placeholder="Search claims...">
-                        <select id="claimFilter">
-                            <option value="">All support statuses</option>
-                            <option value="strong_support">Strong support</option>
-                            <option value="moderate_support">Moderate support</option>
-                            <option value="related_evidence">Related evidence</option>
-                            <option value="weak_or_unclear">Weak or unclear</option>
-                            <option value="weak">Weak support</option>
-                            <option value="insufficient_evidence">Insufficient evidence</option>
-                            <option value="mapping_incomplete">Mapping incomplete</option>
-                        </select>
-                    </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead><tr><th>No.</th><th>Citation</th><th>Claim Extracted</th><th>Matched Source</th><th>Support Status</th><th>Score</th><th>Direct correction</th></tr></thead>
-                            <tbody id="claimBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane" id="citationNeededPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Citation Needed Claims</h2>
-                            <p>Potential factual, empirical, statistical or interpretive claims that may require citation support.</p>
-                        </div>
-                        <button class="btn btn-primary" id="btnStartCitationNeeded">Detect Citation-Needed Claims</button>
-                    </div>
-
-                    <div class="filters">
-                        <input class="search-input" id="citationNeededSearch" placeholder="Search citation-needed claims...">
-                        <select id="citationNeededPriority">
-                            <option value="">All priorities</option>
-                            <option value="high">High priority</option>
-                            <option value="medium">Medium priority</option>
-                            <option value="low">Low priority</option>
-                        </select>
-                        <select id="citationNeededSort">
-                            <option value="priority">Sort: priority first</option>
-                            <option value="claim_az">Sort: claim A-Z</option>
-                            <option value="claim_za">Sort: claim Z-A</option>
-                            <option value="source">Sort: detector/source</option>
-                        </select>
-                    </div>
-
-                    <div class="empty" id="citationNeededNote" style="margin-bottom:14px;">
-                        Use this section to identify claims that may need a supporting citation. The detector is conservative and intended for human review.
-                    </div>
-
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>No.</th>
-                                    <th>Priority</th>
-                                    <th>Claim needing citation</th>
-                                    <th>Why flagged</th>
-                                    <th>Recommended action</th>
-                                    <th>Search suggestions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="citationNeededBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-                        <div class="tab-pane" id="enrichmentPane">
-                        <div class="card">
-                            <div class="section-title">
-                                <div>
-                                    <h2>Advanced Enrichment</h2>
-                                    <p>Run deeper source search; results are written back into the Recovery, Claim Support, and Citation Needed tabs.</p>
-                                </div>
-                            </div>
-        
-                            <div class="filters">
-                                <select id="enrichmentScope">
-                                    <option value="weak_only">Only weak / insufficient / no evidence</option>
-                                    <option value="recovery_only">Recovery rows only</option>
-                                    <option value="claim_only">Claim-support rows only</option>
-                                    <option value="all_problem_rows">All problem rows</option>
-                                </select>
-        
-                                <button class="btn btn-primary" id="btnStartEnrichment">
-                                 Start Advanced Enrichment
-                        </button>
-                    </div>
-
-                    <div class="empty" id="enrichmentStatusBox">
-                        Advanced enrichment has not been started. When run, it updates the relevant rows inside Recovery, Claim Support, and Citation Needed instead of creating a separate table.
-                    </div>
-
-                    <!-- Manual Verification moved to the Verification tab. -->
-                </div>
-            </div>
             <div class="tab-pane" id="certificatePane">
                 <div class="card">
                     <div class="section-title">
                         <div>
-                            <h2>Citation Integrity Certificate</h2>
-                            <p>Formal summary of citation integrity review, manual verification, ACII score, timestamp, and required corrections.</p>
+                            <h2>Submission-Readiness Certificate</h2>
+                            <p>Submission-readiness summary covering Evidence Resolution progress, source verification, approved tracked corrections, ACII, and whether the optional writing-signals review was enabled.</p>
                         </div>
                         <button class="btn btn-green" id="btnDownloadCertificate">Generate Certificate</button>
                     </div>
@@ -1970,18 +1843,6 @@
                 </div>
                 </div>
 
-
-            <div class="tab-pane" id="suggestionsPane">
-                <div class="card">
-                    <div class="section-title">
-                        <div>
-                            <h2>Suggestions</h2>
-                            <p>Citation and reference suggestions returned by the analysis engine.</p>
-                        </div>
-                    </div>
-                    <div id="suggestionsContent"></div>
-                </div>
-            </div>
 
         </section>
     </section>
@@ -2007,7 +1868,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-identity-safe-reference-aware-v1.8.8.2";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-evidence-resolution-v1.9.0";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2111,8 +1972,20 @@ document.addEventListener("DOMContentLoaded", function () {
     // ======================================================================
 
     function formatBadge(status) {
-        const clean = String(status || "offline").toLowerCase();
+        const clean = String(status || "offline").toLowerCase().replace(/[^a-z0-9]+/g, "_");
         return `<span class="badge ${esc(clean)}">${esc(status || "offline")}</span>`;
+    }
+
+    function verificationDisplayStatus(rowOrStatus) {
+        const raw = typeof rowOrStatus === "object" ? (rowOrStatus?.canonical_status || rowOrStatus?.status || "") : rowOrStatus;
+        const status = String(raw || "").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+        if (["verified", "matched", "exact_match"].includes(status)) return "Verified";
+        if (["likely", "verified_with_metadata_differences", "metadata_mismatch"].includes(status)) return "Verified with metadata differences";
+        if (["valid_not_indexed", "valid_but_not_digitally_indexed", "manual_valid"].includes(status)) return "Valid but not digitally indexed";
+        if (["not_found", "metadata_not_found", "no_match"].includes(status)) return "Not found — manual review";
+        if (["offline", "lookup_failed", "failed", "timeout", "error"].includes(status)) return "Lookup failed — retry or review";
+        if (["identity_conflict", "serious_identity_conflict", "doi_title_conflict"].includes(status)) return "Serious identity conflict";
+        return "Possible match — human review needed";
     }
 
     function normalizeDoiUrl(doi) {
@@ -2219,7 +2092,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     <div class="paywall-head">
                         <div>
                             <h2 class="paywall-title">Full Review unlocked</h2>
-                            <p class="paywall-subtitle">You have access to the complete CiteIntegrity review for this result, including Recovery, Claim Support, Citation Needed, Advanced Enrichment, certificate, and export.</p>
+                            <p class="paywall-subtitle">You have access to the complete CiteIntegrity review for this result, including Evidence Resolution, optional Academic Voice and Writing Signals, the Readiness Certificate, and student-ready exports. Missing Citations and Uncited References remain visible as their own tabs.</p>
                         </div>
                         <span class="paywall-badge unlocked">✅ ${esc(pkg.document_tier_name || pkg.name || "Paid access")}</span>
                     </div>
@@ -2235,7 +2108,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="paywall-head">
                     <div>
                         <h2 class="paywall-title">Free Preview shown <span class="locked-inline">🔒 Full Review locked</span></h2>
-                        <p class="paywall-subtitle">You are seeing a limited preview. Unlock Full Review to view all rows, Recovery, Claim Support, Citation Needed, Advanced Enrichment, certificate, and exports. Each payment includes two full analyses.</p>
+                        <p class="paywall-subtitle">You are seeing a limited preview. Missing Citations and Uncited References remain visible as standalone tabs. Unlock Full Review for Evidence Resolution actions, source candidates, tracked corrections, the Readiness Certificate, and exports. Each payment includes two full analyses.</p>
                     </div>
                     <span class="paywall-badge">🔒 Payment required</span>
                 </div>
@@ -3267,7 +3140,7 @@ document.addEventListener("DOMContentLoaded", function () {
                             <span style="width:70px; height:44px; display:inline-flex;">${logo}</span>
                             <div>
                                 <h2 class="paywall-title" style="margin:0;">CiteIntegrity</h2>
-                                <div class="small-muted">Demo Citation Integrity Certificate</div>
+                                <div class="small-muted">${esc(c.certificate_title || "CiteIntegrity Submission-Readiness Certificate")}</div>
                             </div>
                         </div>
                         <p class="paywall-subtitle">
@@ -3283,9 +3156,9 @@ document.addEventListener("DOMContentLoaded", function () {
                 </div>
 
                 <div class="paywall-grid">
-                    <div class="paywall-mini"><strong>System-verified references</strong><br>${esc(s.automatically_verified_references || s.system_verified_references || 0)}</div>
-                    <div class="paywall-mini"><strong>Manual verified with evidence</strong><br>${esc(s.user_attested_manual_verification_with_evidence || s.manual_verified_with_evidence || 0)}</div>
-                    <div class="paywall-mini"><strong>Evidence links recorded</strong><br>${esc(s.manual_evidence_links_recorded || 0)}</div>
+                    <div class="paywall-mini"><strong>Evidence resolved</strong><br>${esc(s.evidence_resolved || 0)} of ${esc(s.evidence_total || 0)}</div>
+                    <div class="paywall-mini"><strong>Evidence pending</strong><br>${esc(s.evidence_pending || 0)}</div>
+                    <div class="paywall-mini"><strong>Approved tracked corrections</strong><br>${esc(s.approved_tracked_corrections || 0)}</div>
                 </div>
 
                 <div class="table-wrap" style="margin-top:16px;">
@@ -3296,6 +3169,13 @@ document.addEventListener("DOMContentLoaded", function () {
                             <tr><td>Total references</td><td>${esc(c.total_references ?? s.total_references ?? 0)}</td></tr>
                             <tr><td>ACII score</td><td>${esc(c.acii_score ?? "Not available")}</td></tr>
                             <tr><td>Clearance status</td><td>${esc(c.clearance_status || "")}</td></tr>
+                            <tr><td>Evidence issues identified</td><td>${esc(s.evidence_total || 0)}</td></tr>
+                            <tr><td>Evidence resolutions completed</td><td>${esc(s.evidence_resolved || 0)}</td></tr>
+                            <tr><td>Evidence resolutions pending</td><td>${esc(s.evidence_pending || 0)}</td></tr>
+                            <tr><td>Approved tracked corrections</td><td>${esc(s.approved_tracked_corrections || 0)}</td></tr>
+                            <tr><td>Academic Voice module</td><td>${esc(s.academic_voice_status || "Not enabled (optional)")}</td></tr>
+                            <tr><td>Writing signals reviewed</td><td>${esc(s.academic_voice_signals || 0)}</td></tr>
+                            <tr><td>Approved writing revisions</td><td>${esc(s.approved_voice_revisions || 0)}</td></tr>
                             <tr><td>System-verified references</td><td>${esc(s.automatically_verified_references || 0)}</td></tr>
                             <tr><td>User-attested manual verification with evidence</td><td>${esc(s.user_attested_manual_verification_with_evidence || s.manual_verified_with_evidence || 0)}</td></tr>
                             <tr><td>User-attested manual verification without evidence</td><td>${esc(s.user_attested_manual_verification_without_evidence || s.manual_verified_without_evidence || 0)}</td></tr>
@@ -3317,6 +3197,9 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="small-muted" style="margin-top:14px;">
                     <strong>Manual verification integrity note:</strong> ${esc(c.manual_verification_integrity_note || "Manual verification entries are user-attested decisions. They do not constitute independent verification by CiteIntegrity unless also system-verified or institutionally verified.")}
                 </div>
+                <div class="small-muted" style="margin-top:10px;">
+                    <strong>Writing-signals note:</strong> ${esc(c.writing_signals_note || "Academic Voice and Writing Signals is optional and does not determine authorship.")}
+                </div>
             </div>
         `;
     }
@@ -3329,7 +3212,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
         if (!hasPaidAccess(data)) {
             box.innerHTML = lockHtml(
-                "Citation Integrity Certificate",
+                "Submission-Readiness Certificate",
                 "Unlock Full Review to generate and download the certificate."
             );
             if (btn) btn.disabled = true;
@@ -3396,18 +3279,56 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    function renderEvidenceCandidate(item, source, sourceIndex) {
+        const fit = source.context_fit || {};
+        const identity = source.identity_fit || {};
+        const fingerprint = fit.claim_fingerprint || {};
+        const fieldMatches = fit.field_matches || {};
+        const fitHtml = Object.keys(fit).length ? `<div class="candidate-fit"><strong>Structured context screen: ${esc(String(fit.label || "review").replaceAll("_", " "))} · ${esc(fit.score ?? "--")}/100</strong><br>${esc(fit.explanation || "")}${fit.specific_claim_overlap_terms?.length ? `<br>Specific claim matches: ${esc(fit.specific_claim_overlap_terms.join(", "))}` : ""}<br>Abstract compared: <strong>${fit.candidate_abstract_compared ? "Yes" : "No"}</strong><details style="margin-top:7px"><summary>Manuscript profile, claim fingerprint and field matches</summary><div class="small-muted" style="margin-top:6px"><strong>Manuscript disciplines:</strong> ${esc((fingerprint.manuscript_disciplines || []).join(", ") || "Not inferred")}<br><strong>Manuscript keywords:</strong> ${esc((fingerprint.manuscript_keywords || []).join(", ") || "Not recovered")}<br><strong>Manuscript geography/setting:</strong> ${esc([...(fingerprint.manuscript_geography || []), ...(fingerprint.manuscript_settings || [])].join(", ") || "Not recovered")}<br><strong>Population:</strong> ${esc((fingerprint.subject_or_population || []).join(", ") || "Not specified")}<br><strong>Concepts/variables:</strong> ${esc((fingerprint.concepts_or_variables || []).join(", ") || "Not recovered")}<br><strong>Claimed relationship:</strong> ${esc(String(fingerprint.claimed_relationship || "unspecified").replaceAll("_", " "))}<br><strong>Location:</strong> ${esc((fingerprint.location || []).join(", ") || "Not specified")}<br><strong>Time:</strong> ${esc((fingerprint.time_period || []).join(", ") || "Not specified")}<br><strong>Evidence needed:</strong> ${esc(fingerprint.required_evidence_type || "Review required")}<br><strong>Nearby citations:</strong> ${esc((fingerprint.nearby_citations || []).join("; ") || "None recovered")}<br><strong>Current section:</strong> ${esc(fingerprint.current_section || "Not recovered")}<br><strong>Field matches:</strong> concepts ${esc((fieldMatches.concepts_or_variables || []).join(", ") || "none")}; population ${esc((fieldMatches.subject_or_population || []).join(", ") || "none")}; location ${esc((fieldMatches.location || []).join(", ") || "none")}; relationship ${fieldMatches.claimed_relationship ? "yes" : "no"}; evidence type ${fieldMatches.required_evidence_type ? "yes" : "review"}.</div></details><br><strong>${esc(fit.warning || "Context fit is not proof of claim support.")}</strong></div>` : "";
+        const identityHtml = Object.keys(identity).length ? `<div class="candidate-fit"><strong>Identity screen: ${esc(String(identity.status || "review").replaceAll("_", " "))}</strong>${identity.title_similarity !== undefined && identity.title_similarity !== null ? ` · title similarity ${esc(identity.title_similarity)}%` : ""}<br>${esc(identity.warning || "Confirm that this is the same publication.")}</div>` : "";
+        const confirmationText = ["claim_support", "citation_needed"].includes(item.category)
+            ? "I opened this source and confirmed that it supports the exact claim and fits the manuscript topic."
+            : "I opened this source and confirmed that it is the same publication intended in the manuscript.";
+        const linkHtml = source.url
+            ? `<a class="candidate-source-link btn btn-outline" style="margin-left:10px;color:#075e45;text-decoration:underline;font-weight:800" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">🔗 Open candidate source</a><div class="small-muted" style="margin:6px 0 0 28px;word-break:break-all">${esc(source.url)}</div>`
+            : `<span class="small-muted" style="margin-left:8px">No direct source URL supplied. Do not approve.</span>`;
+        return `<label style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${linkHtml}${fitHtml}${identityHtml}<span class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}"> <span>${esc(confirmationText)}</span></span></label>`;
+    }
+
     function renderStudentGuidance(data) {
         const plan = data.correction_plan || {};
         const counts = plan.counts || {};
-        setCount("countCorrections", counts.total || 0);
+        const workspace = plan.evidence_resolution_workspace || data.evidence_resolution_workspace || {};
+        const workspaceCounts = workspace.counts || {};
+        setCount("countCorrections", workspaceCounts.pending ?? counts.total ?? 0);
         const headline = $("correctionHeadline");
-        if (headline) headline.textContent = plan.headline || "Review the detailed findings before submission.";
+        if (headline) headline.textContent = workspace.headline || plan.headline || "Review the detailed findings before submission.";
+        const overview = $("resolutionOverview");
+        if (overview) {
+            const groups = Array.isArray(workspace.groups) ? workspace.groups : [];
+            overview.innerHTML = `<button class="resolution-card active" data-resolution-filter="all"><strong>${esc(workspaceCounts.pending ?? 0)}</strong><span>All pending evidence issues</span></button>${groups.map(group => `<button class="resolution-card" data-resolution-filter="${esc(group.key)}"><strong>${esc(group.pending ?? 0)}</strong><span>${esc(group.label)}</span></button>`).join("")}`;
+            overview.querySelectorAll(".resolution-card").forEach(button => button.addEventListener("click", () => {
+                overview.querySelectorAll(".resolution-card").forEach(card => card.classList.remove("active"));
+                button.classList.add("active");
+                const filter = button.dataset.resolutionFilter || "all";
+                document.querySelectorAll("#correctionContent .guidance-item").forEach(card => {
+                    card.style.display = filter === "all" || card.dataset.evidenceGroup === filter ? "" : "none";
+                });
+            }));
+        }
+        const workflow = $("resolutionWorkflow");
+        if (workflow) workflow.innerHTML = (workspace.workflow || []).map(step => `<span class="resolution-step">${esc(step.step)}. ${esc(step.name)}</span>`).join("");
         const correctionBox = $("correctionContent");
-        const items = Array.isArray(plan.items) ? plan.items : [];
+        const allItems = Array.isArray(plan.items) ? plan.items : [];
+        const evidenceIds = new Set(workspace.item_ids || []);
+        const items = [
+            ...allItems.filter(item => evidenceIds.has(item.id)),
+            ...allItems.filter(item => !evidenceIds.has(item.id) && !["academic_voice", "academic_voice_revision"].includes(item.category)),
+        ];
         if (correctionBox) {
             correctionBox.innerHTML = items.length ? items.map((item, index) => `
-                <div class="guidance-item priority-${esc(item.priority || "optional")}" data-correction-id="${esc(item.id)}" data-decision="${esc(item.decision || "pending")}">
-                    <div class="guidance-meta">${item.decision && item.decision !== "pending" ? "✅" : "⏳"} ${esc(item.priority)} · ${esc(item.category)} · Item ${index + 1} · Decision: ${esc(item.decision || "pending")}</div>
+                <div class="guidance-item priority-${esc(item.priority || "optional")}" data-correction-id="${esc(item.id)}" data-decision="${esc(item.decision || "pending")}" data-evidence-group="${esc(item.evidence_group || "other_corrections")}">
+                    <div class="guidance-meta">${item.decision && item.decision !== "pending" ? "✅" : "⏳"} ${esc(item.priority)} · ${esc(item.evidence_group_label || item.category)} · Item ${index + 1} · Decision: ${esc(item.decision || "pending")}</div>
                     <strong>${esc(item.title)}</strong>
                     ${item.location ? `<div class="small-muted">Location: ${esc(JSON.stringify(item.location))}</div>` : ""}
                     <p><strong>What is wrong:</strong> ${esc(item.what_is_wrong || item.title || "")}</p>
@@ -3415,15 +3336,15 @@ document.addEventListener("DOMContentLoaded", function () {
                     <p><strong>Evidence:</strong> ${esc(item.evidence || "")}</p>
                     ${item.supporting_metadata && Object.keys(item.supporting_metadata).length ? `<details><summary>Supporting source or metadata</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(item.supporting_metadata, null, 2))}</pre></details>` : ""}
                     ${item.evidence_link ? `<p><a href="${esc(item.evidence_link)}" target="_blank" rel="noopener">Open supporting evidence</a></p>` : ""}
-                    ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>✅ Candidate sources found. Select one, open it, then approve:</strong>${item.source_candidates.map((source, sourceIndex) => `<label style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${source.url ? `<a class="candidate-source-link btn btn-outline" style="margin-left:10px;color:#075e45;text-decoration:underline;font-weight:800" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">🔗 Open candidate source</a><div class="small-muted" style="margin:6px 0 0 28px;word-break:break-all">${esc(source.url)}</div>` : `<span class="small-muted" style="margin-left:8px">No direct source URL supplied. Do not approve.</span>`}</label>`).join("")}</div>` : ""}
+                    ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>✅ Candidate sources found. Select one, open it, verify the required condition, then approve:</strong>${item.source_candidates.map((source, sourceIndex) => renderEvidenceCandidate(item, source, sourceIndex)).join("")}</div>` : ""}
                     <p><strong>Confidence:</strong> ${esc(item.confidence ?? "Review required")}</p>
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ Action recorded: ${esc(item.decision)}</strong>${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
                     <div class="privacy-actions correction-decisions">
-                        ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : (["reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Replace verified reference" : "Approve selected source")}</button>` : ""}
+                        ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Replace verified reference" : "Approve selected source")}</button>` : ""}
                         ${item.category === "claim_support" ? `<button class="btn btn-outline revise-claim-support" data-id="${esc(item.id)}">Revise or qualify claim</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
-                        ${!["citation_needed","missing_reference","uncited_reference","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
+                        ${!["citation_needed","missing_reference","uncited_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
                         ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
@@ -3445,15 +3366,35 @@ document.addEventListener("DOMContentLoaded", function () {
             correctionBox.querySelectorAll(".revise-claim-support").forEach(btn => btn.addEventListener("click", () => approveClaimRevision(btn.dataset.id)));
         }
 
-        const voice = data.academic_voice_review || {};
-        const voiceSignals = Array.isArray(voice.signals) ? voice.signals : [];
-        setCount("countVoice", voiceSignals.length);
+        const voiceSettings = data.academic_voice_settings || {};
+        const voiceEnabled = voiceSettings.enabled === true;
+        const voice = voiceEnabled ? (data.academic_voice_review || {}) : {};
+        const voiceSignals = voiceEnabled && Array.isArray(voice.signals) ? voice.signals : [];
+        setCount("countVoice", voiceEnabled ? voiceSignals.length : "Off");
+        const voiceGate = $("voiceModuleGate");
+        const voiceStatus = $("voiceModuleStatus");
+        const voiceHeading = $("voiceModuleHeading");
+        const voiceMessage = $("voiceModuleMessage");
+        const voiceModuleContent = $("voiceModuleContent");
+        const voiceToggle = $("btnToggleVoiceModule");
+        if (voiceGate) voiceGate.classList.toggle("enabled", voiceEnabled);
+        if (voiceStatus) { voiceStatus.textContent = voiceEnabled ? "Enabled for this analysis" : "Off by default"; voiceStatus.classList.toggle("on", voiceEnabled); }
+        if (voiceHeading) voiceHeading.textContent = voiceEnabled ? "Writing-signal review is enabled" : "This optional module is off";
+        if (voiceMessage) voiceMessage.textContent = voiceEnabled
+            ? "Signals identify reviewable writing patterns, not authorship. Any proposed revision still requires your approval before Track Changes."
+            : "Enable it only if you want explainable writing-pattern signals. Tables, equations, reference entries and statistical result statements are excluded where detected.";
+        if (voiceModuleContent) voiceModuleContent.style.display = voiceEnabled ? "block" : "none";
+        if (voiceToggle) {
+            voiceToggle.textContent = voiceEnabled ? "Turn off for this analysis" : "Enable Academic Voice and Writing Signals";
+            voiceToggle.className = voiceEnabled ? "btn btn-outline" : "btn btn-primary";
+            voiceToggle.onclick = () => setAcademicVoiceEnabled(!voiceEnabled);
+        }
         const voiceSummary = $("voiceSummary");
         if (voiceSummary) {
             const summary = voice.summary || {};
-            voiceSummary.innerHTML = `<strong>Voice readiness: ${esc(summary.voice_readiness_score ?? "--")}/100</strong><br>
+            voiceSummary.innerHTML = voiceEnabled ? `<strong>Voice readiness: ${esc(summary.voice_readiness_score ?? "--")}/100</strong><br>
                 Critical: ${esc(summary.critical || 0)} · Important: ${esc(summary.important || 0)} · Optional: ${esc(summary.optional || 0)}<br>
-                ${esc(voice.disclaimer || "This review identifies writing patterns, not authorship.")}`;
+                ${esc(voice.disclaimer || "This review identifies writing patterns, not authorship.")}` : "Optional writing-signal review is off.";
         }
         const voiceBox = $("voiceContent");
         if (voiceBox) {
@@ -3485,6 +3426,30 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    async function setAcademicVoiceEnabled(enabled) {
+        const button = $("btnToggleVoiceModule");
+        if (button) { button.disabled = true; button.textContent = enabled ? "Enabling review..." : "Turning off..."; }
+        setStatus(enabled ? "Running the optional writing-signal review..." : "Turning off the optional writing-signal review...", "info");
+        try {
+            const response = await fetch(`/api/academic-voice/${encodeURIComponent(JOB_ID)}/settings`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled}),
+            });
+            const js = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(js.detail || "The module setting could not be updated.");
+            latestResults.academic_voice_settings = js.settings || {enabled};
+            latestResults.academic_voice_review = js.academic_voice_review || {};
+            latestResults.correction_plan = js.correction_plan || latestResults.correction_plan;
+            latestResults.evidence_resolution_workspace = latestResults.correction_plan?.evidence_resolution_workspace || latestResults.evidence_resolution_workspace;
+            renderStudentGuidance(latestResults);
+            setStatus(enabled ? "✅ Academic Voice and Writing Signals is enabled for this analysis." : "Academic Voice and Writing Signals is off for this analysis.", enabled ? "good" : "info");
+        } catch (error) {
+            setStatus("Writing-signal setting failed: " + error.message, "bad");
+            if (button) button.disabled = false;
+        }
+    }
+
     async function saveCorrectionDecision(itemId, decision, note, extra = {}) {
         try {
             setStatus("Saving your correction decision...", "info");
@@ -3494,6 +3459,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const js = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(js.detail || "Could not save correction decision.");
             latestResults.correction_plan = js.correction_plan;
+            latestResults.evidence_resolution_workspace = js.correction_plan?.evidence_resolution_workspace || latestResults.evidence_resolution_workspace;
             renderStudentGuidance(latestResults);
             renderClaimSupport(latestResults);
             setStatus(`✅ Correction marked ${decision}. The approved change will appear in the Track Changes document.`, "good");
@@ -3516,7 +3482,8 @@ document.addEventListener("DOMContentLoaded", function () {
             if (item) item.source_candidates = js.candidates || [];
             renderStudentGuidance(latestResults);
             renderClaimSupport(latestResults);
-            setStatus((js.candidates || []).length ? `✅ ${(js.candidates || []).length} candidate sources found. Open, verify and select one.` : "No suitable indexed source was found. Revise the claim or search manually instead of forcing a citation.", (js.candidates || []).length ? "good" : "warn");
+            const withheld = Number(js.withheld_candidate_count || 0);
+            setStatus((js.candidates || []).length ? `✅ ${(js.candidates || []).length} candidate sources passed the structured context screen${withheld ? `; ${withheld} general or out-of-context match(es) were withheld` : ""}. Open, verify and select one.` : `No candidate passed the structured claim fingerprint${withheld ? `; ${withheld} general or out-of-context match(es) were withheld` : ""}. Revise the claim or search manually instead of forcing a citation.`, (js.candidates || []).length ? "good" : "warn");
         } catch (error) {
             console.error(error);
             setStatus("Source search failed: " + error.message + " Check that the web service has outbound access to scholarly indexes.", "bad");
@@ -3532,7 +3499,11 @@ document.addEventListener("DOMContentLoaded", function () {
         const source = item.source_candidates?.[Number(selected.value)];
         if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
         if (!source.opened_by_user) { setStatus("Open the candidate source link before approving it.", "warn"); return; }
-        if (!confirm("Confirm that you opened this source and it directly supports the claim or citation.")) return;
+        const confirmation = document.querySelector(`.candidate-fit-confirm[data-item-id="${CSS.escape(itemId)}"][data-source-index="${CSS.escape(selected.value)}"]`);
+        if (!confirmation?.checked) { setStatus("Tick the verification confirmation under the selected source before approval.", "warn"); return; }
+        if (["claim_support", "citation_needed"].includes(category)) source.context_fit_confirmed = true;
+        else source.identity_confirmed = true;
+        if (!confirm("Record this source as opened and manually verified, then prepare the approved change for Track Changes?")) return;
         const action = category === "missing_reference" ? "add_reference" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
         const proposed = ["missing_reference","source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? source.formatted_reference : source.citation_text;
         saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, secondary_replacement:source.formatted_reference || "", original_text:item.evidence});
@@ -3589,7 +3560,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function fixNextIssue() {
-        const next = document.querySelector('#correctionContent .guidance-item[data-decision="pending"]');
+        const next = [...document.querySelectorAll('#correctionContent .guidance-item[data-decision="pending"]')].find(card => card.style.display !== "none");
         if (!next) { setStatus("All correction items have a recorded decision.", "good"); return; }
         next.scrollIntoView({behavior:"smooth", block:"center"});
         next.style.outline = "3px solid #19b36b";
@@ -3811,7 +3782,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function renderMissing(data) { /* unchanged, omitted for brevity but identical to original logic */ 
-        const rows = data.missing_in_references || [];
+        const rows = getSafeRows(data.missing_in_references);
         const body = $("missingBody");
         if (!body) return;
         if (!rows.length) { body.innerHTML = `<tr><td colspan="3"><div class="empty">No missing citations detected.</div></td></tr>`; return; }
@@ -3823,7 +3794,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function renderUncited(data) { 
-        const rows = data.uncited_references || [];
+        const rows = getSafeRows(data.uncited_references);
         const body = $("uncitedBody");
         if (!body) return;
         if (!rows.length) { body.innerHTML = `<tr><td colspan="2"><div class="empty">No uncited references detected.</div></td></tr>`; return; }
@@ -3855,9 +3826,9 @@ document.addEventListener("DOMContentLoaded", function () {
         if (kpis) {
             const items = [
                 ["Verified", summary.verified ?? rows.filter(r => r.status === "verified").length],
-                ["Likely", summary.likely ?? rows.filter(r => r.status === "likely").length],
-                ["Needs review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
-                ["Not found", summary.not_found ?? rows.filter(r => r.status === "not_found").length]
+                ["Metadata differences", summary.likely ?? rows.filter(r => r.status === "likely").length],
+                ["Human review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
+                ["Not found / failed", Number(summary.not_found ?? rows.filter(r => r.status === "not_found").length) + Number(summary.offline ?? rows.filter(r => r.status === "offline").length)]
             ];
             kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
@@ -3882,7 +3853,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 : (isManualReviewRow(row)
                     && manualIndex >= 0 ? `<button class="btn btn-outline manual-jump" data-manual-index="${manualIndex}" type="button">Manual verify</button>`
                     : `<span class="small-muted">—</span>`);
-            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td><td>${manualHtml}</td></tr>`;
+            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(verificationDisplayStatus(row))}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td><td>${manualHtml}</td></tr>`;
         }).join("");
     }
 
