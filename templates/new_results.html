@@ -1459,6 +1459,18 @@
         .resolution-step { padding:7px 10px; border-radius:999px; background:#eff6ff; border:1px solid #bfdbfe; color:#1e3a8a; font-size:12px; font-weight:800; }
         .candidate-fit { margin:8px 0 4px 28px; padding:9px 10px; border-radius:9px; background:#f8fafc; border-left:4px solid #2563eb; font-size:12px; }
         .candidate-confirm { display:flex; align-items:flex-start; gap:7px; margin:9px 0 0 28px; padding:8px 10px; background:#fffbeb; border:1px solid #fde68a; border-radius:9px; font-size:12px; font-weight:750; }
+        .manual-review-candidate { border-color:#f59e0b !important; background:#fffbeb; }
+        .manual-review-badge { display:inline-flex; align-items:center; margin:0 0 7px 28px; padding:5px 9px; border-radius:999px; background:#fef3c7; color:#92400e; font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:.02em; }
+        .source-search-feedback { margin:12px 0; padding:13px 14px; border:1px solid #bfdbfe; border-left:5px solid #2563eb; border-radius:10px; background:#eff6ff; color:#172554; font-size:13px; line-height:1.45; }
+        .source-search-feedback[data-state="searching"] { border-color:#93c5fd; background:#eff6ff; }
+        .source-search-feedback[data-state="completed_with_candidates"] { border-color:#86efac; border-left-color:#16a34a; background:#f0fdf4; color:#14532d; }
+        .source-search-feedback[data-state="completed_all_withheld"], .source-search-feedback[data-state="completed_no_candidates"] { border-color:#fcd34d; border-left-color:#d97706; background:#fffbeb; color:#78350f; }
+        .source-search-feedback[data-state="failed"] { border-color:#fecaca; border-left-color:#dc2626; background:#fef2f2; color:#7f1d1d; }
+        .source-search-metrics { display:flex; flex-wrap:wrap; gap:7px; margin:8px 0; }
+        .source-search-metric { padding:4px 8px; border:1px solid currentColor; border-radius:999px; background:rgba(255,255,255,.7); font-size:11px; font-weight:850; }
+        .source-search-links { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
+        .source-search-links a { display:inline-flex; padding:6px 9px; border:1px solid currentColor; border-radius:8px; background:#fff; color:inherit; font-weight:850; text-decoration:underline; }
+        .source-search-feedback details { margin-top:8px; }
         .optional-module-gate { border:2px dashed #94a3b8; border-radius:16px; background:#f8fafc; padding:18px; margin-bottom:16px; }
         .optional-module-gate.enabled { border-style:solid; border-color:#86efac; background:#f0fdf4; }
         .module-status { display:inline-flex; align-items:center; padding:5px 9px; border-radius:999px; background:#e2e8f0; font-size:12px; font-weight:900; margin-bottom:8px; }
@@ -1868,7 +1880,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-evidence-resolution-v1.9.0";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-evidence-resolution-v1.9.1";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3279,6 +3291,42 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    function renderSourceSearchReport(item) {
+        const report = item?.source_search_report || {};
+        const state = String(report.state || "");
+        if (!state) return `<div class="source-search-feedback" data-id="${esc(item?.id || "")}" hidden></div>`;
+        const providerCounts = report.provider_result_counts || {};
+        const providers = Array.isArray(report.providers_attempted) ? report.providers_attempted : [];
+        const manualLinks = Array.isArray(report.manual_search_links) ? report.manual_search_links : [];
+        const nextSteps = Array.isArray(report.next_steps) ? report.next_steps : [];
+        const providerErrors = Array.isArray(report.provider_errors) ? report.provider_errors : [];
+        const reasons = Object.entries(report.rejection_reason_counts || {}).filter(([, count]) => Number(count || 0) > 0);
+        const searching = state === "searching";
+        const icon = searching ? "⏳" : (state === "completed_with_candidates" ? "✅" : (state === "failed" ? "⚠️" : "ℹ️"));
+        const heading = searching ? "Scholarly source search in progress" : "Scholarly source search report";
+        const providerMetrics = providers.length
+            ? providers.map(provider => `<span class="source-search-metric">${esc(provider)}: ${esc(providerCounts[provider] ?? 0)} record(s)</span>`).join("")
+            : (!searching ? `<span class="source-search-metric">No provider result was recorded</span>` : "");
+        const resultMetrics = searching ? "" : `<span class="source-search-metric">Recommended: ${esc(report.strict_candidate_count || 0)}</span><span class="source-search-metric">Manual review: ${esc(report.manual_review_candidate_count || 0)}</span><span class="source-search-metric">Withheld: ${esc(report.withheld_candidate_count || 0)}</span><span class="source-search-metric">Queries: ${esc(report.query_count || 0)}</span>`;
+        return `<div class="source-search-feedback" data-id="${esc(item?.id || "")}" data-state="${esc(state)}" role="status" aria-live="polite">
+            <strong>${icon} ${heading}</strong><br>${esc(report.message || "Searching Crossref and OpenAlex with the manuscript topic profile and claim fingerprint…")}
+            <div class="source-search-metrics">${providerMetrics}${resultMetrics}</div>
+            ${providerErrors.length ? `<details open><summary><strong>Provider connection report</strong></summary><ul>${providerErrors.map(row => `<li>${esc(row.provider || "scholarly index")}: ${esc(String(row.error_type || "lookup error").replaceAll("_", " "))}</li>`).join("")}</ul></details>` : ""}
+            ${reasons.length ? `<details><summary><strong>Why records were withheld</strong></summary><ul>${reasons.map(([reason, count]) => `<li>${esc(reason)} (${esc(count)})</li>`).join("")}</ul></details>` : ""}
+            ${manualLinks.length ? `<div><strong>Continue manually:</strong><div class="source-search-links">${manualLinks.map(link => `<a href="${esc(link.url || "")}" target="_blank" rel="noopener">${esc(link.label || "Open scholarly search")}</a>`).join("")}</div></div>` : ""}
+            ${nextSteps.length ? `<details open><summary><strong>What to do next</strong></summary><ol>${nextSteps.map(step => `<li>${esc(step)}</li>`).join("")}</ol></details>` : ""}
+            ${report.updated_at ? `<div class="small-muted">Last search: ${esc(new Date(report.updated_at).toLocaleString())}</div>` : ""}
+        </div>`;
+    }
+
+    function refreshSourceSearchReports(item) {
+        document.querySelectorAll(`.source-search-feedback[data-id="${CSS.escape(item?.id || "")}"]`).forEach(node => {
+            const holder = document.createElement("div");
+            holder.innerHTML = renderSourceSearchReport(item);
+            node.replaceWith(holder.firstElementChild);
+        });
+    }
+
     function renderEvidenceCandidate(item, source, sourceIndex) {
         const fit = source.context_fit || {};
         const identity = source.identity_fit || {};
@@ -3287,12 +3335,14 @@ document.addEventListener("DOMContentLoaded", function () {
         const fitHtml = Object.keys(fit).length ? `<div class="candidate-fit"><strong>Structured context screen: ${esc(String(fit.label || "review").replaceAll("_", " "))} · ${esc(fit.score ?? "--")}/100</strong><br>${esc(fit.explanation || "")}${fit.specific_claim_overlap_terms?.length ? `<br>Specific claim matches: ${esc(fit.specific_claim_overlap_terms.join(", "))}` : ""}<br>Abstract compared: <strong>${fit.candidate_abstract_compared ? "Yes" : "No"}</strong><details style="margin-top:7px"><summary>Manuscript profile, claim fingerprint and field matches</summary><div class="small-muted" style="margin-top:6px"><strong>Manuscript disciplines:</strong> ${esc((fingerprint.manuscript_disciplines || []).join(", ") || "Not inferred")}<br><strong>Manuscript keywords:</strong> ${esc((fingerprint.manuscript_keywords || []).join(", ") || "Not recovered")}<br><strong>Manuscript geography/setting:</strong> ${esc([...(fingerprint.manuscript_geography || []), ...(fingerprint.manuscript_settings || [])].join(", ") || "Not recovered")}<br><strong>Population:</strong> ${esc((fingerprint.subject_or_population || []).join(", ") || "Not specified")}<br><strong>Concepts/variables:</strong> ${esc((fingerprint.concepts_or_variables || []).join(", ") || "Not recovered")}<br><strong>Claimed relationship:</strong> ${esc(String(fingerprint.claimed_relationship || "unspecified").replaceAll("_", " "))}<br><strong>Location:</strong> ${esc((fingerprint.location || []).join(", ") || "Not specified")}<br><strong>Time:</strong> ${esc((fingerprint.time_period || []).join(", ") || "Not specified")}<br><strong>Evidence needed:</strong> ${esc(fingerprint.required_evidence_type || "Review required")}<br><strong>Nearby citations:</strong> ${esc((fingerprint.nearby_citations || []).join("; ") || "None recovered")}<br><strong>Current section:</strong> ${esc(fingerprint.current_section || "Not recovered")}<br><strong>Field matches:</strong> concepts ${esc((fieldMatches.concepts_or_variables || []).join(", ") || "none")}; population ${esc((fieldMatches.subject_or_population || []).join(", ") || "none")}; location ${esc((fieldMatches.location || []).join(", ") || "none")}; relationship ${fieldMatches.claimed_relationship ? "yes" : "no"}; evidence type ${fieldMatches.required_evidence_type ? "yes" : "review"}.</div></details><br><strong>${esc(fit.warning || "Context fit is not proof of claim support.")}</strong></div>` : "";
         const identityHtml = Object.keys(identity).length ? `<div class="candidate-fit"><strong>Identity screen: ${esc(String(identity.status || "review").replaceAll("_", " "))}</strong>${identity.title_similarity !== undefined && identity.title_similarity !== null ? ` · title similarity ${esc(identity.title_similarity)}%` : ""}<br>${esc(identity.warning || "Confirm that this is the same publication.")}</div>` : "";
         const confirmationText = ["claim_support", "citation_needed"].includes(item.category)
-            ? "I opened this source and confirmed that it supports the exact claim and fits the manuscript topic."
+            ? (source.manual_review_only
+                ? "I read the full source and located a passage that supports the exact claim, population, setting and strength of wording."
+                : "I opened this source and confirmed that it supports the exact claim and fits the manuscript topic.")
             : "I opened this source and confirmed that it is the same publication intended in the manuscript.";
         const linkHtml = source.url
             ? `<a class="candidate-source-link btn btn-outline" style="margin-left:10px;color:#075e45;text-decoration:underline;font-weight:800" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">🔗 Open candidate source</a><div class="small-muted" style="margin:6px 0 0 28px;word-break:break-all">${esc(source.url)}</div>`
             : `<span class="small-muted" style="margin-left:8px">No direct source URL supplied. Do not approve.</span>`;
-        return `<label style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${linkHtml}${fitHtml}${identityHtml}<span class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}"> <span>${esc(confirmationText)}</span></span></label>`;
+        return `<label class="${source.manual_review_only ? "manual-review-candidate" : ""}" style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px">${source.manual_review_only ? `<span class="manual-review-badge">Manual full-text review required</span><br>` : ""}<input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${linkHtml}${fitHtml}${identityHtml}<span class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}"> <span>${esc(confirmationText)}</span></span></label>`;
     }
 
     function renderStudentGuidance(data) {
@@ -3337,6 +3387,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     ${item.supporting_metadata && Object.keys(item.supporting_metadata).length ? `<details><summary>Supporting source or metadata</summary><pre style="white-space:pre-wrap">${esc(JSON.stringify(item.supporting_metadata, null, 2))}</pre></details>` : ""}
                     ${item.evidence_link ? `<p><a href="${esc(item.evidence_link)}" target="_blank" rel="noopener">Open supporting evidence</a></p>` : ""}
                     ${Array.isArray(item.source_candidates) && item.source_candidates.length ? `<div class="source-candidates"><strong>✅ Candidate sources found. Select one, open it, verify the required condition, then approve:</strong>${item.source_candidates.map((source, sourceIndex) => renderEvidenceCandidate(item, source, sourceIndex)).join("")}</div>` : ""}
+                    ${renderSourceSearchReport(item)}
                     <p><strong>Confidence:</strong> ${esc(item.confidence ?? "Review required")}</p>
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ Action recorded: ${esc(item.decision)}</strong>${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
@@ -3353,8 +3404,8 @@ document.addEventListener("DOMContentLoaded", function () {
                 </div>`).join("") : `<div class="empty">No correction-plan items are available.</div>`;
             correctionBox.querySelectorAll(".correction-decision").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, btn.dataset.decision, "")));
             correctionBox.querySelectorAll(".correction-feedback").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, "rejected", "User marked this as an incorrect finding.")));
-            correctionBox.querySelectorAll(".find-correction-sources").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id)));
-            correctionBox.querySelectorAll(".approve-correction-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, btn.dataset.category)));
+            correctionBox.querySelectorAll(".find-correction-sources").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id, btn)));
+            correctionBox.querySelectorAll(".approve-correction-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, btn.dataset.category, btn)));
             correctionBox.querySelectorAll(".candidate-source-link").forEach(link => link.addEventListener("click", () => {
                 const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
                 const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
@@ -3469,37 +3520,81 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    async function findCorrectionSources(itemId) {
-        const button = document.querySelector(`.find-correction-sources[data-id="${CSS.escape(itemId)}"], .claim-find-source[data-id="${CSS.escape(itemId)}"]`);
-        const oldLabel = button?.textContent;
-        if (button) { button.disabled = true; button.textContent = "Searching..."; }
-        setStatus("Searching Crossref, OpenAlex and other scholarly indexes...", "info");
+    async function findCorrectionSources(itemId, triggerButton = null) {
+        const button = triggerButton || document.querySelector(`.find-correction-sources[data-id="${CSS.escape(itemId)}"], .claim-find-source[data-id="${CSS.escape(itemId)}"]`);
+        const oldLabel = button?.textContent || "Find supporting source";
+        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+        if (!item) { setStatus("This correction could not be located. Refresh the results page and try again.", "bad"); return; }
+        const manualQuery = encodeURIComponent(String(item.evidence || item.title || "scholarly source").replace(/\s+/g, " ").slice(0, 500));
+        if (button) { button.disabled = true; button.textContent = "Searching scholarly indexes…"; }
+        item.source_search_report = {
+            state: "searching",
+            message: "Searching Crossref and OpenAlex using the manuscript topic profile and this claim's structured fingerprint. This can take several seconds.",
+            providers_attempted: ["crossref", "openalex"],
+            provider_result_counts: {},
+        };
+        refreshSourceSearchReports(item);
+        setStatus("Searching Crossref and OpenAlex with manuscript and claim context...", "info");
         try {
             const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/sources/${encodeURIComponent(itemId)}`, {method:"POST"});
             const js = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(js.detail || "Source search failed.");
-            const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
-            if (item) item.source_candidates = js.candidates || [];
+            if (!response.ok) {
+                const failure = new Error(typeof js.detail === "string" ? js.detail : "Source search failed.");
+                failure.searchReport = js.search_report;
+                throw failure;
+            }
+            item.source_candidates = Array.isArray(js.candidates) ? js.candidates : [];
+            item.source_search_report = js.search_report || {
+                state: item.source_candidates.length ? "completed_with_candidates" : "completed_no_candidates",
+                message: js.message || "The source search completed.",
+                strict_candidate_count: item.source_candidates.length,
+            };
             renderStudentGuidance(latestResults);
             renderClaimSupport(latestResults);
-            const withheld = Number(js.withheld_candidate_count || 0);
-            setStatus((js.candidates || []).length ? `✅ ${(js.candidates || []).length} candidate sources passed the structured context screen${withheld ? `; ${withheld} general or out-of-context match(es) were withheld` : ""}. Open, verify and select one.` : `No candidate passed the structured claim fingerprint${withheld ? `; ${withheld} general or out-of-context match(es) were withheld` : ""}. Revise the claim or search manually instead of forcing a citation.`, (js.candidates || []).length ? "good" : "warn");
+            const report = item.source_search_report || {};
+            const tone = item.source_candidates.length ? "good" : "warn";
+            setStatus(`${item.source_candidates.length ? "✅ " : ""}${report.message || "The source search completed."} See the inline search report for next steps.`, tone);
         } catch (error) {
             console.error(error);
-            setStatus("Source search failed: " + error.message + " Check that the web service has outbound access to scholarly indexes.", "bad");
-            if (button) { button.disabled = false; button.textContent = oldLabel || "Find scholarly sources"; }
+            item.source_candidates = [];
+            item.source_search_report = error.searchReport || {
+                state: "failed",
+                message: `The automatic search did not complete: ${error.message} The manuscript was not changed.`,
+                providers_attempted: ["crossref", "openalex"],
+                provider_result_counts: {},
+                strict_candidate_count: 0,
+                manual_review_candidate_count: 0,
+                withheld_candidate_count: 0,
+                manual_search_links: [
+                    {label: "Search Google Scholar", url: `https://scholar.google.com/scholar?q=${manualQuery}`},
+                    {label: "Search Semantic Scholar", url: `https://www.semanticscholar.org/search?q=${manualQuery}`},
+                    {label: "Search Crossref", url: `https://search.crossref.org/?q=${manualQuery}`},
+                    {label: "Search OpenAlex", url: `https://openalex.org/works?search=${manualQuery}`},
+                ],
+                next_steps: [
+                    "Open a manual scholarly-search link and inspect the title and abstract.",
+                    "Confirm the exact claim, population, setting and strength of wording in the full source.",
+                    "If no source supports the claim, revise or qualify it rather than forcing a citation.",
+                ],
+            };
+            renderStudentGuidance(latestResults);
+            renderClaimSupport(latestResults);
+            setStatus("Source search did not complete. The inline report now shows what happened, manual search links and the next safe action.", "bad");
+        } finally {
+            if (button?.isConnected) { button.disabled = false; button.textContent = oldLabel; }
         }
     }
 
-    function approveCorrectionSource(itemId, category) {
+    function approveCorrectionSource(itemId, category, triggerButton = null) {
         const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
-        const selected = document.querySelector(`input[name="source-${itemId}"]:checked`);
+        const actionScope = triggerButton?.closest(".guidance-item, .claim-direct-actions") || document;
+        const selected = actionScope.querySelector(`input[name="source-${CSS.escape(itemId)}"]:checked`);
         if (!item?.source_candidates?.length) { setStatus("Click Find scholarly sources first.", "warn"); return; }
         if (!selected) { setStatus("Select one candidate source before approval.", "warn"); return; }
         const source = item.source_candidates?.[Number(selected.value)];
         if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
         if (!source.opened_by_user) { setStatus("Open the candidate source link before approving it.", "warn"); return; }
-        const confirmation = document.querySelector(`.candidate-fit-confirm[data-item-id="${CSS.escape(itemId)}"][data-source-index="${CSS.escape(selected.value)}"]`);
+        const confirmation = actionScope.querySelector(`.candidate-fit-confirm[data-item-id="${CSS.escape(itemId)}"][data-source-index="${CSS.escape(selected.value)}"]`);
         if (!confirmation?.checked) { setStatus("Tick the verification confirmation under the selected source before approval.", "warn"); return; }
         if (["claim_support", "citation_needed"].includes(category)) source.context_fit_confirmed = true;
         else source.identity_confirmed = true;
@@ -4379,11 +4474,12 @@ document.addEventListener("DOMContentLoaded", function () {
             let directAction = `<div class="small-muted">No linked correction was generated for this row.</div>`;
             if (correction) {
                 const candidates = Array.isArray(correction.source_candidates) ? correction.source_candidates : [];
-                const candidateList = candidates.length ? `<div style="margin-top:8px"><strong>Select and verify a source:</strong>${candidates.map((source, sourceIndex) => `<label style="display:block;margin-top:7px;padding:7px;border:1px solid #dbe4e0;border-radius:8px"><input type="radio" name="source-${esc(correction.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")}${source.year ? ` (${esc(source.year)})` : ""}${source.url ? `<br><a class="claim-candidate-source-link" data-item-id="${esc(correction.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener" style="color:#075e45;text-decoration:underline;font-weight:800">🔗 Open and verify source</a>` : `<br><span class="small-muted">No evidence link. Do not approve.</span>`}</label>`).join("")}</div>` : "";
+                const candidateList = candidates.length ? `<div style="margin-top:8px"><strong>Select, open and verify a source:</strong>${candidates.map((source, sourceIndex) => renderEvidenceCandidate(correction, source, sourceIndex)).join("")}</div>` : "";
                 directAction = correction.decision && correction.decision !== "pending"
                     ? `<div style="padding:8px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ ${esc(correction.decision)}</strong><br>${esc((correction.approved_action || "Action recorded").replaceAll("_", " "))}</div>`
                     : `<div class="claim-direct-actions" data-id="${esc(correction.id)}">
                         <button class="btn btn-outline claim-find-source" data-id="${esc(correction.id)}" title="Search scholarly indexes for a source that directly supports this claim.">Find supporting source</button>
+                        ${renderSourceSearchReport(correction)}
                         ${candidateList}
                         <button class="btn btn-green claim-approve-source" data-id="${esc(correction.id)}" data-category="claim_support" ${candidates.length ? "" : "disabled title=\"Find and select a source first\""}>Add selected citation</button>
                         <button class="btn btn-outline claim-revise" data-id="${esc(correction.id)}" title="Revise or qualify the claim and insert the approved wording with Track Changes.">Revise or qualify claim</button>
@@ -4396,10 +4492,10 @@ document.addEventListener("DOMContentLoaded", function () {
             body.innerHTML += `<tr><td colspan="7"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
         }
 
-        body.querySelectorAll(".claim-find-source").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id)));
-        body.querySelectorAll(".claim-approve-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, "claim_support")));
+        body.querySelectorAll(".claim-find-source").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id, btn)));
+        body.querySelectorAll(".claim-approve-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, "claim_support", btn)));
         body.querySelectorAll(".claim-revise").forEach(btn => btn.addEventListener("click", () => approveClaimRevision(btn.dataset.id)));
-        body.querySelectorAll(".claim-candidate-source-link").forEach(link => link.addEventListener("click", () => {
+        body.querySelectorAll(".candidate-source-link, .claim-candidate-source-link").forEach(link => link.addEventListener("click", () => {
             const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
             const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
             if (source) source.opened_by_user = true;
