@@ -2,6 +2,8 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from access_control import init_commercial_tables
+from payment_control import ensure_settings_table
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -99,8 +101,12 @@ def init_database():
         
         cursor.close()
         conn.close()
+
+        # Create purchases, purchase runs, service settings, and safe upgrades.
+        init_commercial_tables(DATABASE_URL)
+        ensure_settings_table(DATABASE_URL)
         
-        print("✅ Database tables verified/created successfully")
+        print("✅ Core and commercial database tables verified/created successfully")
         print(f"📊 Tables found: {[t[0] for t in tables]}")
         
         return True

@@ -2,7 +2,7 @@
 Stripe Checkout helpers for CiteIntegrity.
 
 Payment model:
-- Non-African billing countries are routed here.
+- Every billing country except Ghana and Nigeria is routed here.
 - Checkout uses one-time payment mode, matching CiteIntegrity's package model.
 - The Stripe webhook marks the same purchase table as paid and attaches the
   preview job as the first paid analysis run.
@@ -22,11 +22,11 @@ import stripe
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from access_control import create_pending_purchase, mark_purchase_paid, record_purchase_run
+from access_control import create_pending_purchase, get_purchase_by_provider_reference, mark_purchase_paid, record_purchase_run
 from entitlements import get_price, validate_paid_package_for_document
 
-STRIPE_PAYMENTS_VERSION = "1.0.2"
-STRIPE_PAYMENTS_BUILD = "commercial-2026-05-28-stripe-prelink-paid-unlock-final"
+STRIPE_PAYMENTS_VERSION = "2.0.0"
+STRIPE_PAYMENTS_BUILD = "commercial-international-usd-checkout"
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -49,6 +49,19 @@ def _require_stripe_key() -> str:
 
 def amount_to_minor_units(amount: float) -> int:
     return int(round(float(amount) * 100))
+
+
+def _stripe_payment_matches_purchase(session: Any, purchase: Dict[str, Any]) -> bool:
+    if not purchase:
+        return False
+    actual_minor = _safe_int(session.get("amount_total"), 0)
+    expected_minor = amount_to_minor_units(float(purchase.get("amount") or 0))
+    actual_currency = str(session.get("currency") or "").upper()
+    expected_currency = str(purchase.get("currency") or "").upper()
+    details = session.get("customer_details") or {}
+    actual_email = str(details.get("email") or session.get("customer_email") or "").strip().lower()
+    expected_email = str(purchase.get("user_email") or "").strip().lower()
+    return actual_minor == expected_minor and actual_currency == expected_currency and (not actual_email or actual_email == expected_email)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -506,6 +519,7 @@ def initialize_citeintegrity_stripe_payment(
     file_name: str = "",
     success_path: str = "/payment/stripe/success",
     cancel_path: str = "/pricing",
+    billing_country: str = "",
 ) -> Dict[str, Any]:
     try:
         _require_stripe_key()
@@ -563,6 +577,8 @@ def initialize_citeintegrity_stripe_payment(
             preview_file_name=file_name,
             preview_reference_count=reference_count,
             preview_citation_count=citation_count,
+            market="international",
+            billing_country=billing_country,
         )
     except Exception as e:
         print(f"[STRIPE_PENDING_PURCHASE_ERROR] {type(e).__name__}: {e}")
@@ -611,6 +627,7 @@ def initialize_citeintegrity_stripe_payment(
                 "reference_count": str(reference_count),
                 "citation_count": str(citation_count),
                 "payment_provider": "stripe",
+                "billing_country": str(billing_country or "").upper(),
             },
         )
     except Exception as e:
@@ -714,7 +731,10 @@ def verify_and_activate_stripe_session(
             database_url,
             provider_reference=provider_reference,
             purchase_id=metadata.get("purchase_id"),
-        )
+        ) if _stripe_payment_matches_purchase(
+            session,
+            get_purchase_by_provider_reference(database_url, provider_reference=provider_reference) or {},
+        ) else {}
 
         if not purchase:
             print(
@@ -841,11 +861,12 @@ def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str)
             }
 
         metadata = data.get("metadata", {}) or {}
+        pending = get_purchase_by_provider_reference(database_url, provider_reference=provider_reference) or {}
         purchase = _mark_stripe_purchase_paid(
             database_url,
             provider_reference=provider_reference,
             purchase_id=metadata.get("purchase_id"),
-        )
+        ) if _stripe_payment_matches_purchase(data, pending) else {}
 
         attached = {}
         if purchase:

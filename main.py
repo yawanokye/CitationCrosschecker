@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "DEMO_MAIN-web-safe-queue-worker-health-2026-06-01-v1.5.44"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.0"
 
 import io
 import asyncio
@@ -70,7 +70,6 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from engine import run_crosscheck, run_crosscheck_with_autofix, recover_references_for_verification
 
 # Your custom modules
-from engine import run_crosscheck, run_crosscheck_with_autofix
 from verify import (
     submit_verification,
     get_verification_status,
@@ -97,7 +96,31 @@ from evidence_resolution import (
     build_document_topic_profile,
 )
 from source_risk import assess_source_risks
-from payment_control import get_access_mode, set_access_mode, open_access_payload
+from payment_control import get_access_mode, set_access_mode, set_public_notice, open_access_payload
+from entitlements import (
+    DOCUMENT_TIERS,
+    apply_entitlements_to_result,
+    build_plan_selection_payload,
+    recommend_document_tier_with_words,
+)
+from access_control import (
+    get_purchase_by_token,
+    init_commercial_tables,
+    purchase_is_paid_for_job,
+    record_purchase_run,
+    validate_purchase_for_new_run,
+)
+from payment_router import resolve_payment_market
+from paystack_payments import (
+    handle_paystack_webhook,
+    initialize_citeintegrity_payment,
+    verify_and_activate_purchase,
+)
+from stripe_payments import (
+    handle_stripe_webhook,
+    initialize_citeintegrity_stripe_payment,
+    verify_and_activate_stripe_session,
+)
 from document_correction_pack import build_annotated_document, build_tracked_changes_document
 from citation_coach import build_citation_coach
 from privacy_lifecycle import (
@@ -110,8 +133,8 @@ from privacy_lifecycle import (
 )
 
 
-# Optional certificate helpers for training/demo mode. These are wrapped so the
-# demonstration service can still start even if the certificate module is not yet deployed.
+# Optional certificate helpers. The service can still start with a limited
+# fallback certificate if the PDF helper is not available at deployment time.
 try:
     from certificate_builder import (
         build_citation_integrity_certificate,
@@ -734,7 +757,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "1.9.1").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.0-commercial").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -834,6 +857,12 @@ async def lifespan(app_instance: FastAPI):
     print(f"📈 Stats tracker loaded: {stats['total_stats']['total_uploads']} total uploads")
     cleanup = cleanup_expired_manuscript_content()
     print(f"🧹 Temporary-content cleanup: {cleanup}")
+    if DATABASE_URL:
+        try:
+            init_commercial_tables(DATABASE_URL)
+            print("✅ Commercial payment tables verified")
+        except Exception as commercial_error:
+            print(f"⚠️ Commercial table setup failed safely: {commercial_error}")
     cleanup_task = asyncio.create_task(_privacy_cleanup_loop())
     try:
         yield
@@ -909,6 +938,10 @@ async def security_middleware(request: Request, call_next):
         "/results",
         "/features",
         "/pricing",
+        "/payment",
+        "/api/payments",
+        "/api/plans",
+        "/api/webhooks",
         "/contact",
         "/api/contact",
         "/private-stats"
@@ -1009,7 +1042,14 @@ async def force_single_domain(request: Request, call_next):
 async def maintenance_gate(request: Request, call_next):
     """Block public use during upgrades without restricting authenticated developers."""
     path = request.url.path
-    if path == "/health" or path.startswith("/developer/") or path.startswith("/api/developer/access"):
+    if (
+        path == "/health"
+        or path.startswith("/developer/")
+        or path.startswith("/api/developer/access")
+        or path.startswith("/api/webhooks/")
+        or path.startswith("/payment/paystack/callback")
+        or path.startswith("/payment/stripe/success")
+    ):
         return await call_next(request)
     basic_authorized = developer_request_is_authorized(request)
     session_level = developer_session_access_level(request)
@@ -3007,6 +3047,12 @@ def _get_cached_index_html() -> str:
 async def index(request: Request):
     return HTMLResponse(_get_cached_index_html())
 
+
+@app.get("/pricing")
+async def pricing_page(request: Request):
+    query = str(request.url.query or "").strip()
+    return RedirectResponse(url=f"/?{query}#pricing" if query else "/#pricing", status_code=303)
+
 # ============================================================
 # PRIVACY POLICY
 # ============================================================
@@ -3575,6 +3621,22 @@ async def verify(
     is_large_file = bool(load_info.get("large_file", False))
     file_ttl = LARGE_FILE_REDIS_TTL if is_large_file else NORMAL_FILE_REDIS_TTL
     job_timeout = LARGE_DOCUMENT_JOB_TIMEOUT if is_large_file else NORMAL_DOCUMENT_JOB_TIMEOUT
+    recheck_purchase = None
+    access_token = request.cookies.get("ci_access_token", "") if request else ""
+    if DATABASE_URL and access_token and get_access_mode(DATABASE_URL, redis_conn).get("mode") in {"payment_required", "payments_suspended"}:
+        try:
+            recheck = validate_purchase_for_new_run(
+                DATABASE_URL,
+                token=access_token,
+                reference_count=0,
+                citation_count=0,
+                word_count=int(load_info.get("word_count") or 0),
+            )
+            candidate_purchase = recheck.get("purchase") or {}
+            if recheck.get("allowed") and _same_document_family(candidate_purchase.get("preview_file_name", ""), file.filename):
+                recheck_purchase = candidate_purchase
+        except Exception as recheck_error:
+            print(f"[RECHECK] Paid recheck validation failed safely: {recheck_error}")
 
     print(
         f"[PREFLIGHT] {file.filename} -> queue={queue_name}, "
@@ -3690,6 +3752,22 @@ async def verify(
             content={"error": "Failed to queue job", "message": str(q_error)}
         )
 
+    if recheck_purchase:
+        try:
+            attached_recheck = record_purchase_run(
+                DATABASE_URL,
+                purchase_id=recheck_purchase["id"],
+                job_id=job_id,
+                file_name=file.filename,
+                reference_count=0,
+                citation_count=0,
+            )
+            if not attached_recheck.get("run"):
+                recheck_purchase = None
+        except Exception as recheck_record_error:
+            print(f"[RECHECK] Could not attach paid recheck: {recheck_record_error}")
+            recheck_purchase = None
+
     # =========================
     # 7. RECORD STATS
     # =========================
@@ -3733,6 +3811,7 @@ async def verify(
         "selected_style": _main_style_token(style),
         "large_worker_autostart": large_worker_autostart,
         "large_worker_autostart_enabled": os.environ.get("LARGE_WORKER_AUTOSTART_ENABLED", "false"),
+        "paid_recheck": bool(recheck_purchase),
     }
 
 
@@ -3770,9 +3849,14 @@ async def developer_access_page(request: Request, _auth: Any = Depends(authentic
     expiry_text = html.escape(str(state.get("expires_at") or "Not applicable"))
     checked_payment = "checked" if mode == "payment_required" else ""
     checked_open = "checked" if mode == "open_access" else ""
+    checked_suspended = "checked" if mode == "payments_suspended" else ""
     checked_maintenance = "checked" if mode == "maintenance" else ""
     maintenance_check_text = html.escape(str(state.get("maintenance_check_at") or "Not applicable"))
     maintenance_message_text = html.escape(str(state.get("maintenance_message") or "CiteIntegrity is undergoing scheduled maintenance while an upgrade is tested."))
+    public_notice = state.get("public_notice") if isinstance(state.get("public_notice"), dict) else {}
+    notice_checked = "checked" if public_notice.get("enabled") else ""
+    notice_text = html.escape(str(public_notice.get("text") or ""))
+    notice_link = html.escape(str(public_notice.get("link") or ""))
     ai_status_text = "Configured" if os.environ.get("OPENAI_API_KEY", "").strip() else "Not configured"
     response = HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><title>CiteIntegrity Developer Access</title>
 <style>body{{font-family:Arial,sans-serif;background:#f4f7f6;color:#172033;margin:0}}main{{max-width:760px;margin:50px auto;background:white;padding:32px;border-radius:16px;box-shadow:0 8px 30px #0001}}h1{{margin-top:0}}label{{display:block;border:1px solid #dbe4e0;padding:18px;border-radius:10px;margin:12px 0}}button,.button{{display:inline-block;background:#0f7a4f;color:white;border:0;border-radius:8px;padding:12px 18px;font-weight:700;cursor:pointer;text-decoration:none}}.button.secondary{{background:#172033}}.testing{{background:#edf8f2;border:1px solid #b9dfca;padding:18px;border-radius:12px;margin:18px 0}}.warning{{background:#fff7ed;border-left:4px solid #f59e0b;padding:12px}}code{{background:#eef2f1;padding:2px 5px}}</style></head><body><main>
@@ -3783,19 +3867,30 @@ async def developer_access_page(request: Request, _auth: Any = Depends(authentic
 <form id="accessForm">
 <label><input type="radio" name="mode" value="payment_required" {checked_payment}> <strong>Payment-controlled access</strong><br>Free preview is limited. Full Review requires a successful payment or valid entitlement.</label>
 <label><input type="radio" name="mode" value="open_access" {checked_open}> <strong>Temporarily open Full Review for all users</strong><br>All completed analyses receive Full Review access without payment until the selected period expires.</label>
+<label><input type="radio" name="mode" value="payments_suspended" {checked_suspended}> <strong>Suspend new payments</strong><br>Free Preview remains available, paid results remain accessible, and new checkouts are disabled until payment-controlled access is restored.</label>
 <label><input type="radio" name="mode" value="maintenance" {checked_maintenance}> <strong>Block public usage for maintenance</strong><br>Public users see a maintenance notice and check-back time. Authenticated developers retain full access for upgrade testing.</label>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0"><label style="margin:0"><strong>Duration or check-back period</strong><br><input type="number" name="duration_value" min="1" max="365" value="1" style="width:90%;padding:10px;margin-top:8px"></label><label style="margin:0"><strong>Period</strong><br><select name="duration_unit" style="width:95%;padding:10px;margin-top:8px"><option value="hours">Hours</option><option value="days">Days</option><option value="weeks">Weeks</option></select></label></div>
 <label><strong>Maintenance notice</strong><br><textarea name="maintenance_message" rows="3" maxlength="500" style="width:95%;padding:10px;margin-top:8px">{maintenance_message_text}</textarea></label>
+<div class="testing"><strong>Public announcement banner</strong><p>Publish a flashing notice on the landing and upload pages. Leave the link blank when no action button is needed.</p>
+<label><input type="checkbox" name="notice_enabled" value="true" {notice_checked}> <strong>Publish banner</strong></label>
+<label><strong>Banner message</strong><br><textarea name="notice_text" rows="3" maxlength="500" style="width:95%;padding:10px;margin-top:8px" placeholder="Enter the public announcement">{notice_text}</textarea></label>
+<label><strong>Optional link</strong><br><input type="url" name="notice_link" maxlength="500" value="{notice_link}" placeholder="https://citeintegrity.org/..." style="width:95%;padding:10px;margin-top:8px"></label>
+<button type="button" id="saveNotice">Publish banner settings only</button> <span id="noticeStatus"></span></div>
 <p class="warning">Open access is a global commercial setting. It does not disable document privacy or deletion controls.</p>
 <button type="submit">Save access mode</button> <span id="status"></span>
 </form><script>
 document.getElementById('accessForm').addEventListener('submit', async (event) => {{
- event.preventDefault(); const form=new FormData(event.target); const mode=form.get('mode'); const duration_value=Number(form.get('duration_value')); const duration_unit=form.get('duration_unit'); const maintenance_message=form.get('maintenance_message');
+ event.preventDefault(); const form=new FormData(event.target); const mode=form.get('mode'); const duration_value=Number(form.get('duration_value')); const duration_unit=form.get('duration_unit'); const maintenance_message=form.get('maintenance_message'); const notice_enabled=form.get('notice_enabled')==='true'; const notice_text=form.get('notice_text'); const notice_link=form.get('notice_link');
  if(mode==='open_access' && !confirm('Open Full Review access to every user without payment?')) return;
+ if(mode==='payments_suspended' && !confirm('Suspend all new checkouts while keeping Free Preview and existing paid access available?')) return;
  if(mode==='maintenance' && !confirm('Block all public usage and show the maintenance notice? Developer authentication will still allow testing.')) return;
- const response=await fetch('/api/developer/access',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{mode,duration_value,duration_unit,maintenance_message}})}});
+ const response=await fetch('/api/developer/access',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{mode,duration_value,duration_unit,maintenance_message,notice_enabled,notice_text,notice_link}})}});
  const data=await response.json(); document.getElementById('status').textContent=response.ok?'Saved.':(data.detail||'Failed.');
  if(response.ok) {{ document.getElementById('currentMode').textContent=data.mode.replaceAll('_',' '); document.getElementById('expiryTime').textContent=data.expires_at||'Not applicable'; document.getElementById('maintenanceCheck').textContent=data.maintenance_check_at||'Not applicable'; }}
+}});
+document.getElementById('saveNotice').addEventListener('click', async () => {{
+ const form=new FormData(document.getElementById('accessForm')); const notice_enabled=form.get('notice_enabled')==='true'; const notice_text=form.get('notice_text'); const notice_link=form.get('notice_link');
+ const response=await fetch('/api/developer/notice',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{notice_enabled,notice_text,notice_link}})}}); const data=await response.json(); document.getElementById('noticeStatus').textContent=response.ok?'Banner settings published.':(data.detail||'Failed.');
 }});
 </script></main></body></html>""")
     return response
@@ -3834,11 +3929,287 @@ async def developer_access_update(request: Request, credentials: HTTPBasicCreden
     authenticate(credentials)
     payload = await request.json()
     try:
-        return set_access_mode(str(payload.get("mode") or ""), credentials.username, DATABASE_URL, redis_conn, payload.get("duration_value"), str(payload.get("duration_unit") or "hours"), str(payload.get("maintenance_message") or ""))
+        return set_access_mode(str(payload.get("mode") or ""), credentials.username, DATABASE_URL, redis_conn, payload.get("duration_value"), str(payload.get("duration_unit") or "hours"), str(payload.get("maintenance_message") or ""), bool(payload.get("notice_enabled")), str(payload.get("notice_text") or ""), str(payload.get("notice_link") or ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.post("/api/developer/notice")
+async def developer_notice_update(request: Request, credentials: HTTPBasicCredentials = Depends(security)):
+    authenticate(credentials)
+    payload = await request.json()
+    try:
+        return set_public_notice(
+            credentials.username,
+            DATABASE_URL,
+            enabled=bool(payload.get("notice_enabled")),
+            text=str(payload.get("notice_text") or ""),
+            link=str(payload.get("notice_link") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+# ============================================================
+# COMMERCIAL PRICING AND PAYMENT ROUTES
+# ============================================================
+
+def _commercial_job_counts(job_id: str) -> Dict[str, Any]:
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Analysis job not found.")
+    if str(job.get("status") or "").lower() != "completed":
+        raise HTTPException(status_code=409, detail="Complete the Free Preview before choosing a Full Review package.")
+    result = job.get("result") or {}
+    if isinstance(result, str):
+        result = json.loads(result)
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    references = int(summary.get("reference_entries_found") or len(result.get("references_raw") or result.get("references") or []))
+    citations = int(summary.get("in_text_citations_found") or len(result.get("in_text_citations") or result.get("citations") or []))
+    word_count = int(
+        summary.get("word_count")
+        or (result.get("preflight") or {}).get("word_count")
+        or result.get("word_count")
+        or 0
+    )
+    if not word_count:
+        manuscript_text = result.get("main_text") or result.get("full_text") or result.get("document_text") or ""
+        word_count = len(re.findall(r"\b\w+\b", str(manuscript_text)))
+    return {
+        "job": job,
+        "result": result,
+        "file_name": str(job.get("file_name") or result.get("file_name") or result.get("filename") or "manuscript"),
+        "reference_count": references,
+        "citation_count": citations,
+        "word_count": word_count,
+    }
+
+
+def _same_document_family(original_name: str, new_name: str) -> bool:
+    """Allow ordinary revision suffixes while preventing credit reuse on another work."""
+    def key(value: str) -> str:
+        stem = Path(str(value or "")).stem.lower()
+        stem = re.sub(r"\b(revised|revision|corrected|final|edited|updated|copy|version|v\d+)\b", " ", stem)
+        return re.sub(r"[^a-z0-9]+", "", stem)
+    original_key, new_key = key(original_name), key(new_name)
+    if not original_key or not new_key:
+        return False
+    return original_key == new_key or original_key in new_key or new_key in original_key
+
+
+def _checkout_rate_limited(request: Request, email: str) -> bool:
+    if not redis_conn:
+        return False
+    limit = max(1, int(os.environ.get("CHECKOUT_RATE_LIMIT_PER_MINUTE", "5")))
+    identity = f"{request.client.host if request.client else 'unknown'}|{email.lower()}"
+    key = "citeintegrity:checkout:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    count = redis_conn.incr(key)
+    if count == 1:
+        redis_conn.expire(key, 60)
+    return count > limit
+
+
+def _commercial_access_allowed(request: Optional[Request], job_id: str) -> bool:
+    if request is not None and (developer_session_access_level(request) or developer_request_is_authorized(request)):
+        return True
+    state = get_access_mode(DATABASE_URL, redis_conn)
+    if state.get("mode") == "open_access":
+        return True
+    if DATABASE_URL:
+        try:
+            return bool(purchase_is_paid_for_job(DATABASE_URL, job_id=job_id).get("paid"))
+        except Exception as exc:
+            print(f"[ACCESS] Paid-job check failed safely for {job_id}: {exc}")
+    return False
+
+
+def _require_commercial_access(request: Request, job_id: str) -> None:
+    if not _commercial_access_allowed(request, job_id):
+        raise HTTPException(status_code=402, detail="Full Review payment is required for this feature.")
+
+
+@app.get("/api/pricing")
+async def commercial_pricing():
+    markets = {}
+    for code in ("GH", "NG", "INTL"):
+        market = resolve_payment_market(code)
+        payload = build_plan_selection_payload(0, 0, market["currency"], 0)
+        markets[market["market"]] = {
+            "country_code": market["country_code"],
+            "label": market["label"],
+            "provider": market["provider"],
+            "currency": market["currency"],
+            "tiers": payload["tiers"],
+        }
+    return {"ok": True, "model": "free_preview_plus_pay_as_you_go", "markets": markets}
+
+
+@app.get("/api/public/config")
+async def public_commercial_config():
+    state = get_access_mode(DATABASE_URL, redis_conn)
+    notice = state.get("public_notice") if isinstance(state.get("public_notice"), dict) else {}
+    return {
+        "ok": True,
+        "access_mode": state.get("mode") or "payment_required",
+        "show_pricing": state.get("mode") != "open_access",
+        "payments_available": state.get("mode") == "payment_required",
+        "public_notice": {
+            "enabled": bool(notice.get("enabled") and str(notice.get("text") or "").strip()),
+            "text": str(notice.get("text") or "")[:500],
+            "link": str(notice.get("link") or "")[:500],
+        },
+    }
+
+
+@app.get("/api/plans/recommend/{job_id}")
+async def recommend_commercial_plan(job_id: str, billing_country: str = "GH", currency: str = ""):
+    counts = _commercial_job_counts(job_id)
+    # Backward compatibility: old clients sent currency rather than billing country.
+    if not billing_country and currency:
+        billing_country = "NG" if currency.upper() == "NGN" else ("GH" if currency.upper() == "GHS" else "INTL")
+    market = resolve_payment_market(billing_country)
+    payload = build_plan_selection_payload(
+        counts["reference_count"], counts["citation_count"], market["currency"], counts["word_count"]
+    )
+    payload.update({"ok": True, "job_id": job_id, "market": market})
+    return payload
+
+
+@app.post("/api/payments/initialize")
+async def initialize_commercial_checkout(request: Request):
+    state = get_access_mode(DATABASE_URL, redis_conn)
+    if state.get("mode") == "payments_suspended":
+        raise HTTPException(status_code=503, detail="New payments are temporarily suspended. Free Preview remains available.")
+    if state.get("mode") != "payment_required":
+        raise HTTPException(status_code=409, detail="Checkout is not required while Full Review access is open.")
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Commercial checkout is not configured.")
+
+    payload = await request.json()
+    email = str(payload.get("email") or "").strip().lower()[:254]
+    job_id = str(payload.get("job_id") or "").strip()
+    billing_country = str(payload.get("billing_country") or "INTL").strip().upper()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    if _checkout_rate_limited(request, email):
+        raise HTTPException(status_code=429, detail="Too many checkout attempts. Please wait one minute and try again.")
+
+    counts = _commercial_job_counts(job_id)
+    market = resolve_payment_market(billing_country)
+    tier_key = recommend_document_tier_with_words(
+        counts["reference_count"], counts["citation_count"], counts["word_count"]
+    )
+    if tier_key == "custom_large":
+        raise HTTPException(status_code=422, detail="This document exceeds the self-service limits. Please contact CiteIntegrity for a quotation.")
+
+    common = {
+        "database_url": DATABASE_URL,
+        "user_email": email,
+        "tier_key": tier_key,
+        "reference_count": counts["reference_count"],
+        "citation_count": counts["citation_count"],
+        "job_id": job_id,
+        "file_name": counts["file_name"],
+    }
+    if market["provider"] == "paystack":
+        outcome = initialize_citeintegrity_payment(
+            **common,
+            selected_currency=market["currency"],
+            market=market["market"],
+            billing_country=market["country_code"],
+            callback_path=f"/payment/paystack/callback/{market['market']}",
+        )
+        checkout_url = outcome.get("authorization_url")
+    else:
+        outcome = initialize_citeintegrity_stripe_payment(
+            **common,
+            selected_currency="USD",
+            billing_country=market["country_code"],
+        )
+        checkout_url = outcome.get("checkout_url")
+
+    if not outcome.get("ok") or not checkout_url:
+        print(f"[CHECKOUT_INIT_ERROR] provider={market['provider']} error={outcome.get('gateway_error') or outcome.get('error')}")
+        raise HTTPException(status_code=502, detail=outcome.get("error") or "Payment could not start.")
+
+    response = JSONResponse({
+        "ok": True,
+        "provider": market["provider"],
+        "market": market["market"],
+        "currency": market["currency"],
+        "checkout_url": checkout_url,
+        "display_amount": outcome.get("display_amount"),
+        "tier_key": tier_key,
+    })
+    access_token = outcome.get("access_token")
+    if access_token:
+        response.set_cookie(
+            "ci_access_token", access_token,
+            max_age=14 * 24 * 3600, httponly=True,
+            secure=os.environ.get("PAYMENT_COOKIE_SECURE", "true").lower() not in {"0", "false", "no"},
+            samesite="lax", path="/",
+        )
+    return response
+
+
+@app.get("/payment/paystack/callback/{market}")
+async def paystack_callback(market: str, reference: str = "", trxref: str = ""):
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Payment verification is unavailable.")
+    provider_reference = reference or trxref
+    outcome = verify_and_activate_purchase(database_url=DATABASE_URL, reference=provider_reference, market=market)
+    if not outcome.get("activated"):
+        return RedirectResponse(url="/pricing?payment=failed", status_code=303)
+    purchase = outcome.get("purchase") or {}
+    job_id = str(purchase.get("preview_job_id") or "")
+    return RedirectResponse(url=f"/results/{quote_plus(job_id)}?payment=success" if job_id else "/?payment=success", status_code=303)
+
+
+@app.get("/payment/stripe/success")
+async def stripe_success(session_id: str = "", job_id: str = ""):
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Payment verification is unavailable.")
+    outcome = verify_and_activate_stripe_session(database_url=DATABASE_URL, session_id=session_id, fallback_job_id=job_id)
+    destination_job = str(outcome.get("job_id") or job_id or "")
+    if not outcome.get("activated"):
+        return RedirectResponse(url="/pricing?payment=failed", status_code=303)
+    return RedirectResponse(url=f"/results/{quote_plus(destination_job)}?payment=success", status_code=303)
+
+
+@app.post("/api/webhooks/paystack/{market}")
+async def paystack_webhook(request: Request, market: str):
+    if not DATABASE_URL:
+        return JSONResponse(status_code=503, content={"ok": False})
+    raw = await request.body()
+    outcome = handle_paystack_webhook(
+        database_url=DATABASE_URL,
+        raw_body=raw,
+        signature=request.headers.get("x-paystack-signature", ""),
+        market=market,
+    )
+    return JSONResponse(status_code=int(outcome.get("status_code") or 200), content=outcome)
+
+
+@app.post("/api/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    if not DATABASE_URL:
+        return JSONResponse(status_code=503, content={"ok": False})
+    outcome = handle_stripe_webhook(
+        database_url=DATABASE_URL,
+        raw_body=await request.body(),
+        signature=request.headers.get("stripe-signature", ""),
+    )
+    return JSONResponse(status_code=int(outcome.get("status_code") or 200), content=outcome)
+
+
+@app.get("/api/payments/status/{job_id}")
+async def payment_status(request: Request, job_id: str):
+    paid = _commercial_access_allowed(request, job_id)
+    return {"ok": True, "job_id": job_id, "paid": paid, "access_mode": get_access_mode(DATABASE_URL, redis_conn).get("mode")}
 
 
 # ============================================================
@@ -4034,6 +4405,7 @@ async def api_manual_search(request: Request):
 
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id is required")
+    _require_commercial_access(request, job_id)
     if len(query) < 3:
         raise HTTPException(status_code=400, detail="Manual search query is too short")
 
@@ -4228,6 +4600,7 @@ async def api_manual_verify_evidence(request: Request):
 
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id is required")
+    _require_commercial_access(request, job_id)
     if not reference:
         raise HTTPException(status_code=400, detail="reference is required")
     if not evidence_url:
@@ -4287,6 +4660,7 @@ async def api_manual_verify_decision(request: Request):
     allowed = {"manual_verified", "manual_not_verified", "not_indexed_but_plausible", "keep_needs_review"}
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id is required")
+    _require_commercial_access(request, job_id)
     if decision not in allowed:
         raise HTTPException(status_code=400, detail="Invalid manual verification decision")
     if not reference and not candidate:
@@ -5320,6 +5694,47 @@ def _demo_build_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[st
     cert.pop("analysis_run", None)
     return cert
 
+
+def _build_review_certificate(result: Dict[str, Any], job_id: str = "") -> Dict[str, Any]:
+    """Build a correctly labelled certificate for paid/open/developer access."""
+    if DEMO_UNLOCK_ALL_FEATURES:
+        return _demo_build_certificate(result, job_id)
+
+    access = result.get("access") if isinstance(result.get("access"), dict) else {}
+    package = access.get("package") if isinstance(access.get("package"), dict) else {}
+    package_label = str(
+        package.get("document_tier_name")
+        or package.get("name")
+        or ("Temporary Open Access - Full Review" if access.get("open_access") else "CiteIntegrity Full Review")
+    )
+    document_title = result.get("document_title") or _demo_extract_document_title(result)
+    if build_citation_integrity_certificate is not None:
+        try:
+            cert = build_citation_integrity_certificate(
+                result,
+                job_id=job_id,
+                access=access,
+                package_label=package_label,
+                document_title=document_title,
+            )
+        except TypeError:
+            cert = build_citation_integrity_certificate(
+                result,
+                job_id=job_id,
+                access=access,
+                package_label=package_label,
+            )
+    else:
+        cert = _demo_certificate_fallback(result, job_id)
+
+    cert["certificate_id"] = str(cert.get("certificate_id") or "CI-" + job_id[:8].upper()).replace("CI-DEMO-", "CI-")
+    cert["document_title"] = document_title
+    cert["demo_unlocked"] = False
+    cert["package"] = package_label
+    cert["review_type"] = "Full Review"
+    cert["coverage_note"] = "Certificate generated from the CiteIntegrity Full Review completed for this document."
+    return cert
+
 # ============================================================
 # RESULT CHECK ENDPOINT
 # ============================================================
@@ -5354,7 +5769,7 @@ def _apply_developer_testing_access(result: Dict[str, Any], request: Optional[Re
     return result
 
 
-def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] = None) -> Dict[str, Any]:
+def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] = None, job_id: str = "") -> Dict[str, Any]:
     """Attach explainable, lightweight student guidance to a completed result."""
     result = result or {}
     if result.get("result_deleted"):
@@ -5386,7 +5801,34 @@ def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] =
     if access_control.get("mode") == "open_access":
         result["access"] = open_access_payload()
         result["payment_required"] = False
+        return attach_privacy_status(result)
+
     result = _apply_developer_testing_access(result, request)
+    if result.get("access", {}).get("developer_unlocked") or result.get("demo_unlocked"):
+        return attach_privacy_status(result)
+
+    paid_state = {"paid": False, "tier_key": "", "currency": "GHS", "purchase": None}
+    if DATABASE_URL and job_id:
+        try:
+            paid_state = purchase_is_paid_for_job(DATABASE_URL, job_id=job_id)
+        except Exception as paid_error:
+            print(f"[ACCESS] Purchase lookup failed safely for {job_id}: {paid_error}")
+
+    result = apply_entitlements_to_result(
+        result,
+        tier_key=paid_state.get("tier_key") or "",
+        paid=bool(paid_state.get("paid")),
+        currency=paid_state.get("currency") or "GHS",
+    )
+    result["global_access_control"] = access_control
+    result["payment_required"] = not bool(paid_state.get("paid"))
+    result["payments_suspended"] = access_control.get("mode") == "payments_suspended"
+    if paid_state.get("purchase"):
+        result["access"]["purchase"] = {
+            "analyses_total": paid_state["purchase"].get("analyses_total"),
+            "analyses_used": paid_state["purchase"].get("analyses_used"),
+            "expires_at": str(paid_state["purchase"].get("expires_at") or ""),
+        }
     return attach_privacy_status(result)
 
 
@@ -5439,7 +5881,7 @@ async def get_result(request: Request, job_id: str, fresh: int = 0):
             try:
                 cached_result = json.loads(cached)
                 cached_result = _demo_prepare_full_review_result(job_id, cached_result, persist=False)
-                cached_result = _prepare_student_result(cached_result, request)
+                cached_result = _prepare_student_result(cached_result, request, job_id)
                 return {"status": "completed", "data": cached_result}
             except:
                 pass
@@ -5465,7 +5907,7 @@ async def get_result(request: Request, job_id: str, fresh: int = 0):
                 if isinstance(result, str):
                     result = json.loads(result)
                 result = _demo_prepare_full_review_result(job_id, result, persist=True)
-                result = _prepare_student_result(result, request)
+                result = _prepare_student_result(result, request, job_id)
                 return {"status": "completed", "data": result}
             elif row["status"] == "processing":
                 return {"status": "processing", "message": "Processing in background"}
@@ -5499,11 +5941,12 @@ async def delete_job_content(job_id: str):
 
 
 @app.get("/api/report-package/{job_id}")
-async def download_complete_report_package(job_id: str, delete_after: int = 1):
+async def download_complete_report_package(request: Request, job_id: str, delete_after: int = 1):
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    result = _prepare_student_result(job.get("result") or {})
+    result = _prepare_student_result(job.get("result") or {}, None, job_id)
     if result.get("result_deleted"):
         raise HTTPException(status_code=410, detail="Manuscript content and detailed results have already been deleted.")
     original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
@@ -5529,11 +5972,12 @@ async def download_complete_report_package(job_id: str, delete_after: int = 1):
 
 
 @app.get("/api/academic-voice/{job_id}")
-async def get_academic_voice_review(job_id: str):
+async def get_academic_voice_review(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    result = _prepare_student_result(job.get("result") or {})
+    result = _prepare_student_result(job.get("result") or {}, None, job_id)
     if result.get("result_deleted"):
         raise HTTPException(status_code=410, detail="Manuscript content has been deleted.")
     settings = result.get("academic_voice_settings") or {}
@@ -5558,6 +6002,7 @@ async def get_academic_voice_review(job_id: str):
 @app.post("/api/academic-voice/{job_id}/settings")
 async def update_academic_voice_settings(job_id: str, request: Request):
     """Enable or disable the optional writing-signal review for one analysis."""
+    _require_commercial_access(request, job_id)
     payload = await request.json()
     enabled = payload.get("enabled") is True
     job = load_job_record_fresh(job_id)
@@ -5601,6 +6046,7 @@ async def update_academic_voice_settings(job_id: str, request: Request):
 
 @app.post("/api/corrections/{job_id}/decision")
 async def save_correction_decision(job_id: str, request: Request):
+    _require_commercial_access(request, job_id)
     payload = await request.json()
     item_id = str(payload.get("item_id") or "").strip()
     decision = str(payload.get("decision") or "").strip().lower()
@@ -5692,7 +6138,8 @@ async def save_correction_decision(job_id: str, request: Request):
 
 
 @app.post("/api/corrections/{job_id}/approve-reference-formatting")
-async def approve_all_reference_formatting(job_id: str):
+async def approve_all_reference_formatting(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -5948,7 +6395,8 @@ def _build_source_search_report(
 
 
 @app.post("/api/corrections/{job_id}/sources/{item_id}")
-async def find_correction_sources(job_id: str, item_id: str):
+async def find_correction_sources(request: Request, job_id: str, item_id: str):
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -6170,6 +6618,7 @@ async def rewrite_academic_voice(request: Request):
     job_id = str(payload.get("job_id") or "").strip()
     if not job_id:
         raise HTTPException(status_code=400, detail="The analysis job ID is required.")
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -6202,6 +6651,7 @@ async def rewrite_academic_voice(request: Request):
 
 @app.post("/api/academic-voice/{job_id}/approve")
 async def approve_academic_voice_revision(job_id: str, request: Request):
+    _require_commercial_access(request, job_id)
     payload = await request.json()
     original = str(payload.get("original_text") or "").strip()
     revised = str(payload.get("proposed_replacement") or "").strip()
@@ -6242,6 +6692,10 @@ async def compare_revision(request: Request):
     payload = await request.json()
     original_id = str(payload.get("original_job_id") or "")
     revised_id = str(payload.get("revised_job_id") or "")
+    if original_id:
+        _require_commercial_access(request, original_id)
+    if revised_id:
+        _require_commercial_access(request, revised_id)
     original = load_job_record_fresh(original_id) if original_id else None
     revised = load_job_record_fresh(revised_id) if revised_id else None
     if not original or not revised:
@@ -6249,7 +6703,7 @@ async def compare_revision(request: Request):
     return compare_revision_results(original.get("result") or {}, revised.get("result") or {})
 
 @app.get("/job/{job_id}")
-def get_job_endpoint(job_id: str, include_result: int = 0):
+def get_job_endpoint(request: Request, job_id: str, include_result: int = 0):
     """Lightweight job status endpoint.
 
     By default this no longer returns the full result JSON, preventing large
@@ -6265,14 +6719,15 @@ def get_job_endpoint(job_id: str, include_result: int = 0):
         "verification": job.get("verification", {})
     }
     if include_result:
-        payload["result"] = job.get("result")
+        payload["result"] = _prepare_student_result(job.get("result") or {}, request, job_id)
     return payload
 # ============================================================
 # AUTO-FIX ENDPOINTS
 # ============================================================
 
 @app.post("/apply-autofix")
-async def apply_autofix(job_id: str = Form(...)):
+async def apply_autofix(request: Request, job_id: str = Form(...)):
+    _require_commercial_access(request, job_id)
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -6311,7 +6766,8 @@ async def apply_autofix(job_id: str = Form(...)):
     }
 
 @app.get("/autofix-suggestions/{job_id}")
-async def get_autofix_suggestions(job_id: str):
+async def get_autofix_suggestions(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -6340,7 +6796,8 @@ async def get_autofix_suggestions(job_id: str):
     }
 
 @app.get("/fix-log/{job_id}")
-async def get_fix_log(job_id: str):
+async def get_fix_log(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -6507,7 +6964,7 @@ async def verify_online(job_id: str = Form(...)):
 # ============================================================
 
 @app.get("/online/status")
-def online_status(job_id: str):
+def online_status(request: Request, job_id: str):
     try:
         job = load_job_record_fresh(job_id)
 
@@ -6641,7 +7098,7 @@ def online_status(job_id: str):
             or result.get("recovery")
             or result.get("claim_support")
         ):
-            response["result"] = result
+            response["result"] = _prepare_student_result(result, request, job_id)
 
         return JSONResponse(content=response)
 
@@ -6664,10 +7121,10 @@ def online_status(job_id: str):
 @app.post("/api/enrichment/start/{job_id}")
 async def start_advanced_enrichment(job_id: str, request: Request):
     """
-    Start advanced enrichment. In the training/demo build, this endpoint is
-    always open. If Redis or the deep worker is unavailable, it completes a
-    local enrichment pass so the demonstration does not show a closed feature.
+    Start the paid/open-access advanced enrichment workflow. Explicit demo
+    builds retain their local fallback when no queue is configured.
     """
+    _require_commercial_access(request, job_id)
     try:
         payload = await request.json()
     except Exception:
@@ -6786,11 +7243,15 @@ async def debug_enrichment_counts(job_id: str):
     }
 
 # ============================================================
-# CERTIFICATE AND CITATION-NEEDED ENDPOINTS - TRAINING/DEMO OPEN ACCESS
+# CERTIFICATE AND CITATION-NEEDED ENDPOINTS
 # ============================================================
 
 @app.get("/api/demo/access/{job_id}")
-async def demo_access_status(job_id: str):
+async def demo_access_status(request: Request, job_id: str):
+    if not DEMO_UNLOCK_ALL_FEATURES and not (
+        developer_session_access_level(request) or developer_request_is_authorized(request)
+    ):
+        raise HTTPException(status_code=404, detail="Demo access is not enabled.")
     return {
         "ok": True,
         "job_id": job_id,
@@ -6800,7 +7261,8 @@ async def demo_access_status(job_id: str):
 
 
 @app.get("/api/citation-needed/{job_id}")
-async def get_citation_needed_claims(job_id: str):
+async def get_citation_needed_claims(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -6817,7 +7279,8 @@ async def get_citation_needed_claims(job_id: str):
 
 
 @app.post("/api/citation-needed/start/{job_id}")
-async def start_citation_needed_claims(job_id: str):
+async def start_citation_needed_claims(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -6836,15 +7299,17 @@ async def start_citation_needed_claims(job_id: str):
 
 
 @app.get("/api/certificate/{job_id}")
-async def get_citation_integrity_certificate(job_id: str):
-    """Generate or regenerate a demo certificate only when the user asks for it."""
+async def get_citation_integrity_certificate(request: Request, job_id: str):
+    """Generate or regenerate a review certificate only when the user asks for it."""
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     result = _demo_prepare_full_review_result(job_id, job.get("result") or {}, persist=False)
+    result = _prepare_student_result(result, request, job_id)
     result["manual_verification_summary"] = _manual_build_summary(result)
-    certificate = _demo_build_certificate(result, job_id=job_id)
+    certificate = _build_review_certificate(result, job_id=job_id)
     result["citation_integrity_certificate"] = certificate
     result["certificate_state"] = {
         "requires_regeneration": False,
@@ -6864,20 +7329,24 @@ async def get_citation_integrity_certificate(job_id: str):
 
 
 @app.get("/api/certificate/{job_id}/download")
-async def download_citation_integrity_certificate(job_id: str, format: str = "pdf"):
+async def download_citation_integrity_certificate(request: Request, job_id: str, format: str = "pdf"):
+    _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     result = _demo_prepare_full_review_result(job_id, job.get("result") or {}, persist=False)
+    result = _prepare_student_result(result, request, job_id)
     result["manual_verification_summary"] = _manual_build_summary(result)
     # Download the generated certificate if it is current; otherwise rebuild so the
     # PDF always includes the latest manual verification evidence.
     state = result.get("certificate_state") or {}
-    if result.get("citation_integrity_certificate") and not state.get("requires_regeneration"):
+    existing_certificate = result.get("citation_integrity_certificate") or {}
+    incompatible_demo_certificate = bool(existing_certificate.get("demo_unlocked") and not DEMO_UNLOCK_ALL_FEATURES)
+    if existing_certificate and not state.get("requires_regeneration") and not incompatible_demo_certificate:
         certificate = result.get("citation_integrity_certificate")
     else:
-        certificate = _demo_build_certificate(result, job_id=job_id)
+        certificate = _build_review_certificate(result, job_id=job_id)
         result["citation_integrity_certificate"] = certificate
         result["certificate_state"] = {
             "requires_regeneration": False,
@@ -6899,7 +7368,7 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
         return Response(
             content=html_doc,
             media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="Demo_CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.html"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+            headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.html"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
         )
 
     if render_certificate_pdf_bytes is None:
@@ -6911,7 +7380,7 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
         return Response(
             content=html_doc,
             media_type="text/html; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="Demo_CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.html"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+            headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.html"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
         )
 
     try:
@@ -6922,7 +7391,7 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="Demo_CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.pdf"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+        headers={"Content-Disposition": f'attachment; filename="CiteIntegrity_Certificate_{safe_job}_{generated_stamp}.pdf"', "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
     )
 
 # ============================================================
@@ -6930,7 +7399,8 @@ async def download_citation_integrity_certificate(job_id: str, format: str = "pd
 # ============================================================
 
 @app.get("/export-fixed-document/{job_id}")
-async def export_fixed_document(job_id: str, format: str = "txt"):
+async def export_fixed_document(request: Request, job_id: str, format: str = "txt"):
+    _require_commercial_access(request, job_id)
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -7909,6 +8379,7 @@ def _build_sqlite_dashboard_stats(days: int = 30) -> Dict[str, Any]:
     # Development jobs may live only in the in-process store. Aggregate only
     # count fields from those results; never expose their text in /private-stats.
     local_feature_totals = _empty_feature_metrics()
+    _require_commercial_access(request, job_id)
     try:
         with _lock:
             local_jobs = list(_store.values())
@@ -8012,6 +8483,7 @@ def get_performance_stats(
 
 @app.post("/export-references")
 async def export_references(
+    request: Request,
     job_id: str = Form(...),
     style: str = Form("apa7"),
     format_type: str = Form("docx")
@@ -8019,6 +8491,7 @@ async def export_references(
     """
     Export verified references to DOCX or HTML.
     """
+    _require_commercial_access(request, job_id)
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")

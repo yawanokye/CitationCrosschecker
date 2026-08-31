@@ -2132,8 +2132,32 @@
     </style>
 </head>
 <body>
+    <style>
+        .developer-notice-banner{display:none;position:relative;z-index:50;padding:13px 22px;background:linear-gradient(90deg,#7c2d12,#ea580c,#7c2d12);background-size:220% 100%;color:#fff;text-align:center;font-weight:850;letter-spacing:.01em;animation:ciNoticeFlash 1.8s ease-in-out infinite}
+        .developer-notice-banner.is-visible{display:block}
+        .developer-notice-banner a{color:#fff;text-decoration:underline;text-underline-offset:3px;margin-left:10px}
+        @keyframes ciNoticeFlash{0%,100%{background-position:0 50%;box-shadow:inset 0 0 0 0 rgba(255,255,255,0)}50%{background-position:100% 50%;box-shadow:inset 0 0 0 3px rgba(255,255,255,.25)}}
+        .commercial-pricing-section{display:none;padding:76px 22px;background:linear-gradient(180deg,#f8fafc,#eefbf5)}
+        .commercial-pricing-inner{max-width:1160px;margin:0 auto}
+        .market-tabs{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin:24px 0}
+        .market-tab{border:1px solid #cbd5e1;background:#fff;color:#0f172a;border-radius:999px;padding:11px 18px;font-weight:850;cursor:pointer}
+        .market-tab.active{background:#0f7a4f;color:#fff;border-color:#0f7a4f}
+        .commercial-price-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+        .commercial-price-card{display:none;background:#fff;border:1px solid #dce7e2;border-radius:22px;padding:22px;box-shadow:0 12px 34px rgba(15,23,42,.07)}
+        .commercial-price-card.active-market{display:block}
+        .commercial-price-card h3{margin:0 0 8px;color:#0f172a;font-size:19px}
+        .commercial-price{font-size:30px;font-weight:950;color:#0f7a4f;margin:12px 0}
+        .commercial-price-card ul{padding-left:20px;color:#475569;line-height:1.65}
+        .pricing-benefits{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+        .pricing-benefit{background:#fff;border:1px solid #dce7e2;border-radius:20px;padding:20px;color:#475569}
+        .pricing-benefit h3{margin-top:0;color:#0f172a}
+        @media(max-width:900px){.commercial-price-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pricing-benefits{grid-template-columns:1fr}}
+        @media(max-width:560px){.commercial-price-grid{grid-template-columns:1fr}.developer-notice-banner{padding:11px 14px;font-size:13px}}
+        @media(prefers-reduced-motion:reduce){.developer-notice-banner{animation:none}}
+    </style>
+    <div id="developerNoticeBanner" class="developer-notice-banner" role="status" aria-live="polite"><span id="developerNoticeText"></span><a id="developerNoticeLink" href="#" hidden>Learn more</a></div>
     <div class="top-notice">
-        <strong>New in CiteIntegrity 1.9.1:</strong> every supporting-source search now reports the indexes queried, candidates recommended for review, unsafe matches withheld, manual search links and the next safe action. The Evidence Resolution Workspace and optional Academic Voice and Writing Signals remain available.
+        <strong>CiteIntegrity 2.0:</strong> start with a free preview, then unlock the complete review with simple pay-as-you-go pricing. Supporting-source searches report the indexes queried, candidates recommended for review, unsafe matches withheld, manual search links and the next safe action.
     </div>
 
     <header class="site-header">
@@ -2154,6 +2178,7 @@
                 <a href="/#home">Home</a>
                 <a href="#features">Features</a>
                 <a href="#workflow">How it works</a>
+                <a href="#pricing" data-pricing-link>Pricing</a>
                 <a href="#testimonials">Testimonials</a>
                 <a href="#faq">FAQ</a>
                 <a href="/contact">Contact</a>
@@ -2212,10 +2237,6 @@
             </div>
         </section>
 
-        <div class="presentation-mode-note" aria-label="Presentation mode notice">
-            <div class="note-card"><strong>Presentation mode:</strong> payment and pricing details are hidden on this version so the demonstration can focus on the CiteIntegrity workflow, features and academic value.</div>
-        </div>
-
         <section class="demo-video-section" id="demo-video">
             <div class="section demo-video-wrap">
                 <div class="section-title">
@@ -2261,7 +2282,7 @@
             <div class="section-title">
                 <div class="small-title">Full Review Features</div>
                 <h2>Explore the complete citation integrity workflow.</h2>
-                <p>This presentation version shows the full review toolkit for checking, verifying, recovering, explaining and exporting citation integrity evidence, without displaying payment or pricing details.</p>
+                <p>Full Review checks, verifies, recovers, explains and exports citation-integrity evidence, with transparent pay-as-you-go access after the free preview.</p>
             </div>
 
             <div class="feature-suite-grid">
@@ -2320,6 +2341,52 @@
         </section>
 
         
+        <section class="commercial-pricing-section" id="pricing" aria-labelledby="pricingTitle">
+            <div class="commercial-pricing-inner">
+                <div class="section-title">
+                    <div class="small-title">Simple pay-as-you-go pricing</div>
+                    <h2 id="pricingTitle">Preview free. Pay only when you need the complete review.</h2>
+                    <p>No compulsory student subscription. Every purchase unlocks the current Full Review and one recheck of the same document within 14 days.</p>
+                </div>
+                <div class="market-tabs" role="tablist" aria-label="Choose pricing market">
+                    <button class="market-tab active" type="button" data-price-market="GHS">Ghana</button>
+                    <button class="market-tab" type="button" data-price-market="NGN">Nigeria</button>
+                    <button class="market-tab" type="button" data-price-market="USD">International</button>
+                </div>
+                <div class="commercial-price-grid">
+                    <article class="commercial-price-card active-market">
+                        <h3>Article or Assignment</h3>
+                        <p>Up to 15,000 words, 100 references and 300 in-text citations.</p>
+                        <div class="commercial-price" data-ghs="GHS 10" data-ngn="₦1,500" data-usd="US$2.99">GHS 10</div>
+                        <ul><li>Full citation-reference analysis</li><li>ACII report and integrity findings</li><li>One same-document recheck</li></ul>
+                    </article>
+                    <article class="commercial-price-card active-market">
+                        <h3>Project or Long Report</h3>
+                        <p>Up to 35,000 words, 200 references and 700 in-text citations.</p>
+                        <div class="commercial-price" data-ghs="GHS 20" data-ngn="₦2,500" data-usd="US$4.99">GHS 20</div>
+                        <ul><li>Full citation-reference analysis</li><li>Source verification and recovery</li><li>One same-document recheck</li></ul>
+                    </article>
+                    <article class="commercial-price-card active-market">
+                        <h3>Master’s Dissertation</h3>
+                        <p>Up to 75,000 words, 350 references and 1,400 in-text citations.</p>
+                        <div class="commercial-price" data-ghs="GHS 35" data-ngn="₦4,000" data-usd="US$7.99">GHS 35</div>
+                        <ul><li>Full integrity and claim-support review</li><li>Correction plan, exports and certificate</li><li>One same-document recheck</li></ul>
+                    </article>
+                    <article class="commercial-price-card active-market">
+                        <h3>Doctoral Thesis</h3>
+                        <p>Up to 120,000 words, 600 references and 2,400 in-text citations.</p>
+                        <div class="commercial-price" data-ghs="GHS 50" data-ngn="₦6,000" data-usd="US$12.99">GHS 50</div>
+                        <ul><li>Full large-document integrity review</li><li>Tracked corrections and report package</li><li>One same-document recheck</li></ul>
+                    </article>
+                </div>
+                <div class="pricing-benefits">
+                    <div class="pricing-benefit"><h3>Included in the free preview</h3><p>Preliminary ACII assessment, citation and reference counts, issue counts, and a limited sample of findings. Detailed evidence, corrections, exports and certificates remain locked until payment.</p></div>
+                    <div class="pricing-benefit"><h3>Secure local and international checkout</h3><p>Ghana payments use Paystack in GHS. Nigeria payments use Paystack in NGN. Other countries use Stripe in USD. The server selects the gateway and price from the billing country.</p></div>
+                </div>
+                <div style="text-align:center;margin-top:26px"><a class="btn btn-primary" href="/new/analyse">Start with a free preview</a></div>
+            </div>
+        </section>
+
         <section class="workflow workflow-enhanced" id="workflow">
             <div class="section">
                 <div class="section-title">
@@ -2845,6 +2912,50 @@
                 });
             });
         });
+    </script>
+    <script>
+    (() => {
+        const pricing = document.getElementById("pricing");
+        const banner = document.getElementById("developerNoticeBanner");
+        const noticeText = document.getElementById("developerNoticeText");
+        const noticeLink = document.getElementById("developerNoticeLink");
+
+        function applyPublicConfig(config) {
+            const showPricing = config?.show_pricing !== false;
+            if (pricing) pricing.style.display = showPricing ? "block" : "none";
+            document.querySelectorAll('[data-pricing-link]').forEach((link) => { link.hidden = !showPricing; });
+            const notice = config?.public_notice || {};
+            if (banner && notice.enabled && String(notice.text || "").trim()) {
+                noticeText.textContent = String(notice.text).trim();
+                const rawLink = String(notice.link || "").trim();
+                if (rawLink) {
+                    try {
+                        const url = new URL(rawLink, window.location.origin);
+                        if (["http:", "https:"].includes(url.protocol)) {
+                            noticeLink.href = url.href;
+                            noticeLink.hidden = false;
+                        }
+                    } catch (_) {}
+                }
+                banner.classList.add("is-visible");
+            }
+        }
+
+        fetch("/api/public/config", {cache: "no-store"})
+            .then(response => response.ok ? response.json() : Promise.reject(new Error("config unavailable")))
+            .then(applyPublicConfig)
+            .catch(() => { if (pricing) pricing.style.display = "block"; });
+
+        document.querySelectorAll("[data-price-market]").forEach(button => {
+            button.addEventListener("click", () => {
+                const market = button.dataset.priceMarket.toLowerCase();
+                document.querySelectorAll("[data-price-market]").forEach(item => item.classList.toggle("active", item === button));
+                document.querySelectorAll(".commercial-price").forEach(price => {
+                    price.textContent = price.dataset[market] || price.textContent;
+                });
+            });
+        });
+    })();
     </script>
 </body>
 </html>

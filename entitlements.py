@@ -2,13 +2,14 @@
 entitlements.py
 CiteIntegrity entitlement, pricing, and currency rules.
 
-Launch model:
+Commercial launch model:
 - Free Preview requires no account.
 - Paid review requires email only, no password.
 - Every paid package is a Full Integrity Review.
 - Each paid purchase includes 2 analysis runs.
-- Applicant can choose GHS or USD at checkout.
-- Prices are fixed by currency, not live-converted.
+- Ghana is priced in GHS, Nigeria in NGN, and other countries in USD.
+- Country, payment provider, currency, and price are resolved server-side.
+- Prices are fixed by market, not live-converted at checkout.
 """
 
 from __future__ import annotations
@@ -18,17 +19,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_CURRENCY = "GHS"
-SUPPORTED_CURRENCIES = {"GHS", "USD"}
+SUPPORTED_CURRENCIES = {"GHS", "NGN", "USD"}
 ANALYSES_PER_PURCHASE = 2
-PURCHASE_VALIDITY_DAYS = 90
+PURCHASE_VALIDITY_DAYS = 14
 
 DOCUMENT_TIERS: Dict[str, Dict[str, Any]] = {
     "article": {
         "name": "Article Full Review",
         "description": "For journal articles, essays, assignments, and short manuscripts.",
-        "max_references": 50,
-        "max_citations": 120,
-        "prices": {"GHS": 20.00, "USD": 1.99},
+        "max_words": 15000,
+        "max_references": 100,
+        "max_citations": 300,
+        "prices": {"GHS": 10.00, "NGN": 1500.00, "USD": 2.99},
         "analysis_runs": ANALYSES_PER_PURCHASE,
         "advanced_enrichment_cap": 30,
         "display_order": 1,
@@ -36,9 +38,10 @@ DOCUMENT_TIERS: Dict[str, Dict[str, Any]] = {
     "research_paper": {
         "name": "Research Paper Full Review",
         "description": "For long papers, research proposals, dissertation chapters, and working papers.",
-        "max_references": 120,
-        "max_citations": 300,
-        "prices": {"GHS": 50.00, "USD": 4.99},
+        "max_words": 35000,
+        "max_references": 200,
+        "max_citations": 700,
+        "prices": {"GHS": 20.00, "NGN": 2500.00, "USD": 4.99},
         "analysis_runs": ANALYSES_PER_PURCHASE,
         "advanced_enrichment_cap": 80,
         "display_order": 2,
@@ -46,9 +49,10 @@ DOCUMENT_TIERS: Dict[str, Dict[str, Any]] = {
     "thesis": {
         "name": "Thesis Full Review",
         "description": "For master's theses, dissertations, and substantial research reports.",
-        "max_references": 300,
-        "max_citations": 800,
-        "prices": {"GHS": 100.00, "USD": 9.99},
+        "max_words": 75000,
+        "max_references": 350,
+        "max_citations": 1400,
+        "prices": {"GHS": 35.00, "NGN": 4000.00, "USD": 7.99},
         "analysis_runs": ANALYSES_PER_PURCHASE,
         "advanced_enrichment_cap": 200,
         "display_order": 3,
@@ -56,9 +60,10 @@ DOCUMENT_TIERS: Dict[str, Dict[str, Any]] = {
     "phd": {
         "name": "PhD / Large Document Full Review",
         "description": "For PhD theses, books, large reports, and very large manuscripts.",
-        "max_references": 700,
-        "max_citations": 1800,
-        "prices": {"GHS": 150.00, "USD": 14.99},
+        "max_words": 120000,
+        "max_references": 600,
+        "max_citations": 2400,
+        "prices": {"GHS": 50.00, "NGN": 6000.00, "USD": 12.99},
         "analysis_runs": ANALYSES_PER_PURCHASE,
         "advanced_enrichment_cap": 400,
         "display_order": 4,
@@ -127,6 +132,21 @@ def recommend_document_tier(reference_count: int, citation_count: int) -> str:
             return tier_key
     return "custom_large"
 
+
+def recommend_document_tier_with_words(reference_count: int, citation_count: int, word_count: int = 0) -> str:
+    """Recommend from the largest measured dimension, including upload preflight words."""
+    reference_count = _as_int(reference_count)
+    citation_count = _as_int(citation_count)
+    word_count = _as_int(word_count)
+    for tier_key, tier in ordered_document_tiers():
+        if (
+            reference_count <= tier["max_references"]
+            and citation_count <= tier["max_citations"]
+            and (word_count <= 0 or word_count <= tier["max_words"])
+        ):
+            return tier_key
+    return "custom_large"
+
 def get_document_tier(tier_key: str) -> Optional[Dict[str, Any]]:
     tier = DOCUMENT_TIERS.get(str(tier_key or "").strip().lower())
     return deepcopy(tier) if tier else None
@@ -156,6 +176,7 @@ def get_package(tier_key: str, paid: bool = True, currency: str = DEFAULT_CURREN
         "document_tier": tier_key,
         "document_tier_name": tier["name"],
         "description": tier["description"],
+        "max_words": tier["max_words"],
         "max_references": tier["max_references"],
         "max_citations": tier["max_citations"],
         "amount": price["amount"],
@@ -168,30 +189,32 @@ def get_package(tier_key: str, paid: bool = True, currency: str = DEFAULT_CURREN
     })
     return package
 
-def validate_paid_package_for_document(tier_key: str, reference_count: int, citation_count: int) -> Dict[str, Any]:
+def validate_paid_package_for_document(tier_key: str, reference_count: int, citation_count: int, word_count: int = 0) -> Dict[str, Any]:
     tier_key = str(tier_key or "").strip().lower()
     tier = get_document_tier(tier_key)
     if not tier:
-        return {"allowed": False, "reason": "unknown_tier", "message": "The selected package is not recognised.", "recommended_tier": recommend_document_tier(reference_count, citation_count)}
+        return {"allowed": False, "reason": "unknown_tier", "message": "The selected package is not recognised.", "recommended_tier": recommend_document_tier_with_words(reference_count, citation_count, word_count)}
     reference_count = _as_int(reference_count)
     citation_count = _as_int(citation_count)
-    if reference_count <= tier["max_references"] and citation_count <= tier["max_citations"]:
-        return {"allowed": True, "reason": "within_limits", "message": "The selected package can process this document.", "selected_tier": tier_key, "recommended_tier": recommend_document_tier(reference_count, citation_count)}
-    recommended = recommend_document_tier(reference_count, citation_count)
+    word_count = _as_int(word_count)
+    if reference_count <= tier["max_references"] and citation_count <= tier["max_citations"] and (word_count <= 0 or word_count <= tier["max_words"]):
+        return {"allowed": True, "reason": "within_limits", "message": "The selected package can process this document.", "selected_tier": tier_key, "recommended_tier": recommend_document_tier_with_words(reference_count, citation_count, word_count)}
+    recommended = recommend_document_tier_with_words(reference_count, citation_count, word_count)
     return {
         "allowed": False,
         "reason": "document_exceeds_selected_tier",
-        "message": f"This document has {reference_count} references and {citation_count} in-text citations. It exceeds the {tier['name']} limit of {tier['max_references']} references or {tier['max_citations']} in-text citations.",
+        "message": f"This document has {word_count or 'an unmeasured number of'} words, {reference_count} references and {citation_count} in-text citations. It exceeds the {tier['name']} limit of {tier['max_words']} words, {tier['max_references']} references or {tier['max_citations']} in-text citations.",
         "selected_tier": tier_key,
         "recommended_tier": recommended,
-        "selected_limits": {"max_references": tier["max_references"], "max_citations": tier["max_citations"]},
+        "selected_limits": {"max_words": tier["max_words"], "max_references": tier["max_references"], "max_citations": tier["max_citations"]},
     }
 
-def build_plan_selection_payload(reference_count: int, citation_count: int, selected_currency: str = DEFAULT_CURRENCY) -> Dict[str, Any]:
+def build_plan_selection_payload(reference_count: int, citation_count: int, selected_currency: str = DEFAULT_CURRENCY, word_count: int = 0) -> Dict[str, Any]:
     reference_count = _as_int(reference_count)
     citation_count = _as_int(citation_count)
     selected_currency = normalise_currency(selected_currency)
-    recommended = recommend_document_tier(reference_count, citation_count)
+    word_count = _as_int(word_count)
+    recommended = recommend_document_tier_with_words(reference_count, citation_count, word_count)
     tiers = []
     for key, tier in ordered_document_tiers():
         selected_price = get_price(key, selected_currency)
@@ -200,6 +223,7 @@ def build_plan_selection_payload(reference_count: int, citation_count: int, sele
             "package_key": f"{key}_full_review",
             "name": tier["name"],
             "description": tier["description"],
+            "max_words": tier["max_words"],
             "max_references": tier["max_references"],
             "max_citations": tier["max_citations"],
             "prices": deepcopy(tier["prices"]),
@@ -210,11 +234,12 @@ def build_plan_selection_payload(reference_count: int, citation_count: int, sele
             "validity_days": PURCHASE_VALIDITY_DAYS,
             "advanced_enrichment_cap": tier.get("advanced_enrichment_cap", 0),
             "recommended": key == recommended,
-            "allowed_for_document": reference_count <= tier["max_references"] and citation_count <= tier["max_citations"],
+            "allowed_for_document": reference_count <= tier["max_references"] and citation_count <= tier["max_citations"] and (word_count <= 0 or word_count <= tier["max_words"]),
         })
     return {
         "reference_count": reference_count,
         "citation_count": citation_count,
+        "word_count": word_count,
         "recommended_tier": recommended,
         "recommended_package": None if recommended == "custom_large" else f"{recommended}_full_review",
         "selected_currency": selected_currency,
@@ -222,7 +247,7 @@ def build_plan_selection_payload(reference_count: int, citation_count: int, sele
         "analysis_runs_per_purchase": ANALYSES_PER_PURCHASE,
         "validity_days": PURCHASE_VALIDITY_DAYS,
         "tiers": tiers,
-        "message": "Every paid package includes Full Integrity Review. Applicants can pay in GHS or USD. Each purchase includes 2 analysis runs.",
+        "message": "Every paid package includes Full Integrity Review and one recheck of the same document within 14 days.",
     }
 
 def get_processing_flags(paid: bool = False) -> Dict[str, bool]:
@@ -269,7 +294,12 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     safe["advanced_enrichment"] = locked_payload("Advanced Enrichment")
     safe["citation_integrity_certificate"] = locked_payload("Citation Integrity Certificate")
     safe["export"] = locked_payload("Export Report")
-    safe["preview_notice"] = "This is a Free Preview. Unlock Full Review to see all results, recovery suggestions, claim support, citation-needed claims, advanced enrichment, certificate, and export."
+    safe["correction_plan"] = locked_payload("Submission-Ready Correction Plan")
+    safe["evidence_resolution_workspace"] = locked_payload("Evidence Resolution Workspace")
+    safe["citation_improvement_coach"] = locked_payload("Citation Improvement Coach")
+    safe["source_risk_review"] = locked_payload("Source Risk Review")
+    safe["academic_voice_review"] = locked_payload("Academic Voice and Writing Signals")
+    safe["preview_notice"] = "This is a Free Preview. Unlock Full Review to see all findings, recovery suggestions, claim support, tracked corrections, the certificate, and exports."
     return safe
 
 def utc_now_iso() -> str:
@@ -287,10 +317,10 @@ def purchase_has_remaining_analysis(purchase: Dict[str, Any]) -> bool:
 def purchase_remaining_analyses(purchase: Dict[str, Any]) -> int:
     return max(_as_int(purchase.get("analyses_total"), ANALYSES_PER_PURCHASE) - _as_int(purchase.get("analyses_used"), 0), 0)
 
-def can_use_purchase_for_document(purchase: Dict[str, Any], reference_count: int, citation_count: int) -> Dict[str, Any]:
+def can_use_purchase_for_document(purchase: Dict[str, Any], reference_count: int, citation_count: int, word_count: int = 0) -> Dict[str, Any]:
     if not purchase_has_remaining_analysis(purchase):
         return {"allowed": False, "reason": "no_analysis_credit_remaining", "message": "This purchase has no analysis runs remaining."}
-    tier_check = validate_paid_package_for_document(purchase.get("document_tier") or "", reference_count, citation_count)
+    tier_check = validate_paid_package_for_document(purchase.get("document_tier") or "", reference_count, citation_count, word_count)
     if not tier_check.get("allowed"):
         return tier_check
     return {"allowed": True, "reason": "purchase_valid", "message": f"This purchase has {purchase_remaining_analyses(purchase)} analysis run(s) remaining.", "remaining_analyses": purchase_remaining_analyses(purchase)}
@@ -309,9 +339,16 @@ CREATE TABLE IF NOT EXISTS purchases (
     payment_provider TEXT,
     provider_reference TEXT UNIQUE,
     access_token_hash TEXT,
+    preview_job_id TEXT,
+    preview_file_name TEXT,
+    preview_reference_count INTEGER DEFAULT 0,
+    preview_citation_count INTEGER DEFAULT 0,
+    market TEXT,
+    billing_country TEXT,
     analyses_total INTEGER DEFAULT 2,
     analyses_used INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    paid_at TIMESTAMPTZ,
     expires_at TIMESTAMP
 );
 

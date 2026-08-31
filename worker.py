@@ -33,7 +33,7 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "1.9.1"
+__version__ = "2.0.0"
 WORKER_BUILD = "commercial-2026-08-24-evidence-resolution-visible-source-search-reporting"
 
 try:
@@ -4948,7 +4948,10 @@ if __name__ == "__main__":
     print(f"📊 Redis: {REDIS_URL[:50]}..." if REDIS_URL else "📊 Redis: NOT SET")
     print(f"💾 PostgreSQL: {'Connected' if DATABASE_URL else 'NOT SET'}")
 
-    queue_env = os.environ.get("WORKER_QUEUES", "document_processing,large_document_processing,verification,deep_enrichment")
+    # General workers deliberately exclude deep_enrichment by default. This
+    # prevents an expensive paid enrichment job from blocking new uploads and
+    # makes duplicate general workers safe to suspend at low launch traffic.
+    queue_env = os.environ.get("WORKER_QUEUES", "document_processing,verification,large_document_processing")
     queues_to_listen = [q.strip() for q in queue_env.split(",") if q.strip()]
 
     with Connection(redis_conn):

@@ -1880,7 +1880,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-evidence-resolution-v1.9.1";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.0";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2120,37 +2120,42 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="paywall-head">
                     <div>
                         <h2 class="paywall-title">Free Preview shown <span class="locked-inline">🔒 Full Review locked</span></h2>
-                        <p class="paywall-subtitle">You are seeing a limited preview. Missing Citations and Uncited References remain visible as standalone tabs. Unlock Full Review for Evidence Resolution actions, source candidates, tracked corrections, the Readiness Certificate, and exports. Each payment includes two full analyses.</p>
+                        <p class="paywall-subtitle">You are seeing a limited preview. Unlock Full Review for all findings, Evidence Resolution actions, source candidates, tracked corrections, the Readiness Certificate, and exports. Each payment includes the current Full Review and one recheck of the same document within 14 days.</p>
                     </div>
                     <span class="paywall-badge">🔒 Payment required</span>
                 </div>
                 <div class="paywall-grid">
                     <div class="paywall-mini"><strong>References detected</strong><br>${esc(counts.reference_count)}</div>
                     <div class="paywall-mini"><strong>In-text citations detected</strong><br>${esc(counts.citation_count)}</div>
-                    <div class="paywall-mini"><strong>Paid access</strong><br>2 full analyses</div>
+                    <div class="paywall-mini"><strong>Paid access</strong><br>Full Review + 1 recheck</div>
                 </div>
                 <div id="planBox" class="paywall-mini" style="margin-top:14px;">Loading recommended package...</div>
                 <div class="paywall-controls">
                     <input id="payEmail" type="email" placeholder="Enter email for payment and access link">
-                    <select id="payCurrency"><option value="GHS">Pay in GHS</option><option value="USD">Pay in USD</option></select>
+                    <select id="payCountry"><option value="GH">Ghana · GHS · Paystack</option><option value="NG">Nigeria · NGN · Paystack</option><option value="INTL">Other country · USD · Stripe</option></select>
                     <button class="btn btn-green" id="btnPayUnlock">Unlock Full Review</button>
                 </div>
                 <div class="small-muted" style="margin-top:10px;">Your document is used for citation integrity analysis. Payment records store email, package, analysis count, payment reference, and job link.</div>
             </div>
         `;
 
-        loadPlanRecommendation("GHS");
-        $("payCurrency")?.addEventListener("change", (e) => loadPlanRecommendation(e.target.value));
-        $("btnPayUnlock")?.addEventListener("click", startPaystackCheckout);
+        if (data?.payments_suspended === true) {
+            const controls = panel.querySelector(".paywall-controls");
+            if (controls) controls.innerHTML = `<div class="locked-card" style="grid-column:1/-1"><strong>New payments are temporarily suspended.</strong><br>Free Preview remains available. Please return when checkout reopens.</div>`;
+            return;
+        }
+        loadPlanRecommendation("GH");
+        $("payCountry")?.addEventListener("change", (e) => loadPlanRecommendation(e.target.value));
+        $("btnPayUnlock")?.addEventListener("click", startCheckout);
     }
 
-    async function loadPlanRecommendation(currency = "GHS") {
+    async function loadPlanRecommendation(billingCountry = "GH") {
         if (DEMO_HIDE_PAYMENT_DETAILS) return;
 
         const box = $("planBox");
         if (!box) return;
         try {
-            const js = await fetchJsonNoCache(`/api/plans/recommend/${encodeURIComponent(JOB_ID)}?currency=${encodeURIComponent(currency)}`);
+            const js = await fetchJsonNoCache(`/api/plans/recommend/${encodeURIComponent(JOB_ID)}?billing_country=${encodeURIComponent(billingCountry)}`);
             const recommended = (js.tiers || []).find(t => t.recommended) || (js.tiers || []).find(t => t.allowed_for_document) || (js.tiers || [])[0];
             window.recommendedPlan = recommended || null;
             if (!recommended) {
@@ -2160,8 +2165,8 @@ document.addEventListener("DOMContentLoaded", function () {
             box.innerHTML = `
                 <strong>Recommended package: ${esc(recommended.name)}</strong><br>
                 Price: <strong>${esc(recommended.selected_price_display || (recommended.selected_currency + " " + recommended.selected_amount))}</strong><br>
-                Limit: ${esc(recommended.max_references)} references / ${esc(recommended.max_citations)} in-text citations<br>
-                Runs included: ${esc(recommended.analysis_runs || 2)}
+                Limit: ${Number(recommended.max_words || 0).toLocaleString()} words, ${esc(recommended.max_references)} references<br>
+                Includes: Full Review and one recheck within 14 days
             `;
         } catch (e) {
             console.warn("Plan recommendation failed:", e);
@@ -2169,14 +2174,14 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    async function startPaystackCheckout() {
+    async function startCheckout() {
         if (DEMO_HIDE_PAYMENT_DETAILS) {
             setStatus("Payment screen is hidden for this demonstration.", "info");
             return;
         }
 
         const email = ($("payEmail")?.value || "").trim();
-        const currency = ($("payCurrency")?.value || "GHS").trim().toUpperCase();
+        const billingCountry = ($("payCountry")?.value || "INTL").trim().toUpperCase();
         const plan = window.recommendedPlan;
         const counts = getDocumentCounts(latestResults || {});
 
@@ -2191,16 +2196,16 @@ document.addEventListener("DOMContentLoaded", function () {
 
         const btn = $("btnPayUnlock");
         if (btn) btn.disabled = true;
-        setStatus("Opening Paystack checkout...", "info");
+        setStatus("Opening secure checkout...", "info");
 
         try {
-            const res = await fetch("/api/paystack/initialize", {
+            const res = await fetch("/api/payments/initialize", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     email,
                     tier_key: plan.tier_key,
-                    currency,
+                    billing_country: billingCountry,
                     job_id: JOB_ID,
                     file_name: latestResults?.file_name || latestResults?.filename || "",
                     reference_count: counts.reference_count,
@@ -2208,10 +2213,10 @@ document.addEventListener("DOMContentLoaded", function () {
                 })
             });
             const js = await res.json();
-            if (!res.ok || js.ok === false || !js.authorization_url) {
+            if (!res.ok || js.ok === false || !js.checkout_url) {
                 throw new Error(js.detail || js.error || "Payment could not be initialized.");
             }
-            window.location.href = js.authorization_url;
+            window.location.href = js.checkout_url;
         } catch (e) {
             console.error(e);
             setStatus("Payment could not start: " + e.message, "bad");

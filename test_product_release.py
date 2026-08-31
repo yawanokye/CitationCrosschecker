@@ -485,16 +485,16 @@ def test_certificate_reports_evidence_resolution_and_optional_voice_state():
     assert certificate["clearance_status"] == "Revision Required"
 
 
-def test_v191_release_identity_and_homepage_feature_notice():
+def test_v200_release_identity_and_homepage_feature_notice():
     env = Path(".env.example").read_text(encoding="utf-8")
     home = Path("templates/new_index.html").read_text(encoding="utf-8")
     output = Path("templates/new_results.html").read_text(encoding="utf-8")
-    assert "RELEASE_VERSION=1.9.1" in env
+    assert "RELEASE_VERSION=2.0.0-commercial" in env
     assert "Evidence Resolution Workspace" in home
-    assert "Academic Voice and Writing Signals" in home
+    assert "Optional writing signals, off by default" in home
     assert "Evidence Resolution Workspace" in output
-    assert "PRODUCTION_RESULTS-evidence-resolution-v1.9.1" in output
-    assert "every supporting-source search now reports" in home
+    assert "PRODUCTION_RESULTS-commercial-v2.0.0" in output
+    assert "Simple pay-as-you-go pricing" in home
 
 
 def test_stats_reports_new_feature_use_without_manuscript_content():

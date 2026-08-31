@@ -1,5 +1,5 @@
 -- purchases_schema_multi_currency.sql
--- CiteIntegrity commercial tables for email-only paid access with GHS/USD choice.
+-- CiteIntegrity commercial tables for GHS, NGN and USD pay-as-you-go access.
 
 CREATE TABLE IF NOT EXISTS purchases (
     id SERIAL PRIMARY KEY,
@@ -19,10 +19,13 @@ CREATE TABLE IF NOT EXISTS purchases (
     preview_file_name TEXT,
     preview_reference_count INTEGER DEFAULT 0,
     preview_citation_count INTEGER DEFAULT 0,
+    market TEXT,
+    billing_country TEXT,
 
     analyses_total INTEGER DEFAULT 2,
     analyses_used INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    paid_at TIMESTAMPTZ,
     expires_at TIMESTAMP
 );
 
@@ -41,4 +44,3 @@ CREATE INDEX IF NOT EXISTS idx_purchases_provider_reference ON purchases(provide
 CREATE INDEX IF NOT EXISTS idx_purchases_access_token_hash ON purchases(access_token_hash);
 CREATE INDEX IF NOT EXISTS idx_purchase_runs_purchase_id ON purchase_runs(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_runs_job_id ON purchase_runs(job_id);
-

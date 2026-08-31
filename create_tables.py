@@ -2,11 +2,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 
-# Your Render PostgreSQL connection string
-DATABASE_URL = "postgresql://citeintegrity:tey5nazFNiI0dj7D60FXlFkVwyPlXYjN@dpg-d7kiapvavr4c73bk9h60-a/citeintegrity"
+# Never store database credentials in source control or release archives.
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Alternative: Read from environment variable (better practice)
-# DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise SystemExit("DATABASE_URL is required. Configure it as a deployment secret.")
 
 try:
     print("🔌 Connecting to PostgreSQL...")
