@@ -4,7 +4,7 @@ import re
 import unittest
 from pathlib import Path
 
-from entitlements import DOCUMENT_TIERS, build_plan_selection_payload
+from entitlements import DOCUMENT_TIERS, apply_entitlements_to_result, build_plan_selection_payload
 from payment_control import default_mode
 from payment_router import resolve_payment_market
 
@@ -56,6 +56,36 @@ class CommercialReleaseTests(unittest.TestCase):
             self.assertIn("GHS 10", source)
             self.assertIn("₦1,500", source)
             self.assertIn("US$2.99", source)
+
+    def test_free_preview_redacts_result_indicators(self):
+        result = {
+            "summary": {
+                "in_text_citations_found": 80,
+                "reference_entries_found": 82,
+                "missing_in_references": 3,
+                "uncited_references": 5,
+                "match_rate": 94,
+            },
+            "online_verification": {
+                "rows": [{"status": "verified"}] * 12,
+                "summary": {"verified": 11, "not_found": 1},
+            },
+        }
+        preview = apply_entitlements_to_result(result, tier_key="article", paid=False, currency="GHS")
+        self.assertTrue(preview["summary"]["counts_locked"])
+        self.assertIsNone(preview["summary"]["missing_in_references"])
+        self.assertIsNone(preview["summary"]["match_rate"])
+        self.assertTrue(preview["online_verification"]["counts_locked"])
+        self.assertIsNone(preview["online_verification"]["summary"]["verified"])
+
+    def test_results_ui_locks_all_indicator_surfaces(self):
+        source = (ROOT / "templates" / "new_results.html").read_text(encoding="utf-8")
+        self.assertIn('"countCorrections", "countVoice", "countSummary", "countMissing"', source)
+        self.assertIn('lockRow(3, "Summary indicators"', source)
+        self.assertIn('indicatorsUnlocked ? esc(value) : "🔒"', source)
+        self.assertIn('Result indicators</strong><br>🔒 Unlock to view totals', source)
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('payload.pop("reference_count", None)', main)
 
     def test_public_notice_is_on_landing_and_upload_pages(self):
         for name in ("index.html", "new_index.html", "new_analyse.html"):

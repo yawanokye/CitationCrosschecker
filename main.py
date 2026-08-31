@@ -4075,6 +4075,11 @@ async def recommend_commercial_plan(job_id: str, billing_country: str = "GH", cu
     payload = build_plan_selection_payload(
         counts["reference_count"], counts["citation_count"], market["currency"], counts["word_count"]
     )
+    # The package can be recommended before checkout without exposing the
+    # document's locked result indicators in the public response.
+    payload.pop("reference_count", None)
+    payload.pop("citation_count", None)
+    payload.pop("word_count", None)
     payload.update({"ok": True, "job_id": job_id, "market": market})
     return payload
 

@@ -267,10 +267,17 @@ def _limit_online_verification(result: Dict[str, Any], max_rows: int) -> None:
         return
     rows = ov.get("rows") or []
     if isinstance(rows, list):
-        ov["total_rows_available"] = len(rows)
+        ov["total_rows_available"] = None
         ov["rows"] = rows[:max_rows]
         ov["limited"] = len(rows) > max_rows
+        ov["counts_locked"] = True
         ov["limit_message"] = f"Free Preview shows only the first {max_rows} reference verification rows."
+    summary = ov.get("summary") if isinstance(ov.get("summary"), dict) else {}
+    for key in ("verified", "likely", "needs_review", "not_found", "offline", "total", "completed"):
+        if key in summary:
+            summary[key] = None
+    summary["counts_locked"] = True
+    ov["summary"] = summary
     result["online_verification"] = ov
 
 def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", paid: bool = False, currency: str = DEFAULT_CURRENCY) -> Dict[str, Any]:
@@ -299,7 +306,17 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     safe["citation_improvement_coach"] = locked_payload("Citation Improvement Coach")
     safe["source_risk_review"] = locked_payload("Source Risk Review")
     safe["academic_voice_review"] = locked_payload("Academic Voice and Writing Signals")
-    safe["preview_notice"] = "This is a Free Preview. Unlock Full Review to see all findings, recovery suggestions, claim support, tracked corrections, the certificate, and exports."
+    safe_summary = safe.get("summary") if isinstance(safe.get("summary"), dict) else {}
+    for key in (
+        "in_text_citations_found", "reference_entries_found", "missing_in_references",
+        "uncited_references", "match_rate", "verified_references", "recovery_rows",
+        "claim_support_rows", "citation_needed_claims",
+    ):
+        if key in safe_summary:
+            safe_summary[key] = None
+    safe_summary["counts_locked"] = True
+    safe["summary"] = safe_summary
+    safe["preview_notice"] = "This is a Free Preview. Result totals and detailed findings unlock with Full Review, including recovery suggestions, claim support, tracked corrections, the certificate, and exports."
     return safe
 
 def utc_now_iso() -> str:

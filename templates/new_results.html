@@ -2113,7 +2113,6 @@ document.addEventListener("DOMContentLoaded", function () {
             return;
         }
 
-        const counts = getDocumentCounts(data);
         panel.style.display = "block";
         panel.innerHTML = `
             <div class="paywall-card">
@@ -2125,8 +2124,8 @@ document.addEventListener("DOMContentLoaded", function () {
                     <span class="paywall-badge">🔒 Payment required</span>
                 </div>
                 <div class="paywall-grid">
-                    <div class="paywall-mini"><strong>References detected</strong><br>${esc(counts.reference_count)}</div>
-                    <div class="paywall-mini"><strong>In-text citations detected</strong><br>${esc(counts.citation_count)}</div>
+                    <div class="paywall-mini"><strong>Result indicators</strong><br>🔒 Unlock to view totals</div>
+                    <div class="paywall-mini"><strong>Detailed findings</strong><br>🔒 Unlock to review evidence</div>
                     <div class="paywall-mini"><strong>Paid access</strong><br>Full Review + 1 recheck</div>
                 </div>
                 <div id="planBox" class="paywall-mini" style="margin-top:14px;">Loading recommended package...</div>
@@ -3843,9 +3842,10 @@ document.addEventListener("DOMContentLoaded", function () {
         ];
         const grid = $("kpiGrid");
         if (!grid) return;
+        const indicatorsUnlocked = hasPaidAccess(data);
         grid.innerHTML = kpis.map(([label, value]) => `
             <div class="kpi">
-                <div class="kpi-value">${esc(value)}</div>
+                <div class="kpi-value" aria-label="${indicatorsUnlocked ? esc(value) : "Locked until Full Review"}">${indicatorsUnlocked ? esc(value) : "🔒"}</div>
                 <div class="kpi-label">${esc(label)}</div>
             </div>
         `).join("");
@@ -3855,6 +3855,12 @@ document.addEventListener("DOMContentLoaded", function () {
         const s = data.summary || {};
         const body = $("summaryBody");
         if (!body) return;
+        if (!hasPaidAccess(data)) {
+            body.innerHTML = lockRow(3, "Summary indicators", "Unlock Full Review to view citation totals, reference totals, missing and uncited counts, and the reconciliation rate.");
+            const compBody = $("aciiComponentsBody");
+            if (compBody) compBody.innerHTML = lockRow(4, "ACII component indicators", "Unlock Full Review to view the component-level measurements.");
+            return;
+        }
         body.innerHTML = `
             <tr><td>In-text citation occurrences</td><td><strong>${esc(s.in_text_citations_found)}</strong></td><td>Total citation occurrences extracted from the manuscript.</td></tr>
             <tr><td>Reference entries found</td><td><strong>${esc(s.reference_entries_found)}</strong></td><td>Total reference entries detected in the reference list.</td></tr>
@@ -3930,7 +3936,8 @@ document.addEventListener("DOMContentLoaded", function () {
                 ["Human review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
                 ["Not found / failed", Number(summary.not_found ?? rows.filter(r => r.status === "not_found").length) + Number(summary.offline ?? rows.filter(r => r.status === "offline").length)]
             ];
-            kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
+            const indicatorsUnlocked = hasPaidAccess(data);
+            kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value" aria-label="${indicatorsUnlocked ? esc(value) : "Locked until Full Review"}">${indicatorsUnlocked ? esc(value) : "🔒"}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
         if (!body) return;
         if (!rows.length) { body.innerHTML = `<tr><td colspan="9"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
@@ -4529,6 +4536,15 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function updateCounts(data) {
+        if (!hasPaidAccess(data)) {
+            [
+                "countCorrections", "countVoice", "countSummary", "countMissing",
+                "countUncited", "countC2R", "countR2C", "countVerify",
+                "countRecovery", "countClaim", "countCitationNeeded",
+                "countEnrichment", "countSuggestions"
+            ].forEach(id => setCount(id, "🔒"));
+            return;
+        }
         const rec = isLockedPayload(data.recovery) ? {} : (data.recovery || {});
         const suggestions = getSuggestions(data);
         const suggestionCount = (suggestions.citations || []).length + (suggestions.references || []).length;
