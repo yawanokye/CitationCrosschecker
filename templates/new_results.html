@@ -2035,6 +2035,31 @@ document.addEventListener("DOMContentLoaded", function () {
         return Array.isArray(value) ? value : [];
     }
 
+    function previewCoverage(data, key) {
+        const coverage = data?.preview_coverage?.[key];
+        return coverage && typeof coverage === "object" ? coverage : {};
+    }
+
+    function previewTotal(data, key, fallback = 0) {
+        const total = Number(previewCoverage(data, key).total);
+        return Number.isFinite(total) ? total : fallback;
+    }
+
+    function previewNoticeHtml(data, key, label) {
+        if (hasPaidAccess(data)) return "";
+        const coverage = previewCoverage(data, key);
+        const shown = Number(coverage.shown || 0);
+        const total = Number(coverage.total || 0);
+        if (!total || shown >= total) return "";
+        const remaining = Math.max(total - shown, 0);
+        return `<div class="locked-card preview-sample-note"><strong>Free Preview:</strong> Showing ${shown} of ${total} ${esc(label)}. Unlock Full Review to see the remaining ${remaining}.</div>`;
+    }
+
+    function previewNoticeRow(data, key, label, colspan) {
+        const notice = previewNoticeHtml(data, key, label);
+        return notice ? `<tr><td colspan="${colspan}">${notice}</td></tr>` : "";
+    }
+
     function lockHtml(featureName, message) {
         if (DEMO_HIDE_PAYMENT_DETAILS) {
             return `
@@ -2059,7 +2084,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function setPaidOnlyButtons(isPaid) {
-        ["btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment", "btnDownloadCertificate"].forEach(id => {
+        ["btnVerify", "btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment", "btnDownloadCertificate", "btnStartCitationNeeded", "btnApproveReferenceFormatting", "btnFixNext", "btnRewritePassage", "btnCompareRevision", "btnDownloadDelete"].forEach(id => {
             const btn = $(id);
             if (!btn) return;
 
@@ -2119,13 +2144,13 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="paywall-head">
                     <div>
                         <h2 class="paywall-title">Free Preview shown <span class="locked-inline">🔒 Full Review locked</span></h2>
-                        <p class="paywall-subtitle">You are seeing a limited preview. Unlock Full Review for all findings, Evidence Resolution actions, source candidates, tracked corrections, the Readiness Certificate, and exports. Each payment includes the current Full Review and one recheck of the same document within 14 days.</p>
+                        <p class="paywall-subtitle">Missing Citations, Uncited References, and Match Rate are locked. Other result categories show a complete 25% sample capped at 10 rows. Unlock Full Review for every finding, Evidence Resolution action, source candidate, tracked correction, the Readiness Certificate, and exports. Each payment includes one recheck of the same document within 14 days.</p>
                     </div>
                     <span class="paywall-badge">🔒 Payment required</span>
                 </div>
                 <div class="paywall-grid">
-                    <div class="paywall-mini"><strong>Result indicators</strong><br>🔒 Unlock to view totals</div>
-                    <div class="paywall-mini"><strong>Detailed findings</strong><br>🔒 Unlock to review evidence</div>
+                    <div class="paywall-mini"><strong>Core reconciliation</strong><br>🔒 Missing, uncited, and match rate</div>
+                    <div class="paywall-mini"><strong>Other findings</strong><br>25% sample, maximum 10 rows</div>
                     <div class="paywall-mini"><strong>Paid access</strong><br>Full Review + 1 recheck</div>
                 </div>
                 <div id="planBox" class="paywall-mini" style="margin-top:14px;">Loading recommended package...</div>
@@ -3419,13 +3444,20 @@ document.addEventListener("DOMContentLoaded", function () {
             correctionBox.querySelectorAll(".delete-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "delete_reference")));
             correctionBox.querySelectorAll(".cite-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "cite_reference")));
             correctionBox.querySelectorAll(".revise-claim-support").forEach(btn => btn.addEventListener("click", () => approveClaimRevision(btn.dataset.id)));
+            if (!hasPaidAccess(data)) {
+                correctionBox.insertAdjacentHTML("afterbegin", previewNoticeHtml(data, "correction_plan", "correction-plan items") || `<div class="locked-card"><strong>Free Preview:</strong> Sample findings are read-only. Unlock Full Review to act on them.</div>`);
+                correctionBox.querySelectorAll("button, input, select, textarea").forEach(control => {
+                    control.disabled = true;
+                    control.title = "Unlock Full Review to use this action.";
+                });
+            }
         }
 
         const voiceSettings = data.academic_voice_settings || {};
         const voiceEnabled = voiceSettings.enabled === true;
         const voice = voiceEnabled ? (data.academic_voice_review || {}) : {};
         const voiceSignals = voiceEnabled && Array.isArray(voice.signals) ? voice.signals : [];
-        setCount("countVoice", voiceEnabled ? voiceSignals.length : "Off");
+        setCount("countVoice", voiceEnabled ? (hasPaidAccess(data) ? voiceSignals.length : previewTotal(data, "academic_voice", voiceSignals.length)) : "Off");
         const voiceGate = $("voiceModuleGate");
         const voiceStatus = $("voiceModuleStatus");
         const voiceHeading = $("voiceModuleHeading");
@@ -3442,7 +3474,9 @@ document.addEventListener("DOMContentLoaded", function () {
         if (voiceToggle) {
             voiceToggle.textContent = voiceEnabled ? "Turn off for this analysis" : "Enable Academic Voice and Writing Signals";
             voiceToggle.className = voiceEnabled ? "btn btn-outline" : "btn btn-primary";
-            voiceToggle.onclick = () => setAcademicVoiceEnabled(!voiceEnabled);
+            voiceToggle.disabled = !hasPaidAccess(data);
+            voiceToggle.title = hasPaidAccess(data) ? "" : "Unlock Full Review to change this module.";
+            voiceToggle.onclick = hasPaidAccess(data) ? () => setAcademicVoiceEnabled(!voiceEnabled) : null;
         }
         const voiceSummary = $("voiceSummary");
         if (voiceSummary) {
@@ -3460,7 +3494,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     <div><strong>Why flagged:</strong> ${esc(item.why_flagged || "")}</div>
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
                     ${item.passage && item.passage !== "Document-level pattern" ? `<button class="btn btn-outline use-voice-passage" data-index="${index}" style="margin-top:10px;">Use passage for revision</button>` : ""}
-                </div>`).join("") : `<div class="empty">No writing-pattern signals were identified.</div>`;
+                </div>`).join("") + previewNoticeHtml(data, "academic_voice", "writing-signal rows") : `<div class="empty">No writing-pattern signals were identified.</div>`;
             voiceBox.querySelectorAll(".use-voice-passage").forEach(btn => btn.addEventListener("click", () => {
                 const signal = voiceSignals[Number(btn.dataset.index)];
                 if ($("rewritePassage") && signal) $("rewritePassage").value = signal.passage || "";
@@ -3830,22 +3864,22 @@ document.addEventListener("DOMContentLoaded", function () {
         const ovRows = data.online_verification?.rows || [];
         const claimRows = getSafeRows(data.claim_support);
         const rec = isLockedPayload(data.recovery) ? {} : (data.recovery || {});
+        const paid = hasPaidAccess(data);
         const kpis = [
-            ["In-text citations", s.in_text_citations_found],
-            ["References", s.reference_entries_found],
-            ["Missing citations", s.missing_in_references],
-            ["Uncited references", s.uncited_references],
-            ["Match rate", `${s.match_rate}%`],
-            ["Verified rows", ovRows.length],
-            ["Recovery rows", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length],
-            ["Claim rows", claimRows.length]
+            ["In-text citations", s.in_text_citations_found, false],
+            ["References", s.reference_entries_found, false],
+            ["Missing citations", s.missing_in_references, !paid],
+            ["Uncited references", s.uncited_references, !paid],
+            ["Match rate", s.match_rate === null || s.match_rate === undefined ? "" : `${s.match_rate}%`, !paid],
+            ["Verification rows", paid ? ovRows.length : previewTotal(data, "online_verification", ovRows.length), false],
+            ["Recovery rows", paid ? (rec.missing_recovery || []).length + (rec.verification_recovery || []).length : previewTotal(data, "recovery", 0), false],
+            ["Claim rows", paid ? claimRows.length : previewTotal(data, "claim_support", claimRows.length), false]
         ];
         const grid = $("kpiGrid");
         if (!grid) return;
-        const indicatorsUnlocked = hasPaidAccess(data);
-        grid.innerHTML = kpis.map(([label, value]) => `
+        grid.innerHTML = kpis.map(([label, value, locked]) => `
             <div class="kpi">
-                <div class="kpi-value" aria-label="${indicatorsUnlocked ? esc(value) : "Locked until Full Review"}">${indicatorsUnlocked ? esc(value) : "🔒"}</div>
+                <div class="kpi-value" aria-label="${locked ? "Locked until Full Review" : esc(value)}">${locked ? "🔒" : esc(value)}</div>
                 <div class="kpi-label">${esc(label)}</div>
             </div>
         `).join("");
@@ -3855,18 +3889,13 @@ document.addEventListener("DOMContentLoaded", function () {
         const s = data.summary || {};
         const body = $("summaryBody");
         if (!body) return;
-        if (!hasPaidAccess(data)) {
-            body.innerHTML = lockRow(3, "Summary indicators", "Unlock Full Review to view citation totals, reference totals, missing and uncited counts, and the reconciliation rate.");
-            const compBody = $("aciiComponentsBody");
-            if (compBody) compBody.innerHTML = lockRow(4, "ACII component indicators", "Unlock Full Review to view the component-level measurements.");
-            return;
-        }
+        const paid = hasPaidAccess(data);
         body.innerHTML = `
             <tr><td>In-text citation occurrences</td><td><strong>${esc(s.in_text_citations_found)}</strong></td><td>Total citation occurrences extracted from the manuscript.</td></tr>
             <tr><td>Reference entries found</td><td><strong>${esc(s.reference_entries_found)}</strong></td><td>Total reference entries detected in the reference list.</td></tr>
-            <tr><td>Missing citations</td><td><strong style="color:#b91c1c;">${esc(s.missing_in_references)}</strong></td><td>Citations in the text that need corresponding references.</td></tr>
-            <tr><td>Uncited references</td><td><strong style="color:#c2410c;">${esc(s.uncited_references)}</strong></td><td>References listed but not cited in the manuscript body.</td></tr>
-            <tr><td>Match rate</td><td><strong>${esc(s.match_rate)}%</strong></td><td>Estimated citation-reference reconciliation rate.</td></tr>
+            <tr><td>Missing citations</td><td><strong style="color:#b91c1c;">${paid ? esc(s.missing_in_references) : "🔒"}</strong></td><td>${paid ? "Citations in the text that need corresponding references." : "Unlock Full Review to view this indicator."}</td></tr>
+            <tr><td>Uncited references</td><td><strong style="color:#c2410c;">${paid ? esc(s.uncited_references) : "🔒"}</strong></td><td>${paid ? "References listed but not cited in the manuscript body." : "Unlock Full Review to view this indicator."}</td></tr>
+            <tr><td>Match rate</td><td><strong>${paid ? `${esc(s.match_rate)}%` : "🔒"}</strong></td><td>${paid ? "Estimated citation-reference reconciliation rate." : "Unlock Full Review to view this indicator."}</td></tr>
         `;
         const components = data.acii?.components || {};
         const compBody = $("aciiComponentsBody");
@@ -3888,9 +3917,13 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function renderMissing(data) { /* unchanged, omitted for brevity but identical to original logic */ 
-        const rows = getSafeRows(data.missing_in_references);
         const body = $("missingBody");
         if (!body) return;
+        if (isLockedPayload(data.missing_in_references)) {
+            body.innerHTML = lockRow(3, "Missing Citations", "Unlock Full Review to view the count and full list of missing citations.");
+            return;
+        }
+        const rows = getSafeRows(data.missing_in_references);
         if (!rows.length) { body.innerHTML = `<tr><td colspan="3"><div class="empty">No missing citations detected.</div></td></tr>`; return; }
         body.innerHTML = rows.map((row, i) => {
             const citation = typeof row === "string" ? row : (row.citation_in_text || row.citation || row.in_text || "");
@@ -3900,9 +3933,13 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function renderUncited(data) { 
-        const rows = getSafeRows(data.uncited_references);
         const body = $("uncitedBody");
         if (!body) return;
+        if (isLockedPayload(data.uncited_references)) {
+            body.innerHTML = lockRow(2, "Uncited References", "Unlock Full Review to view the count and full list of uncited references.");
+            return;
+        }
+        const rows = getSafeRows(data.uncited_references);
         if (!rows.length) { body.innerHTML = `<tr><td colspan="2"><div class="empty">No uncited references detected.</div></td></tr>`; return; }
         body.innerHTML = rows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.reference || row)}</td></tr>`).join("");
     }
@@ -3913,7 +3950,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const body = $("c2rBody");
         if (!body) return;
         if (!rows.length) { body.innerHTML = `<tr><td colspan="6"><div class="empty">No citation-reference mapping available.</div></td></tr>`; return; }
-        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "not_found")}</td><td>${esc(row.citation)}</td><td>${esc(row.count)}</td><td>${esc(row.matched_reference || "")}</td><td>${esc(row.flags || "")}</td></tr>`).join("");
+        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "not_found")}</td><td>${esc(row.citation)}</td><td>${esc(row.count)}</td><td>${esc(row.matched_reference || "")}</td><td>${esc(row.flags || "")}</td></tr>`).join("") + previewNoticeRow(data, "reconciliation_intext_to_reference", "citation-to-reference rows", 6);
     }
 
     function renderR2C(data) {
@@ -3921,7 +3958,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const body = $("r2cBody");
         if (!body) return;
         if (!rows.length) { body.innerHTML = `<tr><td colspan="4"><div class="empty">No reference-citation mapping available.</div></td></tr>`; return; }
-        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td><strong>${esc(row.times_cited ?? 0)}</strong></td><td>${esc(row.reference || "")}</td><td>${esc((row.cited_by || []).slice(0, 8).join("; "))}</td></tr>`).join("");
+        body.innerHTML = rows.slice(0, 1500).map((row, i) => `<tr><td>${i+1}</td><td><strong>${esc(row.times_cited ?? 0)}</strong></td><td>${esc(row.reference || "")}</td><td>${esc((row.cited_by || []).slice(0, 8).join("; "))}</td></tr>`).join("") + previewNoticeRow(data, "reconciliation_reference_to_intext", "reference-to-citation rows", 4);
     }
     function renderVerification(data) {
         const ov = data.online_verification || {};
@@ -3936,8 +3973,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 ["Human review", summary.needs_review ?? rows.filter(r => r.status === "needs_review").length],
                 ["Not found / failed", Number(summary.not_found ?? rows.filter(r => r.status === "not_found").length) + Number(summary.offline ?? rows.filter(r => r.status === "offline").length)]
             ];
-            const indicatorsUnlocked = hasPaidAccess(data);
-            kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value" aria-label="${indicatorsUnlocked ? esc(value) : "Locked until Full Review"}">${indicatorsUnlocked ? esc(value) : "🔒"}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
+            kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value" aria-label="${esc(value)}">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
         if (!body) return;
         if (!rows.length) { body.innerHTML = `<tr><td colspan="9"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
@@ -3955,13 +3991,15 @@ document.addEventListener("DOMContentLoaded", function () {
             const queryKey = manualQueryFromRow(row).toLowerCase();
             const manualIndex = manualIndexByReference.has(queryKey) ? manualIndexByReference.get(queryKey) : -1;
             const manualDecision = row.manual_decision_label || manualDecisionLabel(row.manual_decision || row.manual_verification_status || "");
-            const manualHtml = manualDecision
+            const manualHtml = !hasPaidAccess(data)
+                ? `<span class="small-muted">🔒 Full Review</span>`
+                : manualDecision
                 ? `<span class="badge verified">${esc(manualDecision)}</span>`
                 : (isManualReviewRow(row)
                     && manualIndex >= 0 ? `<button class="btn btn-outline manual-jump" data-manual-index="${manualIndex}" type="button">Manual verify</button>`
                     : `<span class="small-muted">—</span>`);
             return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(verificationDisplayStatus(row))}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td><td>${manualHtml}</td></tr>`;
-        }).join("");
+        }).join("") + previewNoticeRow(data, "online_verification", "verification rows", 9);
     }
 
 
@@ -4124,11 +4162,13 @@ document.addEventListener("DOMContentLoaded", function () {
         const verifyRows = rec.verification_recovery || [];
 
         if (missingBody) {
-            if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
+            if (isLockedPayload(missingRows)) { missingBody.innerHTML = lockRow(4, "Missing Citation Recovery", "Unlock Full Review to view missing citation recovery findings."); }
+            else if (!missingRows.length) { missingBody.innerHTML = `<tr><td colspan="4"><div class="empty">No missing citation recovery rows available.</div></td></tr>`; }
             else {
                 const visibleMissingRows = missingRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
                 missingBody.innerHTML = visibleMissingRows.map((row, i) => `<tr><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(row.count ?? 1)}</td><td>${renderSuggestionList(row.deep_suggestions || row.suggestions || row.alternative_sources || [], row.enrichment_note || "")}${renderPossibleSourceGuidance(row)}${renderAlternativeSources(row)}</td></tr>`).join("");
                 if (missingRows.length > CONFIG.MAX_RECOVERY_DISPLAY) missingBody.innerHTML += `<tr><td colspan="4"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${missingRows.length} missing recovery rows.</div></td></tr>`;
+                missingBody.innerHTML += previewNoticeRow(data, "recovery_missing", "missing-citation recovery rows", 4);
             }
         }
 
@@ -4138,6 +4178,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 const visibleVerifyRows = verifyRows.slice(0, CONFIG.MAX_RECOVERY_DISPLAY);
                 verifyBody.innerHTML = visibleVerifyRows.map((row, i) => `<tr><td>${i+1}</td><td>${formatBadge(row.status || "offline")}</td><td>${esc(row.citation || "")}</td><td>${esc(row.reference || "")}</td><td>${renderSuggestionList(row.deep_suggestions || row.suggestions || row.alternative_sources || [], row.enrichment_note || "")}${renderPossibleSourceGuidance(row)}${renderAlternativeSources(row)}</td></tr>`).join("");
                 if (verifyRows.length > CONFIG.MAX_RECOVERY_DISPLAY) verifyBody.innerHTML += `<tr><td colspan="5"><div class="empty">Showing first ${CONFIG.MAX_RECOVERY_DISPLAY} of ${verifyRows.length} verification recovery rows.</div></td></tr>`;
+                verifyBody.innerHTML += previewNoticeRow(data, "recovery_verification", "verification recovery rows", 5);
             }
         }
     }
@@ -4356,8 +4397,10 @@ document.addEventListener("DOMContentLoaded", function () {
             const high = rows.filter(r => citationNeededPriority(r) === "high").length;
             const medium = rows.filter(r => citationNeededPriority(r) === "medium").length;
             const low = rows.filter(r => citationNeededPriority(r) === "low").length;
+            const coverage = previewCoverage(data, "citation_needed_claims");
+            const total = hasPaidAccess(data) ? rows.length : Number(coverage.total || rows.length);
             note.innerHTML = `
-                Showing <strong>${viewRows.length}</strong> of <strong>${rows.length}</strong> citation-needed claim(s).
+                Showing <strong>${viewRows.length}</strong> of <strong>${total}</strong> citation-needed claim(s).
                 High: <strong>${high}</strong>, Medium: <strong>${medium}</strong>, Low: <strong>${low}</strong>.
             `;
         }
@@ -4387,7 +4430,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     <td>${citationNeededSearchLinks(row)}</td>
                 </tr>
             `;
-        }).join("");
+        }).join("") + previewNoticeRow(data, "citation_needed_claims", "citation-needed claims", 6);
 
         if (viewRows.length > CONFIG.MAX_CLAIM_DISPLAY) {
             body.innerHTML += `<tr><td colspan="6"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${viewRows.length} citation-needed rows.</div></td></tr>`;
@@ -4484,7 +4527,9 @@ document.addEventListener("DOMContentLoaded", function () {
             const claimText = getClaimText(row);
             const correction = (data.correction_plan?.items || []).find(item => item.category === "claim_support" && (item.evidence === claimText || item.supporting_metadata?.citation === row.citation));
             let directAction = `<div class="small-muted">No linked correction was generated for this row.</div>`;
-            if (correction) {
+            if (!hasPaidAccess(data)) {
+                directAction = `<div class="locked-card"><strong>🔒 Actions locked</strong><br>Unlock Full Review to search, approve, or revise evidence.</div>`;
+            } else if (correction) {
                 const candidates = Array.isArray(correction.source_candidates) ? correction.source_candidates : [];
                 const candidateList = candidates.length ? `<div style="margin-top:8px"><strong>Select, open and verify a source:</strong>${candidates.map((source, sourceIndex) => renderEvidenceCandidate(correction, source, sourceIndex)).join("")}</div>` : "";
                 directAction = correction.decision && correction.decision !== "pending"
@@ -4498,7 +4543,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     </div>`;
             }
             return `<tr data-status="${esc(status)}"><td>${i+1}</td><td>${esc(row.citation || "")}</td><td>${esc(claimText)}</td><td>${esc(sourceTitle)}${doiHtml}${note}${alternatives}</td><td>${formatBadge(status)}</td><td>${esc(score)}</td><td style="min-width:260px">${directAction}</td></tr>`;
-        }).join("");
+        }).join("") + previewNoticeRow(data, "claim_support", "claim-support rows", 7);
 
         if (rows.length > CONFIG.MAX_CLAIM_DISPLAY) {
             body.innerHTML += `<tr><td colspan="7"><div class="empty">Showing first ${CONFIG.MAX_CLAIM_DISPLAY} of ${rows.length} claim-support rows. Export the report for the full list.</div></td></tr>`;
@@ -4528,46 +4573,44 @@ document.addEventListener("DOMContentLoaded", function () {
         const suggestions = getSuggestions(data);
         const items = [...(suggestions.citations || []), ...(suggestions.references || [])];
         if (!items.length) { content.innerHTML = `<div class="empty">No suggestions were returned. This may mean no fixable citation issues were detected, or suggestions were not enabled during upload.</div>`; return; }
-        content.innerHTML = `<div style="margin-bottom:16px;" class="small-muted">Total suggestions: <strong>${items.length}</strong></div>${items.slice(0, 500).map((s, i) => {
+        const total = hasPaidAccess(data) ? items.length : previewTotal(data, "autofix", items.length);
+        content.innerHTML = `<div style="margin-bottom:16px;" class="small-muted">Total suggestions: <strong>${total}</strong></div>${items.slice(0, 500).map((s, i) => {
             const confidence = Number(s.confidence || 0);
             const level = confidence >= 0.85 ? "high" : confidence >= 0.7 ? "medium" : "low";
             return `<div class="suggestion-item ${level}"><div><strong>${i+1}. ${esc(s.issue_type || s.type || "Suggestion")}</strong></div><div class="line-through">Original: ${esc(s.original || s.citation || "")}</div><div class="suggested">Suggested: ${esc(s.suggested || s.title || "Review required")}</div><div class="small-muted" style="margin-top:8px;">Reason: ${esc(s.reason || "Citation/reference issue detected.")}${confidence ? ` | Confidence: ${Math.round(confidence * 100)}%` : ""}</div></div>`;
-        }).join("")}`;
+        }).join("")}${previewNoticeHtml(data, "autofix", "suggestions")}`;
     }
 
     function updateCounts(data) {
-        if (!hasPaidAccess(data)) {
-            [
-                "countCorrections", "countVoice", "countSummary", "countMissing",
-                "countUncited", "countC2R", "countR2C", "countVerify",
-                "countRecovery", "countClaim", "countCitationNeeded",
-                "countEnrichment", "countSuggestions"
-            ].forEach(id => setCount(id, "🔒"));
-            return;
-        }
+        const paid = hasPaidAccess(data);
         const rec = isLockedPayload(data.recovery) ? {} : (data.recovery || {});
         const suggestions = getSuggestions(data);
         const suggestionCount = (suggestions.citations || []).length + (suggestions.references || []).length;
-        setCount("countSummary", "OK");
-        setCount("countMissing", data.missing_in_references?.length || 0);
-        setCount("countUncited", data.uncited_references?.length || 0);
+        setCount("countSummary", paid ? "OK" : "Preview");
+        setCount("countMissing", paid ? (data.missing_in_references?.length || 0) : "🔒");
+        setCount("countUncited", paid ? (data.uncited_references?.length || 0) : "🔒");
         const c2rUniqueRows = getUniqueCitationsWithCount(
             data.reconciliation_intext_to_reference || []
         );
         
-        setCount("countC2R", c2rUniqueRows.length);
-        setCount("countR2C", data.reconciliation_reference_to_intext?.length || 0);
-        setCount("countVerify", data.online_verification?.rows?.length || 0);
-        setCount("countRecovery", (rec.missing_recovery || []).length + (rec.verification_recovery || []).length);
-        setCount("countClaim", getSafeRows(data.claim_support).length || (isLockedPayload(data.claim_support) ? "🔒" : 0));
+        setCount("countC2R", paid ? c2rUniqueRows.length : previewTotal(data, "reconciliation_intext_to_reference", c2rUniqueRows.length));
+        setCount("countR2C", paid ? (data.reconciliation_reference_to_intext?.length || 0) : previewTotal(data, "reconciliation_reference_to_intext", 0));
+        setCount("countVerify", paid ? (data.online_verification?.rows?.length || 0) : previewTotal(data, "online_verification", 0));
+        setCount("countRecovery", paid ? (rec.missing_recovery || []).length + (rec.verification_recovery || []).length : previewTotal(data, "recovery", 0));
+        setCount("countClaim", paid ? getSafeRows(data.claim_support).length : previewTotal(data, "claim_support", 0));
         const citationNeededRows = getCitationNeededRows(data);
-        setCount("countCitationNeeded", Array.isArray(citationNeededRows) ? citationNeededRows.length : (isLockedPayload(citationNeededRows) ? "🔒" : 0));
+        setCount("countCitationNeeded", paid ? (Array.isArray(citationNeededRows) ? citationNeededRows.length : 0) : previewTotal(data, "citation_needed_claims", 0));
 
         const enrichment = data.enrichment || {};
         const enrichmentState = String(enrichment.state || "optional").replaceAll("_", " ");
-        setCount("countEnrichment", enrichmentState || "Optional");
+        setCount("countEnrichment", paid ? (enrichmentState || "Optional") : "🔒");
         
-        setCount("countSuggestions", suggestionCount);
+        setCount("countSuggestions", paid ? suggestionCount : previewTotal(data, "autofix", suggestionCount));
+        if (!paid) {
+            setCount("countCorrections", previewTotal(data, "correction_plan", 0));
+            const voiceEnabled = data.academic_voice_settings?.enabled === true;
+            setCount("countVoice", voiceEnabled ? previewTotal(data, "academic_voice", 0) : "Off");
+        }
     }
 
     // --------------------- VERIFICATION API ---------------------

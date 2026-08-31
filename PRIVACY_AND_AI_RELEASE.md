@@ -132,8 +132,9 @@ environment variable and is used only for selected-passage academic rewriting.
 The output now consolidates unsupported claims, incomplete mappings, weak or
 unclear support, missing references, incomplete reference metadata, identity
 conflicts and every unresolved online-verification result into one approval-led
-workspace. Missing Citations and Uncited References remain permanently visible
-as separate audit tabs because users still need their full lists at a glance.
+workspace. Missing Citations and Uncited References remain separate audit tabs.
+Their counts and rows are payment-gated in Free Preview and fully visible after
+payment, during temporary open access, or in an authorised developer session.
 
 Claim-source discovery first profiles the manuscript title, abstract,
 objectives, questions, keywords, inferred discipline, geography, population,

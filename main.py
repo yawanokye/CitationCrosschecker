@@ -104,6 +104,7 @@ from entitlements import (
     recommend_document_tier_with_words,
 )
 from access_control import (
+    get_purchase_by_provider_reference,
     get_purchase_by_token,
     init_commercial_tables,
     purchase_is_paid_for_job,
@@ -112,6 +113,7 @@ from access_control import (
 )
 from payment_router import resolve_payment_market
 from paystack_payments import (
+    handle_central_payment_confirmation,
     handle_paystack_webhook,
     initialize_citeintegrity_payment,
     verify_and_activate_purchase,
@@ -1047,6 +1049,8 @@ async def maintenance_gate(request: Request, call_next):
         or path.startswith("/developer/")
         or path.startswith("/api/developer/access")
         or path.startswith("/api/webhooks/")
+        or path.startswith("/api/paystack/payment-confirmation")
+        or path.startswith("/payment/callback")
         or path.startswith("/payment/paystack/callback")
         or path.startswith("/payment/stripe/success")
     ):
@@ -4126,7 +4130,7 @@ async def initialize_commercial_checkout(request: Request):
             selected_currency=market["currency"],
             market=market["market"],
             billing_country=market["country_code"],
-            callback_path=f"/payment/paystack/callback/{market['market']}",
+            callback_path="/payment/callback",
         )
         checkout_url = outcome.get("authorization_url")
     else:
@@ -4161,17 +4165,34 @@ async def initialize_commercial_checkout(request: Request):
     return response
 
 
-@app.get("/payment/paystack/callback/{market}")
-async def paystack_callback(market: str, reference: str = "", trxref: str = ""):
+def _complete_paystack_callback(provider_reference: str, market: str):
     if not DATABASE_URL:
         raise HTTPException(status_code=503, detail="Payment verification is unavailable.")
-    provider_reference = reference or trxref
-    outcome = verify_and_activate_purchase(database_url=DATABASE_URL, reference=provider_reference, market=market)
+    outcome = verify_and_activate_purchase(
+        database_url=DATABASE_URL,
+        reference=provider_reference,
+        market=market,
+        source="browser_callback",
+    )
     if not outcome.get("activated"):
         return RedirectResponse(url="/pricing?payment=failed", status_code=303)
     purchase = outcome.get("purchase") or {}
     job_id = str(purchase.get("preview_job_id") or "")
     return RedirectResponse(url=f"/results/{quote_plus(job_id)}?payment=success" if job_id else "/?payment=success", status_code=303)
+
+
+@app.get("/payment/callback")
+async def paystack_central_callback(reference: str = "", trxref: str = ""):
+    provider_reference = str(reference or trxref or "").strip()
+    purchase = get_purchase_by_provider_reference(DATABASE_URL, provider_reference=provider_reference) if DATABASE_URL and provider_reference else None
+    market = str((purchase or {}).get("market") or "ghana")
+    return _complete_paystack_callback(provider_reference, market)
+
+
+@app.get("/payment/paystack/callback/{market}")
+async def paystack_callback(market: str, reference: str = "", trxref: str = ""):
+    """Backward-compatible callback for transactions created before the central route."""
+    return _complete_paystack_callback(str(reference or trxref or "").strip(), market)
 
 
 @app.get("/payment/stripe/success")
@@ -4195,6 +4216,21 @@ async def paystack_webhook(request: Request, market: str):
         raw_body=raw,
         signature=request.headers.get("x-paystack-signature", ""),
         market=market,
+    )
+    return JSONResponse(status_code=int(outcome.get("status_code") or 200), content=outcome)
+
+
+@app.post("/api/paystack/payment-confirmation")
+async def central_paystack_payment_confirmation(request: Request):
+    """Receive a signed CiteIntegrity payment notice routed by ProjectReady."""
+    if not DATABASE_URL:
+        return JSONResponse(status_code=503, content={"ok": False, "message": "Payment verification is unavailable."})
+    raw = await request.body()
+    outcome = handle_central_payment_confirmation(
+        database_url=DATABASE_URL,
+        raw_body=raw,
+        signature=request.headers.get("x-citeintegrity-signature", ""),
+        authorization=request.headers.get("authorization", ""),
     )
     return JSONResponse(status_code=int(outcome.get("status_code") or 200), content=outcome)
 

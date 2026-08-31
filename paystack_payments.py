@@ -1,6 +1,6 @@
 """Paystack helpers for CiteIntegrity's Ghana and Nigeria markets."""
 from __future__ import annotations
-import hashlib, hmac, json, os, secrets, urllib.error, urllib.parse, urllib.request
+import hashlib, hmac, json, os, re, secrets, urllib.error, urllib.parse, urllib.request
 from typing import Any, Dict, Optional
 from entitlements import DEFAULT_CURRENCY, get_price, validate_paid_package_for_document
 from access_control import (
@@ -16,8 +16,16 @@ PAYSTACK_PAYMENTS_BUILD = "commercial-local-ghs-ngn-direct-charge"
 PAYSTACK_BASE_URL = "https://api.paystack.co"
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "").strip()
 PAYSTACK_GH_SECRET_KEY = os.environ.get("PAYSTACK_GH_SECRET_KEY", PAYSTACK_SECRET_KEY).strip()
-PAYSTACK_NG_SECRET_KEY = os.environ.get("PAYSTACK_NG_SECRET_KEY", "").strip()
+PAYSTACK_NG_SECRET_KEY = os.environ.get(
+    "PAYSTACK_NG_SECRET_KEY", PAYSTACK_SECRET_KEY or PAYSTACK_GH_SECRET_KEY
+).strip()
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+PAYSTACK_CALLBACK_URL = os.environ.get("PAYSTACK_CALLBACK_URL", f"{APP_BASE_URL}/payment/callback").strip()
+PAYSTACK_REFERENCE_PREFIX = re.sub(
+    r"[^A-Z0-9]", "", os.environ.get("PAYSTACK_REFERENCE_PREFIX", "CIT").strip().upper()
+)[:12] or "CIT"
+PAYSTACK_SOURCE_APP = os.environ.get("PAYSTACK_SOURCE_APP", "citeintegrity").strip().lower() or "citeintegrity"
+PAYSTACK_CONFIRMATION_SECRET = os.environ.get("PAYSTACK_CONFIRMATION_SECRET", "").strip()
 
 PAYSTACK_USER_AGENT = os.environ.get(
     "PAYSTACK_USER_AGENT",
@@ -26,6 +34,28 @@ PAYSTACK_USER_AGENT = os.environ.get(
 
 class PaystackError(Exception):
     pass
+
+
+def is_citeintegrity_reference(reference: str) -> bool:
+    return str(reference or "").strip().upper().startswith(f"{PAYSTACK_REFERENCE_PREFIX}-")
+
+
+def verify_central_confirmation_signature(raw_body: bytes, signature: str = "", authorization: str = "") -> bool:
+    """Authenticate ProjectReady's server-to-server payment confirmation."""
+    if not PAYSTACK_CONFIRMATION_SECRET:
+        return False
+    expected = hmac.new(
+        PAYSTACK_CONFIRMATION_SECRET.encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+    supplied = str(signature or "").strip().lower()
+    if supplied.startswith("sha256="):
+        supplied = supplied[7:]
+    signature_ok = bool(supplied) and hmac.compare_digest(expected, supplied)
+    bearer = str(authorization or "").strip()
+    bearer_ok = bearer.lower().startswith("bearer ") and hmac.compare_digest(
+        bearer[7:].strip(), PAYSTACK_CONFIRMATION_SECRET
+    )
+    return signature_ok or bearer_ok
 
 def _normalise_market(market: str) -> str:
     return "nigeria" if str(market or "").strip().lower() in {"ng", "nga", "nigeria"} else "ghana"
@@ -146,9 +176,8 @@ def initialize_citeintegrity_payment(
 
     charge = get_paystack_charge_amount(tier_key, selected_currency, market)
 
-    provider_reference = (
-        f"CI-{secrets.token_urlsafe(16).replace('_', '').replace('-', '')}"
-    )
+    order_id = secrets.token_hex(12).upper()
+    provider_reference = f"{PAYSTACK_REFERENCE_PREFIX}-{order_id}"
 
     purchase = create_pending_purchase(
         database_url,
@@ -172,6 +201,9 @@ def initialize_citeintegrity_payment(
     )
 
     metadata = {
+        "source_app": PAYSTACK_SOURCE_APP,
+        "order_id": order_id,
+        "product_code": "full_analysis",
         "product": "CiteIntegrity",
         "purchase_id": purchase["id"],
         "tier_key": tier_key,
@@ -199,7 +231,7 @@ def initialize_citeintegrity_payment(
         "amount": str(charge["amount_subunit"]),
         "currency": charge["currency"],
         "reference": provider_reference,
-        "callback_url": f"{APP_BASE_URL}{callback_path}",
+        "callback_url": PAYSTACK_CALLBACK_URL or f"{APP_BASE_URL}{callback_path}",
         "metadata": metadata,
     }
 
@@ -254,7 +286,7 @@ def verify_paystack_transaction(reference: str, market: str = "ghana") -> Dict[s
         return {"ok": False, "verified": False, "message": response.get("message", "Verification failed."), "paystack_response": response}
     data = response.get("data") or {}
     status = str(data.get("status") or "").lower()
-    return {"ok": True, "verified": status == "success", "transaction_status": status, "reference": data.get("reference"), "amount": data.get("amount"), "currency": data.get("currency"), "customer_email": ((data.get("customer") or {}).get("email") or ""), "paystack_data": data}
+    return {"ok": True, "verified": status == "success", "transaction_status": status, "reference": data.get("reference"), "amount": data.get("amount"), "currency": data.get("currency"), "customer_email": ((data.get("customer") or {}).get("email") or ""), "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {}, "paystack_data": data}
 
 def _attach_preview_job_to_purchase(database_url: str, purchase: Dict[str, Any], source: str = "paystack") -> Dict[str, Any]:
     """
@@ -302,11 +334,37 @@ def _payment_matches_purchase(verification: Dict[str, Any], purchase: Dict[str, 
     actual_currency = str(verification.get("currency") or "").upper()
     expected_email = str(purchase.get("user_email") or "").strip().lower()
     actual_email = str(verification.get("customer_email") or "").strip().lower()
-    ok = expected_minor == actual_minor and expected_currency == actual_currency and (not actual_email or expected_email == actual_email)
-    return {"ok": ok, "expected_amount": expected_minor, "actual_amount": actual_minor, "expected_currency": expected_currency, "actual_currency": actual_currency, "email_matches": not actual_email or expected_email == actual_email}
+    expected_reference = str(purchase.get("provider_reference") or "").strip()
+    actual_reference = str(verification.get("reference") or "").strip()
+    metadata = verification.get("metadata") if isinstance(verification.get("metadata"), dict) else {}
+    metadata_source = str(metadata.get("source_app") or "").strip().lower()
+    metadata_product = str(metadata.get("product_code") or "").strip().lower()
+    reference_matches = bool(expected_reference) and hmac.compare_digest(expected_reference, actual_reference)
+    source_matches = not metadata_source or metadata_source == PAYSTACK_SOURCE_APP
+    product_matches = not metadata_product or metadata_product == "full_analysis"
+    email_matches = not actual_email or expected_email == actual_email
+    ok = (
+        expected_minor == actual_minor
+        and expected_currency == actual_currency
+        and email_matches
+        and reference_matches
+        and source_matches
+        and product_matches
+    )
+    return {
+        "ok": ok,
+        "expected_amount": expected_minor,
+        "actual_amount": actual_minor,
+        "expected_currency": expected_currency,
+        "actual_currency": actual_currency,
+        "email_matches": email_matches,
+        "reference_matches": reference_matches,
+        "source_matches": source_matches,
+        "product_matches": product_matches,
+    }
 
 
-def verify_and_activate_purchase(*, database_url: str, reference: str, market: str = "ghana") -> Dict[str, Any]:
+def verify_and_activate_purchase(*, database_url: str, reference: str, market: str = "ghana", source: str = "callback") -> Dict[str, Any]:
     verification = verify_paystack_transaction(reference, market)
 
     if not verification.get("verified"):
@@ -336,7 +394,7 @@ def verify_and_activate_purchase(*, database_url: str, reference: str, market: s
     attached = _attach_preview_job_to_purchase(
         database_url,
         purchase,
-        source="callback",
+        source=source,
     )
 
     return {
@@ -346,6 +404,47 @@ def verify_and_activate_purchase(*, database_url: str, reference: str, market: s
         "preview_job_attached": attached,
         "verification": verification,
     }
+
+
+def handle_central_payment_confirmation(
+    *,
+    database_url: str,
+    raw_body: bytes,
+    signature: str = "",
+    authorization: str = "",
+) -> Dict[str, Any]:
+    """Verify a ProjectReady-routed CiteIntegrity payment and activate it once."""
+    if not verify_central_confirmation_signature(raw_body, signature, authorization):
+        return {"ok": False, "status_code": 401, "message": "Invalid central confirmation signature."}
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return {"ok": False, "status_code": 400, "message": "Invalid confirmation payload."}
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    if isinstance(data.get("metadata"), dict):
+        metadata = {**data.get("metadata"), **metadata}
+    reference = str(payload.get("reference") or data.get("reference") or "").strip()
+    source_app = str(payload.get("source_app") or metadata.get("source_app") or "").strip().lower()
+    event = str(payload.get("event") or "charge.success").strip().lower()
+    if event != "charge.success":
+        return {"ok": True, "status_code": 200, "message": "No activation required for this event.", "event": event}
+    if source_app != PAYSTACK_SOURCE_APP or not is_citeintegrity_reference(reference):
+        return {"ok": False, "status_code": 400, "message": "Confirmation is not for CiteIntegrity."}
+
+    purchase = get_purchase_by_provider_reference(database_url, provider_reference=reference)
+    if not purchase or str(purchase.get("payment_provider") or "").lower() != "paystack":
+        return {"ok": False, "status_code": 404, "message": "No matching CiteIntegrity purchase was found."}
+    market = _normalise_market(str(purchase.get("market") or "ghana"))
+    outcome = verify_and_activate_purchase(
+        database_url=database_url,
+        reference=reference,
+        market=market,
+        source="projectready_webhook",
+    )
+    outcome["status_code"] = 200 if outcome.get("activated") else 400
+    return outcome
 
 def verify_paystack_webhook_signature(raw_body: bytes, signature: str, market: str = "ghana") -> bool:
     secret = _require_secret_key(market).encode("utf-8")
@@ -368,8 +467,10 @@ def handle_paystack_webhook(*, database_url: str, raw_body: bytes, signature: st
     if event_type == "charge.success" and reference:
         pending = get_purchase_by_provider_reference(database_url, provider_reference=reference)
         verification = {
+            "reference": reference,
             "amount": data.get("amount"), "currency": data.get("currency"),
             "customer_email": ((data.get("customer") or {}).get("email") or ""),
+            "metadata": data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
         }
         match = _payment_matches_purchase(verification, pending or {}) if pending else {"ok": False}
         if not pending or not match.get("ok"):

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_CURRENCY = "GHS"
@@ -73,19 +74,18 @@ DOCUMENT_TIERS: Dict[str, Dict[str, Any]] = {
 FREE_PREVIEW_FEATURES: Dict[str, Any] = {
     "name": "Free Preview",
     "is_paid": False,
-    "max_references_preview": 10,
-    "max_citations_preview": 20,
-    "max_rows_preview": 5,
+    "preview_fraction": 0.25,
+    "preview_max_rows": 10,
     "show_summary": True,
     "show_acii": "preview",
-    "show_missing": "limited",
-    "show_uncited": "limited",
+    "show_missing": False,
+    "show_uncited": False,
     "show_c2r": "limited",
     "show_r2c": "limited",
     "show_verification": "limited",
-    "show_recovery": False,
-    "show_claim_support": False,
-    "show_citation_needed": False,
+    "show_recovery": "limited",
+    "show_claim_support": "limited",
+    "show_citation_needed": "limited",
     "show_advanced_enrichment": False,
     "show_certificate": False,
     "allow_export": False,
@@ -252,33 +252,84 @@ def build_plan_selection_payload(reference_count: int, citation_count: int, sele
 
 def get_processing_flags(paid: bool = False) -> Dict[str, bool]:
     if not paid:
-        return {"run_verification": True, "run_recovery": False, "run_claim_support": False, "run_citation_needed": False, "run_advanced_enrichment": False, "run_certificate": False, "allow_export": False}
+        return {"run_verification": True, "run_recovery": True, "run_claim_support": True, "run_citation_needed": True, "run_advanced_enrichment": False, "run_certificate": False, "allow_export": False}
     return {"run_verification": True, "run_recovery": True, "run_claim_support": True, "run_citation_needed": True, "run_advanced_enrichment": True, "run_certificate": True, "allow_export": True}
 
 def limit_rows(rows: Any, limit: int = 5) -> Any:
     return rows[:limit] if isinstance(rows, list) else rows
 
+
+def preview_rows(rows: Any, fraction: float = 0.25, max_rows: int = 10) -> Tuple[Any, Dict[str, Any]]:
+    """Return a first-quarter sample capped at ``max_rows`` and explicit coverage."""
+    if not isinstance(rows, list):
+        return rows, {"total": 0, "shown": 0, "fraction": fraction, "max_rows": max_rows}
+    total = len(rows)
+    shown = min(total, max_rows, max(1, ceil(total * fraction))) if total else 0
+    return rows[:shown], {
+        "total": total,
+        "shown": shown,
+        "fraction": fraction,
+        "max_rows": max_rows,
+        "capped": bool(total and ceil(total * fraction) > max_rows),
+    }
+
+
+def preview_grouped_rows(groups: Dict[str, Any], fraction: float = 0.25, max_rows: int = 10) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Sample related row groups together so their combined preview never exceeds the cap."""
+    clean_groups = {key: value if isinstance(value, list) else [] for key, value in groups.items()}
+    total = sum(len(value) for value in clean_groups.values())
+    target = min(total, max_rows, max(1, ceil(total * fraction))) if total else 0
+    sampled = {key: [] for key in clean_groups}
+    nonempty = [key for key, value in clean_groups.items() if value]
+
+    # Give each non-empty subgroup one row where the overall preview budget permits it.
+    for key in nonempty:
+        if sum(len(value) for value in sampled.values()) >= target:
+            break
+        sampled[key].append(clean_groups[key][0])
+
+    indexes = {key: len(sampled[key]) for key in clean_groups}
+    while sum(len(value) for value in sampled.values()) < target:
+        progressed = False
+        for key in nonempty:
+            if sum(len(value) for value in sampled.values()) >= target:
+                break
+            index = indexes[key]
+            if index < len(clean_groups[key]):
+                sampled[key].append(clean_groups[key][index])
+                indexes[key] += 1
+                progressed = True
+        if not progressed:
+            break
+
+    shown = sum(len(value) for value in sampled.values())
+    return sampled, {
+        "total": total,
+        "shown": shown,
+        "fraction": fraction,
+        "max_rows": max_rows,
+        "capped": bool(total and ceil(total * fraction) > max_rows),
+        "groups": {key: {"total": len(clean_groups[key]), "shown": len(sampled[key])} for key in clean_groups},
+    }
+
 def locked_payload(feature_name: str, required_plan: str = "Full Review") -> Dict[str, Any]:
     return {"locked": True, "feature": feature_name, "required_plan": required_plan, "message": f"Unlock {required_plan} to view {feature_name}."}
 
-def _limit_online_verification(result: Dict[str, Any], max_rows: int) -> None:
+def _limit_online_verification(result: Dict[str, Any], fraction: float = 0.25, max_rows: int = 10) -> Dict[str, Any]:
     ov = result.get("online_verification") or {}
     if not isinstance(ov, dict):
-        return
+        return {"total": 0, "shown": 0, "fraction": fraction, "max_rows": max_rows}
     rows = ov.get("rows") or []
+    coverage = {"total": 0, "shown": 0, "fraction": fraction, "max_rows": max_rows}
     if isinstance(rows, list):
-        ov["total_rows_available"] = None
-        ov["rows"] = rows[:max_rows]
-        ov["limited"] = len(rows) > max_rows
-        ov["counts_locked"] = True
-        ov["limit_message"] = f"Free Preview shows only the first {max_rows} reference verification rows."
-    summary = ov.get("summary") if isinstance(ov.get("summary"), dict) else {}
-    for key in ("verified", "likely", "needs_review", "not_found", "offline", "total", "completed"):
-        if key in summary:
-            summary[key] = None
-    summary["counts_locked"] = True
-    ov["summary"] = summary
+        sampled, coverage = preview_rows(rows, fraction, max_rows)
+        ov["total_rows_available"] = coverage["total"]
+        ov["rows"] = sampled
+        ov["limited"] = coverage["shown"] < coverage["total"]
+        ov["preview_coverage"] = coverage
+        ov["limit_message"] = f"Free Preview shows {coverage['shown']} of {coverage['total']} verification rows."
     result["online_verification"] = ov
+    return coverage
 
 def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", paid: bool = False, currency: str = DEFAULT_CURRENCY) -> Dict[str, Any]:
     safe = deepcopy(result or {})
@@ -289,34 +340,117 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     if paid:
         safe["advanced_enrichment_cap"] = package.get("advanced_enrichment_cap", 0)
         return safe
-    preview_limit = FREE_PREVIEW_FEATURES["max_rows_preview"]
-    safe["missing_in_references"] = limit_rows(safe.get("missing_in_references"), preview_limit)
-    safe["uncited_references"] = limit_rows(safe.get("uncited_references"), preview_limit)
-    safe["reconciliation_intext_to_reference"] = limit_rows(safe.get("reconciliation_intext_to_reference"), preview_limit)
-    safe["reconciliation_reference_to_intext"] = limit_rows(safe.get("reconciliation_reference_to_intext"), preview_limit)
-    _limit_online_verification(safe, FREE_PREVIEW_FEATURES["max_references_preview"])
-    safe["recovery"] = locked_payload("Recovery Suggestions")
-    safe["claim_support"] = locked_payload("Claim Support")
-    safe["citation_needed_claims"] = locked_payload("Citation Needed Claims")
+    preview_fraction = float(FREE_PREVIEW_FEATURES["preview_fraction"])
+    preview_max_rows = int(FREE_PREVIEW_FEATURES["preview_max_rows"])
+    coverage: Dict[str, Any] = {}
+    # Reconciliation samples must not reveal individual locked missing or uncited findings.
+    c2r_rows = safe.get("reconciliation_intext_to_reference")
+    if isinstance(c2r_rows, list):
+        safe["reconciliation_intext_to_reference"] = [
+            row for row in c2r_rows
+            if not isinstance(row, dict) or str(row.get("status") or "").lower() not in {"not_found", "missing", "missing_reference", "unmatched"}
+        ]
+    r2c_rows = safe.get("reconciliation_reference_to_intext")
+    if isinstance(r2c_rows, list):
+        safe["reconciliation_reference_to_intext"] = [
+            row for row in r2c_rows
+            if not isinstance(row, dict) or _as_int(row.get("times_cited"), len(row.get("cited_by") or [])) > 0
+        ]
+
+    for key in (
+        "reconciliation_intext_to_reference", "reconciliation_reference_to_intext",
+        "claim_support", "citation_needed_claims",
+    ):
+        safe[key], coverage[key] = preview_rows(safe.get(key), preview_fraction, preview_max_rows)
+
+    # These findings reveal the core reconciliation outcome and remain fully payment-gated.
+    safe["missing_in_references"] = locked_payload("Missing Citations")
+    safe["uncited_references"] = locked_payload("Uncited References")
+    coverage["missing_in_references"] = {"locked": True, "total": None, "shown": 0}
+    coverage["uncited_references"] = {"locked": True, "total": None, "shown": 0}
+    coverage["online_verification"] = _limit_online_verification(safe, preview_fraction, preview_max_rows)
+
+    recovery = safe.get("recovery") if isinstance(safe.get("recovery"), dict) else {}
+    if recovery and not recovery.get("locked"):
+        sampled_recovery, recovery_coverage = preview_grouped_rows({
+            "verification_recovery": recovery.get("verification_recovery"),
+        }, preview_fraction, preview_max_rows)
+        recovery.update(sampled_recovery)
+        recovery["missing_recovery"] = locked_payload("Missing Citation Recovery")
+        coverage["recovery"] = recovery_coverage
+        coverage["recovery_missing"] = {"locked": True, "total": None, "shown": 0}
+        coverage["recovery_verification"] = recovery_coverage["groups"]["verification_recovery"]
+        recovery["preview_read_only"] = True
+        safe["recovery"] = recovery
+    else:
+        coverage["recovery"] = {"total": 0, "shown": 0, "fraction": preview_fraction, "max_rows": preview_max_rows}
+
+    plan = safe.get("correction_plan") if isinstance(safe.get("correction_plan"), dict) else {}
+    if plan and not plan.get("locked"):
+        sensitive_categories = {"missing_reference", "missing_citation", "uncited_reference", "uncited_references"}
+        eligible_items = [
+            item for item in (plan.get("items") or [])
+            if isinstance(item, dict) and str(item.get("category") or "").lower() not in sensitive_categories
+        ]
+        plan["items"], coverage["correction_plan"] = preview_rows(eligible_items, preview_fraction, preview_max_rows)
+        pending = sum(1 for item in eligible_items if str(item.get("decision") or "pending").lower() == "pending")
+        plan["counts"] = {"total": len(eligible_items), "pending": pending}
+        original_workspace = plan.get("evidence_resolution_workspace") if isinstance(plan.get("evidence_resolution_workspace"), dict) else {}
+        plan["evidence_resolution_workspace"] = {
+            "headline": original_workspace.get("headline") or plan.get("headline") or "Review the available sample findings.",
+            "counts": {"total": len(eligible_items), "pending": pending},
+            "groups": [],
+            "item_ids": [item.get("id") for item in plan["items"] if item.get("id")],
+            "workflow": original_workspace.get("workflow") or [],
+        }
+        plan["preview_read_only"] = True
+        safe["correction_plan"] = plan
+        safe["evidence_resolution_workspace"] = plan["evidence_resolution_workspace"]
+    else:
+        safe["correction_plan"] = locked_payload("Submission-Ready Correction Plan")
+        safe["evidence_resolution_workspace"] = locked_payload("Evidence Resolution Workspace")
+        coverage["correction_plan"] = {"total": 0, "shown": 0, "fraction": preview_fraction, "max_rows": preview_max_rows}
+
+    voice = safe.get("academic_voice_review") if isinstance(safe.get("academic_voice_review"), dict) else {}
+    if voice and not voice.get("locked"):
+        voice["signals"], coverage["academic_voice"] = preview_rows(voice.get("signals"), preview_fraction, preview_max_rows)
+        voice["preview_read_only"] = True
+        safe["academic_voice_review"] = voice
+    else:
+        safe["academic_voice_review"] = locked_payload("Academic Voice and Writing Signals")
+        coverage["academic_voice"] = {"total": 0, "shown": 0, "fraction": preview_fraction, "max_rows": preview_max_rows}
+
+    autofix = safe.get("autofix") if isinstance(safe.get("autofix"), dict) else {}
+    autofix_suggestions = autofix.get("suggestions") if isinstance(autofix.get("suggestions"), dict) else {}
+    sampled_autofix, autofix_coverage = preview_grouped_rows({
+        "citations": autofix_suggestions.get("citations"),
+        "references": autofix_suggestions.get("references"),
+    }, preview_fraction, preview_max_rows)
+    for key in ("citations", "references"):
+        if key in autofix_suggestions:
+            autofix_suggestions[key] = sampled_autofix[key]
+            coverage[f"autofix_{key}"] = autofix_coverage["groups"][key]
+    coverage["autofix"] = autofix_coverage
+    if autofix_suggestions:
+        autofix["suggestions"] = autofix_suggestions
+        autofix["preview_read_only"] = True
+        safe["autofix"] = autofix
+
     safe["advanced_enrichment"] = locked_payload("Advanced Enrichment")
     safe["citation_integrity_certificate"] = locked_payload("Citation Integrity Certificate")
     safe["export"] = locked_payload("Export Report")
-    safe["correction_plan"] = locked_payload("Submission-Ready Correction Plan")
-    safe["evidence_resolution_workspace"] = locked_payload("Evidence Resolution Workspace")
     safe["citation_improvement_coach"] = locked_payload("Citation Improvement Coach")
     safe["source_risk_review"] = locked_payload("Source Risk Review")
-    safe["academic_voice_review"] = locked_payload("Academic Voice and Writing Signals")
     safe_summary = safe.get("summary") if isinstance(safe.get("summary"), dict) else {}
-    for key in (
-        "in_text_citations_found", "reference_entries_found", "missing_in_references",
-        "uncited_references", "match_rate", "verified_references", "recovery_rows",
-        "claim_support_rows", "citation_needed_claims",
-    ):
-        if key in safe_summary:
-            safe_summary[key] = None
-    safe_summary["counts_locked"] = True
+    safe_summary["preview_fraction"] = preview_fraction
+    safe_summary["preview_max_rows"] = preview_max_rows
+    safe_summary["missing_in_references"] = None
+    safe_summary["uncited_references"] = None
+    safe_summary["match_rate"] = None
+    safe_summary["locked_indicators"] = ["missing_in_references", "uncited_references", "match_rate"]
     safe["summary"] = safe_summary
-    safe["preview_notice"] = "This is a Free Preview. Result totals and detailed findings unlock with Full Review, including recovery suggestions, claim support, tracked corrections, the certificate, and exports."
+    safe["preview_coverage"] = coverage
+    safe["preview_notice"] = "Free Preview keeps Missing Citations, Uncited References, and Match Rate locked. Other available result categories show a complete 25% sample capped at 10 rows. Unlock Full Review for all findings, actions, exports, certificate, and recheck."
     return safe
 
 def utc_now_iso() -> str:

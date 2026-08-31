@@ -6,6 +6,11 @@ CiteIntegrity uses a free preview plus one-time Full Review purchases. There is
 no compulsory subscription. Every purchase covers the current Full Review and
 one recheck of the same document within 14 days.
 
+The unpaid preview shows the ACII assessment, citation and reference totals,
+and 25% of complete rows in each other available result category, capped at 10
+rows. Missing Citations, Uncited References and Match Rate remain locked until
+payment. Preview actions, exports and certificates are also locked.
+
 | Document package | Ghana | Nigeria | International |
 |---|---:|---:|---:|
 | Article or assignment | GHS 10 | NGN 1,500 | USD 2.99 |
@@ -13,7 +18,7 @@ one recheck of the same document within 14 days.
 | Master's thesis | GHS 35 | NGN 4,000 | USD 7.99 |
 | PhD or large document | GHS 50 | NGN 6,000 | USD 12.99 |
 
-These are fixed local prices, not live foreign-exchange conversions.
+These are fixed local launch prices, not live foreign-exchange conversions.
 
 ## Gateway routing
 
@@ -23,13 +28,38 @@ These are fixed local prices, not live foreign-exchange conversions.
   `STRIPE_SECRET_KEY`.
 - The server derives the package and amount from the completed preview. Browser
   requests cannot supply or override a price.
-- Paystack callbacks/webhooks and Stripe success/webhook handlers verify the
+- Paystack callbacks, central confirmations and Stripe handlers verify the
   amount, currency, customer email and provider reference before activation.
 
-Configure these public production URLs in the payment dashboards:
+Keep these existing settings in the Paystack dashboard:
 
-- Paystack Ghana webhook: `/api/webhooks/paystack/ghana`
-- Paystack Nigeria webhook: `/api/webhooks/paystack/nigeria`
+- Live webhook: `https://projectreadyai.com/api/paystack/webhook`
+- Live callback: ProjectReady's existing callback URL
+
+CiteIntegrity supplies `https://citeintegrity.org/payment/callback` in each
+transaction initialization request, so no Paystack dashboard URL needs to be
+replaced. New CiteIntegrity references start with `CIT-` and include
+`source_app=citeintegrity` plus `product_code=full_analysis` in metadata.
+
+ProjectReady's central webhook must verify Paystack's signature first. It then
+keeps processing `PRJ-` transactions locally and forwards only `CIT-`
+`charge.success` events to:
+
+- `POST https://citeintegrity.org/api/paystack/payment-confirmation`
+- `Content-Type: application/json`
+- `X-CiteIntegrity-Signature: <HMAC-SHA256 of the exact forwarded body>`
+
+Both services must use the same `PAYSTACK_CONFIRMATION_SECRET`. CiteIntegrity
+does not trust the forwarded success notice by itself. It calls Paystack's
+transaction verification API, checks the stored order, reference, amount,
+currency, email and metadata, and activates the purchase idempotently.
+
+The direct CiteIntegrity webhook routes below remain available as optional
+fallbacks but are not placed in the Paystack dashboard when ProjectReady is the
+central router:
+
+- `/api/webhooks/paystack/ghana`
+- `/api/webhooks/paystack/nigeria`
 - Stripe webhook: `/api/webhooks/stripe`
 - Stripe event: `checkout.session.completed`
 

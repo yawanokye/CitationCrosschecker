@@ -57,7 +57,7 @@ class CommercialReleaseTests(unittest.TestCase):
             self.assertIn("₦1,500", source)
             self.assertIn("US$2.99", source)
 
-    def test_free_preview_redacts_result_indicators(self):
+    def test_free_preview_locks_core_indicators_and_caps_other_samples(self):
         result = {
             "summary": {
                 "in_text_citations_found": 80,
@@ -67,23 +67,60 @@ class CommercialReleaseTests(unittest.TestCase):
                 "match_rate": 94,
             },
             "online_verification": {
-                "rows": [{"status": "verified"}] * 12,
-                "summary": {"verified": 11, "not_found": 1},
+                "rows": [{"status": "verified", "reference": str(i)} for i in range(80)],
+                "summary": {"verified": 79, "not_found": 1},
+            },
+            "missing_in_references": [{"citation": "Locked"}] * 8,
+            "uncited_references": [{"reference": "Locked"}] * 12,
+            "claim_support": [{"claim": str(i)} for i in range(60)],
+            "citation_needed_claims": [{"claim": str(i)} for i in range(20)],
+            "reconciliation_intext_to_reference": [{"status": "matched", "citation": str(i)} for i in range(80)] + [{"status": "not_found", "citation": "must stay locked"}],
+            "reconciliation_reference_to_intext": [{"times_cited": 1, "reference": str(i)} for i in range(80)] + [{"times_cited": 0, "reference": "must stay locked"}],
+            "recovery": {
+                "missing_recovery": [{"citation": str(i)} for i in range(40)],
+                "verification_recovery": [{"reference": str(i)} for i in range(60)],
+            },
+            "correction_plan": {
+                "items": [
+                    {"id": "locked-missing", "category": "missing_reference"},
+                    {"id": "locked-uncited", "category": "uncited_reference"},
+                    *[{"id": f"claim-{i}", "category": "claim_support"} for i in range(40)],
+                ],
+                "evidence_resolution_workspace": {"counts": {"pending": 42}},
             },
         }
         preview = apply_entitlements_to_result(result, tier_key="article", paid=False, currency="GHS")
-        self.assertTrue(preview["summary"]["counts_locked"])
+        self.assertEqual(preview["summary"]["in_text_citations_found"], 80)
+        self.assertEqual(preview["summary"]["reference_entries_found"], 82)
         self.assertIsNone(preview["summary"]["missing_in_references"])
+        self.assertIsNone(preview["summary"]["uncited_references"])
         self.assertIsNone(preview["summary"]["match_rate"])
-        self.assertTrue(preview["online_verification"]["counts_locked"])
-        self.assertIsNone(preview["online_verification"]["summary"]["verified"])
+        self.assertTrue(preview["missing_in_references"]["locked"])
+        self.assertTrue(preview["uncited_references"]["locked"])
+        self.assertTrue(preview["recovery"]["missing_recovery"]["locked"])
+        self.assertLessEqual(len(preview["recovery"]["verification_recovery"]), 10)
+        self.assertNotIn("must stay locked", str(preview["reconciliation_intext_to_reference"]))
+        self.assertNotIn("must stay locked", str(preview["reconciliation_reference_to_intext"]))
+        self.assertNotIn("locked-missing", str(preview["correction_plan"]))
+        self.assertNotIn("locked-uncited", str(preview["correction_plan"]))
+        self.assertEqual(preview["online_verification"]["summary"]["verified"], 79)
+        for key, rows in (
+            ("online_verification", preview["online_verification"]["rows"]),
+            ("claim_support", preview["claim_support"]),
+            ("citation_needed_claims", preview["citation_needed_claims"]),
+            ("reconciliation_intext_to_reference", preview["reconciliation_intext_to_reference"]),
+            ("reconciliation_reference_to_intext", preview["reconciliation_reference_to_intext"]),
+        ):
+            self.assertLessEqual(len(rows), 10, key)
+            self.assertEqual(preview["preview_coverage"][key]["shown"], len(rows))
 
-    def test_results_ui_locks_all_indicator_surfaces(self):
+    def test_results_ui_locks_core_indicators_and_marks_samples(self):
         source = (ROOT / "templates" / "new_results.html").read_text(encoding="utf-8")
-        self.assertIn('"countCorrections", "countVoice", "countSummary", "countMissing"', source)
-        self.assertIn('lockRow(3, "Summary indicators"', source)
-        self.assertIn('indicatorsUnlocked ? esc(value) : "🔒"', source)
-        self.assertIn('Result indicators</strong><br>🔒 Unlock to view totals', source)
+        self.assertIn('lockRow(3, "Missing Citations"', source)
+        self.assertIn('lockRow(2, "Uncited References"', source)
+        self.assertIn('setCount("countMissing", paid ?', source)
+        self.assertIn('previewNoticeRow(data, "online_verification"', source)
+        self.assertIn('25% sample capped at 10 rows', source)
         main = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('payload.pop("reference_count", None)', main)
 
@@ -93,6 +130,7 @@ class CommercialReleaseTests(unittest.TestCase):
             self.assertIn("developerNoticeBanner", source)
             self.assertIn("/api/public/config", source)
             self.assertIn("ciNoticeFlash", source)
+            self.assertIn("#16a34a", source)
         main = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('/api/developer/notice', main)
         self.assertIn('Publish banner settings only', main)
@@ -114,8 +152,39 @@ class CommercialReleaseTests(unittest.TestCase):
         for marker in ("expected_minor", "expected_currency", "expected_email"):
             self.assertIn(marker, paystack)
             self.assertIn(marker, stripe)
+        self.assertIn("expected_reference", paystack)
         self.assertIn("verify_paystack_webhook_signature", paystack)
         self.assertIn("stripe.Webhook.construct_event", stripe)
+
+    def test_projectready_central_paystack_routing_is_configured(self):
+        paystack = (ROOT / "paystack_payments.py").read_text(encoding="utf-8")
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        env = (ROOT / ".env.example").read_text(encoding="utf-8")
+        guide = (ROOT / "RENDER_ENVIRONMENT.md").read_text(encoding="utf-8")
+        for marker in (
+            'PAYSTACK_REFERENCE_PREFIX", "CIT"',
+            '"source_app": PAYSTACK_SOURCE_APP',
+            '"product_code": "full_analysis"',
+            "handle_central_payment_confirmation",
+        ):
+            self.assertIn(marker, paystack)
+        self.assertIn('@app.get("/payment/callback")', main)
+        self.assertIn('@app.post("/api/paystack/payment-confirmation")', main)
+        for marker in (
+            "PAYSTACK_CALLBACK_URL=https://citeintegrity.org/payment/callback",
+            "PAYSTACK_REFERENCE_PREFIX=CIT",
+            "PAYSTACK_SOURCE_APP=citeintegrity",
+            "PAYSTACK_CONFIRMATION_SECRET=",
+        ):
+            self.assertIn(marker, env)
+        self.assertIn("https://projectreadyai.com/api/paystack/webhook", guide)
+
+    def test_projectready_confirmation_uses_hmac_sha256(self):
+        paystack = (ROOT / "paystack_payments.py").read_text(encoding="utf-8")
+        self.assertIn("PAYSTACK_CONFIRMATION_SECRET", paystack)
+        self.assertIn("hashlib.sha256", paystack)
+        self.assertIn("hmac.compare_digest", paystack)
+        self.assertIn("verify_central_confirmation_signature", paystack)
 
     def test_cost_optimised_worker_roles_are_isolated(self):
         worker = (ROOT / "worker.py").read_text(encoding="utf-8")
