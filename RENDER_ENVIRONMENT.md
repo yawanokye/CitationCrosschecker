@@ -46,6 +46,43 @@ exact Paystack webhook body forwarded to CiteIntegrity in the
 | `DATABASE_URL` | CiteIntegrity PostgreSQL connection string |
 | `REDIS_URL` | CiteIntegrity Redis connection string |
 
+## Required integrity-verification values
+
+| Render key | Recommended value |
+|---|---|
+| `CITATION_CROSSCHECKER_MAILTO` | A monitored technical contact email for Crossref polite-pool identification |
+| `OPENALEX_API_KEY` | CiteIntegrity's OpenAlex production API key |
+| `PUBLICATION_STATUS_CHECK_ENABLED` | `true` |
+| `PUBLICATION_STATUS_TIMEOUT` | `8` |
+| `PUBLICATION_STATUS_CACHE_TTL` | `21600` |
+| `RETRACTION_WATCH_DB_PATH` | Leave unset to use the bundled `data/retraction_watch.sqlite3` snapshot |
+
+The web service and every document-processing worker must receive the same
+integrity-verification values. A missing OpenAlex key can reduce fallback
+coverage. A disabled or failed publication-status check is reported as
+`unchecked`, never as clear.
+
+The bundled Retraction Watch DOI index was generated from Crossref's official
+daily dataset. Refresh it before each release:
+
+```bash
+git clone --depth 1 https://gitlab.com/crossref/retraction-watch-data.git /tmp/retraction-watch-data
+python scripts/build_retraction_watch_index.py \
+  --csv /tmp/retraction-watch-data/retraction_watch.csv \
+  --output data/retraction_watch.sqlite3 \
+  --dataset-date YYYY-MM-DD \
+  --source-commit COMMIT_SHA
+```
+
+## Safe deployment sequence for this corrective release
+
+1. Set `GLOBAL_ACCESS_MODE=maintenance` from the protected developer portal.
+2. Add the integrity-verification values above to the web service and all workers.
+3. Deploy the web service, core worker, and large-document worker from the same release.
+4. Run `python -m unittest -q test_integrity_corrective_release.py`.
+5. Process the supplied 20-reference benchmark and confirm 20 verification rows.
+6. Restore `GLOBAL_ACCESS_MODE=payment_required` only after the benchmark passes.
+
 The existing Paystack dashboard webhook remains:
 
 `https://projectreadyai.com/api/paystack/webhook`

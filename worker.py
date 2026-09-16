@@ -34,7 +34,7 @@ from claim_checker import (
 )
 
 __version__ = "2.0.0"
-WORKER_BUILD = "commercial-2026-08-24-evidence-resolution-visible-source-search-reporting"
+WORKER_BUILD = "commercial-2026-09-16-publication-integrity-v1.6.0"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -412,6 +412,12 @@ def _compute_verification_summary(rows):
         "needs_review": sum(1 for r in rows if r and r.get("status") == "needs_review"),
         "not_found": sum(1 for r in rows if r and r.get("status") == "not_found"),
         "offline": sum(1 for r in rows if r and r.get("status") == "offline"),
+        "publication_status_checked": sum(1 for r in rows if r and r.get("publication_status_checked") is True),
+        "publication_status_unchecked": sum(1 for r in rows if not r or r.get("publication_status_checked") is not True),
+        "active_retractions_or_withdrawals": sum(1 for r in rows if r and str(r.get("publication_status") or "").lower() in {"retracted", "withdrawn"}),
+        "expressions_of_concern": sum(1 for r in rows if r and str(r.get("publication_status") or "").lower() == "expression_of_concern"),
+        "corrections": sum(1 for r in rows if r and str(r.get("publication_status") or "").lower() == "corrected"),
+        "reinstatements": sum(1 for r in rows if r and str(r.get("publication_status") or "").lower() == "reinstated"),
     }
 
 
@@ -424,7 +430,8 @@ def _reference_cache_key(ref, style="apa", enrich_metadata=False):
         "enrich_metadata": bool(enrich_metadata),
     }, sort_keys=True)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return f"verify:v2:{digest}"
+    # v3 invalidates rows cached before publication-event verification existed.
+    return f"verify:v3-publication-integrity:{digest}"
 
 
 def _make_offline_verification_row(ref, error="Verification failed or timed out", style="apa"):

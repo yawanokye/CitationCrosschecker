@@ -13,6 +13,12 @@ from datetime import datetime
 
 import requests
 
+from publication_integrity import (
+    enrich_verification_row,
+    events_from_crossref_message,
+    is_publication_notice,
+)
+
 try:
     import redis
 except Exception:
@@ -28,6 +34,7 @@ MAILTO = (
     or os.getenv("OPENALEX_MAILTO")
     or ""
 ).strip()
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "").strip()
 
 # ============================================================
 # REDIS-PERSISTENT VERIFICATION PROGRESS
@@ -2309,6 +2316,8 @@ def _query_openalex_by_doi(doi: str) -> List[Dict[str, Any]]:
     params: Dict[str, Any] = {"filter": f"doi:{_doi_url(doi)}", "per-page": 5}
     if MAILTO:
         params["mailto"] = MAILTO
+    if OPENALEX_API_KEY:
+        params["api_key"] = OPENALEX_API_KEY
     data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "query_name": "openalex_doi_exact", "item": it} for it in items]
@@ -2326,6 +2335,8 @@ def _query_openalex_search(query: str, rows: int = None, publication_year: str =
         params["filter"] = f"publication_year:{publication_year}"
     if MAILTO:
         params["mailto"] = MAILTO
+    if OPENALEX_API_KEY:
+        params["api_key"] = OPENALEX_API_KEY
     data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "query_name": query_name, "item": it} for it in items]
@@ -2377,6 +2388,7 @@ def _candidate_fields(cand: Dict[str, Any]) -> Dict[str, Any]:
     if src == "crossref":
         title_list = item.get("title") or []
         container_list = item.get("container-title") or item.get("short-container-title") or []
+        candidate_publication_events = events_from_crossref_message(item)
         return {
             "source": src,
             "sources": sources,
@@ -3634,6 +3646,7 @@ def _candidate_fields(cand: Dict[str, Any]) -> Dict[str, Any]:
     if src == "crossref":
         title_list = item.get("title") or []
         container_list = item.get("container-title") or item.get("short-container-title") or []
+        candidate_publication_events = events_from_crossref_message(item)
         return {
             "source": src,
             "sources": sources,
@@ -3650,6 +3663,8 @@ def _candidate_fields(cand: Dict[str, Any]) -> Dict[str, Any]:
             "type": _safe_strip(item.get("type", "")),
             "url": _safe_strip(item.get("URL", "")),
             "is_retracted": bool(item.get("relation", {}).get("is-retracted-by") or item.get("relation", {}).get("retracts")),
+            "candidate_publication_events": candidate_publication_events,
+            "candidate_is_publication_notice": is_publication_notice(item),
         }
 
     if src == "openalex":
@@ -4152,6 +4167,8 @@ def _verify_single_reference(
             "matched_publisher": _safe_strip(meta.get("publisher", "")),
             "matched_type": _safe_strip(meta.get("type", "")),
             "matched_url": _safe_strip(meta.get("url", "")),
+            "candidate_publication_events": meta.get("candidate_publication_events") or [],
+            "candidate_is_publication_notice": bool(meta.get("candidate_is_publication_notice")),
             "title_score": int(meta.get("title_score", 0)),
             "journal_score": int(meta.get("journal_score", 0)),
             "author_overlap": int(meta.get("author_overlap", 0)),
@@ -7935,6 +7952,8 @@ def _v1534_query_openalex_doi(doi: str) -> List[Dict[str, Any]]:
     params = {"filter": f"doi:{doi}", "per-page": 1}
     if MAILTO:
         params["mailto"] = MAILTO
+    if OPENALEX_API_KEY:
+        params["api_key"] = OPENALEX_API_KEY
     data = _safe_get_json(url, params=params, timeout=API_TIMEOUT)
     items = (data or {}).get("results", [])
     return [{"source": "openalex", "item": it} for it in items]
@@ -8144,4 +8163,38 @@ def _verify_single_reference(
             pass
 
     row["status"] = _normalize_verify_status(row.get("status"))
+    return row
+
+
+# ============================================================
+# PUBLICATION EVENT VERIFICATION v1.6.0
+# ============================================================
+# This final wrapper runs after bibliographic matching. It checks the confirmed
+# DOI against Crossref update-to metadata, including Retraction Watch events.
+VERIFY_BUILD = "commercial-2026-09-16-publication-integrity-v1.6.0"
+_V160_PREVIOUS_VERIFY_SINGLE_REFERENCE = globals().get("_verify_single_reference")
+
+
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    row = _V160_PREVIOUS_VERIFY_SINGLE_REFERENCE(
+        ref, style, use_crossref, use_openalex, enrich_metadata
+    )
+    try:
+        row = enrich_verification_row(row, ref)
+        row["verification_build"] = VERIFY_BUILD
+    except Exception as exc:
+        row = dict(row or {})
+        row.update({
+            "publication_status_checked": False,
+            "publication_status": "unchecked",
+            "publication_status_source": "crossref",
+            "publication_status_reason": f"Publication-status verification failed safely: {exc}",
+            "verification_build": VERIFY_BUILD,
+        })
     return row

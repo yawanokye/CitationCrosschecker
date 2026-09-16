@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 import os
 
@@ -13,7 +13,7 @@ def assess_source_risks(result: Dict[str, Any]) -> Dict[str, Any]:
     rows = online.get("rows") if isinstance(online, dict) else online
     rows = rows if isinstance(rows, list) else []
     risks: List[Dict[str, Any]] = []
-    current_year = datetime.utcnow().year
+    current_year = datetime.now(timezone.utc).year
     seen_dois: Dict[str, int] = {}
     questionable = {name.strip().lower() for name in os.getenv("QUESTIONABLE_JOURNALS", "").split("|") if name.strip()}
     for index, row in enumerate(rows):
@@ -21,12 +21,30 @@ def assess_source_risks(result: Dict[str, Any]) -> Dict[str, Any]:
             continue
         status = str(row.get("status") or "").lower()
         title = row.get("matched_title") or row.get("title") or row.get("reference") or f"Reference {index + 1}"
-        if row.get("is_retracted") is True or str(row.get("publication_status") or "").lower() in {"retracted", "withdrawn"}:
-            risks.append({"priority":"critical", "risk":"retracted_or_withdrawn", "reference":title, "action":"Open the publisher record and replace or discuss the retracted source as academically appropriate."})
-        if row.get("expression_of_concern") is True:
-            risks.append({"priority":"critical", "risk":"expression_of_concern", "reference":title, "action":"Review the expression of concern and do not rely on this source without explicit justification."})
+        publication_status = str(row.get("publication_status") or "unchecked").lower()
+        publication_events = row.get("publication_events") if isinstance(row.get("publication_events"), list) else []
+        event_context = {
+            "publication_status": publication_status,
+            "events": publication_events,
+            "source": row.get("publication_status_source") or "",
+            "checked_at": row.get("publication_status_checked_at") or "",
+            "data_version": row.get("publication_status_data_version") or "",
+            "doi": row.get("publication_status_doi") or row.get("reference_doi") or row.get("doi") or "",
+        }
+        if row.get("is_retracted") is True or publication_status in {"retracted", "withdrawn"}:
+            risks.append({"priority":"critical", "risk":"retracted_or_withdrawn", "reference":title, "action":"Open the publisher record and replace the source or explicitly justify why the retracted or withdrawn work is cited.", **event_context})
+        elif row.get("expression_of_concern") is True or publication_status == "expression_of_concern":
+            risks.append({"priority":"critical", "risk":"expression_of_concern", "reference":title, "action":"Review the expression of concern and do not rely on this source without explicit justification.", **event_context})
+        elif publication_status == "publication_notice" or row.get("work_role") == "publication_notice":
+            risks.append({"priority":"optional", "risk":"publication_notice", "reference":title, "action":"This is a publication notice. Citing the notice itself is legitimate. Confirm that it is being cited for the intended purpose.", **event_context})
+        elif publication_status == "corrected" or row.get("is_corrected") is True:
+            risks.append({"priority":"important", "risk":"corrected_publication", "reference":title, "action":"Open the correction and confirm that the corrected record and claims are used.", **event_context})
+        elif publication_status == "reinstated" or row.get("is_reinstated") is True:
+            risks.append({"priority":"optional", "risk":"reinstated_publication", "reference":title, "action":"This work has been reinstated and must not be treated as actively retracted. Review the event history for context.", **event_context})
+        elif row.get("publication_status_checked") is not True:
+            risks.append({"priority":"important", "risk":"publication_status_unchecked", "reference":title, "action":"Publication status could not be checked. Verify the DOI and inspect the publisher record before relying on this source.", "qualification":"Unchecked is not the same as clear.", **event_context})
         update_type = str(row.get("update_type") or row.get("relation_type") or "").lower()
-        if update_type in {"correction", "corrigendum", "erratum", "update", "is-corrected-by", "is-superseded-by"} or row.get("is_superseded") is True:
+        if publication_status not in {"corrected", "reinstated", "publication_notice"} and (update_type in {"correction", "corrigendum", "erratum", "update", "is-corrected-by", "is-superseded-by"} or row.get("is_superseded") is True):
             risks.append({"priority":"important", "risk":"corrected_or_superseded", "reference":title, "action":"Open the latest publisher record and use the corrected or current version where appropriate.", "url":row.get("url") or row.get("evidence_url") or ""})
         if status in {"not_found", "unverified", "failed"}:
             risks.append({

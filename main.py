@@ -3558,7 +3558,7 @@ async def verify(
     file: UploadFile = File(...),
     style: str = Form("auto"),
     enable_autofix: str = Form("false"),  # CHANGE: Use str instead of bool
-    enable_online_verification: str = Form("false"),  # CHANGE: Use str instead of bool
+    enable_online_verification: str = Form("true"),
     enable_academic_voice: str = Form("false"),
     request: Request = None
 ):

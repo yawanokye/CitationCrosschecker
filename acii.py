@@ -273,14 +273,60 @@ def compute_acii(engine_result: Dict[str, Any], rows: List[Dict[str, Any]]) -> D
     balance = _temporal_balance(rows_copy)
     tq = _temporal_quality(rows_copy)
 
-    # Weighted ACII score
-    acii = round(
+    # This is a bibliographic profile until publication-status coverage is
+    # complete. It must not be presented as an integrity assurance on its own.
+    profile_score = round(
         0.35 * v +
         0.20 * c +
         0.20 * d +
         0.25 * tq,
         2
     )
+
+    summary = engine_result.get("summary") if isinstance(engine_result, dict) else {}
+    summary = summary if isinstance(summary, dict) else {}
+    expected_references = int(summary.get("reference_entries_found") or len(rows_copy) or 0)
+    checked_rows = sum(1 for row in rows_copy if row.get("publication_status_checked") is True)
+    unchecked_rows = max(0, expected_references - checked_rows)
+    coverage_complete = bool(
+        expected_references > 0
+        and len(rows_copy) == expected_references
+        and checked_rows == expected_references
+    )
+
+    statuses = [str(row.get("publication_status") or "unchecked").lower() for row in rows_copy]
+    active_retractions = sum(1 for status in statuses if status in {"retracted", "withdrawn"})
+    expressions_of_concern = statuses.count("expression_of_concern")
+    corrections = statuses.count("corrected")
+    reinstatements = statuses.count("reinstated")
+    publication_notices = statuses.count("publication_notice")
+
+    score_available = coverage_complete
+    acii = profile_score if score_available else None
+    if score_available and active_retractions:
+        acii = min(profile_score, 49.0)
+        category = "Critical Review"
+        description = "Active retraction or withdrawal events require review before this reference list can be considered submission-ready."
+    elif score_available and expressions_of_concern:
+        acii = min(profile_score, 59.0)
+        category = "Review Required"
+        description = "One or more sources carry an expression of concern and require documented human review."
+    elif score_available and corrections:
+        acii = min(profile_score, 79.0)
+        category = "Qualified"
+        description = "Publication corrections were found. Confirm that the corrected records and claims are used."
+    elif score_available and reinstatements:
+        category = "Verified with History"
+        description = "Publication-status checks are complete. At least one source has a reinstatement history and is not actively retracted."
+    elif score_available:
+        category = _category(acii)
+        description = _get_acii_description(acii)
+    else:
+        category = "Incomplete Integrity Coverage"
+        description = (
+            f"Integrity rating withheld because publication status was checked for "
+            f"{checked_rows} of {expected_references} detected references."
+        )
 
     # Generate recommendations
     recency_recommendation = _recency_recommendation(rows_copy, recency)
@@ -309,13 +355,48 @@ def compute_acii(engine_result: Dict[str, Any], rows: List[Dict[str, Any]]) -> D
         recommendations["priority"] = f"Focus on improving: {', '.join(priority_areas)}"
 
     # Generate remark
-    acii_remark = _get_acii_remark(acii, recency, balance, v, d)
+    acii_remark = (
+        _get_acii_remark(acii, recency, balance, v, d)
+        if score_available
+        else "No integrity rating is issued until every detected reference has a completed publication-status check."
+    )
+
+    if not score_available:
+        recommendations["priority"] = (
+            "Complete publication-status verification for all detected references before interpreting the ACII."
+        )
+    elif active_retractions:
+        recommendations["priority"] = (
+            "Review every active retraction or withdrawal. Replace the source or document why it is cited."
+        )
+    elif expressions_of_concern:
+        recommendations["priority"] = (
+            "Review each expression of concern and avoid relying on the affected work without explicit justification."
+        )
 
     return {
         "ACII": acii,
-        "category": _category(acii),
-        "description": _get_acii_description(acii),
+        "score_available": score_available,
+        "category": category,
+        "description": description,
         "remark": acii_remark,
+        "bibliographic_profile_score": profile_score,
+        "coverage": {
+            "expected_references": expected_references,
+            "verification_rows": len(rows_copy),
+            "publication_status_checked": checked_rows,
+            "publication_status_unchecked": unchecked_rows,
+            "row_count_matches_detected_references": len(rows_copy) == expected_references,
+            "complete": coverage_complete,
+        },
+        "integrity_events": {
+            "active_retractions_or_withdrawals": active_retractions,
+            "expressions_of_concern": expressions_of_concern,
+            "corrections": corrections,
+            "reinstatements": reinstatements,
+            "publication_notices": publication_notices,
+        },
+        "disclaimer": "ACII is a screening indicator, not a finding of research misconduct. Human review remains required.",
 
         "components": {
             "verification_integrity": {
@@ -353,7 +434,9 @@ def compute_acii(engine_result: Dict[str, Any], rows: List[Dict[str, Any]]) -> D
         "recommendations": recommendations,
 
         "stats": {
-            "total_references": len(rows_copy)
+            "total_references": len(rows_copy),
+            "expected_references": expected_references,
+            "publication_status_checked": checked_rows,
         }
     }
 

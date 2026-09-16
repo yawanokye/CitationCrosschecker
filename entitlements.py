@@ -440,7 +440,30 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     safe["citation_integrity_certificate"] = locked_payload("Citation Integrity Certificate")
     safe["export"] = locked_payload("Export Report")
     safe["citation_improvement_coach"] = locked_payload("Citation Improvement Coach")
-    safe["source_risk_review"] = locked_payload("Source Risk Review")
+    # Publication-safety warnings are never payment-gated. Commercial access
+    # unlocks depth, workflow, export, and remediation, not knowledge that a
+    # cited work is retracted or otherwise carries a publication event.
+    source_risk = safe.get("source_risk_review") if isinstance(safe.get("source_risk_review"), dict) else {}
+    source_rows = source_risk.get("risks") if isinstance(source_risk.get("risks"), list) else []
+    safety_risks = {
+        "retracted_or_withdrawn", "expression_of_concern", "corrected_publication",
+        "reinstated_publication", "publication_notice", "publication_status_unchecked",
+    }
+    visible_source_rows = [
+        row for row in source_rows
+        if isinstance(row, dict) and str(row.get("risk") or "") in safety_risks
+    ]
+    source_risk["risks"] = visible_source_rows
+    source_risk["counts"] = {
+        "critical": sum(1 for row in visible_source_rows if row.get("priority") == "critical"),
+        "important": sum(1 for row in visible_source_rows if row.get("priority") == "important"),
+        "optional": sum(1 for row in visible_source_rows if row.get("priority") == "optional"),
+        "total": len(visible_source_rows),
+    }
+    source_risk["safety_information_free"] = True
+    source_risk["limited"] = True
+    source_risk["limit_message"] = "Publication-status safety alerts are shown in full. Full Review unlocks all other source-risk findings, remediation, and export."
+    safe["source_risk_review"] = source_risk
     safe_summary = safe.get("summary") if isinstance(safe.get("summary"), dict) else {}
     safe_summary["preview_fraction"] = preview_fraction
     safe_summary["preview_max_rows"] = preview_max_rows

@@ -1856,6 +1856,22 @@ def _looks_like_new_numeric_reference_start(s: str) -> bool:
     return False
 
 
+def _numeric_reference_marker_value(s: str) -> Optional[int]:
+    """Return a leading numeric reference marker, excluding publication years."""
+    s0 = (s or "").strip()
+    for pattern in (
+        r"^\[\s*(\d{1,4})\s*\]\s+\S",
+        r"^\(\s*(\d{1,4})\s*\)\s+\S",
+        r"^(\d{1,4})[\.)]\s+\S",
+        r"^(\d{1,4})\s+[A-Z].+",
+    ):
+        match = re.match(pattern, s0)
+        if match:
+            value = int(match.group(1))
+            return None if 1900 <= value <= 2099 else value
+    return None
+
+
 def _looks_like_new_apa_reference_start(s: str) -> bool:
     s0 = (s or "").strip()
     if not s0:
@@ -2321,11 +2337,25 @@ def _merge_reference_lines(raw_lines: List[str], style_hint: str = "apa") -> Lis
         if not s:
             continue
 
-        is_new = (
-            _looks_like_new_numeric_reference_start(s)
-            or _looks_like_new_apa_reference_start(s)
-            or (cur and YEAR_RE.search(cur) and _looks_like_wrapped_apa_reference_start_without_year(s))
-        )
+        if style_hint == "numeric":
+            marker = _numeric_reference_marker_value(s)
+            current_marker = _numeric_reference_marker_value(cur) if cur else None
+            # Numeric lists are sequential. A wrapped page ending, article
+            # number, model name such as "Grok 3.", or DOI suffix must not
+            # become a new reference merely because it looks like "N. text".
+            is_new = bool(
+                marker is not None
+                and (
+                    not cur
+                    or current_marker is None
+                    or marker == current_marker + 1
+                )
+            )
+        else:
+            is_new = (
+                _looks_like_new_apa_reference_start(s)
+                or (cur and YEAR_RE.search(cur) and _looks_like_wrapped_apa_reference_start_without_year(s))
+            )
 
         # Important PDF/DOCX repair: do not split a reference in the middle of a
         # wrapped author list. This is what caused Chen & Plank, Vaz, and
@@ -2362,29 +2392,31 @@ def _merge_reference_lines(raw_lines: List[str], style_hint: str = "apa") -> Lis
 
 def _split_embedded_numeric_refs(merged: List[str]) -> List[str]:
     out: List[str] = []
-    br_pat = re.compile(r"(?=(\[\s*\d{1,4}\s*\]\s+))")
-    dot_pat = re.compile(r"(?=(\b\d{1,4}[\.\)]\s+))")
+    marker_pat = re.compile(
+        r"(?<![A-Za-z0-9])(?=(?:\[\s*(\d{1,4})\s*\]|\(\s*(\d{1,4})\s*\)|(\d{1,4})[\.)])\s+\S)"
+    )
 
     for s in merged:
         s = (s or "").strip()
         if not s:
             continue
 
+        leading = _numeric_reference_marker_value(s)
+        expected = leading + 1 if leading is not None else None
         cuts: List[int] = []
-
-        for m in br_pat.finditer(s):
-            pos = m.start(1)
-            if pos > 0:
+        for match in marker_pat.finditer(s):
+            pos = match.start()
+            if pos <= 0:
+                continue
+            number = int(next(group for group in match.groups() if group is not None))
+            if 1900 <= number <= 2099:
+                continue
+            # Only split a proven sequential marker. This prevents page ranges
+            # such as 3739-3749, fragments such as "3749. doi:", and "Grok 3."
+            # from inflating the reference count.
+            if expected is not None and number == expected:
                 cuts.append(pos)
-
-        for m in dot_pat.finditer(s):
-            pos = m.start(1)
-            if pos > 0:
-                token = m.group(1).strip()
-                num = re.match(r"^(\d{1,4})", token)
-                if num and YEAR_RE.fullmatch(num.group(1)):
-                    continue
-                cuts.append(pos)
+                expected += 1
 
         if not cuts:
             out.append(s)
