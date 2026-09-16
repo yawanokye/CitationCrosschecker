@@ -30,6 +30,15 @@ splitting, and an ACII rating that could overstate assurance.
   and timestamps.
 - Verification cache keys were versioned so pre-release rows cannot bypass the
   new publication-status checks.
+- Release 2.0.2 queues verification automatically in the backend after analysis,
+  so it continues even when the upload page is closed.
+- Verification now receives queue priority, uses bounded parallel requests, a
+  six-hour DOI-aware cache, larger chunks, and one short-reference rescue query.
+- Numeric reference completeness is assessed before the year. Complete
+  Vancouver and IEEE entries are no longer labelled as missing a title merely
+  because only volume, issue, pages, or an article number follows the year.
+- Evidence Resolution counts now include visible formatting corrections, so the
+  overview cannot show zero while pending cards are displayed.
 
 ## Acceptance criteria
 
@@ -60,8 +69,8 @@ For the supplied DOI benchmark, confirm:
 
 Use the existing developer access control to place the application in maintenance
 mode during deployment. Restore paid access only after the benchmark and payment
-smoke tests pass. Do not clear or reuse older `verify:v2` Redis rows. The release
-uses a new `verify:v3-publication-integrity` cache namespace.
+smoke tests pass. Do not reuse older verification cache rows. The release uses
+the `verify:v4-fast-integrity` namespace with a six-hour expiry.
 
 ## Interpretation boundary
 

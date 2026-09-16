@@ -5,6 +5,7 @@ import json
 import re
 import time
 import hashlib
+import uuid
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -33,8 +34,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "2.0.0"
-WORKER_BUILD = "commercial-2026-09-16-publication-integrity-v1.6.0"
+__version__ = "2.0.2"
+WORKER_BUILD = "commercial-2026-09-17-auto-fast-verification-v1.6.1"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -62,7 +63,7 @@ redis_conn = redis.from_url(REDIS_URL)
 # DURABLE VERIFICATION HELPERS
 # ============================================================
 
-VERIFY_CHUNK_SIZE = int(os.environ.get("VERIFY_CHUNK_SIZE", "10"))
+VERIFY_CHUNK_SIZE = int(os.environ.get("VERIFY_CHUNK_SIZE", "40"))
 CLAIM_SUPPORT_TIMEOUT = int(os.environ.get("CLAIM_SUPPORT_TIMEOUT", "60"))
 MAX_ALT_SOURCES_IN_VERIFY = int(os.environ.get("MAX_ALT_SOURCES_IN_VERIFY", "5"))
 
@@ -302,9 +303,12 @@ CITATION_NEEDED_MIN_CONFIDENCE = float(os.environ.get("CITATION_NEEDED_MIN_CONFI
 # This is the main speed lever for reducing 10-reference jobs from about a minute
 # to a few seconds, subject to Crossref/OpenAlex latency and rate limits.
 VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
-VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_CACHE_TTL", "0"))  # no Redis reference cache by default
-VERIFY_USE_CACHE = _env_flag("VERIFY_USE_CACHE", "0")
+# Redis caches only public bibliographic verification rows for a short period.
+# Keep verify.py's separate process-memory cache disabled for privacy and memory safety.
+VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_REDIS_CACHE_TTL", "21600"))
+VERIFY_USE_CACHE = _env_flag("VERIFY_REDIS_CACHE_ENABLED", "1")
 VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
+VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v4-fast-integrity").strip() or "v4-fast-integrity"
 
 # Privacy-first cache controls. Defaults are OFF.
 CACHE_RESULTS_IN_REDIS = _env_flag("CACHE_RESULTS_IN_REDIS", "0")
@@ -423,15 +427,22 @@ def _compute_verification_summary(rows):
 
 def _reference_cache_key(ref, style="apa", enrich_metadata=False):
     """Stable Redis cache key for a reference verification result."""
+    reference = re.sub(r"\s+", " ", str(ref or "")).strip()
+    doi_match = re.search(r"10\.\d{4,9}/[^\s\]\[()<>\"']+", reference, flags=re.I)
+    identity = (
+        "doi:" + doi_match.group(0).rstrip(".,;:").lower()
+        if doi_match else
+        "text:" + re.sub(r"[^a-z0-9]+", " ", reference.casefold()).strip()
+    )
     raw = json.dumps({
-        "reference": str(ref or "").strip(),
+        "namespace": VERIFY_CACHE_NAMESPACE,
+        "identity": identity,
         "style": _worker_style_family(style),
         "selected_style": str(style or "").strip(),
         "enrich_metadata": bool(enrich_metadata),
     }, sort_keys=True)
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    # v3 invalidates rows cached before publication-event verification existed.
-    return f"verify:v3-publication-integrity:{digest}"
+    return f"verify:{VERIFY_CACHE_NAMESPACE}:{digest}"
 
 
 def _make_offline_verification_row(ref, error="Verification failed or timed out", style="apa"):
@@ -468,7 +479,9 @@ def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
             if cached:
                 row = json.loads(cached)
                 if isinstance(row, dict):
-                    row.setdefault("cache_hit", True)
+                    row["reference"] = ref
+                    row["original_reference"] = ref
+                    row["cache_hit"] = True
                     return _add_worker_style_metadata(row, style)
         except Exception as e:
             print(f"[VERIFY CACHE] Cache read failed: {e}")
@@ -3628,6 +3641,36 @@ def scenario_6_potential_wrong_reference(c2r_rows):
     return suggestions
 
 
+def _reference_is_seriously_incomplete(ref, style="apa"):
+    """Conservative completeness gate for both author-year and numeric references."""
+    text = re.sub(r"\s+", " ", str(ref or "")).strip()
+    text = re.sub(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])\s*", "", text)
+    without_links = re.sub(r"https?://\S+|\bdoi\s*:?\s*10\.\S+", " ", text, flags=re.I)
+    year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", without_links, flags=re.I)
+    if not year_match:
+        return True
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,}", without_links)
+    if len(without_links) < 35 or len(words) < 7:
+        return True
+
+    style_family = _worker_style_family(style)
+    looks_numeric = style_family.startswith("numeric_") or bool(
+        re.match(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])", str(ref or ""))
+    )
+    if looks_numeric:
+        # Vancouver/IEEE titles normally appear before the year. Requiring text
+        # after the year falsely flags complete journal references such as
+        # "... Nurse Educ Pract. 2025;82:104262."
+        before_year = without_links[:year_match.start()]
+        before_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,}", before_year)
+        return len(before_words) < 6 or before_year.count(".") < 2
+
+    # Author-year references normally place the title after the year.
+    after_year = without_links[year_match.end():]
+    after_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,}", after_year)
+    return len(after_words) < 3
+
+
 def detect_reference_quality_issues(references_raw, style="apa", enable_online_suggestions=False):
     """
     Safer reference-quality checks.
@@ -3756,15 +3799,9 @@ def detect_reference_quality_issues(references_raw, style="apa", enable_online_s
                 field="url"
             ))
 
-        # 4. Seriously incomplete reference only
-        has_enough_length = len(ref) >= 45
-        has_title_after_year = False
-
-        if year and str(year) in ref:
-            after_year = ref.split(str(year), 1)[-1]
-            has_title_after_year = len(after_year.strip(" .,)")) >= 15
-
-        if not year or not has_enough_length or not has_title_after_year:
+        # 4. Seriously incomplete reference only. The title position is
+        # style-aware so complete numeric references are not mislabelled.
+        if _reference_is_seriously_incomplete(ref, style=style):
             suggestions.append(make_suggestion(
                 original=original,
                 suggested="Review reference manually",
@@ -3830,13 +3867,21 @@ def dedupe_suggestions_by_priority(suggestions):
 # MAIN PROCESS_DOCUMENT FUNCTION
 # ============================================================
 
-def process_document(job_id, filename, style="apa", enable_autofix=False, enable_academic_voice=False):
+def process_document(
+    job_id,
+    filename,
+    style="apa",
+    enable_autofix=False,
+    enable_academic_voice=False,
+    enable_online_verification=True,
+):
     """Process a document - runs in background"""
     print(f"🔥 Processing job {job_id}: {filename}")
     print(f"📋 enable_autofix flag received: {enable_autofix}")
     
     enable_autofix = bool(enable_autofix)
     enable_academic_voice = bool(enable_academic_voice)
+    enable_online_verification = bool(enable_online_verification)
     print(f"📋 Using enable_autofix: {enable_autofix}")
     
     # Load file from Redis
@@ -3875,6 +3920,7 @@ def process_document(job_id, filename, style="apa", enable_autofix=False, enable
         result["analysis_options"] = {
             **(result.get("analysis_options") if isinstance(result.get("analysis_options"), dict) else {}),
             "academic_voice_enabled": enable_academic_voice,
+            "online_verification_enabled": enable_online_verification,
         }
         result["academic_voice_settings"] = {
             "enabled": enable_academic_voice,
@@ -4064,6 +4110,42 @@ def process_document(job_id, filename, style="apa", enable_autofix=False, enable
 
         print(f"✅ Suggestions preserved/merged: {len(citation_suggestions)} citation + {len(reference_suggestions)} reference suggestions")
         
+        # Prepare automatic verification before saving the completed analysis.
+        # This makes verification durable even if the user closes the browser.
+        automatic_verification_job_id = None
+        automatic_verification_total = 0
+        if enable_online_verification:
+            try:
+                automatic_refs = _normalise_references_for_verification(result, style=style)
+                automatic_verification_total = len(automatic_refs)
+                if automatic_verification_total:
+                    automatic_verification_job_id = f"verify:{job_id}:auto:{uuid.uuid4().hex[:8]}"
+                    result = _set_verification_meta(
+                        result,
+                        state="queued",
+                        progress=0,
+                        total=automatic_verification_total,
+                        percentage=0,
+                        verification_job_id=automatic_verification_job_id,
+                        rq_job_id=automatic_verification_job_id,
+                        message=f"Automatic verification queued for {automatic_verification_total} references",
+                        queued_at=now_iso(),
+                        final_tables_ready=False,
+                    )
+                else:
+                    result = _set_verification_meta(
+                        result,
+                        state="completed",
+                        progress=0,
+                        total=0,
+                        percentage=100,
+                        message=result.get("reference_detection_message", "No references extracted"),
+                        completed_at=now_iso(),
+                        final_tables_ready=True,
+                    )
+            except Exception as automatic_prepare_error:
+                print(f"[AUTO VERIFY] Could not prepare automatic verification: {automatic_prepare_error}")
+
         # Save result
         cursor.execute(
             "UPDATE jobs SET status = 'completed', result = %s, completed_at = NOW() WHERE job_id = %s",
@@ -4073,6 +4155,34 @@ def process_document(job_id, filename, style="apa", enable_autofix=False, enable
         
         cursor.close()
         conn.close()
+
+        if automatic_verification_job_id:
+            try:
+                verification_queue = Queue("verification", connection=redis_conn)
+                verification_queue.enqueue(
+                    "worker.process_verification",
+                    job_id,
+                    style,
+                    False,
+                    job_id=automatic_verification_job_id,
+                    job_timeout=10800,
+                    result_ttl=86400,
+                    failure_ttl=86400,
+                )
+                print(
+                    f"[AUTO VERIFY] Queued {automatic_verification_job_id} "
+                    f"for {automatic_verification_total} references"
+                )
+            except Exception as automatic_queue_error:
+                print(f"[AUTO VERIFY] Queue failed: {automatic_queue_error}")
+                result = _set_verification_meta(
+                    result,
+                    state="error",
+                    message="Automatic verification could not be queued. Use Retry Verification.",
+                    error=str(automatic_queue_error),
+                    completed_at=now_iso(),
+                )
+                _save_job_result(job_id, result, status="completed")
         
         # Privacy-first: do not cache full results in Redis unless explicitly enabled.
         if CACHE_RESULTS_IN_REDIS:

@@ -39,9 +39,15 @@ CROSSREF_MAILTO = (
     or ""
 ).strip()
 _RETRACTION_WATCH_DB_ENV = os.getenv("RETRACTION_WATCH_DB_PATH", "").strip()
+_BUNDLED_RETRACTION_WATCH_DB = Path(__file__).resolve().parent / "data" / "retraction_watch.sqlite3"
+_LEGACY_RETRACTION_WATCH_DB = Path(__file__).resolve().parent / "retraction_watch.sqlite3"
 RETRACTION_WATCH_DB_PATH = Path(
     _RETRACTION_WATCH_DB_ENV
-    or str(Path(__file__).resolve().parent / "data" / "retraction_watch.sqlite3")
+    or str(
+        _BUNDLED_RETRACTION_WATCH_DB
+        if _BUNDLED_RETRACTION_WATCH_DB.is_file()
+        else _LEGACY_RETRACTION_WATCH_DB
+    )
 )
 
 _DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)

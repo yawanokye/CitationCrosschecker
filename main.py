@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.0"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.2-verification"
 
 import io
 import asyncio
@@ -759,7 +759,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.0-commercial").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.2-verification").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -3721,6 +3721,7 @@ async def verify(
             style,
             autofix_enabled,  # CHANGE: Use the variable, not hardcoded True
             academic_voice_enabled,
+            online_verify_enabled,
             job_timeout=job_timeout,
             result_ttl=86400,
             failure_ttl=86400
@@ -3812,6 +3813,7 @@ async def verify(
         ),
         "autofix_enabled": autofix_enabled,  # Include for debugging
         "academic_voice_enabled": academic_voice_enabled,
+        "online_verification_enabled": online_verify_enabled,
         "selected_style": _main_style_token(style),
         "large_worker_autostart": large_worker_autostart,
         "large_worker_autostart_enabled": os.environ.get("LARGE_WORKER_AUTOSTART_ENABLED", "false"),

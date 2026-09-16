@@ -678,6 +678,7 @@ EVIDENCE_GROUP_LABELS = {
     "incomplete_metadata": "Incomplete reference metadata",
     "metadata_conflicts": "Metadata conflicts",
     "uncited_references": "Uncited references",
+    "other_corrections": "Formatting and other corrections",
 }
 
 
@@ -692,13 +693,18 @@ def evidence_group_for_item(item: Dict[str, Any]) -> str:
         if status == "weak_or_unclear":
             return "weak_support"
         return "unsupported_claims"
-    return {
+    mapped = {
         "missing_reference": "missing_references",
         "source_verification": "unresolved_verification",
         "reference_incomplete": "incomplete_metadata",
         "reference_identity_conflict": "metadata_conflicts",
         "uncited_reference": "uncited_references",
     }.get(category, "")
+    if mapped:
+        return mapped
+    if category in {"reference_metadata", "reference_style", "citation_formatting", "citation_coach"}:
+        return "other_corrections"
+    return ""
 
 
 def build_evidence_resolution_workspace(items: Iterable[Dict[str, Any]]) -> Dict[str, Any]:

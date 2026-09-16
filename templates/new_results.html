@@ -1880,7 +1880,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.0";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.2-verification";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3374,6 +3374,17 @@ document.addEventListener("DOMContentLoaded", function () {
         return `<label class="${source.manual_review_only ? "manual-review-candidate" : ""}" style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px">${source.manual_review_only ? `<span class="manual-review-badge">Manual full-text review required</span><br>` : ""}<input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${linkHtml}${fitHtml}${identityHtml}<span class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}"> <span>${esc(confirmationText)}</span></span></label>`;
     }
 
+    function correctionLocationText(location) {
+        if (!location || typeof location !== "object") return "";
+        const parts = [];
+        if (location.section) parts.push(String(location.section));
+        if (location.page_estimate) parts.push(`estimated page ${location.page_estimate}`);
+        if (location.paragraph) parts.push(`paragraph ${location.paragraph}`);
+        if (location.sentence) parts.push(`sentence ${location.sentence}`);
+        if (location.location_note && parts.length <= 1) parts.push(String(location.location_note));
+        return parts.join(" · ");
+    }
+
     function renderStudentGuidance(data) {
         const plan = data.correction_plan || {};
         const counts = plan.counts || {};
@@ -3409,7 +3420,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="guidance-item priority-${esc(item.priority || "optional")}" data-correction-id="${esc(item.id)}" data-decision="${esc(item.decision || "pending")}" data-evidence-group="${esc(item.evidence_group || "other_corrections")}">
                     <div class="guidance-meta">${item.decision && item.decision !== "pending" ? "✅" : "⏳"} ${esc(item.priority)} · ${esc(item.evidence_group_label || item.category)} · Item ${index + 1} · Decision: ${esc(item.decision || "pending")}</div>
                     <strong>${esc(item.title)}</strong>
-                    ${item.location ? `<div class="small-muted">Location: ${esc(JSON.stringify(item.location))}</div>` : ""}
+                    ${correctionLocationText(item.location) ? `<div class="small-muted">Location: ${esc(correctionLocationText(item.location))}</div>` : ""}
                     <p><strong>What is wrong:</strong> ${esc(item.what_is_wrong || item.title || "")}</p>
                     <p><strong>Why it matters:</strong> ${esc(item.why_it_matters || "")}</p>
                     <p><strong>Evidence:</strong> ${esc(item.evidence || "")}</p>

@@ -31,6 +31,12 @@ def assess_source_risks(result: Dict[str, Any]) -> Dict[str, Any]:
             "data_version": row.get("publication_status_data_version") or "",
             "doi": row.get("publication_status_doi") or row.get("reference_doi") or row.get("doi") or "",
         }
+        if status in {"not_found", "unverified", "failed"}:
+            risks.append({
+                "priority":"important", "risk":"metadata_not_found", "reference":title,
+                "action":"Check DOI, title, authors, year and publisher manually. Not found does not mean fabricated.",
+                "qualification":"This is an indexing or metadata risk, not an authorship or misconduct finding.",
+            })
         if row.get("is_retracted") is True or publication_status in {"retracted", "withdrawn"}:
             risks.append({"priority":"critical", "risk":"retracted_or_withdrawn", "reference":title, "action":"Open the publisher record and replace the source or explicitly justify why the retracted or withdrawn work is cited.", **event_context})
         elif row.get("expression_of_concern") is True or publication_status == "expression_of_concern":
@@ -46,12 +52,6 @@ def assess_source_risks(result: Dict[str, Any]) -> Dict[str, Any]:
         update_type = str(row.get("update_type") or row.get("relation_type") or "").lower()
         if publication_status not in {"corrected", "reinstated", "publication_notice"} and (update_type in {"correction", "corrigendum", "erratum", "update", "is-corrected-by", "is-superseded-by"} or row.get("is_superseded") is True):
             risks.append({"priority":"important", "risk":"corrected_or_superseded", "reference":title, "action":"Open the latest publisher record and use the corrected or current version where appropriate.", "url":row.get("url") or row.get("evidence_url") or ""})
-        if status in {"not_found", "unverified", "failed"}:
-            risks.append({
-                "priority":"important", "risk":"metadata_not_found", "reference":title,
-                "action":"Check DOI, title, authors, year and publisher manually. Not found does not mean fabricated.",
-                "qualification":"This is an indexing or metadata risk, not an authorship or misconduct finding.",
-            })
         year = row.get("matched_year") or row.get("year")
         try:
             age = current_year - int(str(year)[:4])

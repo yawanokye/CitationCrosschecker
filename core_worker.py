@@ -6,7 +6,7 @@ import runpy
 
 os.environ["WORKER_QUEUES"] = os.environ.get(
     "CORE_WORKER_QUEUES",
-    "document_processing,verification,large_document_processing",
+    "verification,document_processing,large_document_processing",
 )
 os.environ.setdefault("SERVICE_ROLE", "core_worker")
 

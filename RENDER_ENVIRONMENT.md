@@ -56,6 +56,15 @@ exact Paystack webhook body forwarded to CiteIntegrity in the
 | `PUBLICATION_STATUS_TIMEOUT` | `8` |
 | `PUBLICATION_STATUS_CACHE_TTL` | `21600` |
 | `RETRACTION_WATCH_DB_PATH` | Leave unset to use the bundled `data/retraction_watch.sqlite3` snapshot |
+| `VERIFY_PARALLEL_MODE` | `1` |
+| `VERIFY_PARALLEL_WORKERS` | `8` |
+| `VERIFY_CHUNK_SIZE` | `40` |
+| `VERIFY_REQUEST_TIMEOUT` | `4` |
+| `VERIFY_USE_CACHE` | `0`, keeps the unbounded process-memory cache disabled |
+| `VERIFY_REDIS_CACHE_ENABLED` | `1` |
+| `VERIFY_REDIS_CACHE_TTL` | `21600` |
+| `VERIFY_CACHE_NAMESPACE` | `v4-fast-integrity` |
+| `VERIFY_SHORT_OPENALEX_MAX_QUERIES` | `1` |
 
 The web service and every document-processing worker must receive the same
 integrity-verification values. A missing OpenAlex key can reduce fallback
@@ -78,10 +87,12 @@ python scripts/build_retraction_watch_index.py \
 
 1. Set `GLOBAL_ACCESS_MODE=maintenance` from the protected developer portal.
 2. Add the integrity-verification values above to the web service and all workers.
-3. Deploy the web service, core worker, and large-document worker from the same release.
-4. Run `python -m unittest -q test_integrity_corrective_release.py`.
-5. Process the supplied 20-reference benchmark and confirm 20 verification rows.
-6. Restore `GLOBAL_ACCESS_MODE=payment_required` only after the benchmark passes.
+3. Deploy the web service and core worker from the same release. Restart both so the new job argument and automatic queueing code match.
+4. Set the core worker start command to `python core_worker.py`. Its default priority is `verification,document_processing,large_document_processing` so a completed upload is verified before the next waiting upload.
+5. Run `python -m unittest -q test_integrity_corrective_release.py test_verification_operational_release.py`.
+6. Process the supplied 20-reference benchmark and confirm 20 verification rows.
+7. Confirm the upload page shows verification enabled and that verification starts without clicking a separate button.
+8. Restore `GLOBAL_ACCESS_MODE=payment_required` only after the benchmark passes.
 
 The existing Paystack dashboard webhook remains:
 
