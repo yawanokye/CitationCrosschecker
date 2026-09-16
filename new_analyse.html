@@ -1,0 +1,1383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analyse Manuscript | CiteIntegrity</title>
+    <meta name="description" content="Upload a thesis, dissertation, article, or manuscript for citation integrity analysis with CiteIntegrity.">
+
+    <style>
+        :root {
+            --navy: #0f172a;
+            --navy-soft: #1e293b;
+            --blue: #2563eb;
+            --blue-soft: #e8f0fe;
+            --green: #19b36b;
+            --green-dark: #13855a;
+            --green-soft: #ecfdf5;
+            --amber: #f59e0b;
+            --red: #ef4444;
+            --slate: #64748b;
+            --muted: #94a3b8;
+            --line: #e2e8f0;
+            --soft-bg: #f8fafc;
+            --white: #ffffff;
+            --shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+            --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: linear-gradient(180deg, #ffffff 0%, var(--soft-bg) 42%, #ffffff 100%);
+            color: var(--navy);
+            line-height: 1.55;
+            font-size: 15px;
+        }
+
+        a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .site-header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(255, 255, 255, 0.96);
+            backdrop-filter: blur(14px);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .header-inner {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 10px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: max-content;
+        }
+
+        .brand-mark {
+            width: 46px;
+            height: 32px;
+            display: block;
+        }
+
+        .brand-name {
+            font-size: 21px;
+            font-weight: 900;
+            letter-spacing: -0.6px;
+        }
+
+        .brand-badge {
+            background: var(--green-soft);
+            color: var(--green-dark);
+            padding: 5px 11px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+
+        .nav {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            color: var(--slate);
+            font-size: 14px;
+            font-weight: 750;
+        }
+
+        .nav a:hover {
+            color: var(--navy);
+        }
+
+        .nav-cta {
+            background: var(--navy);
+            color: white !important;
+            padding: 9px 16px;
+            border-radius: 999px;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .mobile-toggle {
+            display: none;
+            border: 1px solid var(--line);
+            background: white;
+            border-radius: 12px;
+            padding: 8px 11px;
+            cursor: pointer;
+            font-size: 18px;
+        }
+
+        .container {
+            max-width: 1220px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .page-hero {
+            padding: 18px 0 8px;
+            text-align: center;
+        }
+
+        .page-hero h1 {
+            font-size: clamp(28px, 3.8vw, 42px);
+            line-height: 1.05;
+            font-weight: 950;
+            letter-spacing: -1.7px;
+            margin-bottom: 10px;
+        }
+
+        .page-hero p {
+            max-width: 790px;
+            margin: 0 auto;
+            color: #475569;
+            font-size: 16px;
+        }
+
+        .trust-line {
+            margin: 14px auto 0;
+            max-width: 850px;
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .trust-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: white;
+            border: 1px solid var(--line);
+            color: var(--slate);
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 12px;
+            font-weight: 800;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1.35fr) 380px;
+            gap: 18px;
+            align-items: start;
+            padding: 18px 0 42px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            box-shadow: var(--shadow-soft);
+            padding: 20px;
+        }
+
+        .card-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .card-title h2 {
+            font-size: 20px;
+            font-weight: 900;
+            letter-spacing: -0.4px;
+        }
+
+        .small-pill {
+            background: var(--green-soft);
+            color: var(--green-dark);
+            padding: 5px 11px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+
+        .file-area {
+            border: 2px dashed #cbd5e1;
+            border-radius: 20px;
+            padding: 18px 18px;
+            text-align: center;
+            background: #fbfdff;
+            cursor: pointer;
+            transition: 0.25s ease;
+        }
+
+        .file-area:hover {
+            border-color: var(--green);
+            background: #f0fdf4;
+            transform: translateY(-1px);
+        }
+
+        .file-area.drag-over {
+            border-color: var(--green);
+            background: #ecfdf5;
+            transform: scale(1.01);
+        }
+
+        .file-icon {
+            font-size: 30px;
+            margin-bottom: 6px;
+        }
+
+        .file-main {
+            font-size: 16px;
+            font-weight: 900;
+            margin-bottom: 4px;
+        }
+
+        .file-sub {
+            color: var(--slate);
+            font-size: 12.5px;
+            max-width: 620px;
+            margin: 0 auto;
+        }
+
+        .file-name {
+            margin-top: 11px;
+            color: var(--green-dark);
+            font-size: 13px;
+            font-weight: 850;
+            word-break: break-word;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .helper-box {
+            margin-top: 10px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            border-radius: 14px;
+            padding: 9px 12px;
+            color: var(--slate);
+            font-size: 12px;
+        }
+
+        .style-panel {
+            margin-top: 0;
+            margin-bottom: 14px;
+            background: #fbfdff;
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 13px 14px;
+        }
+
+        .style-label-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .style-label-row label {
+            font-size: 13px;
+            font-weight: 900;
+            color: var(--navy);
+        }
+
+        .style-chip {
+            background: var(--blue-soft);
+            color: var(--blue);
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 11px;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+
+        .style-select {
+            width: 100%;
+            border: 1px solid #cbd5e1;
+            border-radius: 14px;
+            padding: 11px 12px;
+            background: white;
+            color: var(--navy);
+            font-size: 13px;
+            font-weight: 800;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .style-select:focus {
+            border-color: var(--green);
+            box-shadow: 0 0 0 3px rgba(25, 179, 107, 0.14);
+        }
+
+        .style-note {
+            margin-top: 8px;
+            color: var(--slate);
+            font-size: 11.8px;
+            line-height: 1.38;
+        }
+
+        .style-note.warn {
+            color: #c2410c;
+        }
+
+        .options-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .option-card {
+            border: 1px solid var(--line);
+            background: #fbfdff;
+            border-radius: 16px;
+            padding: 11px;
+            display: flex;
+            gap: 9px;
+            align-items: flex-start;
+            cursor: pointer;
+        }
+
+        .option-card input {
+            margin-top: 4px;
+            accent-color: var(--green);
+        }
+
+        .option-card strong {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 2px;
+        }
+
+        .option-card span {
+            display: block;
+            color: var(--slate);
+            font-size: 11.5px;
+            line-height: 1.35;
+        }
+
+        .progress-panel {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            border-radius: 14px;
+            padding: 10px;
+            color: var(--slate);
+            font-weight: 800;
+            font-size: 12px;
+            min-height: 48px;
+        }
+
+        .step .circle {
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            background: #e2e8f0;
+            color: #475569;
+            display: grid;
+            place-items: center;
+            font-size: 11px;
+            font-weight: 900;
+            flex: 0 0 auto;
+        }
+
+        .step.active {
+            color: var(--blue);
+            border-color: #bfdbfe;
+            background: #eff6ff;
+        }
+
+        .step.active .circle {
+            background: var(--blue);
+            color: white;
+        }
+
+        .step.done {
+            color: var(--green-dark);
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+        }
+
+        .step.done .circle {
+            background: var(--green);
+            color: white;
+        }
+
+        .button-row {
+            display: grid;
+            gap: 10px;
+        }
+
+        .btn {
+            width: 100%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 13px 18px;
+            border-radius: 999px;
+            font-weight: 900;
+            font-size: 14px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: 0.2s ease;
+            font-family: inherit;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--navy), #1e3a8a);
+            color: white;
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.20);
+        }
+
+        .btn-green {
+            background: linear-gradient(135deg, var(--green), var(--green-dark));
+            color: white;
+            box-shadow: 0 14px 30px rgba(25, 179, 107, 0.22);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .status-box {
+            margin-top: 12px;
+            border-radius: 16px;
+            padding: 12px 14px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+        }
+
+        .status {
+            color: var(--slate);
+            font-weight: 800;
+            font-size: 12.5px;
+        }
+
+        .status.good { color: var(--green-dark); }
+        .status.warn { color: #c2410c; }
+        .status.bad { color: var(--red); }
+        .status.info { color: var(--blue); }
+
+        .progress-wrap {
+            display: none;
+            margin-top: 11px;
+        }
+
+        .progress-track {
+            width: 100%;
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, var(--green), var(--green-dark));
+            border-radius: 999px;
+            transition: width 0.25s ease;
+        }
+
+        .progress-text {
+            margin-top: 7px;
+            font-size: 12px;
+            color: var(--slate);
+            font-weight: 750;
+        }
+
+        .queue-box {
+            margin-top: 12px;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1d4ed8;
+            border-radius: 16px;
+            padding: 11px 13px;
+            font-size: 12.5px;
+            font-weight: 800;
+        }
+
+        .trust-badge {
+            margin-top: 12px;
+            padding: 12px 13px;
+            border-radius: 16px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+            color: var(--slate);
+            font-size: 12.5px;
+            font-weight: 750;
+        }
+
+        .feature-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 4px;
+        }
+
+        .feature-item {
+            display: flex;
+            gap: 10px;
+            padding: 11px;
+            border-radius: 16px;
+            background: #f8fafc;
+            border: 1px solid #eef2f6;
+        }
+
+        .feature-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 13px;
+            background: var(--green-soft);
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+            font-size: 17px;
+        }
+
+        .feature-item strong {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 2px;
+        }
+
+        .feature-item span {
+            color: var(--slate);
+            font-size: 11.5px;
+            line-height: 1.35;
+        }
+
+        .side-stack {
+            display: grid;
+            gap: 16px;
+        }
+
+        .footer {
+            border-top: 1px solid var(--line);
+            background: white;
+            padding: 20px 24px;
+            color: var(--slate);
+            text-align: center;
+            font-size: 12.5px;
+        }
+
+        .footer a {
+            color: var(--green-dark);
+            font-weight: 750;
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+
+        @media (max-width: 1080px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+
+            .side-stack {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 860px) {
+            .brand-badge {
+                display: none;
+            }
+
+            .progress-panel,
+            .feature-list,
+            .side-stack {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .header-inner {
+                align-items: flex-start;
+                flex-wrap: wrap;
+            }
+
+            .mobile-toggle {
+                display: block;
+            }
+
+            .nav {
+                display: none;
+                width: 100%;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+                padding-top: 12px;
+            }
+
+            .nav.open {
+                display: flex;
+            }
+
+            .container {
+                padding: 0 16px;
+            }
+
+            .page-hero {
+                padding: 24px 0 10px;
+            }
+
+            .card {
+                padding: 16px;
+                border-radius: 22px;
+            }
+
+            .file-area {
+                padding: 26px 16px;
+            }
+
+            .options-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+<style>
+    .developer-notice-banner{display:none;position:relative;z-index:80;padding:13px 22px;background:linear-gradient(90deg,#065f46,#16a34a,#065f46);background-size:220% 100%;color:#fff;text-align:center;font-weight:850;animation:ciNoticeFlash 2.6s ease-in-out infinite}
+    .developer-notice-banner.is-visible{display:block}.developer-notice-banner a{color:#fff;text-decoration:underline;text-underline-offset:3px;margin-left:10px}
+    @keyframes ciNoticeFlash{0%,100%{background-position:0 50%;box-shadow:inset 0 0 0 0 rgba(255,255,255,0)}50%{background-position:100% 50%;box-shadow:inset 0 0 0 3px rgba(255,255,255,.25)}}
+    @media(prefers-reduced-motion:reduce){.developer-notice-banner{animation:none}}
+</style>
+<div id="developerNoticeBanner" class="developer-notice-banner" role="status" aria-live="polite"><span id="developerNoticeText"></span><a id="developerNoticeLink" href="#" hidden>Learn more</a></div>
+<!-- Navigation links use absolute root hashes, such as /#home, so they do not resolve to /new/index.html on the analysis route. -->
+
+<header class="site-header">
+    <div class="header-inner">
+        <a class="brand" href="/#home" aria-label="CiteIntegrity home">
+            <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
+                <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
+                <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="brand-name">CiteIntegrity</span>
+            <span class="brand-badge">Citation Integrity Analysis</span>
+        </a>
+
+        <button class="mobile-toggle" id="mobileToggle" aria-label="Open menu">☰</button>
+
+        <nav class="nav" id="mainNav">
+            <a href="/#home">Home</a>
+            <a href="/#features">Features</a>
+            <a href="/#workflow">How it works</a>
+            <a href="/#pricing" data-pricing-link>Pricing</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/#faq" class="nav-cta">FAQ</a>
+        </nav>
+    </div>
+</header>
+
+<main>
+    <section class="page-hero">
+        <div class="container">
+            <h1>Analyse your manuscript for citation integrity</h1>
+            <p>
+                Upload a DOCX manuscript or text-based PDF to check citation-reference matching, missing citations, uncited references, ACII readiness, and optional online verification.
+            </p>
+            <div class="trust-line" aria-label="CiteIntegrity assurances">
+                <span class="trust-pill">🔒 Private processing</span>
+                <span class="trust-pill">✓ Review-only suggestions</span>
+                <span class="trust-pill">✓ Exportable results</span>
+                <span class="trust-pill">✓ No plagiarism database submission</span>
+            </div>
+        </div>
+    </section>
+
+    <section class="container">
+        <div class="layout">
+
+            <div class="card upload-card">
+                <div class="card-title">
+                    <h2>Document upload</h2>
+                    <span class="small-pill">DOCX recommended, PDF supported</span>
+                </div>
+
+                <div class="file-area" id="fileArea">
+                    <div class="file-icon">📑</div>
+                    <div class="file-main">Upload your manuscript</div>
+                    <div class="file-sub">
+                        Drag and drop or click to select a DOCX or text-based PDF.
+                    </div>
+                    <div class="file-name" id="fileName"></div>
+                    <input type="file" id="file" accept=".docx,.pdf">
+                </div>
+
+                <div class="helper-box">
+                    <strong>PDF support:</strong> Text-based PDFs are accepted, but DOCX remains best for accurate citation and reference extraction. Scanned PDFs may produce incomplete results.
+                </div>
+
+                <div class="options-grid">
+                    <label class="option-card">
+                        <input type="checkbox" id="autofix" checked>
+                        <span>
+                            <strong>Enable suggestions</strong>
+                            <span>Generate citation and reference improvement suggestions where possible.</span>
+                        </span>
+                    </label>
+
+                    <label class="option-card">
+                        <input type="checkbox" id="onlineVerify" checked>
+                        <span>
+                            <strong>Verify references and publication status</strong>
+                            <span>Recommended and enabled by default. Checks metadata plus retractions, expressions of concern, corrections, and reinstatements.</span>
+                        </span>
+                    </label>
+
+                    <label class="option-card">
+                        <input type="checkbox" id="academicVoice">
+                        <span>
+                            <strong>Academic Voice and Writing Signals, optional</strong>
+                            <span>Review explainable writing patterns. It is off by default and does not determine whether AI wrote the manuscript.</span>
+                        </span>
+                    </label>
+                </div>
+
+                <div class="progress-panel">
+                    <div class="step" id="stepUpload"><span class="circle">1</span> Document selected</div>
+                    <div class="step" id="stepQueue"><span class="circle">2</span> Document queued</div>
+                    <div class="step" id="stepProcess"><span class="circle">3</span> Analysis running</div>
+                    <div class="step" id="stepDone"><span class="circle">4</span> Results ready</div>
+                </div>
+            </div>
+
+            <aside class="side-stack">
+                <div class="card">
+                    <div class="card-title">
+                        <h2>Run analysis</h2>
+                    </div>
+
+                    <div class="style-panel">
+                        <div class="style-label-row">
+                            <label for="citationStyle">Citation style</label>
+                            <span class="style-chip">Author-year default</span>
+                        </div>
+                        <select class="style-select" id="citationStyle" aria-label="Select citation style family" title="Select the citation family used in the manuscript">
+
+                                <option value="apa" selected title="Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).">Author-year, APA / Harvard / Chicago</option>
+                                <option value="numeric_square" title="Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5].">Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer</option>
+                                <option value="numeric_superscript" title="Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³.">Numeric superscript, AMA / Nature / RSC / ACS / Elsevier</option>
+                                <option value="numeric_round" title="Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations.">Numeric round bracket, Vancouver / ACS</option>
+                                <option value="auto" title="Experimental. Auto-detect can misread some PDFs, so a selected family is safer.">Auto-detect, experimental</option>
+                            
+                            </select>
+                        <div class="style-note" id="citationStyleNote">
+                            Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).
+                        </div>
+                    </div>
+
+
+                    <div class="button-row">
+                        <button class="btn btn-primary" id="btnCheck" disabled>📊 Analyse Document</button>
+                    </div>
+
+                    <div class="status-box">
+                        <div class="status" id="status">System ready. Select citation style, then upload a DOCX or text-based PDF file.</div>
+
+                        <div class="progress-wrap" id="progressWrap">
+                            <div class="progress-track">
+                                <div class="progress-bar" id="progressBar"></div>
+                            </div>
+                            <div class="progress-text" id="progressText">Waiting to begin...</div>
+                        </div>
+                    </div>
+
+                    <div class="queue-box" id="queueStatus">
+                        Checking system availability...
+                    </div>
+
+                    <div class="trust-badge">
+                        🔒 Temporary processing only. Download the complete report package, then delete your manuscript immediately. If you do not delete it, manuscript content expires automatically within 24 hours.
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">
+                        <h2>What this checks</h2>
+                    </div>
+
+                    <div class="feature-list">
+                        <div class="feature-item">
+                            <div class="feature-icon">🔎</div>
+                            <div>
+                                <strong>Missing citations</strong>
+                                <span>Find in-text citations that do not appear in the reference list.</span>
+                            </div>
+                        </div>
+
+                        <div class="feature-item">
+                            <div class="feature-icon">📚</div>
+                            <div>
+                                <strong>Uncited references</strong>
+                                <span>Identify listed references that are not cited in the manuscript body.</span>
+                            </div>
+                        </div>
+
+                        <div class="feature-item">
+                            <div class="feature-icon">📈</div>
+                            <div>
+                                <strong>ACII readiness</strong>
+                                <span>Prepare citation integrity scoring and dashboard review.</span>
+                            </div>
+                        </div>
+
+                        <div class="feature-item">
+                            <div class="feature-icon">🌐</div>
+                            <div>
+                                <strong>Online verification</strong>
+                                <span>Optionally verify references after document analysis is complete.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+        </div>
+    </section>
+</main>
+
+<footer class="footer">
+    <p>© 2026 CiteIntegrity. Thesis, manuscript readiness and citation integrity analysis platform.</p>
+    <div class="footer-links">
+        <a href="/#home">Landing Page</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/#workflow">How it works</a>
+    </div>
+</footer>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    "use strict";
+
+    const RESULT_ROUTE_PREFIX = "/new/results";
+    const POLL_INTERVAL = 2000;
+    const MAX_POLL_ATTEMPTS = 900;
+
+    const $ = (id) => document.getElementById(id);
+
+    const mobileToggle = $("mobileToggle");
+    const mainNav = $("mainNav");
+    const fileArea = $("fileArea");
+    const fileInput = $("file");
+    const fileName = $("fileName");
+    const btnCheck = $("btnCheck");
+    const statusEl = $("status");
+    const queueStatus = $("queueStatus");
+    const progressWrap = $("progressWrap");
+    const progressBar = $("progressBar");
+    const progressText = $("progressText");
+    const citationStyle = $("citationStyle");
+    const citationStyleNote = $("citationStyleNote");
+
+    let pollAttempts = 0;
+    let currentJobId = null;
+
+    if (mobileToggle && mainNav) {
+        mobileToggle.addEventListener("click", function () {
+            mainNav.classList.toggle("open");
+        });
+    }
+
+    function setStatus(message, tone = "") {
+        if (!statusEl) return;
+        statusEl.className = `status ${tone}`;
+        statusEl.textContent = message;
+        console.log("[Status]", message);
+    }
+
+    function setStep(stepId, state) {
+        const step = $(stepId);
+        if (!step) return;
+        step.classList.remove("active", "done");
+        if (state) step.classList.add(state);
+    }
+
+    function resetSteps() {
+        ["stepUpload", "stepQueue", "stepProcess", "stepDone"].forEach(id => {
+            const step = $(id);
+            if (step) step.classList.remove("active", "done");
+        });
+    }
+
+    function updateProgress(percent, message) {
+        if (progressWrap) progressWrap.style.display = "block";
+        if (progressBar) progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+        if (progressText) progressText.textContent = message || "";
+    }
+
+
+    function forceCondensedCitationStyleMenu() {
+        if (!citationStyle) return;
+
+        const allowed = new Set(["apa", "numeric_square", "numeric_superscript", "numeric_round", "auto"]);
+        const previous = allowed.has(citationStyle.value) ? citationStyle.value : "apa";
+
+        const items = [
+            ["apa", "Author-year, APA / Harvard / Chicago", "Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."],
+            ["numeric_square", "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer", "Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer numbered square-bracket styles. Examples: [1], [1,2], [3–5]."],
+            ["numeric_superscript", "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier", "Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³."],
+            ["numeric_round", "Numeric round bracket, Vancouver / ACS", "Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."],
+            ["auto", "Auto-detect, experimental", "Experimental. Auto-detect can misread some PDFs, so selecting the citation family is safer."]
+        ];
+
+        citationStyle.innerHTML = "";
+        for (const [value, label, title] of items) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.title = title;
+            citationStyle.appendChild(option);
+        }
+        citationStyle.value = previous;
+        citationStyle.dataset.menuBuild = "condensed-2026-05-18";
+    }
+
+    function getSelectedCitationStyle() {
+        return citationStyle?.value || "apa";
+    }
+
+    function updateCitationStyleNote() {
+        if (!citationStyle || !citationStyleNote) return;
+
+        const selected = getSelectedCitationStyle();
+        citationStyleNote.classList.remove("warn");
+
+        const notes = {
+            apa: "Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).",
+            numeric_square: "Numeric-square matching: IEEE, Vancouver, NLM, Elsevier and Springer. Examples: [1], [1,2], [3–5].",
+            numeric_superscript: "Numeric-superscript matching: AMA, Nature, RSC, ACS and Elsevier. Examples: text¹, text¹,², text¹–³.",
+            numeric_round: "Numeric-round matching: Vancouver and ACS. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations.",
+            auto: "Experimental auto-detect. It can misread some PDFs, so selecting the citation family is safer."
+        };
+
+        citationStyleNote.textContent = notes[selected] || notes.apa;
+
+        if (selected === "numeric_round" || selected === "auto") {
+            citationStyleNote.classList.add("warn");
+        }
+    }
+
+    function validateFile(file) {
+        if (!file) {
+            return { valid: false, message: "Please select a DOCX or PDF file." };
+        }
+
+        const lowerName = file.name.toLowerCase();
+        const isDocx = lowerName.endsWith(".docx");
+        const isPdf = lowerName.endsWith(".pdf");
+
+        if (!isDocx && !isPdf) {
+            return { valid: false, message: "Only DOCX and PDF files are accepted." };
+        }
+
+        const maxSizeMB = 35;
+        const sizeMB = file.size / (1024 * 1024);
+
+        if (sizeMB > maxSizeMB) {
+            return { valid: false, message: `File is too large. Maximum allowed size is ${maxSizeMB}MB.` };
+        }
+
+        return {
+            valid: true,
+            message: isPdf
+                ? "PDF file selected. Text-based PDFs are supported, but DOCX gives the most accurate analysis."
+                : "DOCX file selected. Ready to analyse."
+        };
+    }
+
+    function handleFileSelected() {
+        const file = fileInput.files[0];
+        const validation = validateFile(file);
+
+        if (!validation.valid) {
+            fileName.textContent = validation.message;
+            fileName.style.color = "#ef4444";
+            btnCheck.disabled = true;
+            setStatus(validation.message, "warn");
+            setStep("stepUpload", "");
+            return;
+        }
+
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+        fileName.textContent = `✅ ${file.name} (${sizeMB} MB)`;
+        fileName.style.color = "#13855a";
+        btnCheck.disabled = false;
+
+        resetSteps();
+        setStep("stepUpload", "done");
+        setStatus(validation.message, "good");
+    }
+
+    if (fileArea && fileInput) {
+        fileArea.addEventListener("click", function () {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener("change", handleFileSelected);
+
+        fileArea.addEventListener("dragover", function (event) {
+            event.preventDefault();
+            fileArea.classList.add("drag-over");
+        });
+
+        fileArea.addEventListener("dragleave", function (event) {
+            event.preventDefault();
+            fileArea.classList.remove("drag-over");
+        });
+
+        fileArea.addEventListener("drop", function (event) {
+            event.preventDefault();
+            fileArea.classList.remove("drag-over");
+
+            const files = event.dataTransfer.files;
+            if (!files || !files.length) return;
+
+            fileInput.files = files;
+            handleFileSelected();
+        });
+    }
+
+    if (citationStyle) {
+        citationStyle.addEventListener("change", updateCitationStyleNote);
+        forceCondensedCitationStyleMenu();
+    updateCitationStyleNote();
+    }
+
+    async function updateQueueStatus() {
+        try {
+            const response = await fetch("/queue/status");
+            const data = await response.json();
+
+            if (!queueStatus) return;
+
+            const readyText = data.server_busy ? "Server is busy" : "Server is ready";
+            const queueSize = data.queue_size ?? data.redis_queue_length ?? 0;
+            const pending = data.pending_jobs ?? 0;
+            const processing = data.processing_jobs ?? 0;
+
+            queueStatus.textContent = `${readyText}. Queue: ${queueSize}. Pending: ${pending}. Processing: ${processing}.`;
+        } catch (error) {
+            if (queueStatus) {
+                queueStatus.textContent = "System availability could not be checked, but you may still try uploading.";
+            }
+        }
+    }
+
+    async function runAnalysis() {
+        const file = fileInput.files[0];
+        const validation = validateFile(file);
+
+        if (!validation.valid) {
+            setStatus(validation.message, "warn");
+            return;
+        }
+
+        btnCheck.disabled = true;
+        pollAttempts = 0;
+        currentJobId = null;
+
+        resetSteps();
+        setStep("stepUpload", "done");
+        setStep("stepQueue", "active");
+
+        updateProgress(8, `Uploading document using ${getSelectedCitationStyle()} style...`);
+        setStatus(`Uploading document for ${getSelectedCitationStyle()} citation analysis...`, "info");
+
+        const formData = new FormData();
+        const selectedStyle = getSelectedCitationStyle();
+
+        formData.append("file", file);
+        formData.append("style", selectedStyle);
+        formData.append("enable_autofix", $("autofix")?.checked ? "true" : "false");
+        formData.append("enable_online_verification", $("onlineVerify")?.checked ? "true" : "false");
+        formData.append("enable_academic_voice", $("academicVoice")?.checked ? "true" : "false");
+        console.log("[CiteIntegrity] Selected citation style:", selectedStyle);
+
+        try {
+            const response = await fetch("/verify", {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await response.json().catch(() => ({}));
+
+            if (response.status === 503) {
+                setStatus(data.message || "Server is busy. Please wait and try again.", "warn");
+                updateProgress(0, "Server busy. Try again shortly.");
+                btnCheck.disabled = false;
+                setStep("stepQueue", "");
+                return;
+            }
+
+            if (!response.ok) {
+                throw new Error(data.message || data.error || "Upload failed.");
+            }
+
+            if (!data.job_id) {
+                throw new Error(data.message || data.error || "No job ID returned.");
+            }
+
+            currentJobId = data.job_id;
+
+            setStep("stepQueue", "done");
+            setStep("stepProcess", "active");
+            updateProgress(22, "Document queued. Waiting for analysis...");
+            setStatus("Document queued. Waiting for analysis result...", "info");
+
+            pollAnalysisResult(currentJobId);
+
+        } catch (error) {
+            console.error(error);
+            setStatus("Error: " + error.message, "bad");
+            updateProgress(0, "Upload failed.");
+            btnCheck.disabled = false;
+            setStep("stepQueue", "");
+        }
+    }
+
+    async function pollAnalysisResult(jobId) {
+        pollAttempts += 1;
+
+        if (pollAttempts > MAX_POLL_ATTEMPTS) {
+            setStatus("Analysis timed out. Please try again.", "bad");
+            updateProgress(0, "Analysis timed out.");
+            btnCheck.disabled = false;
+            return;
+        }
+
+        try {
+            const response = await fetch(`/result/${encodeURIComponent(jobId)}`);
+            const data = await response.json();
+
+            console.log("Analysis poll:", data);
+
+            const status = data.status || "processing";
+
+            if (status === "completed") {
+                const result = data.data || data.result;
+
+                if (!result) {
+                    throw new Error("Completed job has no result data.");
+                }
+
+                setStep("stepProcess", "done");
+                setStep("stepDone", "done");
+
+                updateProgress(100, "Analysis complete. Opening results dashboard...");
+                setStatus("Analysis complete. Opening results dashboard...", "good");
+
+                const autoVerify = $("onlineVerify")?.checked;
+                const suffix = autoVerify ? "?verify=1" : "";
+
+                setTimeout(function () {
+                    window.location.href = `${RESULT_ROUTE_PREFIX}/${encodeURIComponent(jobId)}${suffix}`;
+                }, 900);
+
+                return;
+            }
+
+            if (status === "failed" || status === "error") {
+                throw new Error(data.error || data.message || "Analysis failed.");
+            }
+
+            if (status === "queued") {
+                setStep("stepQueue", "active");
+                updateProgress(32, "Waiting in queue...");
+                setStatus("Waiting in queue...", "info");
+            } else {
+                setStep("stepQueue", "done");
+                setStep("stepProcess", "active");
+
+                const percent = Math.min(90, 40 + pollAttempts);
+                updateProgress(percent, "Processing document. Extracting citations and references...");
+                setStatus("Processing document...", "info");
+            }
+
+            setTimeout(function () {
+                pollAnalysisResult(jobId);
+            }, POLL_INTERVAL);
+
+        } catch (error) {
+            console.error(error);
+            setStatus("Error checking result: " + error.message, "bad");
+            updateProgress(0, "Could not check result.");
+            btnCheck.disabled = false;
+        }
+    }
+
+    if (btnCheck) {
+        btnCheck.addEventListener("click", runAnalysis);
+    }
+
+    updateQueueStatus();
+    setInterval(updateQueueStatus, 8000);
+
+    console.log("[CiteIntegrity] Commercial analyse page ready");
+});
+</script>
+
+
+<script>
+(function enforceCitationStyleCategoryMenu() {
+    "use strict";
+
+    const CATEGORY_OPTIONS = [
+        {
+            value: "apa",
+            label: "Author-year, APA / Harvard / Chicago",
+            title: "Author-year matching. Covers APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020)."
+        },
+        {
+            value: "numeric_square",
+            label: "Numeric square bracket, IEEE / Vancouver / NLM / Elsevier / Springer",
+            title: "Numeric-square matching. Covers IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5]."
+        },
+        {
+            value: "numeric_superscript",
+            label: "Numeric superscript, AMA / Nature / RSC / ACS / Elsevier",
+            title: "Numeric-superscript matching. Covers AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³."
+        },
+        {
+            value: "numeric_round",
+            label: "Numeric round bracket, Vancouver / ACS",
+            title: "Numeric-round matching. Covers Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Select only when the manuscript clearly uses round numeric citations."
+        },
+        {
+            value: "auto",
+            label: "Auto-detect, experimental",
+            title: "Experimental. Auto-detect can misread some PDFs, so selecting the citation family is safer."
+        }
+    ];
+
+    const NOTES = {
+        apa: "Author-year matching: APA, Harvard and Chicago Author-Date. Examples: (Adam, 2020), (Adam 2020), Adam (2020).",
+        numeric_square: "Numeric-square matching: IEEE, Vancouver, NLM, Elsevier and Springer square-bracket styles. Examples: [1], [1,2], [3–5].",
+        numeric_superscript: "Numeric-superscript matching: AMA, Nature, RSC, ACS and Elsevier superscript styles. Examples: text¹, text¹,², text¹–³.",
+        numeric_round: "Numeric-round matching: Vancouver and ACS round-bracket styles. Examples: (1), (1,2), (3–5). Use only when the manuscript clearly uses round numeric citations.",
+        auto: "Auto-detect is experimental. For better accuracy, select the citation family used in the manuscript."
+    };
+
+    function currentFamily(value) {
+        const v = String(value || "").toLowerCase();
+        if (["apa", "harvard", "chicago_author_date", "author_year"].includes(v)) return "apa";
+        if (["ieee", "ieee_square", "vancouver_square", "nlm", "nlm_square", "elsevier", "elsevier_numbered", "elsevier_square", "springer", "springer_numbered", "springer_square", "numeric_square"].includes(v)) return "numeric_square";
+        if (["ama", "ama_superscript", "nature", "nature_superscript", "rsc", "rsc_superscript", "acs_superscript", "elsevier_superscript", "numeric_superscript"].includes(v)) return "numeric_superscript";
+        if (["vancouver_round", "acs_round", "numeric_round"].includes(v)) return "numeric_round";
+        if (v === "auto") return "auto";
+        return "apa";
+    }
+
+    function rebuild(select) {
+        if (!select) return;
+        const selected = currentFamily(select.value);
+        const needsRebuild = select.querySelector("optgroup") || select.options.length !== CATEGORY_OPTIONS.length || Array.from(select.options).some((opt, i) => opt.value !== CATEGORY_OPTIONS[i].value);
+        if (!needsRebuild && select.dataset.menuBuild === "category-only-2026-05-18") return;
+
+        select.innerHTML = "";
+        CATEGORY_OPTIONS.forEach(item => {
+            const opt = document.createElement("option");
+            opt.value = item.value;
+            opt.textContent = item.label;
+            opt.title = item.title;
+            select.appendChild(opt);
+        });
+        select.value = selected;
+        select.dataset.menuBuild = "category-only-2026-05-18";
+        select.title = "Select one citation family, not an individual publisher style.";
+        updateNote(select);
+    }
+
+    function updateNote(select) {
+        const note = document.getElementById("citationStyleHint") || document.getElementById("citationStyleNote");
+        if (note) note.textContent = NOTES[currentFamily(select && select.value)] || NOTES.apa;
+    }
+
+    function apply() {
+        const selects = Array.from(document.querySelectorAll("select#citationStyle, select[name='citationStyle']"));
+        selects.forEach(select => {
+            rebuild(select);
+            if (!select.dataset.categoryListenerAttached) {
+                select.addEventListener("change", () => updateNote(select));
+                select.addEventListener("focus", () => rebuild(select));
+                select.addEventListener("mousedown", () => rebuild(select));
+                select.dataset.categoryListenerAttached = "1";
+            }
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", apply);
+    } else {
+        apply();
+    }
+    window.addEventListener("pageshow", apply);
+    setTimeout(apply, 200);
+    setTimeout(apply, 1000);
+    setTimeout(apply, 3000);
+    window.CITEINTEGRITY_CITATION_MENU_BUILD = "category-only-2026-05-18";
+})();
+</script>
+
+<script>
+(() => {
+    fetch('/api/public/config', {cache:'no-store'}).then(response => response.ok ? response.json() : Promise.reject()).then(config => {
+        document.querySelectorAll('[data-pricing-link]').forEach((link) => { link.hidden = config?.show_pricing === false; });
+        const notice = config?.public_notice || {};
+        const banner = document.getElementById('developerNoticeBanner');
+        if (!banner || !notice.enabled || !String(notice.text || '').trim()) return;
+        document.getElementById('developerNoticeText').textContent = String(notice.text).trim();
+        const link = document.getElementById('developerNoticeLink');
+        const raw = String(notice.link || '').trim();
+        if (raw) {
+            try { const url = new URL(raw, window.location.origin); if (['http:','https:'].includes(url.protocol)) { link.href=url.href; link.hidden=false; } } catch (_) {}
+        }
+        banner.classList.add('is-visible');
+    }).catch(() => {});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CiteIntegrity Admin Dashboard</title>
+    <style>
+        :root {
+            --navy: #0f172a;
+            --navy-2: #172554;
+            --blue: #2563eb;
+            --blue-soft: #eff6ff;
+            --green: #19b36b;
+            --green-dark: #128457;
+            --green-soft: #ecfdf5;
+            --amber: #f59e0b;
+            --amber-soft: #fffbeb;
+            --red: #ef4444;
+            --red-soft: #fef2f2;
+            --slate: #64748b;
+            --slate-dark: #334155;
+            --line: #e2e8f0;
+            --soft: #f8fafc;
+            --white: #ffffff;
+            --shadow: 0 24px 70px rgba(15, 23, 42, 0.12);
+            --shadow-soft: 0 12px 30px rgba(15, 23, 42, 0.08);
+            --radius: 26px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            color: var(--navy);
+            background:
+                radial-gradient(circle at 12% 5%, rgba(37,99,235,0.16), transparent 34%),
+                radial-gradient(circle at 90% 12%, rgba(25,179,107,0.14), transparent 34%),
+                linear-gradient(180deg, #f8fbff, #eef4fb 55%, #f8fafc);
+            min-height: 100vh;
+            line-height: 1.55;
+        }
+
+        a { color: inherit; text-decoration: none; }
+        button, input, select { font: inherit; }
+
+        .page {
+            max-width: 1460px;
+            margin: 0 auto;
+            padding: 22px;
+        }
+
+        .topbar {
+            background: rgba(255,255,255,0.92);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(226,232,240,0.9);
+            border-radius: 26px;
+            padding: 18px 22px;
+            box-shadow: var(--shadow-soft);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 18px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: max-content;
+        }
+
+        .brand-mark {
+            width: 44px;
+            height: 31px;
+            display: block;
+        }
+
+        .brand-copy h1 {
+            font-size: clamp(24px, 3vw, 36px);
+            line-height: 1.05;
+            letter-spacing: -1.2px;
+        }
+
+        .brand-copy p {
+            color: var(--slate-dark);
+            font-size: 14px;
+            margin-top: 3px;
+        }
+
+        .actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .btn {
+            border: 1px solid transparent;
+            border-radius: 999px;
+            padding: 10px 16px;
+            font-weight: 850;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: .2s ease;
+            background: white;
+            color: var(--navy);
+        }
+
+        .btn:hover { transform: translateY(-2px); }
+        .btn-primary { background: linear-gradient(135deg, var(--navy), var(--blue)); color: white; box-shadow: 0 14px 30px rgba(37,99,235,.23); }
+        .btn-green { background: linear-gradient(135deg, var(--green), var(--green-dark)); color: white; box-shadow: 0 14px 30px rgba(25,179,107,.22); }
+        .btn-light { border-color: var(--line); box-shadow: var(--shadow-soft); }
+        .btn-danger { background: var(--red-soft); color: #991b1b; border-color: #fecaca; }
+
+        .storage-banner {
+            border-radius: 22px;
+            padding: 16px 18px;
+            margin-bottom: 18px;
+            display: grid;
+            grid-template-columns: 48px 1fr auto;
+            gap: 14px;
+            align-items: center;
+            border: 1px solid var(--line);
+            background: white;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .storage-banner.ok { border-color: rgba(25,179,107,.22); background: linear-gradient(135deg, var(--green-soft), white); }
+        .storage-banner.warn { border-color: rgba(245,158,11,.30); background: linear-gradient(135deg, var(--amber-soft), white); }
+        .storage-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 17px;
+            display: grid;
+            place-items: center;
+            background: rgba(15,23,42,.06);
+            font-size: 23px;
+        }
+        .storage-banner h2 { font-size: 17px; margin-bottom: 2px; }
+        .storage-banner p { color: var(--slate-dark); font-size: 13px; }
+        .storage-status {
+            padding: 7px 11px;
+            border-radius: 999px;
+            background: white;
+            border: 1px solid var(--line);
+            font-size: 12px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+
+        .toolbar {
+            background: rgba(255,255,255,.88);
+            border: 1px solid var(--line);
+            border-radius: 22px;
+            padding: 14px;
+            display: flex;
+            gap: 12px;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+            box-shadow: var(--shadow-soft);
+        }
+        .toolbar-left, .toolbar-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .select, .input {
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: white;
+            padding: 10px 12px;
+            color: var(--navy);
+            min-height: 42px;
+        }
+        .small-note { color: var(--slate); font-size: 13px; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 14px;
+            margin-bottom: 18px;
+        }
+
+        .stat-card {
+            background: rgba(255,255,255,0.94);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 20px;
+            box-shadow: var(--shadow-soft);
+            min-height: 140px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::after {
+            content: "";
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            right: -55px;
+            top: -55px;
+            background: rgba(37,99,235,.08);
+        }
+
+        .stat-card.green::after { background: rgba(25,179,107,.10); }
+        .stat-card.amber::after { background: rgba(245,158,11,.12); }
+        .stat-card.red::after { background: rgba(239,68,68,.10); }
+
+        .stat-label-top {
+            color: var(--slate-dark);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: .8px;
+            font-weight: 900;
+            margin-bottom: 9px;
+        }
+
+        .stat-number {
+            font-size: clamp(30px, 4vw, 44px);
+            font-weight: 950;
+            letter-spacing: -1.5px;
+            line-height: 1;
+            margin-bottom: 9px;
+            color: var(--navy);
+            position: relative;
+            z-index: 1;
+        }
+
+        .stat-number.green { color: var(--green-dark); }
+        .stat-number.amber { color: #b45309; }
+        .stat-number.red { color: #b91c1c; }
+        .stat-sub { color: var(--slate); font-size: 13px; position: relative; z-index: 1; }
+
+        .panel-grid {
+            display: grid;
+            grid-template-columns: 1.1fr .9fr;
+            gap: 18px;
+            margin-bottom: 18px;
+        }
+        .feature-usage-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 18px;
+            margin-bottom: 18px;
+        }
+        .feature-usage-grid .verification-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .panel {
+            background: rgba(255,255,255,.94);
+            border: 1px solid var(--line);
+            border-radius: 26px;
+            padding: 22px;
+            box-shadow: var(--shadow-soft);
+            overflow: hidden;
+        }
+
+        .panel h2 {
+            font-size: 20px;
+            letter-spacing: -.5px;
+            margin-bottom: 6px;
+        }
+        .panel-copy { color: var(--slate-dark); font-size: 14px; margin-bottom: 18px; }
+
+        .verification-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .mini-card {
+            border: 1px solid #e8edf5;
+            border-radius: 18px;
+            background: var(--soft);
+            padding: 13px;
+        }
+        .mini-card strong { display:block; font-size: 27px; line-height: 1; letter-spacing:-.8px; }
+        .mini-card span { color: var(--slate-dark); font-size: 12px; font-weight: 800; }
+
+        .bar-list { display: grid; gap: 12px; }
+        .bar-row { display: grid; gap: 7px; }
+        .bar-head { display:flex; justify-content:space-between; gap: 12px; font-size: 13px; color: var(--slate-dark); font-weight: 850; }
+        .bar-track { height: 12px; background: #edf2f7; border-radius: 999px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--blue), var(--green)); width: 0%; transition: width .4s ease; }
+
+        .table-panel {
+            background: rgba(255,255,255,.94);
+            border: 1px solid var(--line);
+            border-radius: 26px;
+            padding: 22px;
+            box-shadow: var(--shadow-soft);
+            overflow-x: auto;
+            margin-bottom: 18px;
+        }
+        .table-head {
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:14px;
+            margin-bottom:16px;
+        }
+        .table-head h2 { font-size: 20px; letter-spacing:-.5px; }
+        .table-head p { color: var(--slate-dark); font-size: 14px; }
+
+        table { width: 100%; border-collapse: collapse; min-width: 860px; }
+        th, td { padding: 12px 10px; text-align: left; border-bottom: 1px solid #edf2f7; font-size: 13px; vertical-align: top; }
+        th { color: var(--slate-dark); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; background: #f8fafc; }
+        tr:hover td { background: #f9fbff; }
+
+        .badge {
+            display: inline-flex;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 900;
+            white-space: nowrap;
+        }
+        .badge-success { background: var(--green-soft); color: var(--green-dark); }
+        .badge-danger { background: var(--red-soft); color: #991b1b; }
+        .badge-warn { background: var(--amber-soft); color: #92400e; }
+        .badge-info { background: var(--blue-soft); color: #1d4ed8; }
+
+        .loading, .auth-message, .error-message {
+            background: white;
+            border: 1px solid var(--line);
+            border-radius: 26px;
+            padding: 44px 24px;
+            text-align: center;
+            box-shadow: var(--shadow-soft);
+        }
+        .auth-message h2, .error-message h2 { margin-bottom: 8px; }
+        .auth-message p, .error-message p { color: var(--slate-dark); margin-bottom: 18px; }
+        .auth-form { display: grid; gap: 10px; max-width: 360px; margin: 0 auto; }
+        .spinner {
+            border: 4px solid #e5e7eb;
+            border-top: 4px solid var(--blue);
+            border-radius: 50%;
+            width: 42px;
+            height: 42px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .footer-note {
+            color: var(--slate);
+            font-size: 12px;
+            text-align: center;
+            padding: 8px 0 16px;
+        }
+
+        @media (max-width: 1120px) {
+            .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .panel-grid { grid-template-columns: 1fr; }
+            .feature-usage-grid { grid-template-columns: 1fr; }
+            .verification-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (max-width: 720px) {
+            .page { padding: 14px; }
+            .topbar, .toolbar, .storage-banner { grid-template-columns: 1fr; flex-direction: column; align-items: flex-start; }
+            .actions, .toolbar-left, .toolbar-right { width: 100%; justify-content: flex-start; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .verification-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <header class="topbar">
+            <div class="brand">
+                <svg class="brand-mark" viewBox="0 0 80 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <text x="2" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">C</text>
+                    <text x="40" y="38" font-size="44" font-weight="800" fill="#0f172a" font-family="Georgia, serif">I</text>
+                    <path d="M60 32 L66 40 L76 25" stroke="#19b36b" stroke-width="6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <div class="brand-copy">
+                    <h1>CiteIntegrity Dashboard</h1>
+                    <p>Persistent, count-only analytics for core checks and the newest evidence-resolution features.</p>
+                </div>
+            </div>
+            <div class="actions">
+                <a class="btn btn-light" href="/">← Back to site</a>
+                <a class="btn btn-light" href="/new/analyse">New analysis</a>
+                <button class="btn btn-primary" onclick="refreshStats(true)">Refresh</button>
+            </div>
+        </header>
+
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <label class="small-note" for="daysSelect">Reporting window</label>
+                <select class="select" id="daysSelect" onchange="refreshStats(true)">
+                    <option value="1">Today</option>
+                    <option value="7" selected>Last 7 days</option>
+                    <option value="14">Last 14 days</option>
+                </select>
+            </div>
+            <div class="toolbar-right">
+                <span class="small-note" id="lastUpdated">Waiting for data.</span>
+                <span class="small-note">Safe mode: max 14 days · 50 recent rows</span>
+                <button class="btn btn-light" onclick="downloadJson()">Download JSON</button>
+            </div>
+        </div>
+
+        <div class="storage-banner warn" style="margin-bottom:18px;">
+            <div class="storage-icon">🛡️</div>
+            <div>
+                <h2>Memory-safe dashboard mode</h2>
+                <p>The 30-day detailed view has been disabled because it can overload the web service. Use 7 or 14 days here, and generate 30-day summaries from a backend-safe aggregate endpoint.</p>
+            </div>
+            <span class="storage-status">Protected</span>
+        </div>
+
+        <div id="stats-content">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>Loading CiteIntegrity statistics.</p>
+            </div>
+        </div>
+
+        <p class="footer-note">Private dashboard. Uses Basic Auth and persistent database storage when PostgreSQL is connected.</p>
+    </div>
+
+    <script>
+        let username = '';
+        let password = '';
+        let latestData = null;
+        let isRefreshing = false;
+        let statsAbortController = null;
+        const SAFE_MAX_DAYS = 14;
+        const SAFE_RECENT_LIMIT = 50;
+        const SAFE_REFRESH_INTERVAL_MS = 300000;
+
+        function fmtNumber(value) {
+            const n = Number(value || 0);
+            return n.toLocaleString();
+        }
+
+        function fmtPercent(value) {
+            if (value === null || value === undefined || value === '') return 'N/A';
+            return `${Number(value).toFixed(1)}%`;
+        }
+
+        function fmtSeconds(value) {
+            const n = Number(value || 0);
+            if (!n) return '0s';
+            if (n < 60) return `${n.toFixed(1)}s`;
+            const m = Math.floor(n / 60);
+            const s = Math.round(n % 60);
+            return `${m}m ${s}s`;
+        }
+
+        function fmtDate(value) {
+            if (!value) return 'N/A';
+            const d = new Date(value);
+            if (Number.isNaN(d.getTime())) return value;
+            return d.toLocaleString();
+        }
+
+        function cssSafe(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+        }
+
+        async function refreshStats(force = false) {
+            if (isRefreshing && !force) return;
+            const contentDiv = document.getElementById('stats-content');
+
+            if (!username || !password) {
+                showAuthPrompt();
+                return;
+            }
+
+            isRefreshing = true;
+            if (!latestData) {
+                contentDiv.innerHTML = `<div class="loading"><div class="spinner"></div><p>Loading CiteIntegrity statistics.</p></div>`;
+            }
+
+            try {
+                let days = Number(document.getElementById('daysSelect').value || 7);
+                if (!Number.isFinite(days)) days = 7;
+                days = Math.max(1, Math.min(days, SAFE_MAX_DAYS));
+
+                if (statsAbortController) {
+                    statsAbortController.abort();
+                }
+                statsAbortController = new AbortController();
+
+                const auth = btoa(`${username}:${password}`);
+                const params = new URLSearchParams({
+                    detailed: 'true',
+                    days: String(days),
+                    limit: String(SAFE_RECENT_LIMIT),
+                    safe: '1'
+                });
+
+                const response = await fetch(`/private-stats?${params.toString()}`, {
+                    headers: { 'Authorization': `Basic ${auth}` },
+                    cache: 'no-store',
+                    signal: statsAbortController.signal
+                });
+
+                if (response.status === 401) {
+                    username = '';
+                    password = '';
+                    latestData = null;
+                    showAuthPrompt('Invalid credentials. Please try again.');
+                    return;
+                }
+
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                latestData = await response.json();
+                renderStats(latestData);
+            } catch (error) {
+                if (error.name === 'AbortError') return;
+                contentDiv.innerHTML = `
+                    <div class="error-message">
+                        <h2>Failed to load dashboard</h2>
+                        <p>${cssSafe(error.message)}</p>
+                        <button class="btn btn-primary" onclick="refreshStats(true)">Try again</button>
+                    </div>
+                `;
+            } finally {
+                isRefreshing = false;
+            }
+        }
+
+        function showAuthPrompt(errorMsg = '') {
+            document.getElementById('stats-content').innerHTML = `
+                <div class="auth-message">
+                    <h2>Private dashboard login</h2>
+                    <p>${errorMsg ? cssSafe(errorMsg) : 'Enter the same admin username and password used for protected CiteIntegrity statistics.'}</p>
+                    <form class="auth-form" onsubmit="event.preventDefault(); submitAuth();">
+                        <input class="input" type="text" id="username" placeholder="Username" autocomplete="username">
+                        <input class="input" type="password" id="password" placeholder="Password" autocomplete="current-password">
+                        <button class="btn btn-primary" type="submit">Login</button>
+                    </form>
+                </div>
+            `;
+        }
+
+        function submitAuth() {
+            username = document.getElementById('username').value.trim();
+            password = document.getElementById('password').value;
+            refreshStats(true);
+        }
+
+        function storageBanner(totalStats) {
+            const persistent = !!totalStats.persistent_storage;
+            const cls = persistent ? 'ok' : 'warn';
+            const icon = persistent ? '🟢' : '⚠️';
+            const label = persistent ? 'Persistent' : 'Not persistent';
+            const backend = totalStats.storage_backend || 'unknown';
+            const message = totalStats.storage_message || (persistent ? 'Persistent database storage is active.' : 'Set DATABASE_URL to use PostgreSQL in production.');
+            return `
+                <div class="storage-banner ${cls}">
+                    <div class="storage-icon">${icon}</div>
+                    <div>
+                        <h2>Storage backend: ${cssSafe(backend.toUpperCase())}</h2>
+                        <p>${cssSafe(message)}</p>
+                    </div>
+                    <span class="storage-status">${label}</span>
+                </div>
+            `;
+        }
+
+        function renderStats(data) {
+            const total = data.total_stats || {};
+            const metrics = data.dashboard_metrics || {};
+            const daily = data.daily_stats || {};
+            const recent = (data.recent_uploads || []).slice(0, SAFE_RECENT_LIMIT);
+            const system = data.system_info || {};
+
+            document.getElementById('lastUpdated').textContent = `Last updated: ${fmtDate(system.current_time || total.last_updated)}`;
+
+            const verificationTotal = Number(total.total_verifications || 0);
+            const verified = Number(metrics.verified || 0);
+            const likely = Number(metrics.likely || 0);
+            const needsReview = Number(metrics.needs_review || 0);
+            const notFound = Number(metrics.not_found || 0);
+            const offline = Number(metrics.offline || 0);
+
+            const verifiedPct = verificationTotal ? (verified / verificationTotal) * 100 : 0;
+            const likelyPct = verificationTotal ? (likely / verificationTotal) * 100 : 0;
+            const needsReviewPct = verificationTotal ? (needsReview / verificationTotal) * 100 : 0;
+            const notFoundPct = verificationTotal ? (notFound / verificationTotal) * 100 : 0;
+
+            const html = `
+                ${storageBanner(total)}
+
+                <section class="stats-grid">
+                    ${statCard('Total manuscripts', total.total_uploads, 'Documents uploaded or queued', '')}
+                    ${statCard('Completed checks', total.total_processed, `${total.total_failed || 0} failed checks`, 'green')}
+                    ${statCard('Success rate', fmtPercent(total.success_rate), 'Completed against failed jobs', (Number(total.success_rate || 0) >= 90 ? 'green' : 'amber'))}
+                    ${statCard('Avg processing time', fmtSeconds(total.average_processing_time), 'Per completed document', '')}
+                    ${statCard('References detected', total.total_references_checked, 'Reference entries analysed', '')}
+                    ${statCard('In-text citations', total.total_intext_citations, 'Citation occurrences mapped', '')}
+                    ${statCard('Missing citations', total.total_missing_citations, 'Citations needing references', (Number(total.total_missing_citations || 0) > 0 ? 'amber' : 'green'))}
+                    ${statCard('Uncited references', total.total_uncited_references, 'Listed references not cited', (Number(total.total_uncited_references || 0) > 0 ? 'amber' : 'green'))}
+                    ${statCard('Verification rows', total.total_verifications, 'Online and manual verification checks', '')}
+                    ${statCard('Average ACII', total.average_acii_score ?? 'N/A', 'Across completed reports', (Number(total.average_acii_score || 0) >= 80 ? 'green' : 'amber'))}
+                    ${statCard('Claim rows', metrics.claim_rows || 0, 'Claim support review rows', '')}
+                    ${statCard('Active jobs', system.active_jobs || 0, `Server: ${system.server_busy ? 'busy' : 'ready'}`, system.server_busy ? 'amber' : 'green')}
+                </section>
+
+                <section class="panel-grid">
+                    <div class="panel">
+                        <h2>Reference verification health</h2>
+                        <p class="panel-copy">Status distribution from the online and manual verification workflow.</p>
+                        <div class="verification-grid">
+                            ${miniCard('Verified', verified, 'green')}
+                            ${miniCard('Likely', likely, 'info')}
+                            ${miniCard('Needs review', needsReview, 'warn')}
+                            ${miniCard('Not found', notFound, 'danger')}
+                            ${miniCard('Offline', offline, 'info')}
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h2>Quality distribution</h2>
+                        <p class="panel-copy">Quick view of the most important review categories.</p>
+                        <div class="bar-list">
+                            ${barRow('Verified references', verifiedPct, verified)}
+                            ${barRow('Likely matches', likelyPct, likely)}
+                            ${barRow('Needs review', needsReviewPct, needsReview)}
+                            ${barRow('Not found', notFoundPct, notFound)}
+                        </div>
+                    </div>
+                </section>
+
+                <section class="feature-usage-grid" aria-label="New feature usage">
+                    <div class="panel">
+                        <h2>Evidence Resolution Workspace</h2>
+                        <p class="panel-copy">Workspace coverage, issue outcomes and approved changes currently queued for Track Changes.</p>
+                        <div class="verification-grid">
+                            ${miniCard('Analyses', metrics.evidence_workspace_analyses || 0, 'info')}
+                            ${miniCard('Issues generated', metrics.evidence_issues_generated || 0, 'info')}
+                            ${miniCard('Resolved', metrics.evidence_issues_resolved || 0, 'green')}
+                            ${miniCard('Pending', metrics.evidence_issues_pending || 0, 'warn')}
+                            ${miniCard('Tracked approvals', metrics.tracked_approvals_current || 0, 'green')}
+                            ${miniCard('Decision actions', metrics.correction_decision_events || 0, 'info')}
+                            ${miniCard('Reference-style approvals', metrics.reference_style_approval_events || 0, 'green')}
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h2>Context-aware source discovery</h2>
+                        <p class="panel-copy">Search activity and safety filtering. Withheld candidates failed the structured topic-and-claim context gate.</p>
+                        <div class="verification-grid">
+                            ${miniCard('All searches', metrics.source_search_requests || 0, 'info')}
+                            ${miniCard('Claim-context searches', metrics.context_aware_search_requests || 0, 'info')}
+                            ${miniCard('Identity searches', metrics.reference_identity_search_requests || 0, 'info')}
+                            ${miniCard('Returned candidates', metrics.candidate_sources_returned || 0, 'green')}
+                            ${miniCard('Withheld candidates', metrics.candidates_withheld_by_context || 0, 'warn')}
+                            ${miniCard('Search failures', metrics.source_search_failures || 0, Number(metrics.source_search_failures || 0) ? 'danger' : 'green')}
+                            ${miniCard('Searches with results', metrics.searches_with_candidates || 0, 'green')}
+                            ${miniCard('Source approvals', metrics.source_approval_events || 0, 'green')}
+                        </div>
+                    </div>
+
+                    <div class="panel">
+                        <h2>Academic Voice and Writing Signals</h2>
+                        <p class="panel-copy">Optional-module adoption and reviewed revisions. These are writing signals, never AI-authorship determinations.</p>
+                        <div class="verification-grid">
+                            ${miniCard('Enabled analyses', metrics.academic_voice_enabled_analyses || 0, 'info')}
+                            ${miniCard('Completed reviews', metrics.academic_voice_completed_analyses || 0, 'info')}
+                            ${miniCard('Signals shown', metrics.academic_voice_signals || 0, 'warn')}
+                            ${miniCard('Rewrite requests', metrics.academic_voice_rewrite_requests || 0, 'info')}
+                            ${miniCard('Approved revisions', metrics.academic_voice_approved_revisions || 0, 'green')}
+                        </div>
+                    </div>
+                </section>
+
+                <p class="small-note" style="margin:-4px 0 18px;">Feature statistics contain aggregate counters only. Manuscript text, search queries, candidate titles and source metadata are not included.</p>
+
+                <section class="table-panel">
+                    <div class="table-head">
+                        <div>
+                            <h2>Daily statistics</h2>
+                            <p>Uploads and citation integrity activity for the selected reporting window.</p>
+                        </div>
+                    </div>
+                    ${renderDailyTable(daily)}
+                </section>
+
+                <section class="table-panel">
+                    <div class="table-head">
+                        <div>
+                            <h2>Recent documents</h2>
+                            <p>Latest uploaded or queued manuscripts. Only dashboard-safe counts are shown, capped for memory safety.</p>
+                        </div>
+                    </div>
+                    ${renderRecentTable(recent)}
+                </section>
+            `;
+
+            document.getElementById('stats-content').innerHTML = html;
+        }
+
+        function statCard(label, value, sub, tone) {
+            const cls = tone || '';
+            return `
+                <article class="stat-card ${cls}">
+                    <div class="stat-label-top">${cssSafe(label)}</div>
+                    <div class="stat-number ${cls}">${typeof value === 'number' ? fmtNumber(value) : cssSafe(value)}</div>
+                    <div class="stat-sub">${cssSafe(sub)}</div>
+                </article>
+            `;
+        }
+
+        function miniCard(label, value, tone) {
+            const badgeClass = tone === 'green' ? 'badge-success' : tone === 'warn' ? 'badge-warn' : tone === 'danger' ? 'badge-danger' : 'badge-info';
+            return `
+                <div class="mini-card">
+                    <strong>${fmtNumber(value)}</strong>
+                    <span class="badge ${badgeClass}">${cssSafe(label)}</span>
+                </div>
+            `;
+        }
+
+        function barRow(label, pct, value) {
+            const width = Math.max(0, Math.min(100, pct || 0));
+            return `
+                <div class="bar-row">
+                    <div class="bar-head"><span>${cssSafe(label)}</span><span>${fmtNumber(value)} · ${width.toFixed(1)}%</span></div>
+                    <div class="bar-track"><div class="bar-fill" style="width:${width}%"></div></div>
+                </div>
+            `;
+        }
+
+        function renderDailyTable(daily) {
+            const rows = Object.entries(daily || {}).sort((a,b) => b[0].localeCompare(a[0]));
+            if (!rows.length) return '<p class="small-note">No daily data available yet.</p>';
+            return `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Uploads</th>
+                            <th>Processed</th>
+                            <th>Failed</th>
+                            <th>References</th>
+                            <th>Citations</th>
+                            <th>Missing</th>
+                            <th>Uncited</th>
+                            <th>Verification</th>
+                            <th>Avg time</th>
+                            <th>Avg ACII</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows.map(([date, stats]) => `
+                            <tr>
+                                <td>${cssSafe(date)}</td>
+                                <td>${fmtNumber(stats.uploads)}</td>
+                                <td>${fmtNumber(stats.processed)}</td>
+                                <td>${fmtNumber(stats.failed)}</td>
+                                <td>${fmtNumber(stats.references)}</td>
+                                <td>${fmtNumber(stats.citations)}</td>
+                                <td>${fmtNumber(stats.missing_citations)}</td>
+                                <td>${fmtNumber(stats.uncited_references)}</td>
+                                <td>${fmtNumber(stats.verification_rows)}</td>
+                                <td>${fmtSeconds(stats.avg_processing_time)}</td>
+                                <td>${stats.average_acii_score ?? 'N/A'}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function renderRecentTable(recent) {
+            if (!recent.length) return '<p class="small-note">No recent uploads yet.</p>';
+            return `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Filename</th>
+                            <th>Status</th>
+                            <th>Refs</th>
+                            <th>Citations</th>
+                            <th>Missing</th>
+                            <th>Uncited</th>
+                            <th>Verification</th>
+                            <th>ACII</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${recent.slice(0, 50).map(item => {
+                            const status = item.success ? 'Completed' : (item.status || 'Queued');
+                            const badge = item.success ? 'badge-success' : ((item.status || '').includes('error') || item.error ? 'badge-danger' : 'badge-warn');
+                            return `
+                                <tr>
+                                    <td>${fmtDate(item.timestamp)}</td>
+                                    <td>${cssSafe(item.filename || 'Untitled')}</td>
+                                    <td><span class="badge ${badge}">${cssSafe(status)}</span></td>
+                                    <td>${fmtNumber(item.references_count)}</td>
+                                    <td>${fmtNumber(item.citations_count)}</td>
+                                    <td>${fmtNumber(item.missing_citations_count)}</td>
+                                    <td>${fmtNumber(item.uncited_references_count)}</td>
+                                    <td>${fmtNumber(item.verification_rows)}</td>
+                                    <td>${item.acii_score ?? 'N/A'}</td>
+                                    <td>${fmtSeconds(item.processing_time)}</td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function downloadJson() {
+            if (!latestData) return;
+            const blob = new Blob([JSON.stringify(latestData, null, 2)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `citeintegrity-dashboard-safe-${new Date().toISOString().slice(0,10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        }
+
+        window.addEventListener('beforeunload', () => {
+            if (statsAbortController) statsAbortController.abort();
+        });
+
+        refreshStats();
+        setInterval(() => {
+            if (!document.hidden) refreshStats(false);
+        }, SAFE_REFRESH_INTERVAL_MS);
+    </script>
+</body>
+</html>
