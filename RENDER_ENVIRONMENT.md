@@ -63,7 +63,7 @@ exact Paystack webhook body forwarded to CiteIntegrity in the
 | `VERIFY_USE_CACHE` | `0`, keeps the unbounded process-memory cache disabled |
 | `VERIFY_REDIS_CACHE_ENABLED` | `1` |
 | `VERIFY_REDIS_CACHE_TTL` | `21600` |
-| `VERIFY_CACHE_NAMESPACE` | `v4-fast-integrity` |
+| `VERIFY_CACHE_NAMESPACE` | `v5-numbered-author-year` |
 | `VERIFY_SHORT_OPENALEX_MAX_QUERIES` | `1` |
 
 The web service and every document-processing worker must receive the same

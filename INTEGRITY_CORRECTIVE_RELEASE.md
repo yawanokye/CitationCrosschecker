@@ -55,8 +55,20 @@ splitting, and an ACII rating that could overstate assurance.
 - Numeric reference completeness is assessed before the year. Complete
   Vancouver and IEEE entries are no longer labelled as missing a title merely
   because only volume, issue, pages, or an article number follows the year.
+- Numbered APA entries such as `1. Cohen, J. (1988). ...` now retain numeric
+  citation mapping while using author-year metadata queries. Numbering alone no
+  longer forces the bibliography into a Vancouver/IEEE parser.
+- Provider timeouts, rate limits, and server failures are now reported as
+  incomplete/offline verification, never as evidence that a source is absent.
 - Evidence Resolution counts now include visible formatting corrections, so the
   overview cannot show zero while pending cards are displayed.
+- Evidence Resolution now collapses duplicate lookup, publication-status,
+  uncited-reference, and coaching cards into one actionable issue per problem.
+- Numbered APA entries are no longer reported as bibliographically incomplete,
+  and an explicit output style takes precedence over stale detector hints.
+- A metadata lookup failure is an important review item, not a critical finding.
+  Critical status is reserved for confirmed safety events or serious identity
+  conflicts.
 
 ## Acceptance criteria
 
@@ -88,7 +100,7 @@ For the supplied DOI benchmark, confirm:
 Use the existing developer access control to place the application in maintenance
 mode during deployment. Restore paid access only after the benchmark and payment
 smoke tests pass. Do not reuse older verification cache rows. The release uses
-the `verify:v4-fast-integrity` namespace with a six-hour expiry.
+the `verify:v5-numbered-author-year` namespace with a six-hour expiry.
 
 ## Interpretation boundary
 

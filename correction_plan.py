@@ -69,20 +69,40 @@ def _metadata(row: Any) -> Dict[str, Any]:
 
 def _detected_reference_style(result: Dict[str, Any]) -> str:
     summary = result.get("summary") or {}
-    raw = " ".join(str(value or "").lower() for value in (
-        result.get("selected_style"), result.get("style"), result.get("style_family"), result.get("citation_style"),
-        summary.get("selected_style"), summary.get("style"), summary.get("style_family"), summary.get("citation_style"),
-    ))
-    if "apa6" in raw or "apa 6" in raw:
-        return "apa6"
-    if "harvard" in raw:
-        return "harvard"
-    if "superscript" in raw or any(name in raw for name in ("ama", "nature", "rsc", "acs")):
-        return "numeric_superscript"
-    if "round" in raw:
-        return "numeric_round"
-    if "numeric" in raw or any(name in raw for name in ("vancouver", "ieee", "nlm")):
-        return "numeric_square"
+
+    def canonical(value: Any) -> str:
+        raw = str(value or "").strip().lower().replace("-", "_")
+        if not raw or raw == "auto":
+            return ""
+        if "apa6" in raw or "apa 6" in raw:
+            return "apa6"
+        if "apa" in raw:
+            return "apa7"
+        if "harvard" in raw:
+            return "harvard"
+        if "superscript" in raw or any(name in raw for name in ("ama", "nature", "rsc", "acs")):
+            return "numeric_superscript"
+        if "round" in raw:
+            return "numeric_round"
+        if "numeric" in raw or any(name in raw for name in ("vancouver", "ieee", "nlm", "elsevier", "springer")):
+            return "numeric_square"
+        return ""
+
+    # A user's explicit selection must win over secondary detector fields. The
+    # old implementation concatenated every hint, so a stale numeric detector
+    # value could override an explicitly selected APA style.
+    selected = result.get("selected_style") or summary.get("selected_style")
+    selected_style = canonical(selected)
+    if selected_style:
+        return selected_style
+
+    for value in (
+        result.get("style"), result.get("style_family"), result.get("citation_style"),
+        summary.get("style"), summary.get("style_family"), summary.get("citation_style"),
+    ):
+        detected = canonical(value)
+        if detected:
+            return detected
     return "apa7"
 
 
@@ -295,7 +315,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         enriched["confidence_reason"] = enriched.get("confidence_reason") or verification_status_explanation(row)
         enriched["_priority_override"] = (
             "critical"
-            if enriched["canonical_status"] in {"not_found", "lookup_failed", "serious_identity_conflict"}
+            if enriched["canonical_status"] in {"serious_identity_conflict"}
             else "important"
         )
         risky.append(enriched)
@@ -407,6 +427,11 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         for i, row in enumerate(_rows(suggestions.get(kind))):
             if not isinstance(row, dict) or not row.get("original") or not row.get("suggested"):
                 continue
+            issue_type = str(row.get("issue_type") or row.get("type") or "").lower()
+            if issue_type in {"missing_reference", "uncited_reference"} or issue_type.endswith("_uncited_numbered_reference"):
+                # Missing/uncited records already have first-class correction
+                # items with the correct cite/delete workflow.
+                continue
             original = re.sub(r"\s+", " ", str(row.get("original") or "")).strip()
             suggested = re.sub(r"\s+", " ", str(row.get("suggested") or "")).strip()
             confidence_value = float(row.get("confidence", 0) or 0)
@@ -453,6 +478,12 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
 
     source_risks = (result.get("source_risk_review") or {}).get("risks") or []
     for row in source_risks:
+        risk_name = str(row.get("risk") or "").strip().lower()
+        if risk_name in {"metadata_not_found", "publication_status_unchecked"}:
+            # These states are already represented by the source-verification
+            # item for the same row. Do not ask the user to resolve one lookup
+            # failure two or three times.
+            continue
         item_id = f"source-risk-{len(items) + 1}"
         decision = saved_decisions.get(item_id) or {}
         items.append({
@@ -538,6 +569,10 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
 
     coach = result.get("citation_improvement_coach") or {}
     for row in _rows(coach.get("lessons") if isinstance(coach, dict) else []):
+        if str(row.get("pattern") or "").lower() == "unused_reference_entries":
+            # The dedicated uncited-reference item already provides cite or
+            # delete actions and should be the single source of truth.
+            continue
         item_id = f"coach-{len(items) + 1}"
         decision = saved_decisions.get(item_id) or {}
         items.append({

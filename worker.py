@@ -308,7 +308,7 @@ VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
 VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_REDIS_CACHE_TTL", "21600"))
 VERIFY_USE_CACHE = _env_flag("VERIFY_REDIS_CACHE_ENABLED", "1")
 VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
-VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v4-fast-integrity").strip() or "v4-fast-integrity"
+VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v5-numbered-author-year").strip() or "v5-numbered-author-year"
 
 # Privacy-first cache controls. Defaults are OFF.
 CACHE_RESULTS_IN_REDIS = _env_flag("CACHE_RESULTS_IN_REDIS", "0")
@@ -3643,7 +3643,8 @@ def scenario_6_potential_wrong_reference(c2r_rows):
 
 def _reference_is_seriously_incomplete(ref, style="apa"):
     """Conservative completeness gate for both author-year and numeric references."""
-    text = re.sub(r"\s+", " ", str(ref or "")).strip()
+    original_text = re.sub(r"\s+", " ", str(ref or "")).strip()
+    text = original_text
     text = re.sub(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])\s*", "", text)
     without_links = re.sub(r"https?://\S+|\bdoi\s*:?\s*10\.\S+", " ", text, flags=re.I)
     year_match = re.search(r"\b(?:19|20)\d{2}[a-z]?\b", without_links, flags=re.I)
@@ -3657,7 +3658,11 @@ def _reference_is_seriously_incomplete(ref, style="apa"):
     looks_numeric = style_family.startswith("numeric_") or bool(
         re.match(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])", str(ref or ""))
     )
-    if looks_numeric:
+    numbered_author_year = bool(
+        re.match(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])\s+", original_text)
+        and re.search(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)", original_text, flags=re.I)
+    )
+    if looks_numeric and not numbered_author_year:
         # Vancouver/IEEE titles normally appear before the year. Requiring text
         # after the year falsely flags complete journal references such as
         # "... Nurse Educ Pract. 2025;82:104262."
@@ -3665,7 +3670,8 @@ def _reference_is_seriously_incomplete(ref, style="apa"):
         before_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,}", before_year)
         return len(before_words) < 6 or before_year.count(".") < 2
 
-    # Author-year references normally place the title after the year.
+    # Author-year references, including numbered APA entries, normally place
+    # the title after the parenthesised year.
     after_year = without_links[year_match.end():]
     after_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,}", after_year)
     return len(after_words) < 3

@@ -3,7 +3,7 @@ import re
 import unittest
 from pathlib import Path
 
-from correction_plan import _reference_audit
+from correction_plan import _detected_reference_style, _reference_audit, build_correction_plan
 from evidence_resolution import build_evidence_resolution_workspace
 import publication_integrity
 
@@ -25,6 +25,20 @@ def load_completeness_gate():
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), "worker.py", "exec"), namespace)
     return namespace["_reference_is_seriously_incomplete"]
+
+
+def load_numbered_author_year_detector():
+    """Load the pure syntax detector without importing verification services."""
+    source = (ROOT / "verify.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_looks_like_numbered_author_year_reference"
+    ]
+    namespace = {"re": re}
+    exec(compile(ast.Module(body=[functions[-1]], type_ignores=[]), "verify.py", "exec"), namespace)
+    return namespace["_looks_like_numbered_author_year_reference"]
 
 
 class VerificationOperationalReleaseTests(unittest.TestCase):
@@ -50,7 +64,7 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
         self.assertIn('VERIFY_CHUNK_SIZE", "40"', worker)
         self.assertIn('VERIFY_REDIS_CACHE_ENABLED", "1"', worker)
         self.assertIn('VERIFY_REDIS_CACHE_TTL", "21600"', worker)
-        self.assertIn('VERIFY_CACHE_NAMESPACE", "v4-fast-integrity"', worker)
+        self.assertIn('VERIFY_CACHE_NAMESPACE", "v5-numbered-author-year"', worker)
         self.assertIn('VERIFY_SHORT_OPENALEX_MAX_QUERIES", "1"', verifier)
         for setting in (
             "VERIFY_PARALLEL_MODE=1",
@@ -59,7 +73,7 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
             "VERIFY_USE_CACHE=0",
             "VERIFY_REDIS_CACHE_ENABLED=1",
             "VERIFY_REDIS_CACHE_TTL=21600",
-            "VERIFY_CACHE_NAMESPACE=v4-fast-integrity",
+            "VERIFY_CACHE_NAMESPACE=v5-numbered-author-year",
         ):
             self.assertIn(setting, env)
 
@@ -81,6 +95,11 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
             "3. Abate TW, Enyew A, Gebrie F, Bayuh H. Nurses' knowledge and attitude towards diabetes foot care in Bahir Dar, North West Ethiopia. Heliyon. 2020;6(11):e05552.",
         ]
         self.assertTrue(all(not gate(ref, "numeric_square") for ref in references))
+        self.assertFalse(gate(
+            "1. Cohen, J. (1988). Statistical power analysis for the behavioral "
+            "sciences (2nd ed.). Lawrence Erlbaum Associates.",
+            "numeric_square",
+        ))
         self.assertTrue(gate("1. Smith J. 2020.", "numeric_square"))
 
     def test_exact_doi_prevents_false_metadata_conflict(self):
@@ -107,6 +126,69 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
         self.assertEqual(len(audit), 3)
         self.assertTrue(all(row["identity"]["accepted"] for row in audit))
         self.assertTrue(all(row["identity"]["doi_exact"] for row in audit))
+
+    def test_numbered_apa_references_use_author_year_verification(self):
+        detector = load_numbered_author_year_detector()
+        numbered_apa = (
+            "1. Cohen, J. (1988). Statistical power analysis for the behavioral "
+            "sciences (2nd ed.). Lawrence Erlbaum Associates."
+        )
+        vancouver = (
+            "1. Özden D, Yılmaz İ, Sönmez S. Effect of moulage on nursing students' "
+            "endotracheal suctioning knowledge and skills. Nurse Educ Pract. 2025;82:104262."
+        )
+        self.assertTrue(detector(numbered_apa))
+        self.assertFalse(detector(vancouver))
+
+        source = (ROOT / "verify.py").read_text(encoding="utf-8")
+        self.assertIn('effective_style = "apa" if _looks_like_numbered_author_year_reference(ref)', source)
+        self.assertIn('"verification_profile": "numbered_author_year_v161"', source)
+
+    def test_provider_failures_are_not_reported_as_missing_publications(self):
+        source = (ROOT / "verify.py").read_text(encoding="utf-8")
+        self.assertIn('_record_api_request_diagnostic("rate_limited"', source)
+        self.assertIn('_record_api_request_diagnostic("timeout"', source)
+        self.assertIn('row["status"] = "offline"', source)
+        self.assertIn("Retry verification before treating this reference as not found", source)
+
+    def test_evidence_resolution_deduplicates_lookup_and_uncited_findings(self):
+        reference = (
+            "1. Cohen, J. (1988). Statistical power analysis for the behavioral "
+            "sciences (2nd ed.). Lawrence Erlbaum Associates."
+        )
+        result = {
+            "selected_style": "apa7",
+            "style": "numeric_square",
+            "online_verification": {"rows": [{"reference": reference, "status": "not_found"}]},
+            "uncited_references": [{"reference": reference}],
+            "source_risk_review": {"risks": [
+                {"risk": "metadata_not_found", "reference": reference},
+                {"risk": "publication_status_unchecked", "reference": reference},
+            ]},
+            "citation_improvement_coach": {"lessons": [{
+                "pattern": "unused_reference_entries",
+                "passage": "1 reference entries appear unused.",
+            }]},
+            "autofix": {"suggestions": {"citations": [], "references": [{
+                "original": reference,
+                "suggested": "Remove or cite the reference.",
+                "issue_type": "numeric_square_uncited_numbered_reference",
+                "confidence": 0.9,
+            }]}},
+        }
+        self.assertEqual(_detected_reference_style(result), "apa7")
+        plan = build_correction_plan(result)
+        categories = [item["category"] for item in plan["items"]]
+        self.assertEqual(categories.count("source_verification"), 1)
+        self.assertEqual(categories.count("uncited_reference"), 1)
+        self.assertNotIn("source_risk", categories)
+        self.assertNotIn("citation_coach", categories)
+        unresolved = next(item for item in plan["items"] if item["category"] == "source_verification")
+        self.assertEqual(unresolved["priority"], "important")
+        self.assertEqual(
+            plan["evidence_resolution_workspace"]["counts"]["total"],
+            len(plan["items"]),
+        )
 
     def test_workspace_count_includes_visible_formatting_corrections(self):
         workspace = build_evidence_resolution_workspace([{

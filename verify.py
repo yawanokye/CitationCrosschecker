@@ -137,6 +137,32 @@ VERIFY_SINGLE_REF_TIMEOUT = int(os.getenv("VERIFY_SINGLE_REF_TIMEOUT", str(max(6
 VERIFY_RETRY_BACKOFF_SECONDS = float(os.getenv("VERIFY_RETRY_BACKOFF_SECONDS", "1"))
 VERIFY_FORCE_OPENALEX_FALLBACK = _env_flag("VERIFY_FORCE_OPENALEX_FALLBACK", "1")
 VERIFY_AUTHOR_GATE_FOR_VERIFIED_ONLY = _env_flag("VERIFY_AUTHOR_GATE_FOR_VERIFIED_ONLY", "1")
+
+# Per-reference network diagnostics. Verification runs references in separate
+# threads, so thread-local storage prevents one reference's provider failure
+# from contaminating another reference's result.
+_API_REQUEST_STATE = threading.local()
+
+
+def _reset_api_request_diagnostics() -> None:
+    _API_REQUEST_STATE.events = []
+
+
+def _record_api_request_diagnostic(kind: str, url: str, status_code: int = None) -> None:
+    events = list(getattr(_API_REQUEST_STATE, "events", []) or [])
+    host_match = re.match(r"^https?://([^/]+)", str(url or ""), flags=re.I)
+    event = {
+        "kind": str(kind or "unknown"),
+        "provider": host_match.group(1).lower() if host_match else "unknown",
+    }
+    if status_code is not None:
+        event["status_code"] = int(status_code)
+    events.append(event)
+    _API_REQUEST_STATE.events = events
+
+
+def _api_request_diagnostics() -> List[Dict[str, Any]]:
+    return list(getattr(_API_REQUEST_STATE, "events", []) or [])
 # ============================================================
 # PROGRESS TRACKING (Lightweight)
 # ============================================================
@@ -701,17 +727,24 @@ def _safe_get_json(url: str, params: Optional[dict] = None, timeout: int = None)
             }
             r = requests.get(url, params=params, timeout=timeout, headers=headers)
             if r.status_code == 200:
+                _record_api_request_diagnostic("ok", url, 200)
                 return r.json()
             if r.status_code == 429:
-                # Do not hold the job for long API backoffs. Mark the row for review instead.
-                print("[DEBUG] API rate limited. Skipping this lookup quickly.")
+                _record_api_request_diagnostic("rate_limited", url, 429)
+                print("[DEBUG] API rate limited. Skipping this lookup safely.")
                 return None
+            if r.status_code == 404:
+                _record_api_request_diagnostic("not_found_http", url, 404)
+                return None
+            _record_api_request_diagnostic("http_error", url, r.status_code)
             return None
         except requests.exceptions.Timeout:
+            _record_api_request_diagnostic("timeout", url)
             print(f"[DEBUG] API timeout after {timeout}s on attempt {attempt + 1}/{attempts}")
             if attempt < attempts - 1 and VERIFY_RETRY_BACKOFF_SECONDS > 0:
                 time.sleep(VERIFY_RETRY_BACKOFF_SECONDS)
         except Exception as e:
+            _record_api_request_diagnostic("network_error", url)
             print(f"[DEBUG] API request failed quickly: {e}")
             if attempt < attempts - 1 and VERIFY_RETRY_BACKOFF_SECONDS > 0:
                 time.sleep(VERIFY_RETRY_BACKOFF_SECONDS)
@@ -3248,11 +3281,22 @@ def _safe_get_json_with_headers(url: str, params: Optional[dict] = None, headers
             base_headers.update(headers)
         r = requests.get(url, params=params, timeout=timeout, headers=base_headers)
         if r.status_code == 200:
+            _record_api_request_diagnostic("ok", url, 200)
             return r.json()
         if r.status_code == 429:
+            _record_api_request_diagnostic("rate_limited", url, 429)
             _debug_multisource(f"Rate limited by {url}")
+        elif r.status_code == 404:
+            _record_api_request_diagnostic("not_found_http", url, 404)
+        else:
+            _record_api_request_diagnostic("http_error", url, r.status_code)
+        return None
+    except requests.exceptions.Timeout:
+        _record_api_request_diagnostic("timeout", url)
+        _debug_multisource(f"JSON request timed out for {url}")
         return None
     except Exception as exc:
+        _record_api_request_diagnostic("network_error", url)
         _debug_multisource(f"JSON request failed for {url}: {exc}")
         return None
 
@@ -8197,4 +8241,134 @@ def _verify_single_reference(
             "publication_status_reason": f"Publication-status verification failed safely: {exc}",
             "verification_build": VERIFY_BUILD,
         })
+    return row
+
+
+# ============================================================
+# NUMBERED AUTHOR-YEAR REFERENCE VERIFICATION v1.6.1
+# ============================================================
+# A manuscript may cite numerically in the text while formatting each reference
+# as APA, for example: ``1. Cohen, J. (1988). Title...``.  Earlier batch style
+# detection treated every numbered list as Vancouver/IEEE.  That discarded the
+# parenthesised author-year structure and caused valid no-DOI references to be
+# reported as not found.  Citation-marker style and reference-entry syntax are
+# now detected separately.
+VERIFY_BUILD = "commercial-2026-09-17-numbered-author-year-verification-v1.6.1"
+
+
+def _looks_like_numbered_author_year_reference(ref: str) -> bool:
+    """Return True for numbered APA/author-year reference entries."""
+    text = str(ref or "").replace("\xa0", " ").replace("\t", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not re.match(
+        r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}\s*[\.)])\s+",
+        text,
+    ):
+        return False
+
+    text = re.sub(
+        r"^\s*(?:\[\s*\d{1,4}\s*\]\s*[\.]?|\(\s*\d{1,4}\s*\)\s*[\.]?|\d{1,4}\s*[\.)])\s+",
+        "",
+        text,
+        count=1,
+    )
+    year_match = re.search(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)\s*[\.]?", text[:600], flags=re.I)
+    if not year_match:
+        return False
+
+    author_segment = text[:year_match.start()].strip(" ,.;")
+    if not author_segment or ";" in author_segment:
+        return False
+
+    # APA personal authors normally contain a comma followed by initials.
+    personal_author = bool(re.search(
+        r"^[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.|[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+)",
+        author_segment,
+    ))
+    # Also admit a concise organisation or editor author before the year.
+    organisation_author = bool(
+        len(author_segment.split()) <= 18
+        and re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", author_segment)
+        and not re.search(r"\b(?:vol|volume|issue|pp?)\.?\s*\d", author_segment, flags=re.I)
+    )
+    return personal_author or organisation_author
+
+
+_V161_PREVIOUS_EXTRACT_FIELDS_BY_STYLE = globals().get("_extract_fields_by_style")
+
+
+def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
+    """Parse numbered APA entries as author-year without changing citation style."""
+    if _looks_like_numbered_author_year_reference(ref):
+        clean = _strip_leading_numbering(str(ref or ""))
+        fields = _extract_common_fields(clean)
+        info = _style_metadata("apa")
+        fields.update({
+            "style_family": "author_year",
+            "style_label": info.get("label", "APA / author-year"),
+            "style_sample": info.get("sample", ""),
+            "verification_profile": "numbered_author_year_v161",
+            "reference_numbered": True,
+            "reference_entry_syntax": "author_year",
+        })
+        return fields
+    return _V161_PREVIOUS_EXTRACT_FIELDS_BY_STYLE(ref, style)
+
+
+_V161_PREVIOUS_BUILD_QUERY_PLAN = globals().get("_build_verification_query_plan")
+
+
+def _build_verification_query_plan(ref: str, style: str) -> Dict[str, Any]:
+    """Use author-year search queries for numbered APA-style bibliography entries."""
+    effective_style = "apa" if _looks_like_numbered_author_year_reference(ref) else style
+    plan = _V161_PREVIOUS_BUILD_QUERY_PLAN(ref, effective_style)
+    if _looks_like_numbered_author_year_reference(ref):
+        plan["reference_entry_syntax"] = "numbered_author_year"
+        plan["citation_marker_style"] = _canonical_verify_style(style)
+        plan["effective_verification_style"] = "apa"
+        fields = plan.get("fields") or {}
+        if isinstance(fields, dict):
+            fields["verification_profile"] = "numbered_author_year_v161"
+            fields["reference_numbered"] = True
+            fields["reference_entry_syntax"] = "author_year"
+            plan["fields"] = fields
+    return plan
+
+
+_V161_PREVIOUS_VERIFY_SINGLE_REFERENCE = globals().get("_verify_single_reference")
+
+
+def _verify_single_reference(
+    ref: str,
+    style: str,
+    use_crossref: bool,
+    use_openalex: bool,
+    enrich_metadata: bool = False,
+) -> Dict[str, Any]:
+    _reset_api_request_diagnostics()
+    row = _V161_PREVIOUS_VERIFY_SINGLE_REFERENCE(
+        ref, style, use_crossref, use_openalex, enrich_metadata
+    )
+    if _looks_like_numbered_author_year_reference(ref):
+        row["reference_entry_syntax"] = "numbered_author_year"
+        row["effective_verification_style"] = "apa"
+        row["citation_marker_style"] = _canonical_verify_style(style)
+        row["verification_profile"] = "numbered_author_year_v161"
+    diagnostics = _api_request_diagnostics()
+    transient = [
+        event for event in diagnostics
+        if event.get("kind") in {"rate_limited", "timeout", "network_error", "http_error"}
+    ]
+    if _normalize_verify_status(row.get("status")) == "not_found" and transient:
+        # A provider failure is not evidence that a publication does not exist.
+        row["status"] = "offline"
+        row["source"] = row.get("source") or "provider_unavailable"
+        row["publication_status_checked"] = False
+        row["publication_status"] = "unchecked"
+        row["confidence_reason"] = (
+            "One or more scholarly metadata services did not complete the lookup. "
+            "Retry verification before treating this reference as not found."
+        )
+        row["verification_transport_diagnostics"] = transient
+    row["verification_build"] = VERIFY_BUILD
     return row
