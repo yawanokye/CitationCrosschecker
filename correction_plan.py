@@ -8,6 +8,8 @@ from typing import Any, Dict, List
 import re
 
 from reference_formatter import format_reference, validate_reference
+from reference_safety import is_review_instruction, identity_text, notice_kind
+import hashlib
 from evidence_resolution import (
     build_evidence_resolution_workspace,
     claim_requires_resolution,
@@ -127,9 +129,9 @@ def _parse_original_reference(original: str) -> Dict[str, Any]:
     clean = re.sub(r"\s*doi:\s*10\.\S+", "", clean, flags=re.I).strip()
     match = re.match(r"^(.*?)\s*\((\d{4}[a-z]?|n\.d\.)\)\.\s*(.+)$", clean, re.I)
     if not match:
-        numeric = re.match(r"^(.*?)\.\s+(.+?)\.\s+(.+?)\.\s+(\d{4});\s*([^(:\s]+)(?:\(([^)]+)\))?\s*:\s*([^.;]+)", clean)
+        numeric = re.match(r"^(.*?)\.\s+(.+?)\.\s+(.+?)\.\s+(\d{4});\s*([^(:\s]+)(?:\(([^)]+)\))?(?:\s*:\s*([^.;]+))?", clean)
         if numeric:
-            return {"authors": numeric.group(1).strip(), "year": numeric.group(4), "title": numeric.group(2).strip(), "source": numeric.group(3).strip(), "volume": numeric.group(5), "issue": numeric.group(6) or "", "pages": numeric.group(7).strip(), "publisher": "", "edition": "", "doi": doi, "isbn": isbn, "url": url, "type": "article", "parse_confidence": "high"}
+            return {"authors": numeric.group(1).strip(), "year": numeric.group(4), "title": numeric.group(2).strip(), "source": numeric.group(3).strip(), "volume": numeric.group(5).rstrip("."), "issue": numeric.group(6) or "", "pages": (numeric.group(7) or "").strip(), "publisher": "", "edition": "", "doi": doi, "isbn": isbn, "url": url, "type": "article", "parse_confidence": "high"}
         return {"authors": [], "year": "", "title": "", "source": "", "publisher": "", "doi": doi, "isbn": isbn, "url": url, "type": "unknown", "parse_confidence": "low"}
     author_block, year, remainder = (part.strip() for part in match.groups())
     segments = re.split(r"\.\s+", remainder, maxsplit=1)
@@ -168,7 +170,8 @@ def _reference_identity_gate(original_ref: Dict[str, Any], row: Dict[str, Any]) 
     doi_exact = bool(original_doi and matched_doi and original_doi == matched_doi)
     isbn_exact = bool(original_isbn and matched_isbn and original_isbn == matched_isbn)
     year_match = bool(original_year and matched_year and original_year == matched_year)
-    accepted = doi_exact or isbn_exact or (title_score >= .95 and author_match and year_match)
+    role_conflict = bool(notice_kind(original_ref.get("title"))) != bool(notice_kind(row.get("matched_title") or row.get("title")))
+    accepted = (doi_exact or isbn_exact or (title_score >= .95 and author_match and year_match)) and not role_conflict
     reason = "Exact DOI" if doi_exact else ("Exact ISBN" if isbn_exact else ("Title, author and year agree" if accepted else "External record may represent a different publication"))
     return {"accepted": accepted, "doi_exact": doi_exact, "isbn_exact": isbn_exact, "title_similarity": round(title_score, 3), "author_match": author_match, "year_match": year_match, "reason": reason}
 
@@ -210,13 +213,18 @@ def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             italic = segment.startswith("*") and segment.endswith("*")
             segments.append({"text": segment[1:-1] if italic else segment, "italic": italic})
         formatted = re.sub(r"\*", "", formatted_markup).strip()
+        if re.search(r"\bet\s+al\b", str(original_ref.get("authors") or ""), re.I):
+            # A truncated author list cannot be reconstructed from surname-only
+            # matches. Preserve it until the user supplies complete metadata.
+            formatted = original
+            segments = [{"text": original, "italic": False}]
         number_match = re.match(r"^\s*(?:\[(\d+)\]|\((\d+)\)|(\d+)[.)])\s*", original)
-        if style.startswith("numeric_") and number_match:
+        if style.startswith("numeric_") and number_match and formatted != original:
             number = next(group for group in number_match.groups() if group)
             marker = f"[{number}]" if style == "numeric_square" else (f"({number})" if style == "numeric_round" else f"{number}.")
             formatted = f"{marker} {formatted}".strip()
             segments.insert(0, {"text": marker + " ", "italic": False})
-        elif style.startswith("numeric_"):
+        elif style.startswith("numeric_") and not number_match:
             marker = f"[{index + 1}]" if style == "numeric_square" else (f"({index + 1})" if style == "numeric_round" else f"{index + 1}.")
             formatted = f"{marker} {formatted}".strip()
             segments.insert(0, {"text": marker + " ", "italic": False})
@@ -371,7 +379,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             conflict_id = f"reference-identity-conflict-{audit['index']}"
             conflict_decision = saved_decisions.get(conflict_id) or {}
             items.append({
-                "id": conflict_id, "priority": "critical", "category": "reference_identity_conflict",
+                "id": conflict_id, "priority": "critical" if audit["identity"].get("title_similarity", 0) < .70 else "important", "category": "reference_identity_conflict",
                 "title": "Online metadata appears to describe a different publication",
                 "what_is_wrong": audit["identity"].get("reason"),
                 "why_it_matters": "Using this metadata could replace the intended source with an unrelated article, review, book or report.",
@@ -434,6 +442,8 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             original = re.sub(r"\s+", " ", str(row.get("original") or "")).strip()
             suggested = re.sub(r"\s+", " ", str(row.get("suggested") or "")).strip()
+            if is_review_instruction(suggested) or row.get("fix_type") == "review_required":
+                continue
             confidence_value = float(row.get("confidence", 0) or 0)
             reason_lower = str(row.get("reason") or "").lower()
             speculative = any(marker in reason_lower for marker in (
@@ -480,11 +490,17 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     for row in source_risks:
         risk_name = str(row.get("risk") or "").strip().lower()
         if risk_name in {"metadata_not_found", "publication_status_unchecked"}:
-            # These states are already represented by the source-verification
-            # item for the same row. Do not ask the user to resolve one lookup
-            # failure two or three times.
-            continue
-        item_id = f"source-risk-{len(items) + 1}"
+            identity = identity_text(row.get("original_reference") or row.get("reference"))
+            existing = next((item for item in items
+                             if item.get("category") in {"source_verification", "reference_incomplete"}
+                             and identity and identity_text(item.get("evidence")) == identity), None)
+            if existing:
+                existing.setdefault("supporting_metadata", {}).setdefault("source_risks", []).append(dict(row))
+                if risk_name == "publication_status_unchecked":
+                    existing["why_it_matters"] += " Publication status also remains unchecked."
+                continue
+        stable_key = "|".join([risk_name, str(row.get("reference_index") or ""), str(row.get("doi") or row.get("reference") or "")])
+        item_id = "source-risk-" + hashlib.sha256(stable_key.encode()).hexdigest()[:16]
         decision = saved_decisions.get(item_id) or {}
         items.append({
             "id": item_id,
@@ -494,10 +510,10 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             "what_is_wrong": str(row.get("risk", "Source requires review")).replace("_", " ").title(),
             "why_it_matters": row.get("qualification") or "This metadata signal may affect the reliability or suitability of the cited source.",
             "evidence": str(row.get("reference") or "")[:900],
-            "location": _locate(manuscript_text, str(row.get("reference") or "")),
+            "location": {"section": "References", "reference_index": row.get("reference_index"), "location_note": "See the original reference and DOI in Source Verification."},
             "recommended_action": row.get("action", "Review the source metadata manually."),
             "coach_explanation": row.get("action", "Review the source metadata manually."),
-            "supporting_metadata": row.get("metadata") or {},
+            "supporting_metadata": {**(row.get("metadata") or {}), "publication_status": row.get("publication_status"), "events": row.get("events") or [], "doi": row.get("doi"), "data_version": row.get("data_version")},
             "confidence": row.get("confidence", "medium"),
             "evidence_link": row.get("url", ""),
             "auto_apply_allowed": False,
@@ -586,6 +602,10 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         })
 
     for item in items:
+        if item.get("category") in {"source_verification", "reference_style", "reference_incomplete", "reference_identity_conflict", "reference_metadata", "uncited_reference"}:
+            location = item.get("location") or {}
+            if isinstance(location, dict) and location.get("section") == "Document body" and location.get("location_note"):
+                item["location"] = {**location, "section": "References"}
         item["source_search_report"] = saved_search_reports.get(item.get("id")) or {}
 
     rank = {"critical": 0, "important": 1, "optional": 2}

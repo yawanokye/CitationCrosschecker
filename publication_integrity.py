@@ -20,6 +20,7 @@ import re
 import sqlite3
 import threading
 import time
+from reference_safety import notice_kind, plain_metadata
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -79,16 +80,16 @@ def _first_title(message: Dict[str, Any]) -> str:
     title = message.get("title") or ""
     if isinstance(title, list):
         title = title[0] if title else ""
-    return str(title or "").strip()
+    return plain_metadata(title)
 
 
 def _date_value(value: Any) -> str:
     if isinstance(value, dict):
         if value.get("date-time"):
-            return str(value["date-time"])
+            return str(value["date-time"])[:10]
         parts = value.get("date-parts") or []
         if parts and isinstance(parts[0], list):
-            nums = [str(x) for x in parts[0] if x is not None]
+            nums = [str(x) if i == 0 else str(x).zfill(2) for i, x in enumerate(parts[0]) if x is not None]
             if nums:
                 return "-".join(nums)
     return str(value or "").strip()
@@ -138,6 +139,7 @@ def _normalise_event(item: Dict[str, Any], relation_key: str = "") -> Dict[str, 
         "doi": doi,
         "date": _date_value(item.get("updated") or item.get("published") or item.get("created")),
         "source": str(item.get("source") or "crossref").strip().lower(),
+        "record_id": str(item.get("record-id") or item.get("record_id") or ""),
         "url": url,
     }
 
@@ -156,11 +158,8 @@ def events_from_crossref_message(message: Dict[str, Any]) -> List[Dict[str, Any]
     if isinstance(relation, dict):
         relation_map = {
             "is-retracted-by": "retraction",
-            "retracts": "retraction",
             "is-corrected-by": "correction",
-            "corrects": "correction",
             "is-updated-by": "other_update",
-            "updates": "other_update",
             "is-superseded-by": "other_update",
         }
         for key, values in relation.items():
@@ -186,7 +185,7 @@ def events_from_crossref_message(message: Dict[str, Any]) -> List[Dict[str, Any]
 def is_publication_notice(message: Dict[str, Any]) -> bool:
     title = _first_title(message)
     subtype = str(message.get("subtype") or message.get("type") or "").lower()
-    return bool(_NOTICE_TITLE_RE.search(title)) or subtype in {
+    return bool(notice_kind(title)) or subtype in {
         "retraction", "withdrawal", "expression-of-concern", "correction",
         "corrigendum", "erratum", "reinstatement",
     }
@@ -222,7 +221,7 @@ def summarise_publication_events(
                 active_status = "retracted" if event_type == "retraction" else "withdrawn"
             elif event_type == "reinstatement":
                 active_status = "reinstated"
-            elif event_type == "expression_of_concern" and active_status == "clear":
+            elif event_type == "expression_of_concern" and active_status not in {"retracted", "withdrawn"}:
                 active_status = "expression_of_concern"
             elif event_type == "correction" and active_status == "clear":
                 active_status = "corrected"
@@ -241,7 +240,7 @@ def summarise_publication_events(
             "expression_of_concern": "An expression of concern is active for this publication.",
             "corrected": "A correction is recorded for this publication.",
             "reinstated": "This publication has a reinstatement after an earlier event and must not be shown as actively retracted.",
-            "clear": "No Crossref publication event was returned for this DOI.",
+            "clear": "No event was found in the checked sources as of the stated data version. This is not a guarantee of publication integrity.",
         }[status]
 
     return {
@@ -351,7 +350,8 @@ def fetch_crossref_publication_status(
     rw = _retraction_watch_lookup(doi)
     crossref_message: Dict[str, Any] = {}
     crossref_error = ""
-    # The DOI-indexed Retraction Watch snapshot is the complete event source.
+    # The DOI-indexed snapshot covers the dataset as of its published date,
+    # not all possible events or publisher updates. Keep that boundary visible.
     # Avoid a second Crossref call when it is present. Publisher update-to data
     # already returned during bibliographic matching is supplied as candidate
     # events by the verifier.
@@ -379,13 +379,18 @@ def fetch_crossref_publication_status(
     all_events = list(rw.get("events") or []) + candidate_events + crossref_events
     deduped_events = []
     seen_events = set()
+    seen_records = set()
     for event in all_events:
+        event = dict(event)
+        event["date"] = _date_value(event.get("date"))[:10]
         key = (
             event.get("type"), event.get("doi"), event.get("date"),
-            str(event.get("label") or "").lower(),
         )
-        if key not in seen_events:
+        record_key = (event.get("source"), str(event.get("record_id") or ""), event.get("type"))
+        if key not in seen_events and not (record_key[1] and record_key in seen_records):
             seen_events.add(key)
+            if record_key[1]:
+                seen_records.add(record_key)
             deduped_events.append(event)
 
     # A DOI used as a notice DOI is a legitimate publication notice even when
@@ -456,8 +461,8 @@ def enrich_verification_row(row: Dict[str, Any], reference: str = "") -> Dict[st
 
     status = fetch_crossref_publication_status(
         lookup_doi,
-        candidate_events=enriched.get("candidate_publication_events") or [],
-        candidate_is_notice=bool(enriched.get("candidate_is_publication_notice")),
+        candidate_events=(enriched.get("candidate_publication_events") or []) if matched_doi == lookup_doi else [],
+        candidate_is_notice=bool(enriched.get("candidate_is_publication_notice")) if matched_doi == lookup_doi else False,
     )
     enriched["publication_status_checked"] = bool(status.get("checked"))
     enriched["publication_status_source"] = status.get("source") or "crossref"

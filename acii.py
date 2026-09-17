@@ -316,6 +316,7 @@ def compute_acii(engine_result: Dict[str, Any], rows: List[Dict[str, Any]]) -> D
         expected_references > 0
         and len(rows_copy) == expected_references
         and checked_rows == expected_references
+        and all(str(row.get("status") or "").lower() not in {"offline", "failed", "error", "queued", "pending"} for row in rows_copy)
     )
 
     statuses = [str(row.get("publication_status") or "unchecked").lower() for row in rows_copy]

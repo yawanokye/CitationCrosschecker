@@ -4604,8 +4604,12 @@ def _looks_like_vancouver_author_segment(seg: str) -> bool:
         return False
     if re.search(r"\bet\s+al\b", seg, re.I):
         return True
-    # Surname Initials, Surname Initials
-    return len(re.findall(r"\b[A-Z][A-Za-z'’\-]{1,}\s+[A-Z]{1,4}\b", seg)) >= 1
+    # Unicode surnames/initials and corporate editorial authors are valid.
+    pieces = [p.strip() for p in seg.split(",") if p.strip()]
+    if pieces and all(re.search(r"[^\W\d_][\w'’\- ]+\s+[^\W\d_]{1,4}$", p, re.UNICODE)
+                      and p.split()[-1].isupper() for p in pieces):
+        return True
+    return bool(re.search(r"\b(?:editors?|group|committee|collaboration|consortium|organisation|organization)\b", seg, re.I))
 
 
 def _surname_from_numeric_author_piece(piece: str) -> str:
@@ -4621,7 +4625,7 @@ def _surname_from_numeric_author_piece(piece: str) -> str:
     toks = [x for x in re.split(r"\s+", p) if x]
     if toks:
         cand = toks[0]
-        cand = re.sub(r"[^A-Za-z'\-]", "", cand).lower()
+        cand = re.sub(r"[^\w'\-]", "", cand, flags=re.UNICODE).casefold()
         if len(cand) >= 2:
             return cand
     return ""
@@ -6205,6 +6209,8 @@ def _v1523_best_candidate(fields: Dict[str, Any], candidates: List[Dict[str, Any
     for cand in candidates or []:
         try:
             meta = _score_candidate(fields, cand)
+            if meta.get("identity_rejected"):
+                continue
             # Strong DOI exact match should dominate any title parsing weakness.
             if fields.get("doi") and meta.get("doi") and _v1523_normalise_numeric_doi(fields.get("doi")) == _v1523_normalise_numeric_doi(meta.get("doi")):
                 meta["doi_match"] = True
@@ -6214,7 +6220,7 @@ def _v1523_best_candidate(fields: Dict[str, Any], candidates: List[Dict[str, Any
             continue
     if not scored:
         return None, {}, []
-    scored.sort(key=lambda x: int(x.get("score", 0)), reverse=True)
+    scored.sort(key=lambda x: _v1532_candidate_sort_key(fields, x), reverse=True)
     best_meta = scored[0]
     # Alternatives shown only when they are credible enough to review.
     alternatives = []
@@ -6602,78 +6608,53 @@ def _v1526_dedupe_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str,
 
 
 def _v1523_run_numeric_queries(plan: Dict[str, Any], use_crossref: bool, use_openalex: bool) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
-    """
-    Recovery query plan for numeric styles.
-
-    Order:
-    1. DOI exact.
-    2. Crossref bibliographic title, rich title, and short title-key.
-    3. OpenAlex title/rich title with and without year filter.
-    4. Journal-year-volume-page tuple.
-    """
-    candidates: List[Dict[str, Any]] = []
-    query_used: List[str] = []
-    strategy: List[str] = []
-    openalex_allowed = bool(use_openalex or VERIFY_FORCE_OPENALEX_FALLBACK)
-
+    """Bounded DOI-first search; stop at a corroborated identity match."""
+    candidates, queries, strategies = [], [], []
+    fields = plan.get("fields") or {}
     doi = _safe_strip(plan.get("doi", ""))
-    title = _v1523_title_query(plan.get("title", ""))
-    rich_title = _clean_query_text(plan.get("rich_title", ""))
-    title_key = _v1526_short_title_key(title) or _clean_query_text(plan.get("title_key", ""))
+    title = _clean_query_text(plan.get("title", ""))
+    rich = _clean_query_text(plan.get("rich_title", ""))
     journal_tuple = _clean_query_text(plan.get("journal_tuple", ""))
     year = _safe_strip(plan.get("year", ""))
-
-    # DOI exact must dominate.
-    if doi and use_crossref:
-        query_used.append(doi); strategy.append("numeric_crossref_doi_exact")
-        res = _query_crossref_by_doi(doi) or []
-        if res:
-            return _v1526_dedupe_candidates(res), query_used, strategy
-    if doi and openalex_allowed:
-        query_used.append(doi); strategy.append("numeric_openalex_doi_exact")
-        res = _query_openalex_by_doi(doi) or []
-        if res:
-            return _v1526_dedupe_candidates(res), query_used, strategy
-
-    # Title-centred searches. Use several bounded forms, not the raw full reference.
-    if title and _v1523_count_words(title) >= 3:
+    deadline = time.monotonic() + max(5.0, float(os.getenv("VERIFY_REFERENCE_BUDGET_SECONDS", "20")))
+    failed_providers = set()
+    steps = []
+    if doi:
         if use_crossref:
-            for q, name, rows in [
-                (title, "numeric_crossref_title_bibliographic", max(12, VERIFY_TITLE_ROWS)),
-                (rich_title, "numeric_crossref_rich_bibliographic", max(8, VERIFY_CROSSREF_ROWS)),
-                (title_key, "numeric_crossref_title_key", max(8, VERIFY_CROSSREF_ROWS)),
-            ]:
-                q = _clean_query_text(q)
-                if not q:
-                    continue
-                res = _query_crossref_bibliographic(q, query_author="", rows=rows, query_name=name) or []
-                candidates.extend(res)
-                query_used.append(q); strategy.append(name)
-
-        if openalex_allowed:
-            # Search exact-ish title without year first, because online-first metadata can differ by year.
-            for q, y, name, rows in [
-                (title, "", "numeric_openalex_title_unfiltered", max(10, VERIFY_OPENALEX_ROWS)),
-                (rich_title or title, year, "numeric_openalex_rich_year", max(8, VERIFY_OPENALEX_ROWS)),
-                (title_key or title, "", "numeric_openalex_title_key", max(8, VERIFY_OPENALEX_ROWS)),
-            ]:
-                q = _clean_query_text(q)
-                if not q:
-                    continue
-                res = _query_openalex_search(q, rows=rows, publication_year=y, query_name=name) or []
-                candidates.extend(res)
-                query_used.append(q); strategy.append(name)
-
-    # Journal tuple for RSC/ACS/no-title or when title search yields nothing credible.
+            steps.append(("crossref", doi, "doi_exact", lambda: _query_crossref_by_doi(doi)))
+        if use_openalex:
+            steps.append(("openalex", doi, "doi_exact", lambda: _query_openalex_by_doi(doi)))
+    if title:
+        if use_crossref:
+            steps.append(("crossref", title, "title", lambda: _query_crossref_bibliographic(title, rows=VERIFY_TITLE_ROWS, query_name="bounded_title")))
+        if use_openalex:
+            steps.append(("openalex", title, "title", lambda: _query_openalex_search(title, rows=VERIFY_OPENALEX_ROWS, publication_year="", query_name="bounded_title")))
+        if use_crossref and rich and rich != title:
+            steps.append(("crossref", rich, "rich_title", lambda: _query_crossref_bibliographic(rich, rows=VERIFY_CROSSREF_ROWS, query_name="bounded_rich_title")))
     if journal_tuple:
         if use_crossref:
-            res = _query_crossref_bibliographic(journal_tuple, query_author="", rows=max(8, VERIFY_CROSSREF_ROWS), query_name="numeric_crossref_journal_tuple") or []
-            candidates.extend(res); query_used.append(journal_tuple); strategy.append("numeric_crossref_journal_tuple")
-        if openalex_allowed:
-            res = _query_openalex_search(journal_tuple, rows=max(8, VERIFY_OPENALEX_ROWS), publication_year=year, query_name="numeric_openalex_journal_tuple") or []
-            candidates.extend(res); query_used.append(journal_tuple); strategy.append("numeric_openalex_journal_tuple")
-
-    return _v1526_dedupe_candidates(candidates), _dedupe_preserve(query_used), _dedupe_preserve(strategy)
+            steps.append(("crossref", journal_tuple, "journal_tuple", lambda: _query_crossref_bibliographic(journal_tuple, rows=VERIFY_CROSSREF_ROWS, query_name="bounded_tuple")))
+        if use_openalex:
+            steps.append(("openalex", journal_tuple, "journal_tuple", lambda: _query_openalex_search(journal_tuple, rows=VERIFY_OPENALEX_ROWS, publication_year=year, query_name="bounded_tuple")))
+    attempts = 0
+    for provider, query, strategy, lookup in steps:
+        if provider in failed_providers:
+            continue
+        if attempts >= 5 or time.monotonic() >= deadline:
+            _record_api_request_diagnostic("budget_exhausted", provider)
+            break
+        before = len(_api_request_diagnostics())
+        attempts += 1
+        found = lookup() or []
+        candidates.extend(found)
+        queries.append(query)
+        strategies.append(provider + "_" + strategy)
+        recent = _api_request_diagnostics()[before:]
+        if any(d.get("kind") in {"rate_limited", "timeout", "network_error", "http_error"} for d in recent):
+            failed_providers.add(provider)
+        if _candidate_is_strong_enough(fields, candidates):
+            break
+    return _v1526_dedupe_candidates(candidates), _dedupe_preserve(queries), strategies
 
 
 def _classify_from_meta(ref_fields: Dict[str, Any], meta: Dict[str, Any]) -> Tuple[str, str]:
@@ -6815,6 +6796,8 @@ def _v1523_numeric_verify_single(ref: str, style: str, use_crossref: bool, use_o
         "page_match": int(meta.get("page_match", 0)),
         "confidence_reason": reason,
         "alternative_matches": alternatives,
+        "candidate_publication_events": meta.get("candidate_publication_events") or [],
+        "candidate_is_publication_notice": bool(meta.get("candidate_is_publication_notice")),
     })
 
     # Only blank truly unreliable not_found matches. Keep needs_review visible.
@@ -8253,7 +8236,7 @@ def _verify_single_reference(
 # parenthesised author-year structure and caused valid no-DOI references to be
 # reported as not found.  Citation-marker style and reference-entry syntax are
 # now detected separately.
-VERIFY_BUILD = "commercial-2026-09-17-numbered-author-year-verification-v1.6.1"
+VERIFY_BUILD = "commercial-2026-09-17-identity-safety-v2.0.6"
 
 
 def _looks_like_numbered_author_year_reference(ref: str) -> bool:
@@ -8302,6 +8285,13 @@ def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
     if _looks_like_numbered_author_year_reference(ref):
         clean = _strip_leading_numbering(str(ref or ""))
         fields = _extract_common_fields(clean)
+        from correction_plan import _parse_original_reference
+        parsed = _parse_original_reference(clean)
+        if parsed.get("title"):
+            fields.update({"title": parsed["title"], "article_title": parsed["title"],
+                           "journal": parsed.get("source", ""), "year": parsed.get("year", ""),
+                           "volume": parsed.get("volume", ""), "issue": parsed.get("issue", ""),
+                           "pages": parsed.get("pages", ""), "doi": parsed.get("doi", "")})
         info = _style_metadata("apa")
         fields.update({
             "style_family": "author_year",
@@ -8346,9 +8336,11 @@ def _verify_single_reference(
     enrich_metadata: bool = False,
 ) -> Dict[str, Any]:
     _reset_api_request_diagnostics()
-    row = _V161_PREVIOUS_VERIFY_SINGLE_REFERENCE(
+    # One bounded DOI/title search, rather than successive legacy rescue passes.
+    row = _v1523_numeric_verify_single(
         ref, style, use_crossref, use_openalex, enrich_metadata
     )
+    row = enrich_verification_row(row, ref)
     if _looks_like_numbered_author_year_reference(ref):
         row["reference_entry_syntax"] = "numbered_author_year"
         row["effective_verification_style"] = "apa"
@@ -8357,14 +8349,13 @@ def _verify_single_reference(
     diagnostics = _api_request_diagnostics()
     transient = [
         event for event in diagnostics
-        if event.get("kind") in {"rate_limited", "timeout", "network_error", "http_error"}
+        if event.get("kind") in {"rate_limited", "timeout", "network_error", "http_error", "budget_exhausted"}
     ]
     if _normalize_verify_status(row.get("status")) == "not_found" and transient:
         # A provider failure is not evidence that a publication does not exist.
         row["status"] = "offline"
         row["source"] = row.get("source") or "provider_unavailable"
-        row["publication_status_checked"] = False
-        row["publication_status"] = "unchecked"
+        # Preserve an independent input-DOI safety hit if metadata services fail.
         row["confidence_reason"] = (
             "One or more scholarly metadata services did not complete the lookup. "
             "Retry verification before treating this reference as not found."
@@ -8372,3 +8363,52 @@ def _verify_single_reference(
         row["verification_transport_diagnostics"] = transient
     row["verification_build"] = VERIFY_BUILD
     return row
+
+
+# Shared identity guards apply to candidate selection and early-stop checks.
+from reference_safety import plain_metadata, notice_kind, identity_text
+_V206_CANDIDATE_FIELDS = _candidate_fields
+_V206_SCORE_CANDIDATE = _score_candidate
+_V206_CLASSIFY = _classify_from_meta
+
+
+def _candidate_fields(cand):
+    meta = _V206_CANDIDATE_FIELDS(cand)
+    for key in ("title", "journal", "publisher"):
+        meta[key] = plain_metadata(meta.get(key))
+    meta["candidate_is_publication_notice"] = bool(notice_kind(meta.get("title"))) or bool(meta.get("candidate_is_publication_notice"))
+    return meta
+
+
+def _score_candidate(fields, cand):
+    meta = _V206_SCORE_CANDIDATE(fields, cand)
+    original_kind = notice_kind(fields.get("title") or fields.get("article_title"))
+    candidate_kind = notice_kind(meta.get("title"))
+    if bool(original_kind) != bool(candidate_kind) or (original_kind and candidate_kind and original_kind != candidate_kind):
+        meta["identity_rejected"] = "A publication notice and its target article are different records."
+    if fields.get("doi") and meta.get("doi") and _normalise_doi(fields["doi"]) != _normalise_doi(meta["doi"]):
+        meta["identity_rejected"] = "The candidate DOI differs from the supplied DOI."
+    if meta.get("identity_rejected"):
+        meta["score"] = 0
+    return meta
+
+
+def _classify_from_meta(fields, meta):
+    if meta.get("identity_rejected"):
+        return "not_found", meta["identity_rejected"]
+    if meta.get("doi_match"):
+        return "verified", "Exact DOI match. Publication status is checked separately."
+    status, reason = _V206_CLASSIFY(fields, meta)
+    title = identity_text(fields.get("title") or fields.get("article_title"))
+    matched = identity_text(meta.get("title"))
+    if status == "verified" and title:
+        similarity = fuzz.ratio(title, matched)
+        corroboration = (bool(meta.get("author_overlap")) or int(meta.get("author_similarity") or 0) >= 70
+                         or (int(meta.get("journal_score") or 0) >= 70 and bool(meta.get("page_match"))))
+        try:
+            year_delta = abs(int(str(fields.get("year"))[:4]) - int(str(meta.get("year"))[:4]))
+        except (ValueError, TypeError):
+            year_delta = 999
+        if similarity < 88 or year_delta > 1 or not corroboration:
+            return "needs_review", "A candidate was found, but title and supporting metadata need human confirmation."
+    return status, reason

@@ -11,7 +11,7 @@ path is canonical.
 Refresh the snapshot before a future release with:
 
 ```bash
-python scripts/build_retraction_watch_index.py \
+python build_retraction_watch_index.py \
   --csv /path/to/retraction_watch.csv \
   --output data/retraction_watch.sqlite3 \
   --dataset-date YYYY-MM-DD \

@@ -60,10 +60,12 @@ exact Paystack webhook body forwarded to CiteIntegrity in the
 | `VERIFY_PARALLEL_WORKERS` | `8` |
 | `VERIFY_CHUNK_SIZE` | `40` |
 | `VERIFY_REQUEST_TIMEOUT` | `4` |
+| `VERIFY_REFERENCE_BUDGET_SECONDS` | `20`, checked between requests |
 | `VERIFY_USE_CACHE` | `0`, keeps the unbounded process-memory cache disabled |
 | `VERIFY_REDIS_CACHE_ENABLED` | `1` |
 | `VERIFY_REDIS_CACHE_TTL` | `21600` |
-| `VERIFY_CACHE_NAMESPACE` | `v5-numbered-author-year` |
+| `VERIFY_CACHE_NAMESPACE` | `v6-identity-safety` |
+| `RELEASE_VERSION` | `2.0.6-integrity-summary` |
 | `VERIFY_SHORT_OPENALEX_MAX_QUERIES` | `1` |
 
 The web service and every document-processing worker must receive the same
@@ -76,7 +78,7 @@ daily dataset. Refresh it before each release:
 
 ```bash
 git clone --depth 1 https://gitlab.com/crossref/retraction-watch-data.git /tmp/retraction-watch-data
-python scripts/build_retraction_watch_index.py \
+python build_retraction_watch_index.py \
   --csv /tmp/retraction-watch-data/retraction_watch.csv \
   --output data/retraction_watch.sqlite3 \
   --dataset-date YYYY-MM-DD \
@@ -89,7 +91,7 @@ python scripts/build_retraction_watch_index.py \
 2. Add the integrity-verification values above to the web service and all workers.
 3. Deploy the web service and core worker from the same release. Restart both so the new job argument and automatic queueing code match.
 4. Set the core worker start command to `python core_worker.py`. Its default priority is `verification,document_processing,large_document_processing` so a completed upload is verified before the next waiting upload.
-5. Run `python -m unittest -q test_integrity_corrective_release.py test_verification_operational_release.py`.
+5. Install `requirements-test.txt` and run `python -m pytest -q`. See `RELEASE_2_0_6.md` for the validation limits and complete live checklist.
 6. Process the supplied 20-reference benchmark and confirm 20 verification rows.
 7. Confirm the upload page shows verification enabled and that verification starts without clicking a separate button.
 8. Restore `GLOBAL_ACCESS_MODE=payment_required` only after the benchmark passes.

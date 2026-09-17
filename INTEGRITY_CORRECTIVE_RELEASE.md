@@ -1,4 +1,7 @@
-# CiteIntegrity integrity corrective release 2.0.5
+# CiteIntegrity integrity corrective release 2.0.6
+
+The final changes, test evidence, safety summary cards and deployment checklist
+are in `RELEASE_2_0_6.md`. The historical 2.0.5 changes below are retained.
 
 ## Purpose
 
@@ -75,13 +78,12 @@ splitting, and an ACII rating that could overstate assurance.
 Run:
 
 ```bash
-python -m unittest -q test_integrity_corrective_release.py
-python -m unittest -q test_product_release.py test_commercial_release.py
+python -m pytest -q
 ```
 
 The release includes `data/retraction_watch.sqlite3`, generated from the
 Crossref repository snapshot dated 15 September 2026. Rebuild the index before
-future deployments with `scripts/build_retraction_watch_index.py`.
+future deployments with `build_retraction_watch_index.py`.
 
 For the supplied DOI benchmark, confirm:
 
@@ -100,7 +102,8 @@ For the supplied DOI benchmark, confirm:
 Use the existing developer access control to place the application in maintenance
 mode during deployment. Restore paid access only after the benchmark and payment
 smoke tests pass. Do not reuse older verification cache rows. The release uses
-the `verify:v5-numbered-author-year` namespace with a six-hour expiry.
+the `verify:v6-identity-safety` namespace, with a six-hour maximum expiry for
+confirmed results and no caching of transient provider failures.
 
 ## Interpretation boundary
 

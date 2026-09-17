@@ -1478,6 +1478,18 @@
         .consolidated-section { margin-top:18px; }
         .consolidated-section + .consolidated-section { padding-top:18px; border-top:1px solid var(--line); }
 
+        .suggestion-item.info { border-left-color: #27815d; background: #f0fdf4; }
+        @media print {
+            header, .topbar, .sidebar, thead th { position: static !important; }
+            .table-wrap { max-height: none !important; height: auto !important; overflow: visible !important; }
+            .dashboard-grid { display: block !important; }
+            .sidebar, button, .paywall-banner { display: none !important; }
+            .tab-pane { display: block !important; }
+            table { width: 100% !important; table-layout: fixed; font-size: 9pt; }
+            th, td { overflow-wrap: anywhere; white-space: normal !important; }
+            tr, .kpi, .suggestion-item { break-inside: avoid; }
+            .card { overflow: visible !important; }
+        }
     </style>
 </head>
 
@@ -1590,6 +1602,9 @@
             </div>
 
             <div class="kpi-grid" id="kpiGrid"></div>
+            <h3 style="margin:20px 0 10px;">Publication-status safety checks</h3>
+            <div class="kpi-grid" id="publicationKpiGrid" aria-live="polite"></div>
+            <p class="small-muted" id="publicationCoverageNote"></p>
         </div>
     </section>
 
@@ -1813,6 +1828,7 @@
                         <div>
                             <h2>Online & Manual Verification</h2>
                             <p>Reference verification results, scholarly metadata matches, and manual decisions for unresolved references. “Not found” means no suitable indexed record was found; it does not mean the source is fabricated.</p>
+                            <p class="small-muted">“Verified” confirms a bibliographic match, not that the research is reliable or free of publication-status alerts. Read the separate safety findings.</p>
                         </div>
                     </div>
 
@@ -1884,7 +1900,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.5-fast-verification-results";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.6-integrity-summary";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3859,7 +3875,8 @@ document.addEventListener("DOMContentLoaded", function () {
             "expression_of_concern",
             "corrected_publication",
             "reinstated_publication",
-            "publication_notice"
+            "publication_notice",
+            "other_publication_update"
         ]);
         const rows = risks.filter(row => eventRisks.has(String(row.risk || "")));
         if (!rows.length) {
@@ -3867,20 +3884,21 @@ document.addEventListener("DOMContentLoaded", function () {
             box.innerHTML = "";
             return;
         }
-        const critical = rows.filter(row => row.priority === "critical").length;
-        const other = rows.length - critical;
+        const retracted = rows.filter(row => row.risk === "retracted_or_withdrawn").length;
+        const concerns = rows.filter(row => row.risk === "expression_of_concern").length;
+        const other = rows.length - retracted - concerns;
         box.style.display = "block";
         box.innerHTML = `
             <div class="section-title" style="margin-bottom:10px;">
                 <div>
-                    <h2 style="color:#991b1b;">Publication integrity alert</h2>
-                    <p><strong>${critical} active retraction or withdrawal alert(s)</strong>${other ? ` and ${other} other publication-status event(s)` : ""} were found. These safety findings are visible without payment.</p>
+                    <h2>Publication-status findings</h2>
+                    <p><strong>${retracted} active retraction/withdrawal finding(s); ${concerns} expression(s) of concern; ${other} other status finding(s).</strong> These safety findings are visible without payment.</p>
                 </div>
             </div>
             ${rows.map(item => {
                 const events = Array.isArray(item.events) ? item.events : [];
                 const eventText = events.map(event => `${event.label || event.type}${event.date ? ` (${event.date})` : ""}`).join(" → ");
-                return `<div class="suggestion-item ${item.priority === "critical" ? "critical" : "important"}" style="margin-top:8px;">
+                return `<div class="suggestion-item ${item.risk === "retracted_or_withdrawn" ? "critical" : item.risk === "expression_of_concern" ? "important" : "info"}" style="margin-top:8px;">
                     <strong>${esc(String(item.risk || "publication status").replaceAll("_", " "))}</strong>: ${esc(item.reference || "Reference")}
                     <div class="small-muted">${esc(item.action || "Review the publisher record and event history.")}</div>
                     ${eventText ? `<div class="small-muted"><strong>Event history:</strong> ${esc(eventText)}</div>` : ""}
@@ -3917,7 +3935,36 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    function renderPublicationKpis(data) {
+        const grid = $("publicationKpiGrid");
+        const note = $("publicationCoverageNote");
+        if (!grid || !note) return;
+        // Server aggregates are computed BEFORE free-preview sampling.
+        // Never derive safety counts from a 25% preview.
+        const summary = data.source_risk_review?.publication_summary;
+        const known = summary && Number.isFinite(Number(summary.checked));
+        const checked = known ? Number(summary.checked) : 0;
+        const total = known ? Number(summary.total) : Number(data.summary?.reference_entries_found || 0);
+        const cards = [
+            ["Retractions / withdrawals", "retracted_or_withdrawn"],
+            ["Expressions of concern", "expression_of_concern"],
+            ["Corrected publications", "corrected"],
+            ["Reinstated publications", "reinstated"],
+            ["Publication notices", "publication_notice"],
+            ["Other publication updates", "other_update"],
+            ["No recorded event", "no_recorded_event"],
+            ["Unchecked references", "unchecked"]
+        ];
+        grid.innerHTML = cards.map(([label, key]) => {
+            const value = key === "unchecked" ? (known ? summary.unchecked : total) : (known && checked > 0 ? summary[key] ?? 0 : "—");
+            return `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`;
+        }).join("");
+        const versions = known && Array.isArray(summary.data_versions) ? summary.data_versions.join(", ") : "";
+        note.textContent = `${checked} of ${total} references checked. ${known && summary.complete ? "Coverage complete for the checked sources." : "Coverage incomplete; zero counts are not an all-clear."} ${versions ? "Dataset version: " + versions + ". " : ""}Counts use current status per reference, not historical events. A reinstated article is not counted as actively retracted. No recorded event does not guarantee safety; correction and concern coverage is not exhaustive. All safety counts are free.`;
+    }
+
     function renderKpis(data) {
+        renderPublicationKpis(data);
         const s = data.summary || {};
         const ovRows = data.online_verification?.rows || [];
         const claimRows = getSafeRows(data.claim_support);

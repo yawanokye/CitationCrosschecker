@@ -447,7 +447,7 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     source_rows = source_risk.get("risks") if isinstance(source_risk.get("risks"), list) else []
     safety_risks = {
         "retracted_or_withdrawn", "expression_of_concern", "corrected_publication",
-        "reinstated_publication", "publication_notice", "publication_status_unchecked",
+        "reinstated_publication", "publication_notice", "publication_status_unchecked", "other_publication_update",
     }
     visible_source_rows = [
         row for row in source_rows

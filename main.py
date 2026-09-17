@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.5-fast-verification-results"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.6-integrity-summary"
 
 import io
 import asyncio
@@ -760,7 +760,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.5-fast-verification-results").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.6-integrity-summary").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -6107,6 +6107,9 @@ async def save_correction_decision(job_id: str, request: Request):
     action = str(payload.get("action") or "").strip().lower()
     approved_source = payload.get("approved_source") if isinstance(payload.get("approved_source"), dict) else {}
     proposed_replacement = str(payload.get("proposed_replacement") or selected_item.get("proposed_replacement") or "").strip()
+    from reference_safety import is_review_instruction
+    if decision == "accepted" and is_review_instruction(proposed_replacement):
+        raise HTTPException(status_code=400, detail="A review instruction cannot replace manuscript text. Supply a verified reference instead.")
     secondary_replacement = str(payload.get("secondary_replacement") or "").strip()
     original_text = str(payload.get("original_text") or selected_item.get("original_text") or selected_item.get("evidence") or "").strip()
     operation = "replace"

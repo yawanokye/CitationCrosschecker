@@ -55,6 +55,8 @@ def format_reference_numeric(reference: Dict[str, Any]) -> str:
         parts.append(author_text.rstrip(".") + ".")
     if title:
         parts.append(title + ".")
+    if reference.get("edition"):
+        parts.append(str(reference["edition"]).strip().rstrip(".") + ".")
     publication = source
     if year:
         publication += (". " if publication else "") + year
@@ -104,6 +106,10 @@ def parse_author(author: Union[str, Dict]) -> str:
     author = author.strip()
     if _is_corporate_author(author):
         return _name_case(author)
+    if "," not in author:
+        numeric_author = re.fullmatch(r"(.+?)\s+([^\W\d_]{1,5})", author, flags=re.UNICODE)
+        if numeric_author and numeric_author.group(2).isupper():
+            return f"{_name_case(numeric_author.group(1))}, " + " ".join(c + "." for c in numeric_author.group(2))
     
     # Already formatted as "Last, F." or "Last, F. M."
     if ',' in author:
@@ -117,7 +123,7 @@ def parse_author(author: Union[str, Dict]) -> str:
             initials = []
             for token in first_part.split():
                 if token and token[0].isalpha():
-                    initials.append(token[0].upper() + '.')
+                    initials.append('-'.join(part[0].upper() + '.' for part in token.split('-') if part and part[0].isalpha()))
             return f"{last}, {' '.join(initials)}"
         return last
     
@@ -148,6 +154,7 @@ def _is_corporate_author(value: str) -> bool:
         "bank", "commission", "committee", "department", "directorate", "government", "institute",
         "ministry", "organisation", "organization", "project", "service", "university", "programme",
         "agency", "authority", "council", "office", "oecd", "undp", "unesco", "united nations",
+        "editors", "consortium", "collaboration",
     )
     lower = text.casefold()
     return "," not in text and any(marker in lower for marker in markers)
@@ -163,8 +170,18 @@ def parse_authors(authors: Union[List, str, None]) -> List[str]:
     
     if isinstance(authors, str):
         text = authors.strip()
+        # Parse the named authors, never interpret "et al." as a personal name.
+        text = re.sub(r",?\s*\bet\s+al\.?\s*$", "", text, flags=re.I).strip()
+        numeric_parts = [part.strip() for part in text.split(",") if part.strip()]
+        if numeric_parts and all(re.fullmatch(r".+?\s+[^\W\d_]{1,5}", part, re.UNICODE)
+                                 and part.split()[-1].isupper() for part in numeric_parts):
+            return [parse_author(part) for part in numeric_parts]
         # APA-style personal-author strings contain repeating "Surname, initials"
         # groups. A plain organisation name must remain one author.
+        apa_initials = re.compile(r"([^,;&]+),\s*((?:[^\W\d_]\.(?:-[^\W\d_]\.)?\s*)+)(?=\s*,|\s*&|$)", re.UNICODE)
+        pairs = list(apa_initials.finditer(text))
+        if pairs and not re.search(r"\w", apa_initials.sub("", text).replace("&", "")):
+            return [parse_author(m.group(1).strip() + ", " + m.group(2).strip()) for m in pairs]
         personal = re.findall(r"([^,;&]+,\s*(?:[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*\.?\s*){1,4})(?=,\s*(?:&\s*)?[^,;&]+,|\s*&\s*|\s+and\s+|$)", text)
         if personal:
             return [parse_author(value.strip(" ,")) for value in personal]

@@ -34,7 +34,7 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "2.0.5"
+__version__ = "2.0.6"
 WORKER_BUILD = "commercial-2026-09-17-fast-verification-results-v1.6.4"
 
 try:
@@ -308,7 +308,7 @@ VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
 VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_REDIS_CACHE_TTL", "21600"))
 VERIFY_USE_CACHE = _env_flag("VERIFY_REDIS_CACHE_ENABLED", "1")
 VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
-VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v5-numbered-author-year").strip() or "v5-numbered-author-year"
+VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v6-identity-safety").strip() or "v6-identity-safety"
 
 # Privacy-first cache controls. Defaults are OFF.
 CACHE_RESULTS_IN_REDIS = _env_flag("CACHE_RESULTS_IN_REDIS", "0")
@@ -435,7 +435,9 @@ def _reference_cache_key(ref, style="apa", enrich_metadata=False):
         "text:" + re.sub(r"[^a-z0-9]+", " ", reference.casefold()).strip()
     )
     raw = json.dumps({
+        "verification_release": "2.0.6-identity-safety",
         "namespace": VERIFY_CACHE_NAMESPACE,
+        "reference_text": reference,
         "identity": identity,
         "style": _worker_style_family(style),
         "selected_style": str(style or "").strip(),
@@ -503,9 +505,10 @@ def _verify_single_reference_cached(ref, style="apa", enrich_metadata=False):
             row.setdefault("cache_hit", False)
             row = _add_worker_style_metadata(row, style)
 
-        if VERIFY_USE_CACHE and isinstance(row, dict):
+        if VERIFY_USE_CACHE and isinstance(row, dict) and str(row.get("status") or "").lower() not in {"offline", "failed", "error"}:
             try:
-                redis_conn.setex(cache_key, VERIFY_CACHE_TTL, json.dumps(row))
+                ttl = VERIFY_CACHE_TTL if row.get("status") == "verified" and row.get("publication_status_checked") is True else min(VERIFY_CACHE_TTL, 60)
+                redis_conn.setex(cache_key, ttl, json.dumps(row))
             except Exception as e:
                 print(f"[VERIFY CACHE] Cache write failed: {e}")
 

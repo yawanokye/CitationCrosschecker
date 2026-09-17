@@ -1,0 +1,2 @@
+# Install after requirements.txt. Not required by the production web service.
+pytest>=8,<10

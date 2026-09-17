@@ -213,6 +213,10 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
             operation = str(item.get("track_operation") or "replace")
             if not (explicitly_accepted or safe_auto):
                 continue
+            from reference_safety import is_review_instruction
+            if is_review_instruction(replacement) or is_review_instruction(item.get("secondary_replacement")):
+                skipped.append(item.get("id"))
+                continue
             changed = False
             if operation == "insert_after_and_append_reference" and original and replacement:
                 for paragraph in document.paragraphs:

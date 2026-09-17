@@ -1990,9 +1990,10 @@ def extract_references_generalized(text: str) -> List[str]:
     for i, line in enumerate(lines):
         for pattern in heading_patterns:
             if re.search(pattern, line, re.I):
-                if i > len(lines) * 0.6:
-                    ref_start = i
-                    break
+                # Short benchmark manuscripts can have most of their length
+                # in the bibliography. An explicit heading is still valid.
+                ref_start = i
+                break
         if ref_start != -1:
             break
     
