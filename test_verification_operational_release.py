@@ -141,6 +141,27 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
         ):
             self.assertIn(marker, served)
 
+    def test_verification_results_do_not_wait_for_secondary_tables(self):
+        html = (ROOT / "templates" / "new_results.html").read_text(encoding="utf-8")
+        readiness = html.split("function isFinalReady(result)", 1)[1].split(
+            "function hydrateFinalDefaults(result)", 1
+        )[0]
+        self.assertIn("MAX_FINAL_ATTEMPTS: 15", html)
+        self.assertIn("FINAL_RETRY_DELAY: 2000", html)
+        self.assertIn("state === \"finalising\"", readiness)
+        self.assertIn("return verificationReady && hasVerificationRows(result)", readiness)
+        self.assertNotIn('result.status === "completed"', readiness)
+        self.assertIn("Recovery and Claim Support will continue in the background", html)
+        self.assertIn("/result/${encodeURIComponent(JOB_ID)}?fresh=1", html)
+        self.assertIn("Verification worker did not return results", html)
+
+    def test_online_status_serialises_rq_state_and_survives_presentation_errors(self):
+        main = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn("from fastapi.encoders import jsonable_encoder", main)
+        self.assertIn('getattr(raw_rq_status, "value", raw_rq_status)', main)
+        self.assertIn('response["online"]["presentation_warning"]', main)
+        self.assertIn("JSONResponse(content=jsonable_encoder(response))", main)
+
 
 if __name__ == "__main__":
     unittest.main()

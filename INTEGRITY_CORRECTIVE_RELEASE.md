@@ -1,4 +1,4 @@
-# CiteIntegrity integrity corrective release 2.0.4
+# CiteIntegrity integrity corrective release 2.0.5
 
 ## Purpose
 
@@ -33,14 +33,25 @@ splitting, and an ACII rating that could overstate assurance.
   a retraction, expression of concern, correction, reinstatement, or notice.
 - ACII is withheld until publication status is checked for every detected
   reference. Active retractions cap the score at 49 and force `Critical Review`.
+- ACII recency now falls back to the year in the original citation when an
+  otherwise verified provider row omits `matched_year`; current numeric
+  references are no longer described as outdated for that reason.
 - Reports now export publication status, all event records, check state, source,
   and timestamps.
 - Verification cache keys were versioned so pre-release rows cannot bypass the
   new publication-status checks.
-- Release 2.0.4 queues verification automatically in the backend after analysis,
+- Release 2.0.5 queues verification automatically in the backend after analysis,
   so it continues even when the upload page is closed.
 - Verification now receives queue priority, uses bounded parallel requests, a
   six-hour DOI-aware cache, larger chunks, and one short-reference rescue query.
+- Source-verification rows display as soon as they are complete. Recovery and
+  Claim Support no longer block the verification result, and may finish in the
+  background.
+- Final-result polling reads fresh PostgreSQL state instead of repeatedly using
+  a stale Redis result. The old ten-minute waiting loop is limited to 30 seconds
+  and ends with a clear worker diagnostic if no verification rows arrive.
+- The live-status endpoint normalises RQ status values, safely serialises its
+  response, and remains available when a secondary dashboard table fails.
 - Numeric reference completeness is assessed before the year. Complete
   Vancouver and IEEE entries are no longer labelled as missing a title merely
   because only volume, issue, pages, or an article number follows the year.

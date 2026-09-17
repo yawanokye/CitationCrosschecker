@@ -151,6 +151,21 @@ class IntegrityCorrectiveReleaseTests(unittest.TestCase):
         self.assertLessEqual(result["ACII"], 49)
         self.assertEqual(result["category"], "Critical Review")
 
+    def test_acii_recency_falls_back_to_numeric_reference_text(self):
+        rows = [
+            {
+                "status": "verified",
+                "publication_status_checked": True,
+                "publication_status": "clear",
+                "reference": reference,
+            }
+            for reference in BENCHMARK_REFERENCES.splitlines()
+        ]
+        result = compute_acii({"summary": {"reference_entries_found": 20}}, rows)
+        self.assertTrue(result["score_available"])
+        self.assertGreaterEqual(result["components"]["recency"]["score"], 90)
+        self.assertNotIn("outdated references", result["remark"])
+
     def test_publication_safety_alerts_remain_visible_in_free_preview(self):
         base = {
             "summary": {"reference_entries_found": 1, "in_text_citations_found": 1},

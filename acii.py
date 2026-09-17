@@ -4,11 +4,49 @@
 from typing import Dict, List, Any
 from collections import Counter
 import math
+import re
 from datetime import datetime
 
 
 def _safe_ratio(a, b):
     return 0 if b == 0 else a / b
+
+
+def _reference_year(row: Dict[str, Any]) -> int | None:
+    """Return a plausible publication year from metadata or citation text."""
+    current_year = datetime.now().year
+    candidates = [
+        row.get("matched_year"),
+        row.get("year"),
+        row.get("published_year"),
+        row.get("publication_year"),
+    ]
+    metadata = row.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.extend([
+            metadata.get("year"),
+            metadata.get("published_year"),
+            metadata.get("publication_year"),
+        ])
+
+    for value in candidates:
+        match = re.search(r"\b(19\d{2}|20\d{2})\b", str(value or ""))
+        if match:
+            year = int(match.group(1))
+            if 1900 <= year <= current_year + 1:
+                return year
+
+    reference = str(
+        row.get("reference")
+        or row.get("original_reference")
+        or row.get("raw_reference")
+        or ""
+    )
+    for match in re.finditer(r"\b(19\d{2}|20\d{2})\b", reference):
+        year = int(match.group(1))
+        if 1900 <= year <= current_year + 1:
+            return year
+    return None
 
 
 # -----------------------------------------------------
@@ -98,14 +136,7 @@ def _author_diversity(rows: List[Dict[str, Any]]) -> float:
 
 def _temporal_balance(rows: List[Dict[str, Any]]) -> float:
     """Measures spread of references across publication years"""
-    years = []
-    for r in rows:
-        y = r.get("matched_year")
-        if y:
-            try:
-                years.append(int(str(y)[:4]))
-            except (ValueError, TypeError):
-                pass
+    years = [year for row in rows if (year := _reference_year(row)) is not None]
 
     if len(years) < 2:
         return 50  # Neutral score for insufficient data
@@ -121,14 +152,7 @@ def _recency_score(rows: List[Dict[str, Any]], window: int = 5) -> float:
     """Percentage of references published within the last N years"""
     current_year = datetime.now().year
 
-    years = []
-    for r in rows:
-        y = r.get("matched_year")
-        if y:
-            try:
-                years.append(int(str(y)[:4]))
-            except (ValueError, TypeError):
-                pass
+    years = [year for row in rows if (year := _reference_year(row)) is not None]
 
     if not years:
         return 0

@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.4-publication-alert"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.5-fast-verification-results"
 
 import io
 import asyncio
@@ -62,6 +62,7 @@ except Exception as e:
 # FastAPI and web frameworks
 from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.encoders import jsonable_encoder
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -759,7 +760,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.4-publication-alert").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.5-fast-verification-results").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -7033,7 +7034,10 @@ def online_status(request: Request, job_id: str):
                 from rq.job import Job
 
                 rq_job = Job.fetch(rq_job_id, connection=redis_conn)
-                rq_status = rq_job.get_status(refresh=True)
+                raw_rq_status = rq_job.get_status(refresh=True)
+                rq_status = str(getattr(raw_rq_status, "value", raw_rq_status) or "").lower()
+                if "." in rq_status:
+                    rq_status = rq_status.rsplit(".", 1)[-1]
 
                 verification["rq_status"] = rq_status
 
@@ -7141,14 +7145,29 @@ def online_status(request: Request, job_id: str):
             or result.get("recovery")
             or result.get("claim_support")
         ):
-            response["result"] = _prepare_student_result(result, request, job_id)
+            try:
+                response["result"] = _prepare_student_result(result, request, job_id)
+            except Exception as presentation_error:
+                # Live status must remain available even if a secondary
+                # presentation table fails. The browser can retrieve the saved
+                # result through /result while the worker continues.
+                print(
+                    f"[ONLINE STATUS] Result presentation failed for {job_id}: "
+                    f"{type(presentation_error).__name__}"
+                )
+                response["online"]["presentation_warning"] = (
+                    "Verification status is available, but dashboard preparation is still pending."
+                )
 
-        return JSONResponse(content=response)
+        return JSONResponse(content=jsonable_encoder(response))
 
     except Exception as e:
+        print(f"[ONLINE STATUS] Failed for {job_id}: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return JSONResponse(
             status_code=500,
-            content={
+            content=jsonable_encoder({
                 "job_id": job_id,
                 "online": {
                     "state": "error",
@@ -7159,7 +7178,7 @@ def online_status(request: Request, job_id: str):
                     "total": 0,
                     "percentage": 0
                 }
-            }
+            })
         )
 @app.post("/api/enrichment/start/{job_id}")
 async def start_advanced_enrichment(job_id: str, request: Request):

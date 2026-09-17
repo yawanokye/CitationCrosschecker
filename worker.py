@@ -34,8 +34,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "2.0.4"
-WORKER_BUILD = "commercial-2026-09-17-publication-alert-v1.6.3"
+__version__ = "2.0.5"
+WORKER_BUILD = "commercial-2026-09-17-fast-verification-results-v1.6.4"
 
 try:
     from claim_support_scorer import score_claim_support

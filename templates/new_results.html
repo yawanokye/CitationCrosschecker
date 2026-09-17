@@ -1884,7 +1884,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.4-publication-alert";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.5-fast-verification-results";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -1893,8 +1893,8 @@ document.addEventListener("DOMContentLoaded", function () {
         POLL_INTERVAL: 8000,
         RESULT_POLL_BASE_DELAY: 10000,
         RESULT_POLL_MAX_DELAY: 30000,
-        MAX_FINAL_ATTEMPTS: 120,
-        FINAL_RETRY_DELAY: 5000,
+        MAX_FINAL_ATTEMPTS: 15,
+        FINAL_RETRY_DELAY: 2000,
         MAX_STATUS_ERRORS: 12
     };
 
@@ -2313,21 +2313,19 @@ document.addEventListener("DOMContentLoaded", function () {
             result.final_tables_ready === true ||
             Boolean(result.verification_completed_at);
 
-        const completedSignal =
+        const progress = Number(verification.progress || 0);
+        const total = Number(verification.total || 0);
+        const rowsComplete = total > 0 && progress >= total &&
+            result.online_verification.rows.length >= total;
+        const verificationReady =
             finalTablesReady ||
             state === "completed" ||
-            result.status === "completed";
+            state === "finalising" ||
+            rowsComplete;
 
-        const previewMode = result?.access && result.access.paid !== true;
-
-        return (
-            completedSignal &&
-            hasVerificationRows(result) &&
-            (
-                previewMode ||
-                (hasRecoveryPayload(result) && hasClaimPayload(result))
-            )
-        );
+        // Source-verification evidence must display as soon as it is ready.
+        // Recovery and Claim Support are secondary tables and may finish later.
+        return verificationReady && hasVerificationRows(result);
     }
 
     function hydrateFinalDefaults(result) {
@@ -4789,8 +4787,11 @@ document.addEventListener("DOMContentLoaded", function () {
                 const rows = hydrated.online_verification.rows || [];
                 if (isFinalReady(hydrated)) {
                     renderAll(hydrated);
-                    showProgress(100, `Verification complete. ${rows.length} reference records checked.`);
-                    setStatus(`Results ready. ${rows.length} reference records checked and ${(hydrated.claim_support || []).length} claim-support rows populated.`, "good");
+                    const secondaryReady = hasRecoveryPayload(hydrated) && hasClaimPayload(hydrated);
+                    showProgress(100, `Source verification ready. ${rows.length} reference records checked.`);
+                    setStatus(secondaryReady
+                        ? `Results ready. ${rows.length} reference records checked and ${(hydrated.claim_support || []).length} claim-support rows populated.`
+                        : `Source verification ready. Recovery and Claim Support will continue in the background.`, "good");
                     finishVerification(true);
                     return;
                 }
@@ -4907,7 +4908,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 // Use /result as the primary source for the new interface.
                 // Do not call /job here, because /result already works with the current main.py.
                 try {
-                    const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}`);
+                    const resultData = await fetchJsonNoCache(`/result/${encodeURIComponent(JOB_ID)}?fresh=1`);
                     envelopeStatus = String(resultData.status || "").toLowerCase();
                     bestResult = resultData.data || resultData.result || null;
 
@@ -4940,8 +4941,11 @@ document.addEventListener("DOMContentLoaded", function () {
 
                     if (isFinalReady(hydrated)) {
                         renderAll(hydrated);
-                        showProgress(100, `Complete. ${rows.length} reference records checked.`);
-                        setStatus(`Results ready. ${rows.length} reference records checked and ${claimRows.length} claim-support rows populated.`, "good");
+                        const secondaryReady = hasRecoveryPayload(hydrated) && hasClaimPayload(hydrated);
+                        showProgress(100, `Source verification ready. ${rows.length} reference records checked.`);
+                        setStatus(secondaryReady
+                            ? `Results ready. ${rows.length} reference records checked and ${claimRows.length} claim-support rows populated.`
+                            : "Source verification ready. Recovery and Claim Support will continue in the background.", "good");
                         finishVerification(true);
                         finalFetchRunning = false;
                         return hydrated;
@@ -4955,8 +4959,8 @@ document.addEventListener("DOMContentLoaded", function () {
                 }
 
                 const percent = Math.min(99, 96 + Math.floor(attempt / 45));
-                showProgress(percent, `Finalising Recovery and Claim Support tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
-                setStatus("Verification is complete. Waiting for Recovery and Claim Support tables to populate...", "warn");
+                showProgress(percent, `Waiting for source-verification rows... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
+                setStatus("Waiting for the verification worker to return source-verification rows...", "warn");
             } catch (error) {
                 console.error("Final fetch error:", error);
                 showProgress(Math.max(progressHighWater, 96), `Still waiting for final tables... attempt ${attempt}/${CONFIG.MAX_FINAL_ATTEMPTS}`);
@@ -4964,17 +4968,18 @@ document.addEventListener("DOMContentLoaded", function () {
             await new Promise(resolve => setTimeout(resolve, CONFIG.FINAL_RETRY_DELAY));
         }
 
-        if (latestResults) {
+        if (latestResults && hasVerificationRows(latestResults)) {
             const hydrated = hydrateFinalDefaults(latestResults);
             renderAll(hydrated);
             const rows = hydrated.online_verification?.rows?.length || 0;
-            const claimRows = hydrated.claim_support?.length || 0;
-            setStatus(`Results loaded. ${rows} reference records checked and ${claimRows} claim-support rows currently available.`, "good");
-            showProgress(100, "Verification results loaded.");
+            setStatus(`Source verification ready. ${rows} reference records checked.`, "good");
+            showProgress(100, "Source-verification results loaded.");
+            finishVerification(true);
         } else {
-            setStatus("Verification completed, but final results could not be loaded. Please refresh in a moment.", "warn");
+            setStatus("No source-verification rows were returned. Check that worker 1 is running and listening to the verification queue, then retry.", "bad");
+            showProgress(0, "Verification worker did not return results.");
+            finishVerification(false);
         }
-        finishVerification(true);
         finalFetchRunning = false;
         return latestResults;
     }
