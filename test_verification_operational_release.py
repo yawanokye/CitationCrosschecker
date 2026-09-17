@@ -123,6 +123,24 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
         self.assertIn("function correctionLocationText(location)", html)
         self.assertNotIn("Location: ${esc(JSON.stringify(item.location))}", html)
 
+    def test_served_results_template_exposes_publication_safety_findings(self):
+        served = (ROOT / "templates" / "new_results.html").read_text(encoding="utf-8")
+        mirror = (ROOT / "new_results.html").read_text(encoding="utf-8")
+        self.assertEqual(served, mirror)
+        for marker in (
+            'id="globalPublicationSafety"',
+            "function renderGlobalPublicationSafety(data)",
+            "Publication integrity alert",
+            'id="publicationSafetyBox"',
+            "Publication Status</th>",
+            "data.source_risk_review || {}",
+            "These safety alerts are shown regardless of payment",
+            "row.publication_status || \"unchecked\"",
+            "row.publication_events || []",
+            'score_available === false ? "Withheld"',
+        ):
+            self.assertIn(marker, served)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1557,6 +1557,8 @@
 
     <section class="paywall-panel" id="paywallPanel"></section>
 
+    <section class="card" id="globalPublicationSafety" style="display:none;border:2px solid #dc2626;background:#fff7ed;"></section>
+
     <section class="card privacy-panel" id="privacyPanel">
         <div class="section-title">
             <div>
@@ -1882,7 +1884,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.2-verification";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.4-publication-alert";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3829,6 +3831,7 @@ document.addEventListener("DOMContentLoaded", function () {
         window.latestResults = data;
 
         renderPaywall(data);
+        renderGlobalPublicationSafety(data);
         renderACII(data);
         renderKpis(data);
         renderSummary(data);
@@ -3847,6 +3850,45 @@ document.addEventListener("DOMContentLoaded", function () {
         updateCounts(data);
         maybeStartEnrichmentPolling(data);
         restoreActiveResultTab();
+    }
+
+    function renderGlobalPublicationSafety(data) {
+        const box = $("globalPublicationSafety");
+        if (!box) return;
+        const risks = Array.isArray(data?.source_risk_review?.risks) ? data.source_risk_review.risks : [];
+        const eventRisks = new Set([
+            "retracted_or_withdrawn",
+            "expression_of_concern",
+            "corrected_publication",
+            "reinstated_publication",
+            "publication_notice"
+        ]);
+        const rows = risks.filter(row => eventRisks.has(String(row.risk || "")));
+        if (!rows.length) {
+            box.style.display = "none";
+            box.innerHTML = "";
+            return;
+        }
+        const critical = rows.filter(row => row.priority === "critical").length;
+        const other = rows.length - critical;
+        box.style.display = "block";
+        box.innerHTML = `
+            <div class="section-title" style="margin-bottom:10px;">
+                <div>
+                    <h2 style="color:#991b1b;">Publication integrity alert</h2>
+                    <p><strong>${critical} active retraction or withdrawal alert(s)</strong>${other ? ` and ${other} other publication-status event(s)` : ""} were found. These safety findings are visible without payment.</p>
+                </div>
+            </div>
+            ${rows.map(item => {
+                const events = Array.isArray(item.events) ? item.events : [];
+                const eventText = events.map(event => `${event.label || event.type}${event.date ? ` (${event.date})` : ""}`).join(" → ");
+                return `<div class="suggestion-item ${item.priority === "critical" ? "critical" : "important"}" style="margin-top:8px;">
+                    <strong>${esc(String(item.risk || "publication status").replaceAll("_", " "))}</strong>: ${esc(item.reference || "Reference")}
+                    <div class="small-muted">${esc(item.action || "Review the publisher record and event history.")}</div>
+                    ${eventText ? `<div class="small-muted"><strong>Event history:</strong> ${esc(eventText)}</div>` : ""}
+                </div>`;
+            }).join("")}
+            <div class="small-muted" style="margin-top:10px;">Open Source Verification for the publication-status source, data version, DOI and metadata evidence. This automated screening result is not a finding of misconduct.</div>`;
     }
 
     function renderACII(data) {

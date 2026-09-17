@@ -1557,6 +1557,8 @@
 
     <section class="paywall-panel" id="paywallPanel"></section>
 
+    <section class="card" id="globalPublicationSafety" style="display:none;border:2px solid #dc2626;background:#fff7ed;"></section>
+
     <section class="card privacy-panel" id="privacyPanel">
         <div class="section-title">
             <div>
@@ -1814,6 +1816,8 @@
                         </div>
                     </div>
 
+                    <div id="publicationSafetyBox"></div>
+
                     <div class="kpi-grid" id="verifyKpis" style="grid-template-columns: repeat(4, 1fr); margin-bottom:16px;"></div>
 
                     <div class="filters">
@@ -1830,7 +1834,7 @@
 
                     <div class="table-wrap">
                         <table>
-                            <thead><tr><th>No.</th><th>Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th><th>Manual</th></tr></thead>
+                            <thead><tr><th>No.</th><th>Metadata</th><th>Publication Status</th><th>Source</th><th>Score</th><th>DOI</th><th>Year</th><th>Authors</th><th>Matched Title</th><th>Manual</th></tr></thead>
                             <tbody id="verifyBody"></tbody>
                         </table>
                     </div>
@@ -1880,7 +1884,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.2-verification";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.4-publication-alert";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3827,6 +3831,7 @@ document.addEventListener("DOMContentLoaded", function () {
         window.latestResults = data;
 
         renderPaywall(data);
+        renderGlobalPublicationSafety(data);
         renderACII(data);
         renderKpis(data);
         renderSummary(data);
@@ -3847,14 +3852,56 @@ document.addEventListener("DOMContentLoaded", function () {
         restoreActiveResultTab();
     }
 
+    function renderGlobalPublicationSafety(data) {
+        const box = $("globalPublicationSafety");
+        if (!box) return;
+        const risks = Array.isArray(data?.source_risk_review?.risks) ? data.source_risk_review.risks : [];
+        const eventRisks = new Set([
+            "retracted_or_withdrawn",
+            "expression_of_concern",
+            "corrected_publication",
+            "reinstated_publication",
+            "publication_notice"
+        ]);
+        const rows = risks.filter(row => eventRisks.has(String(row.risk || "")));
+        if (!rows.length) {
+            box.style.display = "none";
+            box.innerHTML = "";
+            return;
+        }
+        const critical = rows.filter(row => row.priority === "critical").length;
+        const other = rows.length - critical;
+        box.style.display = "block";
+        box.innerHTML = `
+            <div class="section-title" style="margin-bottom:10px;">
+                <div>
+                    <h2 style="color:#991b1b;">Publication integrity alert</h2>
+                    <p><strong>${critical} active retraction or withdrawal alert(s)</strong>${other ? ` and ${other} other publication-status event(s)` : ""} were found. These safety findings are visible without payment.</p>
+                </div>
+            </div>
+            ${rows.map(item => {
+                const events = Array.isArray(item.events) ? item.events : [];
+                const eventText = events.map(event => `${event.label || event.type}${event.date ? ` (${event.date})` : ""}`).join(" → ");
+                return `<div class="suggestion-item ${item.priority === "critical" ? "critical" : "important"}" style="margin-top:8px;">
+                    <strong>${esc(String(item.risk || "publication status").replaceAll("_", " "))}</strong>: ${esc(item.reference || "Reference")}
+                    <div class="small-muted">${esc(item.action || "Review the publisher record and event history.")}</div>
+                    ${eventText ? `<div class="small-muted"><strong>Event history:</strong> ${esc(eventText)}</div>` : ""}
+                </div>`;
+            }).join("")}
+            <div class="small-muted" style="margin-top:10px;">Open Source Verification for the publication-status source, data version, DOI and metadata evidence. This automated screening result is not a finding of misconduct.</div>`;
+    }
+
     function renderACII(data) {
         const acii = data.acii || {};
-        const score = acii.ACII ?? acii.score ?? "--";
+        const scoreAvailable = acii.score_available !== false && Number.isFinite(Number(acii.ACII ?? acii.score));
+        const score = scoreAvailable ? (acii.ACII ?? acii.score) : "Withheld";
         const scoreEl = $("aciiScore");
         const ratingEl = $("aciiRating");
         const recEl = $("aciiRecommendation");
         if (scoreEl) scoreEl.textContent = score;
-        const rating = getACIIRating(score);
+        const rating = scoreAvailable
+            ? { ...getACIIRating(score), text: acii.category || getACIIRating(score).text }
+            : { text: acii.category || "Incomplete Integrity Coverage", className: "offline" };
         if (ratingEl) {
             ratingEl.textContent = rating.text;
             ratingEl.className = `acii-rating ${rating.className}`;
@@ -3862,10 +3909,12 @@ document.addEventListener("DOMContentLoaded", function () {
         if (recEl) {
             const recs = acii.recommendations || {};
             let html = "";
+            if (acii.description) html += `<div>🛡️ ${esc(acii.description)}</div>`;
             if (recs.recency) html += `<div>📅 ${esc(recs.recency)}</div>`;
             if (recs.verification) html += `<div>🔍 ${esc(recs.verification)}</div>`;
             if (recs.diversity) html += `<div>👥 ${esc(recs.diversity)}</div>`;
             if (recs.priority) html += `<div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.18);">🎯 ${esc(recs.priority)}</div>`;
+            if (acii.disclaimer) html += `<div style="margin-top:8px; opacity:.9;">${esc(acii.disclaimer)}</div>`;
             recEl.innerHTML = html || "Review missing citations, uncited references, verification gaps, and claim-support issues to improve citation integrity.";
         }
     }
@@ -3977,6 +4026,30 @@ document.addEventListener("DOMContentLoaded", function () {
         const summary = ov.summary || {};
         const body = $("verifyBody");
         const kpis = $("verifyKpis");
+        const safetyBox = $("publicationSafetyBox");
+        const safetyReview = data.source_risk_review || {};
+        const safetyRows = Array.isArray(safetyReview.risks) ? safetyReview.risks : [];
+        if (safetyBox) {
+            const critical = safetyRows.filter(row => row.priority === "critical").length;
+            const unchecked = safetyRows.filter(row => row.risk === "publication_status_unchecked").length;
+            safetyBox.innerHTML = safetyRows.length ? `
+                <div class="helper-box" style="margin-bottom:16px;">
+                    <strong>Publication-status safety review: ${critical} critical alert(s), ${unchecked} unchecked.</strong>
+                    <div class="small-muted" style="margin:6px 0 10px;">These safety alerts are shown regardless of payment. An automated result is a screening signal and not a misconduct finding.</div>
+                    ${safetyRows.map(item => {
+                        const events = Array.isArray(item.events) ? item.events : [];
+                        const eventText = events.map(event => `${event.label || event.type}${event.date ? ` (${event.date})` : ""}`).join(" → ");
+                        return `<div class="suggestion-item ${item.priority === "critical" ? "critical" : "important"}" style="margin-top:8px;">
+                            <strong>${esc(String(item.risk || "publication status").replaceAll("_", " "))}</strong>: ${esc(item.reference || "Reference")}
+                            <div class="small-muted">${esc(item.action || "Review the publisher record.")}</div>
+                            ${eventText ? `<div class="small-muted"><strong>Event history:</strong> ${esc(eventText)}</div>` : ""}
+                        </div>`;
+                    }).join("")}
+                </div>` : `
+                <div class="helper-box" style="margin-bottom:16px;">
+                    <strong>Publication-status safety review:</strong> No safety alert is available in the current result. Confirm that all detected references were checked before treating this as clear.
+                </div>`;
+        }
         if (kpis) {
             const items = [
                 ["Verified", summary.verified ?? rows.filter(r => r.status === "verified").length],
@@ -3987,7 +4060,7 @@ document.addEventListener("DOMContentLoaded", function () {
             kpis.innerHTML = items.map(([label, value]) => `<div class="kpi"><div class="kpi-value" aria-label="${esc(value)}">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
         }
         if (!body) return;
-        if (!rows.length) { body.innerHTML = `<tr><td colspan="9"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
+        if (!rows.length) { body.innerHTML = `<tr><td colspan="10"><div class="empty">No verification results yet. Click “Verify References”.</div></td></tr>`; return; }
 
         const manualRowsForIndex = getManualVerificationRows(data);
         const manualIndexByReference = new Map();
@@ -4009,8 +4082,12 @@ document.addEventListener("DOMContentLoaded", function () {
                 : (isManualReviewRow(row)
                     && manualIndex >= 0 ? `<button class="btn btn-outline manual-jump" data-manual-index="${manualIndex}" type="button">Manual verify</button>`
                     : `<span class="small-muted">—</span>`);
-            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(verificationDisplayStatus(row))}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td><td>${manualHtml}</td></tr>`;
-        }).join("") + previewNoticeRow(data, "online_verification", "verification rows", 9);
+            const publicationStatus = String(row.publication_status || "unchecked").replaceAll("_", " ");
+            const eventCount = Number(row.publication_event_count || 0);
+            const statusEvidence = [row.publication_status_source, row.publication_status_data_version].filter(Boolean).join(" · ");
+            const publicationHtml = `${formatBadge(publicationStatus)}${eventCount ? `<div class="small-muted">${eventCount} event(s)</div>` : ""}${statusEvidence ? `<div class="small-muted">${esc(statusEvidence)}</div>` : ""}`;
+            return `<tr data-status="${esc(row.status || "")}"><td>${i+1}</td><td>${formatBadge(verificationDisplayStatus(row))}</td><td>${publicationHtml}</td><td>${esc(row.source || "—")}</td><td>${esc(row.score ?? "—")}</td><td>${doiHtml}</td><td>${esc(row.matched_year || row.year || "—")}</td><td>${esc(row.matched_authors || row.authors || "—")}</td><td>${esc(row.matched_title || row.title || row.reference || "—")}</td><td>${manualHtml}</td></tr>`;
+        }).join("") + previewNoticeRow(data, "online_verification", "verification rows", 10);
     }
 
 
@@ -4712,8 +4789,8 @@ document.addEventListener("DOMContentLoaded", function () {
                 const rows = hydrated.online_verification.rows || [];
                 if (isFinalReady(hydrated)) {
                     renderAll(hydrated);
-                    showProgress(100, `Verification complete. ${rows.length} references verified.`);
-                    setStatus(`Results ready. ${rows.length} references verified and ${(hydrated.claim_support || []).length} claim-support rows populated.`, "good");
+                    showProgress(100, `Verification complete. ${rows.length} reference records checked.`);
+                    setStatus(`Results ready. ${rows.length} reference records checked and ${(hydrated.claim_support || []).length} claim-support rows populated.`, "good");
                     finishVerification(true);
                     return;
                 }
@@ -4863,8 +4940,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
                     if (isFinalReady(hydrated)) {
                         renderAll(hydrated);
-                        showProgress(100, `Complete. ${rows.length} references verified.`);
-                        setStatus(`Results ready. ${rows.length} references verified and ${claimRows.length} claim-support rows populated.`, "good");
+                        showProgress(100, `Complete. ${rows.length} reference records checked.`);
+                        setStatus(`Results ready. ${rows.length} reference records checked and ${claimRows.length} claim-support rows populated.`, "good");
                         finishVerification(true);
                         finalFetchRunning = false;
                         return hydrated;
@@ -4892,7 +4969,7 @@ document.addEventListener("DOMContentLoaded", function () {
             renderAll(hydrated);
             const rows = hydrated.online_verification?.rows?.length || 0;
             const claimRows = hydrated.claim_support?.length || 0;
-            setStatus(`Results loaded. ${rows} references verified and ${claimRows} claim-support rows currently available.`, "good");
+            setStatus(`Results loaded. ${rows} reference records checked and ${claimRows} claim-support rows currently available.`, "good");
             showProgress(100, "Verification results loaded.");
         } else {
             setStatus("Verification completed, but final results could not be loaded. Please refresh in a moment.", "warn");
@@ -5133,7 +5210,9 @@ document.addEventListener("DOMContentLoaded", function () {
         lines.push(`${csvCell("Missing citations")},${csvCell(s.missing_in_references)}`);
         lines.push(`${csvCell("Uncited references")},${csvCell(s.uncited_references)}`);
         lines.push(`${csvCell("Match rate")},${csvCell((s.match_rate ?? "") + "%")}`);
-        lines.push(`${csvCell("ACII")},${csvCell(acii.ACII ?? acii.score ?? "")}`);
+        lines.push(`${csvCell("ACII")},${csvCell(acii.score_available === false ? "Withheld" : (acii.ACII ?? acii.score ?? ""))}`);
+        lines.push(`${csvCell("ACII category")},${csvCell(acii.category || "")}`);
+        lines.push(`${csvCell("ACII disclaimer")},${csvCell(acii.disclaimer || "")}`);
         lines.push(`${csvCell("Verification rows")},${csvCell(verifyRows.length)}`);
         lines.push(`${csvCell("Recovery rows")},${csvCell(recoveryMissing.length + recoveryVerify.length)}`);
         lines.push(`${csvCell("Claim support rows")},${csvCell(claimRows.length)}`);
@@ -5155,8 +5234,8 @@ document.addEventListener("DOMContentLoaded", function () {
         r2cRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.times_cited || row.count || 0)},${csvCell(row.reference || "")},${csvCell(Array.isArray(row.cited_by) ? row.cited_by.join("; ") : (row.cited_by || ""))}`));
 
         lines.push("", csvCell("Online Verification"));
-        lines.push(`${csvCell("No.")},${csvCell("Status")},${csvCell("Source")},${csvCell("Score")},${csvCell("DOI")},${csvCell("Year")},${csvCell("Authors")},${csvCell("Matched Title")}`);
-        verifyRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.source)},${csvCell(row.score)},${csvCell(row.doi)},${csvCell(row.matched_year || row.year)},${csvCell(row.matched_authors || row.authors)},${csvCell(row.matched_title || row.title || row.reference)}`));
+        lines.push(`${csvCell("No.")},${csvCell("Metadata Status")},${csvCell("Publication Status")},${csvCell("Publication Events")},${csvCell("Status Checked")},${csvCell("Status Source")},${csvCell("Status Data Version")},${csvCell("Status Checked At")},${csvCell("Metadata Source")},${csvCell("Score")},${csvCell("DOI")},${csvCell("Year")},${csvCell("Authors")},${csvCell("Matched Title")}`);
+        verifyRows.forEach((row, i) => lines.push(`${csvCell(i+1)},${csvCell(row.status)},${csvCell(row.publication_status)},${csvCell((row.publication_events || []).map(e => `${e.label || e.type}${e.date ? ` (${e.date})` : ""}`).join(" | "))},${csvCell(row.publication_status_checked)},${csvCell(row.publication_status_source)},${csvCell(row.publication_status_data_version)},${csvCell(row.publication_status_checked_at)},${csvCell(row.source)},${csvCell(row.score)},${csvCell(row.doi)},${csvCell(row.matched_year || row.year)},${csvCell(row.matched_authors || row.authors)},${csvCell(row.matched_title || row.title || row.reference)}`));
 
         lines.push("", csvCell("Recovery, Missing Citation"));
         lines.push(`${csvCell("No.")},${csvCell("Citation")},${csvCell("Count")},${csvCell("Suggestions")}`);
@@ -5197,8 +5276,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
         const verificationTable = verifyRows.length ? `
             <table style="${tableStyle}">
-                <tr><th style="${thStyle}">No.</th><th style="${thStyle}">Status</th><th style="${thStyle}">Score</th><th style="${thStyle}">DOI</th><th style="${thStyle}">Matched Title</th></tr>
-                ${verifyRows.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.score)}</td><td style="${cellStyle}">${reportText(r.doi)}</td><td style="${cellStyle}">${reportText(r.matched_title || r.title || r.reference)}</td></tr>`).join("")}
+                <tr><th style="${thStyle}">No.</th><th style="${thStyle}">Metadata</th><th style="${thStyle}">Publication Status</th><th style="${thStyle}">Events</th><th style="${thStyle}">Status Evidence</th><th style="${thStyle}">Score</th><th style="${thStyle}">DOI</th><th style="${thStyle}">Matched Title</th></tr>
+                ${verifyRows.map((r, i) => `<tr><td style="${cellStyle}">${i+1}</td><td style="${cellStyle}">${reportText(r.status)}</td><td style="${cellStyle}">${reportText(r.publication_status || "unchecked")}</td><td style="${cellStyle}">${reportText((r.publication_events || []).map(e => `${e.label || e.type}${e.date ? ` (${e.date})` : ""}`).join("; "))}</td><td style="${cellStyle}">${reportText([r.publication_status_source, r.publication_status_data_version, r.publication_status_checked_at].filter(Boolean).join(" | "))}</td><td style="${cellStyle}">${reportText(r.score)}</td><td style="${cellStyle}">${reportText(r.doi)}</td><td style="${cellStyle}">${reportText(r.matched_title || r.title || r.reference)}</td></tr>`).join("")}
             </table>` : `<p>No online verification rows available.</p>`;
 
         const recoveryTable = `
@@ -5233,7 +5312,9 @@ document.addEventListener("DOMContentLoaded", function () {
 <tr><td style="${cellStyle}">Missing citations</td><td style="${cellStyle}">${reportText(s.missing_in_references)}</td></tr>
 <tr><td style="${cellStyle}">Uncited references</td><td style="${cellStyle}">${reportText(s.uncited_references)}</td></tr>
 <tr><td style="${cellStyle}">Match rate</td><td style="${cellStyle}">${reportText(s.match_rate)}%</td></tr>
-<tr><td style="${cellStyle}">ACII</td><td style="${cellStyle}">${reportText(acii.ACII ?? acii.score ?? "--")}</td></tr>
+<tr><td style="${cellStyle}">ACII</td><td style="${cellStyle}">${reportText(acii.score_available === false ? "Withheld" : (acii.ACII ?? acii.score ?? "--"))}</td></tr>
+<tr><td style="${cellStyle}">ACII category</td><td style="${cellStyle}">${reportText(acii.category || "--")}</td></tr>
+<tr><td style="${cellStyle}">ACII disclaimer</td><td style="${cellStyle}">${reportText(acii.disclaimer || "")}</td></tr>
 <tr><td style="${cellStyle}">Verification rows</td><td style="${cellStyle}">${verifyRows.length}</td></tr>
 <tr><td style="${cellStyle}">Recovery rows</td><td style="${cellStyle}">${recoveryMissing.length + recoveryVerify.length}</td></tr>
 <tr><td style="${cellStyle}">Claim-support rows</td><td style="${cellStyle}">${claimRows.length}</td></tr>

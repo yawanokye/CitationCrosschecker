@@ -1,4 +1,4 @@
-# CiteIntegrity integrity corrective release 1.6.0
+# CiteIntegrity integrity corrective release 2.0.4
 
 ## Purpose
 
@@ -24,13 +24,20 @@ splitting, and an ACII rating that could overstate assurance.
 - A failed or unavailable status check is `unchecked`, never `clear`.
 - Publication-safety alerts are visible in the free preview. Payment unlocks
   depth, remediation, exports, and workflow rather than concealing a retraction.
+- The FastAPI-served results template now displays the publication-safety panel,
+  publication status, event count, event history, evidence source, and data
+  version. A regression test prevents the served template and maintained mirror
+  from drifting apart again.
+- Active publication events also appear in a prominent page-level alert above
+  the dashboard, so a user does not need to open Source Verification to discover
+  a retraction, expression of concern, correction, reinstatement, or notice.
 - ACII is withheld until publication status is checked for every detected
   reference. Active retractions cap the score at 49 and force `Critical Review`.
 - Reports now export publication status, all event records, check state, source,
   and timestamps.
 - Verification cache keys were versioned so pre-release rows cannot bypass the
   new publication-status checks.
-- Release 2.0.2 queues verification automatically in the backend after analysis,
+- Release 2.0.4 queues verification automatically in the backend after analysis,
   so it continues even when the upload page is closed.
 - Verification now receives queue priority, uses bounded parallel requests, a
   six-hour DOI-aware cache, larger chunks, and one short-reference rescue query.
