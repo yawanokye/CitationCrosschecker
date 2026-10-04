@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List
 import re
 
-from reference_formatter import format_reference, validate_reference
+from reference_formatter import format_reference, parse_authors, validate_reference
 from reference_safety import is_review_instruction, identity_text, notice_kind
 import hashlib
 from evidence_resolution import (
@@ -72,6 +72,20 @@ def _metadata(row: Any) -> Dict[str, Any]:
 def _detected_reference_style(result: Dict[str, Any]) -> str:
     summary = result.get("summary") or {}
 
+    def author_year_majority() -> str:
+        entries = [str(value) for value in _rows(result.get("references_raw")) if isinstance(value, str)]
+        if len(entries) < 2:
+            return ""
+        parenthesised = sum(bool(re.search(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)", value, re.I)) for value in entries)
+        plain = sum(bool(re.search(r"\.\s+(?:19|20)\d{2}[a-z]?\.\s+", value, re.I)) for value in entries)
+        threshold = max(2, (len(entries) * 2 + 2) // 3)
+        if plain >= threshold and plain > parenthesised:
+            return "harvard"
+        if parenthesised >= threshold and parenthesised > plain:
+            doi_labels = sum(bool(re.search(r"\bdoi:\s*10\.", value, re.I)) for value in entries)
+            return "apa6" if doi_labels >= threshold else "apa7"
+        return ""
+
     def canonical(value: Any) -> str:
         raw = str(value or "").strip().lower().replace("-", "_")
         if not raw or raw == "auto":
@@ -94,6 +108,8 @@ def _detected_reference_style(result: Dict[str, Any]) -> str:
     # old implementation concatenated every hint, so a stale numeric detector
     # value could override an explicitly selected APA style.
     selected = result.get("selected_style") or summary.get("selected_style")
+    if str(selected or "").strip().lower() in {"apa", "author_year", "author-year"}:
+        return author_year_majority() or "apa7"
     selected_style = canonical(selected)
     if selected_style:
         return selected_style
@@ -105,6 +121,9 @@ def _detected_reference_style(result: Dict[str, Any]) -> str:
         detected = canonical(value)
         if detected:
             return detected
+    majority = author_year_majority()
+    if majority:
+        return majority
     return "apa7"
 
 
@@ -128,6 +147,10 @@ def _parse_original_reference(original: str) -> Dict[str, Any]:
         clean = clean.replace(url_match.group(0), "").strip()
     clean = re.sub(r"\s*doi:\s*10\.\S+", "", clean, flags=re.I).strip()
     match = re.match(r"^(.*?)\s*\((\d{4}[a-z]?|n\.d\.)\)\.\s*(.+)$", clean, re.I)
+    if not match:
+        # Harvard author-date lists often place the year after the author
+        # without parentheses. Parse the same fields before judging completeness.
+        match = re.match(r"^(.*?)\.\s+((?:19|20)\d{2}[a-z]?)\.\s*(.+)$", clean, re.I)
     if not match:
         numeric = re.match(r"^(.*?)\.\s+(.+?)\.\s+(.+?)\.\s+(\d{4});\s*([^(:\s]+)(?:\(([^)]+)\))?(?:\s*:\s*([^.;]+))?", clean)
         if numeric:
@@ -179,7 +202,22 @@ def _reference_identity_gate(original_ref: Dict[str, Any], row: Dict[str, Any]) 
 def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     verification = result.get("online_verification") or {}
     rows = _rows(verification.get("rows") if isinstance(verification, dict) else verification)
+    original_entries = _rows(result.get("references_raw"))
+    if original_entries:
+        # Audit every extracted entry, even while online verification is queued
+        # or a provider has returned only some of the rows.
+        by_reference = {str(row.get("reference") or row.get("original_reference") or "").strip(): row
+                        for row in rows if isinstance(row, dict)}
+        rows = [{**by_reference.get(str(original).strip(), {}), "reference": original}
+                for original in original_entries]
     style = _detected_reference_style(result)
+    selected = str(result.get("selected_style") or (result.get("summary") or {}).get("selected_style") or "").strip().lower()
+    apa_entries = sum(bool(re.search(r"\(\s*(?:19|20)\d{2}[a-z]?\s*\)", str(value), re.I)) for value in original_entries)
+    harvard_entries = sum(bool(re.search(r"\.\s+(?:19|20)\d{2}[a-z]?\.\s+", str(value), re.I)) for value in original_entries)
+    style_is_certain = (selected not in {"apa", "author_year", "author-year", "auto", ""} or
+                        bool(result.get("style") and str(result.get("style")).lower() not in {"apa", "auto"}) or
+                        bool(re.search(r"\b(?:apa6|apa7|harvard|numeric)\b", str(result.get("style_family") or ""), re.I)) or
+                        max(apa_entries, harvard_entries) >= max(2, (len(original_entries) * 2 + 2) // 3))
     audited = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -204,8 +242,23 @@ def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             missing.append("author information")
         if not ref.get("title"):
             missing.append("title")
+        if not ref.get("year") and "year (recommended)" not in missing:
+            missing.append("year")
+        if ref.get("type") == "article" and not ref.get("source"):
+            missing.append("journal or source")
+        if (not ref.get("source") and not ref.get("publisher") and not
+                any(ref.get(key) for key in ("doi", "isbn", "url"))):
+            missing.append("publication source or publisher")
         missing = list(dict.fromkeys(missing))
         formatted_markup = re.sub(r"\s+", " ", format_reference(ref, style)).strip()
+        if style.startswith("numeric_") and original_ref.get("authors"):
+            # Numeric citation families cover several journal styles. Preserve
+            # the manuscript's established initials (e.g. "Smith JA"), rather
+            # than proposing dots for every author in a consistent list.
+            original_authors = str(original_ref["authors"]).strip().rstrip(".") + "."
+            generated_authors = ", ".join(author.replace(", ", " ") for author in parse_authors(original_ref["authors"])).rstrip(".") + "."
+            if generated_authors and formatted_markup.startswith(generated_authors):
+                formatted_markup = original_authors + formatted_markup[len(generated_authors):]
         segments = []
         for segment_index, segment in enumerate(re.split(r"(\*[^*]+\*)", formatted_markup)):
             if not segment:
@@ -235,7 +288,8 @@ def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             "original": original,
             "formatted": formatted,
             "missing": missing,
-            "needs_formatting": bool(formatted and comparable_original != comparable_formatted),
+            "needs_formatting": bool(formatted and comparable_original != comparable_formatted and
+                                     original_ref.get("parse_confidence") == "high" and not missing and style_is_certain),
             "style": style,
             "status": row.get("status") or "needs_review",
             "identity": identity,
@@ -243,6 +297,15 @@ def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             "metadata": ref,
             "format_segments": segments,
         })
+    if selected in {"apa", "author_year", "author-year", "auto", ""}:
+        complete = [row for row in audited if not row["missing"]]
+        changed = sum(row["needs_formatting"] for row in complete)
+        if len(complete) >= 3 and changed * 3 >= len(complete) * 2:
+            # A broad family selection plus near-universal format differences
+            # is weak evidence of an error in each entry. Withhold suggestions
+            # until a specific style or a clear list-level outlier is known.
+            for row in audited:
+                row["needs_formatting"] = False
     return audited
 
 
@@ -252,6 +315,60 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     saved_decisions = result.get("correction_decisions") or {}
     saved_candidates = result.get("correction_source_candidates") or {}
     saved_search_reports = result.get("correction_source_search_reports") or {}
+
+    # A verified source's original author spelling is authoritative for display.
+    # Review only author-year citations whose surname begins in lower case;
+    # preserve the rest of the sentence and every numeric-style citation.
+    if not _detected_reference_style(result).startswith("numeric_"):
+        for source_id, approved in saved_decisions.items():
+            if approved.get("decision") != "accepted" or not isinstance(approved.get("approved_source"), dict):
+                continue
+            source = approved["approved_source"]
+            authors = source.get("authors") or []
+            first = authors[0] if isinstance(authors, list) and authors else authors
+            if isinstance(first, str) and any(term in first.casefold() for term in (
+                "organization", "organisation", "university", "agency", "committee",
+                "consortium", "collaboration", "editors", "ministry", "department",
+            )):
+                continue  # An organisation name is not a personal surname.
+            if isinstance(first, dict):
+                surname = str(first.get("family") or first.get("last") or "").strip()
+            else:
+                surname = str(first or "").split(",", 1)[0].strip()
+                if " " in surname:
+                    surname = surname.split()[-1]
+            year = str(source.get("year") or "").strip()
+            if not surname or not re.fullmatch(r"(?:19|20)\d{2}[a-z]?", year, re.I):
+                continue
+            surname = surname[0].upper() + surname[1:]
+            if not surname[0].isupper():
+                continue
+            # Only a recognisable author-year citation may be changed.
+            pattern = re.compile(
+                r"\b" + re.escape(surname) +
+                r"\b(?:\s+et\s+al\.|\s+(?:and|&)\s+[A-Za-z][\w'-]+)?\s*"
+                r"(?:,\s*|\(\s*)" + re.escape(year) + r"\b(?:\s*\))?", re.I,
+            )
+            seen = set()
+            for match in pattern.finditer(manuscript_text):
+                raw = match.group(0)
+                if raw[:len(surname)] == surname or raw in seen or not raw[:1].islower():
+                    continue
+                seen.add(raw)
+                case_id = "citation-case-" + hashlib.sha1((source_id + "|" + raw).encode()).hexdigest()[:12]
+                decision = saved_decisions.get(case_id) or {}
+                replacement = surname + raw[len(surname):]
+                items.append({"id": case_id, "priority": "important", "category": "citation_case",
+                              "title": "Approved source surname starts in lower case",
+                              "what_is_wrong": f"The approved source gives the surname as {surname}, but this citation begins with lower case.",
+                              "why_it_matters": "The in-text author name should retain the source's spelling and capitalisation.",
+                              "evidence": raw, "original_text": raw, "location": _locate(manuscript_text, raw),
+                              "recommended_action": "Replace with: " + replacement,
+                              "supporting_metadata": {"approved_source": source_id, "confirmed_surname": surname},
+                              "confidence": "high", "proposed_replacement": replacement,
+                              "track_operation": "replace_all", "available_actions": ["accept", "reject", "ignore"],
+                              "auto_apply_allowed": False, "decision": decision.get("decision", "pending"),
+                              "decision_note": decision.get("note", "")})
 
     def add(
         priority: str,
@@ -387,7 +504,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "recommended_action": "Keep the original source identity. Find and verify an exact DOI, ISBN or matching title-author-year record before replacement.",
                 "coach_explanation": "Formatting and source replacement are separate. A style correction must never change the cited work.",
                 "supporting_metadata": {"detected_style": audit["style"], "source_identity_check": audit["identity"]},
-                "confidence": "high", "evidence_link": audit["url"], "proposed_replacement": "",
+                "confidence": "high", "evidence_link": audit["url"], "proposed_replacement": conflict_decision.get("proposed_replacement") or "",
                 "source_candidates": saved_candidates.get(conflict_id) or [], "approved_source": conflict_decision.get("approved_source") or {},
                 "approved_action": conflict_decision.get("action") or "", "track_operation": conflict_decision.get("track_operation") or "replace",
                 "available_actions": ["find_source", "replace_reference", "reject", "ignore"], "auto_apply_allowed": False,
@@ -404,7 +521,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "recommended_action": "Find and verify the complete source metadata before replacing this reference.",
                 "coach_explanation": "Do not guess missing bibliographic fields. Open and verify a candidate source before approval.",
                 "supporting_metadata": {"detected_style": audit["style"], "missing_fields": audit["missing"], "verification_status": audit["status"], "source_identity_check": audit["identity"]},
-                "confidence": "high", "evidence_link": audit["url"], "proposed_replacement": "",
+                "confidence": "high", "evidence_link": audit["url"], "proposed_replacement": decision.get("proposed_replacement") or "",
                 "source_candidates": saved_candidates.get(item_id) or [], "approved_source": decision.get("approved_source") or {},
                 "approved_action": decision.get("action") or "", "track_operation": decision.get("track_operation") or "replace",
                 "available_actions": ["find_source", "replace_reference", "reject", "ignore"], "auto_apply_allowed": False,
@@ -427,6 +544,34 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "track_operation": decision.get("track_operation") or "replace", "available_actions": ["accept", "reject", "ignore"],
                 "auto_apply_allowed": False, "decision": decision.get("decision", "pending"), "decision_note": decision.get("note", ""),
             })
+
+    figure_audit = result.get("table_figure_audit") or {}
+    for finding in _rows(figure_audit.get("findings")):
+        if not isinstance(finding, dict):
+            continue
+        item_id = str(finding.get("id") or "")
+        if not item_id:
+            continue
+        decision = saved_decisions.get(item_id) or {}
+        items.append({
+            "id": item_id,
+            "priority": finding.get("priority") or "important",
+            "category": "table_figure",
+            "title": "Table or figure needs review",
+            "what_is_wrong": finding.get("message") or "Check the table or figure reference.",
+            "why_it_matters": "The text and numbered display items should identify the same table or figure.",
+            "evidence": finding.get("evidence") or "",
+            "original_text": decision.get("original_text") or "",
+            "location": {"section": finding.get("section") or "Document body"},
+            "recommended_action": "Review the caption and nearby text. Propose an exact manuscript edit only when the intended location and wording are certain.",
+            "supporting_metadata": {"finding_type": finding.get("type"), "coverage": figure_audit.get("coverage")},
+            "confidence": "high" if figure_audit.get("coverage") == "docx_structural" else "medium",
+            "proposed_replacement": decision.get("proposed_replacement") or "",
+            "track_operation": decision.get("track_operation") or "replace",
+            "available_actions": ["propose_edit", "reject", "ignore"],
+            "auto_apply_allowed": False,
+            "decision": decision.get("decision", "pending"), "decision_note": decision.get("note", ""),
+        })
 
     autofix = result.get("autofix") or {}
     suggestions = autofix.get("suggestions") or {}

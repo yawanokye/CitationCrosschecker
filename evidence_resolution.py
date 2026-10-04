@@ -679,6 +679,7 @@ EVIDENCE_GROUP_LABELS = {
     "metadata_conflicts": "Metadata conflicts",
     "uncited_references": "Uncited references",
     "source_safety": "Publication safety",
+    "table_figure_integrity": "Table and figure integrity",
     "other_corrections": "Formatting and other corrections",
 }
 
@@ -701,6 +702,7 @@ def evidence_group_for_item(item: Dict[str, Any]) -> str:
         "reference_identity_conflict": "metadata_conflicts",
         "uncited_reference": "uncited_references",
         "source_risk": "source_safety",
+        "table_figure": "table_figure_integrity",
     }.get(category, "")
     if mapped:
         return mapped

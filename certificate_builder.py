@@ -1450,7 +1450,7 @@ def _new_feature_counts(result: Dict[str, Any]) -> Dict[str, Any]:
         and str(item.get("decision") or "").lower() == "accepted"
         and str(item.get("track_operation") or "replace").lower() in {
             "replace", "delete", "insert_after", "append_reference",
-            "insert_after_and_append_reference",
+            "insert_after_and_append_reference", "replace_all",
         }
     )
 
@@ -1480,6 +1480,7 @@ def _new_feature_counts(result: Dict[str, Any]) -> Dict[str, Any]:
         "academic_voice_status": "Enabled for this analysis" if voice_enabled else "Not enabled (optional)",
         "academic_voice_signals": len(voice_signals),
         "approved_voice_revisions": approved_voice_revisions,
+        "table_figure_summary": _dict(_dict(result.get("table_figure_audit")).get("summary")),
     }
 
 

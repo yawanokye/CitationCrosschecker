@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.6-integrity-summary"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.7-manuscript-readiness"
 
 import io
 import asyncio
@@ -760,7 +760,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.6-integrity-summary").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.7-manuscript-readiness").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -6158,9 +6158,25 @@ async def save_correction_decision(job_id: str, request: Request):
             if not original_text or not proposed_replacement:
                 raise HTTPException(status_code=400, detail="Select the claim and citation text before approving where to cite this reference.")
             operation = "insert_after"
+        elif category == "table_figure":
+            if action not in {"propose_replacement", "propose_callout"} or not original_text or not proposed_replacement:
+                raise HTTPException(status_code=400, detail="Select an exact passage and supply the intended table or figure wording before approval.")
+            if original_text == proposed_replacement and action == "propose_replacement":
+                raise HTTPException(status_code=400, detail="The proposed wording must differ from the original.")
+            manuscript = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or "")
+            if manuscript:
+                normalised_manuscript = re.sub(r"\s+", " ", manuscript)
+                normalised_anchor = re.sub(r"\s+", " ", original_text)
+                if normalised_anchor not in normalised_manuscript:
+                    raise HTTPException(status_code=422, detail="That exact passage was not found in the extracted manuscript. Copy a longer phrase from the original document and retry.")
+                if normalised_manuscript.count(normalised_anchor) > 1:
+                    raise HTTPException(status_code=422, detail="This passage appears more than once. Select a longer, unique phrase for the tracked edit.")
+            operation = "insert_after" if action == "propose_callout" else "replace"
+        elif category in {"citation_case", "reference_style"} and not proposed_replacement:
+            raise HTTPException(status_code=400, detail="No reviewable replacement is available for this finding.")
         elif proposed_replacement:
             action = action or "replace_text"
-            operation = "replace"
+            operation = "replace_all" if category == "citation_case" else "replace"
     decisions = result.setdefault("correction_decisions", {})
     decisions[item_id] = {
         "decision": decision,
@@ -6220,10 +6236,26 @@ async def approve_all_reference_formatting(request: Request, job_id: str):
 
 def _candidate_citation_text(candidate: Dict[str, Any]) -> str:
     authors = candidate.get("authors") or []
-    first = str(authors[0] if isinstance(authors, list) and authors else authors or "Source").strip()
-    surname = first.split(",", 1)[0].split()[-1] if first else "Source"
+    people = authors if isinstance(authors, list) else [authors]
+    def family(author: Any) -> str:
+        if isinstance(author, dict):
+            name = str(author.get("family") or author.get("last") or author.get("name") or "").strip()
+        else:
+            name = str(author or "").strip()
+        if "," in name:
+            name = name.split(",", 1)[0]
+        elif not any(term in name.casefold() for term in (
+            "organization", "organisation", "university", "agency", "committee", "consortium",
+            "collaboration", "editors", "ministry", "department", "institute", "council",
+        )):
+            name = name.split()[-1] if name else ""
+        return name[:1].upper() + name[1:]
+    names = [surname for author in people if (surname := family(author))]
+    if not names:
+        return ""  # Missing authors need review, not an invented citation.
     year = str(candidate.get("year") or "n.d.")
-    return f"({surname} et al., {year})" if isinstance(authors, list) and len(authors) > 2 else f"({surname}, {year})"
+    author_text = f"{names[0]} et al." if len(names) > 2 else " & ".join(names)
+    return f"({author_text}, {year})"
 
 
 def _candidate_reference_text(candidate: Dict[str, Any]) -> str:

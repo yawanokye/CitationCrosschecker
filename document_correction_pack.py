@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
@@ -128,32 +129,71 @@ def _tracked_replace(paragraph, original: str, replacement: str, change_id: int,
         start, end = span
     else:
         end = start + len(original)
-    matched_original = full_text[start:end]
-    before, after = full_text[:start], full_text[end:]
     p = paragraph._p
-    for child in list(p):
-        if child.tag != qn("w:pPr"):
-            p.remove(child)
+    runs = [child for child in p if child.tag == qn("w:r")]
+    # A hyperlink, field, drawing, break, or prior complex revision requires
+    # more precise structural handling than a safe text replacement can offer.
+    if any(child.tag not in {qn("w:rPr"), qn("w:t")} for run in runs for child in run):
+        return False
+    raw = "".join("".join(node.text or "" for node in run if node.tag == qn("w:t")) for run in runs)
+    if raw != full_text:
+        return False
+    segments = replacement_segments if isinstance(replacement_segments, list) and replacement_segments else [{"text": replacement}]
 
-    def normal_run(text: str):
-        if not text: return
-        run = OxmlElement("w:r"); node = OxmlElement("w:t"); node.set(qn("xml:space"), "preserve"); node.text = text; run.append(node); p.append(run)
-    normal_run(before)
+    def copy_text_run(source, text):
+        run = OxmlElement("w:r")
+        props = source.find(qn("w:rPr"))
+        if props is not None:
+            run.append(deepcopy(props))
+        node = OxmlElement("w:t"); node.set(qn("xml:space"), "preserve"); node.text = text
+        run.append(node)
+        return run
+
     stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     deletion = OxmlElement("w:del"); deletion.set(qn("w:id"), str(change_id)); deletion.set(qn("w:author"), "CiteIntegrity"); deletion.set(qn("w:date"), stamp)
-    dr = OxmlElement("w:r"); dt = OxmlElement("w:delText"); dt.set(qn("xml:space"), "preserve"); dt.text = matched_original; dr.append(dt); deletion.append(dr); p.append(deletion)
     insertion = OxmlElement("w:ins"); insertion.set(qn("w:id"), str(change_id + 1)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
-    segments = replacement_segments if isinstance(replacement_segments, list) and replacement_segments else [{"text": replacement}]
-    for segment in segments:
-        segment_text = str((segment or {}).get("text") or "")
-        if not segment_text:
-            continue
-        ir = OxmlElement("w:r")
-        if (segment or {}).get("italic"):
-            rpr = OxmlElement("w:rPr"); italic = OxmlElement("w:i"); italic_cs = OxmlElement("w:iCs"); rpr.append(italic); rpr.append(italic_cs); ir.append(rpr)
-        it = OxmlElement("w:t"); it.set(qn("xml:space"), "preserve"); it.text = segment_text; ir.append(it); insertion.append(ir)
-    p.append(insertion)
-    normal_run(after)
+    offset = 0
+    matches = []
+    for run in runs:
+        text = "".join(node.text or "" for node in run if node.tag == qn("w:t"))
+        run_start, run_end = offset, offset + len(text)
+        offset = run_end
+        if run_start < end and run_end > start:
+            matches.append((run, text, run_start, run_end))
+    if not matches:
+        return False
+    for run, text, run_start, run_end in matches:
+        left = max(0, start - run_start)
+        right = min(len(text), end - run_start)
+        if left:
+            run.addprevious(copy_text_run(run, text[:left]))
+        old_run = copy_text_run(run, text[left:right])
+        old_run.find(qn("w:t")).tag = qn("w:delText")
+        deletion.append(old_run)
+        if run is matches[-1][0]:
+            run.addprevious(deletion)
+            # Word retains formatting around the changed span unless the
+            # replacement explicitly requests italic reference segments.
+            old_properties = matches[0][0].find(qn("w:rPr"))
+            for segment in segments:
+                text_value = str((segment or {}).get("text") or "")
+                if not text_value:
+                    continue
+                new_run = OxmlElement("w:r")
+                if old_properties is not None:
+                    new_run.append(deepcopy(old_properties))
+                if (segment or {}).get("italic"):
+                    props = new_run.find(qn("w:rPr"))
+                    if props is None:
+                        props = OxmlElement("w:rPr"); new_run.insert(0, props)
+                    props.append(OxmlElement("w:i"))
+                    props.append(OxmlElement("w:iCs"))
+                node = OxmlElement("w:t"); node.set(qn("xml:space"), "preserve"); node.text = text_value
+                new_run.append(node); insertion.append(new_run)
+            run.addprevious(insertion)
+        if right < len(text):
+            run.addprevious(copy_text_run(run, text[right:]))
+        p.remove(run)
     return True
 
 
@@ -167,23 +207,39 @@ def _tracked_insert_after(paragraph, anchor: str, insertion_text: str, change_id
         start, split_at = span
     else:
         split_at = start + len(anchor)
-    before, after = full_text[:split_at], full_text[split_at:]
     p = paragraph._p
-    for child in list(p):
-        if child.tag != qn("w:pPr"):
-            p.remove(child)
-
-    def normal_run(text: str):
-        if not text:
-            return
-        run = OxmlElement("w:r"); node = OxmlElement("w:t"); node.set(qn("xml:space"), "preserve"); node.text = text; run.append(node); p.append(run)
-
-    normal_run(before)
+    runs = [child for child in p if child.tag == qn("w:r")]
+    if any(child.tag not in {qn("w:rPr"), qn("w:t")} for run in runs for child in run):
+        return False
+    if "".join("".join(node.text or "" for node in run if node.tag == qn("w:t")) for run in runs) != full_text:
+        return False
     stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     insertion = OxmlElement("w:ins"); insertion.set(qn("w:id"), str(change_id)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
-    ir = OxmlElement("w:r"); it = OxmlElement("w:t"); it.set(qn("xml:space"), "preserve"); it.text = " " + insertion_text.strip(); ir.append(it); insertion.append(ir); p.append(insertion)
-    normal_run(after)
-    return True
+    ir = OxmlElement("w:r"); it = OxmlElement("w:t"); it.set(qn("xml:space"), "preserve"); it.text = " " + insertion_text.strip(); ir.append(it); insertion.append(ir)
+    offset = 0
+    for run in runs:
+        text = "".join(node.text or "" for node in run if node.tag == qn("w:t"))
+        next_offset = offset + len(text)
+        if split_at <= next_offset:
+            within = split_at - offset
+            if within == 0:
+                run.addprevious(insertion)
+            elif within == len(text):
+                run.addnext(insertion)
+            else:
+                suffix = deepcopy(run)
+                for node in suffix.findall(qn("w:t")):
+                    suffix.remove(node)
+                for node in run.findall(qn("w:t")):
+                    run.remove(node)
+                before = OxmlElement("w:t"); before.set(qn("xml:space"), "preserve"); before.text = text[:within]
+                after = OxmlElement("w:t"); after.set(qn("xml:space"), "preserve"); after.text = text[within:]
+                run.append(before); suffix.append(after)
+                run.addnext(suffix)
+                suffix.addprevious(insertion)
+            return True
+        offset = next_offset
+    return False
 
 
 def _tracked_append_reference(document: Document, reference_text: str, change_id: int) -> bool:
@@ -239,6 +295,14 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
                 for paragraph in document.paragraphs:
                     if _tracked_replace(paragraph, original, "", change_id):
                         changed = True; change_id += 2; break
+            elif operation == "replace_all" and original and replacement:
+                for paragraph in document.paragraphs:
+                    # Each replacement removes the original from the ordinary
+                    # runs; revision XML retains the deletion for Word review.
+                    for _ in range(100):
+                        if not _tracked_replace(paragraph, original, replacement, change_id):
+                            break
+                        changed = True; change_id += 2
             elif replacement:
                 replacement_segments = ((item.get("supporting_metadata") or {}).get("reference_format_segments") if item.get("category") == "reference_style" else None)
                 for paragraph in document.paragraphs:

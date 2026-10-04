@@ -27,6 +27,7 @@ from verify import verify_references_batch
 from acii import compute_acii
 from academic_voice import analyse_academic_voice
 from correction_plan import build_correction_plan
+from table_figure_audit import audit_tables_figures
 from claim_checker import (
     build_claim_support_rows,
     suggest_alternative_sources_for_claim,
@@ -3923,6 +3924,14 @@ def process_document(
         )
 
         result.setdefault("selected_style", style)
+        try:
+            result["table_figure_audit"] = audit_tables_figures(
+                file_content, filename, result.get("main_text") or ""
+            )
+        except Exception as audit_error:
+            print(f"[TABLE/FIGURE AUDIT] Could not inspect this document: {audit_error}")
+            result["table_figure_audit"] = {"summary": {}, "findings": [], "coverage": "unavailable",
+                                            "note": "Table and figure extraction did not complete."}
         result.setdefault("style_family", _worker_style_family(style))
         result.setdefault("style_label", _worker_style_label(style))
         result.setdefault("style_sample", _worker_style_sample(style))

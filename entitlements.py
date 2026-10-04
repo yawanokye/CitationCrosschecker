@@ -370,6 +370,15 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     coverage["uncited_references"] = {"locked": True, "total": None, "shown": 0}
     coverage["online_verification"] = _limit_online_verification(safe, preview_fraction, preview_max_rows)
 
+    visual_audit = safe.get("table_figure_audit") if isinstance(safe.get("table_figure_audit"), dict) else {}
+    if visual_audit:
+        visual_audit["findings"], coverage["table_figure_audit"] = preview_rows(
+            visual_audit.get("findings"), preview_fraction, preview_max_rows
+        )
+        visual_audit["captions"] = []
+        visual_audit["preview_read_only"] = True
+        safe["table_figure_audit"] = visual_audit
+
     recovery = safe.get("recovery") if isinstance(safe.get("recovery"), dict) else {}
     if recovery and not recovery.get("locked"):
         sampled_recovery, recovery_coverage = preview_grouped_rows({
