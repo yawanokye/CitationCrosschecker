@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
@@ -207,6 +208,10 @@ def _tracked_insert_after(paragraph, anchor: str, insertion_text: str, change_id
         start, split_at = span
     else:
         split_at = start + len(anchor)
+    citation_insertion = insertion_text.strip().startswith(("(", "["))
+    if citation_insertion and split_at and full_text[split_at - 1] in ".!?":
+        # Place an author-year citation before the sentence's final punctuation.
+        split_at -= 1
     p = paragraph._p
     runs = [child for child in p if child.tag == qn("w:r")]
     if any(child.tag not in {qn("w:rPr"), qn("w:t")} for run in runs for child in run):
@@ -242,61 +247,138 @@ def _tracked_insert_after(paragraph, anchor: str, insertion_text: str, change_id
     return False
 
 
+def _editable_paragraphs(document: Document):
+    """Include text in Word tables while keeping body paragraphs first."""
+    yield from document.paragraphs
+    seen = set()
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    if id(paragraph._p) not in seen:
+                        seen.add(id(paragraph._p))
+                        yield paragraph
+
+
+def _tracked_paragraph_near(paragraph, text: str, change_id: int, *, before: bool = False) -> bool:
+    if not text.strip() or re.search(r"\[(?:describe|insert|add|specify|verify)[^\]]*\]", text, re.I):
+        return False  # Do not export an unfilled editorial placeholder.
+    new_paragraph = OxmlElement("w:p")
+    stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    insertion = OxmlElement("w:ins")
+    insertion.set(qn("w:id"), str(change_id)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
+    run = OxmlElement("w:r"); node = OxmlElement("w:t")
+    node.set(qn("xml:space"), "preserve"); node.text = text.strip()
+    run.append(node); insertion.append(run); new_paragraph.append(insertion)
+    if before:
+        paragraph._p.addprevious(new_paragraph)
+    else:
+        paragraph._p.addnext(new_paragraph)
+    return True
+
+
+def _reference_section_anchor(document: Document):
+    paragraphs = document.paragraphs
+    heading_index = next((index for index, p in enumerate(paragraphs)
+                          if p.text.strip().casefold() in {"references", "reference list", "bibliography"}), None)
+    if heading_index is None:
+        return None
+    last = paragraphs[heading_index]
+    for paragraph in paragraphs[heading_index + 1:]:
+        style = paragraph.style.name if paragraph.style else ""
+        if style.lower().startswith("heading") or paragraph.text.strip().casefold().startswith(("appendix", "supplementary materials")):
+            break
+        last = paragraph
+    return last
+
+
 def _tracked_append_reference(document: Document, reference_text: str, change_id: int) -> bool:
     if not reference_text.strip():
         return False
-    paragraph = document.add_paragraph()
-    stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    insertion = OxmlElement("w:ins"); insertion.set(qn("w:id"), str(change_id)); insertion.set(qn("w:author"), "CiteIntegrity"); insertion.set(qn("w:date"), stamp)
-    run = OxmlElement("w:r"); text = OxmlElement("w:t"); text.set(qn("xml:space"), "preserve"); text.text = reference_text.strip(); run.append(text); insertion.append(run); paragraph._p.append(insertion)
-    return True
+    anchor = _reference_section_anchor(document)
+    return bool(anchor and _tracked_paragraph_near(anchor, reference_text, change_id))
 
 
 def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str, Any], original_name: str = "manuscript.docx") -> Tuple[bytes, Dict[str, Any]]:
     document, copied_original = _load_docx(original_bytes)
     applied: List[str] = []
     skipped: List[str] = []
+    unapplied: List[Dict[str, str]] = []
+    accepted = [item for item in (plan.get("items") or []) if item.get("decision") == "accepted"]
     if not copied_original:
         document.add_heading("CiteIntegrity Track Changes Report", level=1)
         document.add_paragraph(f"Track Changes could not be applied because {original_name} was not available as a valid DOCX file. Upload the DOCX version for document-level changes.")
+        skipped = [str(item.get("id") or "") for item in accepted]
+        unapplied = [{"id": item_id, "reason": "Original DOCX is unavailable."} for item_id in skipped]
     else:
+        def candidates(original):
+            return [paragraph for paragraph in _editable_paragraphs(document)
+                    if original in paragraph.text or _normalised_raw_span(paragraph.text, original)]
+
+        def reference_present(text):
+            expected = " ".join(text.split()).casefold()
+            return any(" ".join("".join(p._p.itertext()).split()).casefold().find(expected) >= 0
+                       for p in document.paragraphs)
+
         change_id = 1
-        for item in plan.get("items") or []:
+        for item in accepted:
             original = str(item.get("original_text") or item.get("evidence") or "")
             replacement = str(item.get("proposed_replacement") or "")
-            explicitly_accepted = item.get("decision") == "accepted"
-            safe_auto = item.get("auto_apply_allowed") is True and item.get("decision") == "pending"
             operation = str(item.get("track_operation") or "replace")
-            if not (explicitly_accepted or safe_auto):
-                continue
             from reference_safety import is_review_instruction
             if is_review_instruction(replacement) or is_review_instruction(item.get("secondary_replacement")):
-                skipped.append(item.get("id"))
+                skipped.append(item.get("id")); unapplied.append({"id": item.get("id"), "reason": "A review instruction cannot be manuscript text."})
                 continue
             changed = False
-            if operation == "insert_after_and_append_reference" and original and replacement:
-                for paragraph in document.paragraphs:
-                    if _tracked_insert_after(paragraph, original, replacement, change_id):
-                        changed = True; change_id += 1; break
+            reason = "The exact passage was not found uniquely in editable Word text. Select a longer anchor or review complex fields and tables."
+            if operation in {"insert_after_and_append_reference", "replace_citation_and_append_reference"} and original and replacement:
                 secondary = str(item.get("secondary_replacement") or "")
-                if changed and secondary:
-                    if _tracked_append_reference(document, secondary, change_id):
-                        change_id += 1
+                targets = candidates(original)
+                if len(targets) == 1 and (not secondary or reference_present(secondary) or _reference_section_anchor(document)):
+                    if operation == "replace_citation_and_append_reference" and original == replacement:
+                        primary_changed = bool(secondary and not reference_present(secondary))
+                        if not primary_changed:
+                            reason = "The citation and completed reference are already present; there is no tracked change to apply."
+                    elif operation == "replace_citation_and_append_reference":
+                        primary_changed = _tracked_replace(targets[0], original, replacement, change_id)
+                        if primary_changed: change_id += 2
                     else:
-                        changed = False
+                        primary_changed = _tracked_insert_after(targets[0], original, replacement, change_id)
+                        if primary_changed: change_id += 1
+                    if primary_changed:
+                        if not secondary or reference_present(secondary):
+                            changed = True
+                        elif _tracked_append_reference(document, secondary, change_id):
+                            changed = True; change_id += 1
+                elif secondary and not _reference_section_anchor(document):
+                    reason = "No References heading was found for the new entry. The citation was not inserted either."
             elif operation == "append_reference" and replacement:
-                changed = _tracked_append_reference(document, replacement, change_id)
+                if not reference_present(replacement):
+                    changed = _tracked_append_reference(document, replacement, change_id)
+                else:
+                    reason = "This completed reference is already present in the manuscript."
+                if not changed and not _reference_section_anchor(document):
+                    reason = "No References heading was found for a tracked reference insertion."
+                if changed: change_id += 1
+            elif operation in {"insert_paragraph_after", "insert_paragraph_before"} and original and replacement:
+                targets = candidates(original)
+                if len(targets) == 1:
+                    changed = _tracked_paragraph_near(targets[0], replacement, change_id, before=operation == "insert_paragraph_before")
+                if not changed and re.search(r"\[(?:describe|insert|add|specify|verify)[^\]]*\]", replacement, re.I):
+                    reason = "Complete the proposed introduction before approving it."
                 if changed: change_id += 1
             elif operation == "insert_after" and original and replacement:
-                for paragraph in document.paragraphs:
-                    if _tracked_insert_after(paragraph, original, replacement, change_id):
-                        changed = True; change_id += 1; break
+                targets = candidates(original)
+                if len(targets) == 1:
+                    changed = _tracked_insert_after(targets[0], original, replacement, change_id)
+                if changed: change_id += 1
             elif operation == "delete" and original:
-                for paragraph in document.paragraphs:
-                    if _tracked_replace(paragraph, original, "", change_id):
-                        changed = True; change_id += 2; break
+                targets = candidates(original)
+                if len(targets) == 1:
+                    changed = _tracked_replace(targets[0], original, "", change_id)
+                if changed: change_id += 2
             elif operation == "replace_all" and original and replacement:
-                for paragraph in document.paragraphs:
+                for paragraph in _editable_paragraphs(document):
                     # Each replacement removes the original from the ordinary
                     # runs; revision XML retains the deletion for Word review.
                     for _ in range(100):
@@ -305,9 +387,14 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
                         changed = True; change_id += 2
             elif replacement:
                 replacement_segments = ((item.get("supporting_metadata") or {}).get("reference_format_segments") if item.get("category") == "reference_style" else None)
-                for paragraph in document.paragraphs:
-                    if _tracked_replace(paragraph, original, replacement, change_id, replacement_segments):
-                        changed = True; change_id += 2; break
-            (applied if changed else skipped).append(item.get("id"))
-        document.add_paragraph("CiteIntegrity change-control note: Accepted citations, recovered references, claim revisions, academic-voice revisions and uncited-reference actions were applied as tracked changes only after explicit approval. No scholarly source or claim change was applied silently.")
-    return _docx_bytes(document), {"applied": applied, "skipped": skipped, "applied_count": len(applied)}
+                targets = candidates(original)
+                if len(targets) == 1:
+                    changed = _tracked_replace(targets[0], original, replacement, change_id, replacement_segments)
+                if changed: change_id += 2
+            if changed:
+                applied.append(item.get("id"))
+            else:
+                skipped.append(item.get("id"))
+                unapplied.append({"id": item.get("id"), "reason": reason})
+    return _docx_bytes(document), {"applied": applied, "skipped": skipped, "unapplied": unapplied,
+                                    "applied_count": len(applied), "accepted_count": len(accepted)}

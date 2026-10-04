@@ -553,6 +553,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         if not item_id:
             continue
         decision = saved_decisions.get(item_id) or {}
+        intro = finding.get("type") in {"unreferenced", "first_mention_after"}
         items.append({
             "id": item_id,
             "priority": finding.get("priority") or "important",
@@ -563,8 +564,12 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             "evidence": finding.get("evidence") or "",
             "original_text": decision.get("original_text") or "",
             "location": {"section": finding.get("section") or "Document body"},
-            "recommended_action": "Review the caption and nearby text. Propose an exact manuscript edit only when the intended location and wording are certain.",
-            "supporting_metadata": {"finding_type": finding.get("type"), "coverage": figure_audit.get("coverage")},
+            "recommended_action": ("Edit the proposed section introduction, then approve a tracked paragraph before the table or figure."
+                                   if intro else "Review the caption and nearby text. Propose an exact manuscript edit only when the intended location and wording are certain."),
+            "supporting_metadata": {"finding_type": finding.get("type"), "coverage": figure_audit.get("coverage"),
+                                    "suggested_anchor": finding.get("suggested_anchor") or "",
+                                    "suggested_sentence": finding.get("suggested_sentence") or "",
+                                    "intro_operation": finding.get("intro_operation") or ""},
             "confidence": "high" if figure_audit.get("coverage") == "docx_structural" else "medium",
             "proposed_replacement": decision.get("proposed_replacement") or "",
             "track_operation": decision.get("track_operation") or "replace",
@@ -747,6 +752,14 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         })
 
     for item in items:
+        recorded = saved_decisions.get(item.get("id")) or {}
+        if recorded:
+            item["application_status"] = recorded.get("application_status") or "not_checked"
+            item["application_reason"] = recorded.get("application_reason") or ""
+            item["approved_action"] = recorded.get("action") or item.get("approved_action")
+            item["approved_source"] = recorded.get("approved_source") or item.get("approved_source") or {}
+            item["proposed_replacement"] = recorded.get("proposed_replacement") or item.get("proposed_replacement")
+            item["original_text"] = recorded.get("original_text") or item.get("original_text")
         if item.get("category") in {"source_verification", "reference_style", "reference_incomplete", "reference_identity_conflict", "reference_metadata", "uncited_reference"}:
             location = item.get("location") or {}
             if isinstance(location, dict) and location.get("section") == "Document body" and location.get("location_note"):

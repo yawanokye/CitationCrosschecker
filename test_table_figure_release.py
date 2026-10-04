@@ -2,6 +2,7 @@
 
 import io
 import unittest
+import zipfile
 
 from docx import Document
 
@@ -9,6 +10,7 @@ from correction_plan import _reference_audit, build_correction_plan
 from document_correction_pack import build_tracked_changes_document
 from entitlements import apply_entitlements_to_result
 from table_figure_audit import audit_tables_figures
+from privacy_lifecycle import build_report_package
 
 
 def word_bytes(doc):
@@ -141,6 +143,86 @@ class TableFigureReleaseTests(unittest.TestCase):
         self.assertLessEqual(len(safe["table_figure_audit"]["findings"]), 10)
         self.assertEqual(safe["table_figure_audit"]["captions"], [])
         self.assertTrue(safe["table_figure_audit"]["preview_read_only"])
+
+    def test_approved_source_changes_citation_and_adds_reference_before_appendix(self):
+        doc = Document()
+        doc.add_paragraph("Earlier work by smith (2023) informed the design.")
+        doc.add_heading("References", level=1)
+        doc.add_paragraph("Jones, A. (2021). Prior work.")
+        doc.add_heading("Appendix", level=1)
+        doc.add_paragraph("Supplementary text")
+        item = {"id": "source", "decision": "accepted", "category": "missing_reference",
+                "original_text": "smith (2023)", "proposed_replacement": "Smith (2023)",
+                "secondary_replacement": "Smith, J. (2023). Verified work. Journal of Care.",
+                "track_operation": "replace_citation_and_append_reference"}
+        output, status = build_tracked_changes_document(word_bytes(doc), {"items": [item]})
+        body = Document(io.BytesIO(output))
+        self.assertEqual(status["applied"], ["source"])
+        self.assertIn("w:del", body.paragraphs[0]._p.xml)
+        self.assertIn("Smith (2023)", body.paragraphs[0]._p.xml)
+        xml = body._element.body.xml
+        self.assertLess(xml.index("Verified work"), xml.index("Appendix"))
+        self.assertIn("w:ins", xml)
+        self.assertNotIn("change-control note", xml)
+
+    def test_table_introduction_is_editable_and_tracked_before_caption(self):
+        doc = Document()
+        doc.add_heading("Findings", level=1)
+        doc.add_paragraph("Patient outcomes improved over time.")
+        doc.add_paragraph("Table 1. Patient outcomes", style="Caption")
+        doc.add_table(rows=1, cols=1)
+        findings = audit_tables_figures(word_bytes(doc), "study.docx")["findings"]
+        issue = next(f for f in findings if f["type"] == "unreferenced")
+        item = {"id": "intro", "decision": "accepted", "category": "table_figure",
+                "original_text": issue["suggested_anchor"],
+                "proposed_replacement": "Table 1 presents patient outcomes across the study period.",
+                "track_operation": issue["intro_operation"]}
+        output, status = build_tracked_changes_document(word_bytes(doc), {"items": [item]})
+        self.assertEqual(status["applied"], ["intro"])
+        xml = Document(io.BytesIO(output))._element.body.xml
+        self.assertLess(xml.index("Table 1 presents"), xml.index("Table 1. Patient outcomes"))
+        self.assertIn("w:ins", xml)
+        item["proposed_replacement"] = "Table 1 presents [describe the content accurately]."
+        _, rejected = build_tracked_changes_document(word_bytes(doc), {"items": [item]})
+        self.assertEqual(rejected["skipped"], ["intro"])
+
+    def test_source_approval_is_not_recorded_as_applied_when_nothing_changes(self):
+        doc = Document(); doc.add_paragraph("Smith (2023) informed the design.")
+        doc.add_heading("References", level=1)
+        doc.add_paragraph("Smith, J. (2023). Verified work. Journal of Care.")
+        item = {"id": "source", "decision": "accepted", "category": "missing_reference",
+                "original_text": "Smith (2023)", "proposed_replacement": "Smith (2023)",
+                "secondary_replacement": "Smith, J. (2023). Verified work. Journal of Care.",
+                "track_operation": "replace_citation_and_append_reference"}
+        _, status = build_tracked_changes_document(word_bytes(doc), {"items": [item]})
+        self.assertEqual(status["applied_count"], 0)
+        self.assertIn("already present", status["unapplied"][0]["reason"])
+
+    def test_unlocatable_approved_action_is_reported(self):
+        doc = Document(); doc.add_paragraph("A paragraph that has no cited claim.")
+        item = {"id": "source", "decision": "accepted", "category": "citation_needed",
+                "original_text": "Missing passage", "proposed_replacement": "(Smith, 2023)",
+                "track_operation": "insert_after"}
+        _, status = build_tracked_changes_document(word_bytes(doc), {"items": [item]})
+        self.assertEqual(status["applied_count"], 0)
+        self.assertEqual(status["unapplied"][0]["id"], "source")
+
+    def test_package_reports_track_changes_without_inserting_editorial_note(self):
+        doc = Document(); doc.add_paragraph("A passage to revise.")
+        item = {"id": "claim", "decision": "accepted", "category": "claim_support",
+                "original_text": "A passage to revise.", "proposed_replacement": "A qualified passage.",
+                "track_operation": "replace"}
+        output, status = build_tracked_changes_document(word_bytes(doc), {"items": [item]})
+        package = build_report_package("abc123", {"correction_plan": {"items": [item]},
+                                                 "track_changes_application": status},
+                                       {"CiteIntegrity_Track_Changes.docx": output})
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            report = archive.read("submission_readiness_report.html").decode()
+            self.assertIn("change-control note", report)
+            self.assertIn("1 of 1 accepted actions applied", report)
+            self.assertIn("Applied", archive.read("correction_plan.csv").decode())
+            word_xml = Document(io.BytesIO(archive.read("CiteIntegrity_Track_Changes.docx")))._element.body.xml
+            self.assertNotIn("change-control note", word_xml)
 
 
 if __name__ == "__main__":

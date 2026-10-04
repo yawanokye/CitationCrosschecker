@@ -80,6 +80,24 @@ def _text_blocks(text: str) -> List[Dict[str, Any]]:
     return blocks
 
 
+def _introduction_target(blocks: List[Dict[str, Any]], caption: Dict[str, Any]) -> Dict[str, str]:
+    """Choose an opening passage in the same section, before its display item."""
+    index = caption["index"]
+    section = caption["section"]
+    preceding = [(i, block) for i, block in enumerate(blocks[:index]) if block["section"] == section]
+    heading = next((block for _, block in reversed(preceding)
+                    if re.match(r"^Heading\s*\d", block.get("style") or "", re.I)), None)
+    body = [block for _, block in preceding if block["text"] and block is not heading
+            and not block["table"] and not block["graphic"]
+            and not re.match(r"^Heading\s*\d", block.get("style") or "", re.I)
+            and not CAPTION.match(block["text"]) and not SKIP_HEADING.match(block["text"])]
+    # The earliest substantive paragraph gives a predictable section opening.
+    anchor = (body[0]["text"] if heading else body[-1]["text"]) if body else (heading or {}).get("text", "")
+    return {"suggested_anchor": anchor or caption["text"],
+            "intro_operation": "insert_paragraph_after" if anchor else "insert_paragraph_before",
+            "suggested_sentence": f"{caption['kind'].title()} {caption['number']} presents [describe the content accurately]."}
+
+
 def audit_tables_figures(file_bytes: bytes | None, filename: str, main_text: str = "") -> Dict[str, Any]:
     """Return reviewable findings; never infer a missing illustration from PDF text."""
     docx = str(filename or "").lower().endswith(".docx") and bool(file_bytes)
@@ -141,11 +159,13 @@ def audit_tables_figures(file_bytes: bytes | None, filename: str, main_text: str
         if key not in callout_keys:
             findings.append({"id": f"table-figure-unreferenced-{caption['index']}", "type": "unreferenced",
                              "priority": "important", "evidence": caption["text"], "section": caption["section"],
-                             "message": f"{caption['kind'].title()} {caption['number']} has no matching mention in the manuscript text."})
+                             "message": f"{caption['kind'].title()} {caption['number']} has no matching mention in the manuscript text.",
+                             **_introduction_target(blocks, caption)})
         elif min(c["index"] for c in callouts if _key(c["kind"], c["number"]) == key) > caption["index"]:
             findings.append({"id": f"table-figure-late-callout-{caption['index']}", "type": "first_mention_after",
                              "priority": "optional", "evidence": caption["text"], "section": caption["section"],
-                             "message": "The first mention appears after this caption. Confirm the target submission style."})
+                             "message": "The first mention appears after this caption. Introduce it before the display item.",
+                             **_introduction_target(blocks, caption)})
     for callout in callouts:
         key = _key(callout["kind"], callout["number"])
         if key in caption_keys:

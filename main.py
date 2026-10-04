@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.7-manuscript-readiness"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.8-reviewable-track-changes"
 
 import io
 import asyncio
@@ -760,7 +760,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.7-manuscript-readiness").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.8-reviewable-track-changes").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -5985,7 +5985,7 @@ async def delete_job_content(job_id: str):
 
 
 @app.get("/api/report-package/{job_id}")
-async def download_complete_report_package(request: Request, job_id: str, delete_after: int = 1):
+async def download_complete_report_package(request: Request, job_id: str, delete_after: int = 0):
     _require_commercial_access(request, job_id)
     job = load_job_record_fresh(job_id)
     if not job:
@@ -5996,7 +5996,8 @@ async def download_complete_report_package(request: Request, job_id: str, delete
     original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
     file_name = str(job.get("file_name") or result.get("file_name") or "manuscript.docx")
     annotated = build_annotated_document(original_bytes, result.get("correction_plan") or {}, file_name)
-    tracked, _change_manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, file_name)
+    tracked, change_manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, file_name)
+    result["track_changes_application"] = change_manifest
     package = build_report_package(job_id, result, extra_files={
         "CiteIntegrity_Annotated_Manuscript.docx": annotated,
         "CiteIntegrity_Track_Changes.docx": tracked,
@@ -6013,6 +6014,20 @@ async def download_complete_report_package(request: Request, job_id: str, delete
         },
         background=background,
     )
+
+
+@app.get("/api/corrections/{job_id}/application-status")
+async def correction_application_status(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = _prepare_student_result(job.get("result") or {}, None, job_id)
+    if result.get("result_deleted"):
+        raise HTTPException(status_code=410, detail="Manuscript content has been deleted.")
+    original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
+    _, manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, str(job.get("file_name") or "manuscript.docx"))
+    return manifest
 
 
 @app.get("/api/academic-voice/{job_id}")
@@ -6130,7 +6145,10 @@ async def save_correction_decision(job_id: str, request: Request):
                 secondary_replacement = secondary_replacement or str(approved_source.get("formatted_reference") or "").strip()
                 operation = "insert_after_and_append_reference" if secondary_replacement else "insert_after"
             else:
-                operation = "append_reference"
+                secondary_replacement = secondary_replacement or str(approved_source.get("formatted_reference") or "").strip()
+                if not secondary_replacement:
+                    raise HTTPException(status_code=400, detail="The completed reference is missing from the selected source.")
+                operation = "replace_citation_and_append_reference"
         elif category == "claim_support" and action == "add_supporting_citation":
             if not approved_source.get("url") or not approved_source.get("title"):
                 raise HTTPException(status_code=400, detail="Open and verify a scholarly source before adding it to the claim.")
@@ -6159,8 +6177,16 @@ async def save_correction_decision(job_id: str, request: Request):
                 raise HTTPException(status_code=400, detail="Select the claim and citation text before approving where to cite this reference.")
             operation = "insert_after"
         elif category == "table_figure":
-            if action not in {"propose_replacement", "propose_callout"} or not original_text or not proposed_replacement:
+            if action not in {"propose_replacement", "propose_callout", "propose_introduction"} or not original_text or not proposed_replacement:
                 raise HTTPException(status_code=400, detail="Select an exact passage and supply the intended table or figure wording before approval.")
+            if action == "propose_introduction":
+                metadata = selected_item.get("supporting_metadata") or {}
+                if metadata.get("finding_type") not in {"unreferenced", "first_mention_after"}:
+                    raise HTTPException(status_code=400, detail="An introduction is not applicable to this finding.")
+                if original_text != metadata.get("suggested_anchor"):
+                    raise HTTPException(status_code=422, detail="The introduction anchor changed. Refresh the finding and retry.")
+                if re.search(r"\[(?:describe|insert|add|specify|verify)[^\]]*\]", proposed_replacement, re.I):
+                    raise HTTPException(status_code=422, detail="Complete the table or figure introduction before approval.")
             if original_text == proposed_replacement and action == "propose_replacement":
                 raise HTTPException(status_code=400, detail="The proposed wording must differ from the original.")
             manuscript = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or "")
@@ -6171,14 +6197,13 @@ async def save_correction_decision(job_id: str, request: Request):
                     raise HTTPException(status_code=422, detail="That exact passage was not found in the extracted manuscript. Copy a longer phrase from the original document and retry.")
                 if normalised_manuscript.count(normalised_anchor) > 1:
                     raise HTTPException(status_code=422, detail="This passage appears more than once. Select a longer, unique phrase for the tracked edit.")
-            operation = "insert_after" if action == "propose_callout" else "replace"
+            operation = (metadata.get("intro_operation") or "insert_paragraph_after") if action == "propose_introduction" else ("insert_after" if action == "propose_callout" else "replace")
         elif category in {"citation_case", "reference_style"} and not proposed_replacement:
             raise HTTPException(status_code=400, detail="No reviewable replacement is available for this finding.")
         elif proposed_replacement:
             action = action or "replace_text"
             operation = "replace_all" if category == "citation_case" else "replace"
-    decisions = result.setdefault("correction_decisions", {})
-    decisions[item_id] = {
+    entry = {
         "decision": decision,
         "note": str(payload.get("note") or "")[:1000],
         "action": action,
@@ -6189,6 +6214,16 @@ async def save_correction_decision(job_id: str, request: Request):
         "track_operation": operation,
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
+    if decision == "accepted":
+        original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
+        trial = dict(selected_item, **entry, id=item_id)
+        _, application = build_tracked_changes_document(original_bytes, {"items": [trial]}, str(job.get("file_name") or "manuscript.docx"))
+        if item_id not in application["applied"]:
+            reason = (application.get("unapplied") or [{}])[0].get("reason") or "The proposed change could not be placed in the original Word document."
+            raise HTTPException(status_code=422, detail=f"Approval not recorded: {reason}")
+        entry["application_status"] = "ready_for_track_changes"
+    decisions = result.setdefault("correction_decisions", {})
+    decisions[item_id] = entry
     usage_increments = {"correction_decision_events": 1}
     if decision == "accepted":
         usage_increments["tracked_approval_events"] = 1
@@ -6210,17 +6245,25 @@ async def approve_all_reference_formatting(request: Request, job_id: str):
     plan = build_correction_plan(result)
     decisions = result.setdefault("correction_decisions", {})
     approved = 0
+    unavailable = []
+    original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
     timestamp = datetime.utcnow().isoformat() + "Z"
     for item in plan.get("items") or []:
         if item.get("category") != "reference_style" or item.get("confidence") != "high" or not item.get("proposed_replacement") or item.get("decision") != "pending":
             continue
-        decisions[item["id"]] = {
+        entry = {
             "decision": "accepted", "note": "User approved all detected reference-style corrections.",
             "action": "format_reference", "approved_source": {},
             "proposed_replacement": item["proposed_replacement"], "secondary_replacement": "",
             "original_text": item.get("original_text") or item.get("evidence") or "",
             "track_operation": "replace", "updated_at": timestamp,
         }
+        _, trial = build_tracked_changes_document(original_bytes, {"items": [{**item, **entry}]}, str(job.get("file_name") or "manuscript.docx"))
+        if item["id"] not in trial["applied"]:
+            unavailable.append({"id": item["id"], "reason": (trial.get("unapplied") or [{}])[0].get("reason")})
+            continue
+        entry["application_status"] = "ready_for_track_changes"
+        decisions[item["id"]] = entry
         approved += 1
     result["correction_plan"] = build_correction_plan(result)
     if approved:
@@ -6231,7 +6274,7 @@ async def approve_all_reference_formatting(request: Request, job_id: str):
             reference_style_approval_events=approved,
         )
     _manual_save_result(job_id, result)
-    return {"ok": True, "approved_count": approved, "correction_plan": result["correction_plan"]}
+    return {"ok": True, "approved_count": approved, "unavailable": unavailable, "correction_plan": result["correction_plan"]}
 
 
 def _candidate_citation_text(candidate: Dict[str, Any]) -> str:
@@ -6746,6 +6789,13 @@ async def approve_academic_voice_revision(job_id: str, request: Request):
         raise HTTPException(status_code=409, detail="Academic Voice and Writing Signals is off for this analysis.")
     import hashlib
     revision_id = "voice-revision-" + hashlib.sha256(original.encode("utf-8")).hexdigest()[:12]
+    original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
+    trial_item = {"id": revision_id, "decision": "accepted", "category": "academic_voice_revision",
+                  "original_text": original, "proposed_replacement": revised, "track_operation": "replace"}
+    _, application = build_tracked_changes_document(original_bytes, {"items": [trial_item]}, str(job.get("file_name") or "manuscript.docx"))
+    if revision_id not in application["applied"]:
+        reason = (application.get("unapplied") or [{}])[0].get("reason") or "The passage could not be placed in the original Word file."
+        raise HTTPException(status_code=422, detail=f"Revision not approved: {reason}")
     revisions = result.setdefault("academic_voice_revisions", {})
     revisions[revision_id] = {
         "original_text": original,

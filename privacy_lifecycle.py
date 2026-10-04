@@ -125,21 +125,28 @@ def build_report_package(job_id: str, result: Dict[str, Any], extra_files: Dict[
         "uncited_references": result.get("uncited_references") or [],
         "claim_support": result.get("claim_support") or [],
         "citation_needed_claims": result.get("citation_needed_claims") or [],
+        "track_changes_application": result.get("track_changes_application") or {},
     }
     csv_buffer = io.StringIO()
     writer = csv.writer(csv_buffer)
-    writer.writerow(["Priority", "Category", "Title", "Location", "Evidence", "Recommended action", "Decision"])
+    writer.writerow(["Priority", "Category", "Title", "Location", "Evidence", "Recommended action", "Decision", "Track Changes application"])
     for item in plan.get("items") or []:
         writer.writerow([
             item.get("priority", ""), item.get("category", ""), item.get("title", ""),
             json.dumps(item.get("location"), ensure_ascii=False) if item.get("location") else "",
             item.get("evidence", ""), item.get("recommended_action", ""), item.get("decision", "pending"),
+            "Applied" if item.get("id") in (result.get("track_changes_application") or {}).get("applied", []) else ("Not applied" if item.get("decision") == "accepted" else "Not approved"),
         ])
     counts = plan.get("counts") or {}
+    changes = result.get("track_changes_application") or {}
+    change_note = "CiteIntegrity change-control note: Citations, recovered references, claim revisions, academic-voice revisions and uncited-reference actions are applied as tracked changes only after explicit approval and a successful placement check. No scholarly source or claim change was applied silently. Review the application count and any exceptions below."
+    change_rows = "".join(f"<tr><td>{html.escape(str(row.get('id','')))}</td><td>{html.escape(str(row.get('reason','')))}</td></tr>" for row in changes.get("unapplied") or [])
+    change_status = f"<p><strong>{changes.get('applied_count', 0)} of {changes.get('accepted_count', 0)} accepted actions applied.</strong></p>" + (f"<p class='critical'>Some approved actions could not be placed in the Word file. Review the following items before submission.</p><table><tr><th>Item</th><th>Reason</th></tr>{change_rows}</table>" if change_rows else "")
     report_html = f"""<!doctype html><html><head><meta charset="utf-8"><title>CiteIntegrity Report</title>
-<style>body{{font-family:Arial,sans-serif;max-width:1000px;margin:36px auto;color:#172033;line-height:1.5}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #dbe3ed;padding:8px;text-align:left;vertical-align:top}}th{{background:#eef5f1}}.critical{{color:#b91c1c}}.important{{color:#b45309}}</style></head><body>
+<style>body{{font-family:Arial,sans-serif;max-width:1000px;margin:36px auto;color:#172033;line-height:1.5}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #dbe3ed;padding:8px;text-align:left;vertical-align:top}}th{{background:#eef5f1}}.critical{{color:#b91c1c}}.important{{color:#b45309}}.change-note{{background:#fef3c7;border-left:6px solid #d97706;padding:14px}}</style></head><body>
 <h1>CiteIntegrity Submission-Readiness Report</h1>
 <p><strong>Job:</strong> {html.escape(job_id)}<br><strong>Generated:</strong> {html.escape(manifest['generated_at'])}</p>
+<h2>Word Track Changes application</h2><div class="change-note">{html.escape(change_note)}<br><strong>This note is for the report only; it is not inserted into the manuscript.</strong></div>{change_status}
 <h2>Prioritized correction plan</h2><p>{html.escape(str(plan.get('headline') or 'Human review required.'))}</p>
 <p>Critical: {counts.get('critical', 0)} · Important: {counts.get('important', 0)} · Optional: {counts.get('optional', 0)}</p>
 <table><thead><tr><th>Priority</th><th>Issue</th><th>Evidence</th><th>Recommended action</th></tr></thead><tbody>
