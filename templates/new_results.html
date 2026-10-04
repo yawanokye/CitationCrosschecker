@@ -799,7 +799,7 @@
                 width: 100%;
             }
 
-            #btnDownloadDelete { width:100%; white-space:normal; }
+            #btnDownloadDelete, #btnDownloadOnly { width:100%; white-space:normal; }
 
             .search-input, select {
                 min-width: 100%;
@@ -1424,7 +1424,7 @@
 
         .privacy-panel { border-left: 5px solid #19b36b; }
         .privacy-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
-        #btnDownloadDelete {
+        #btnDownloadOnly {
             min-height: 54px;
             padding: 14px 24px;
             border: 3px solid #064e3b;
@@ -1436,9 +1436,9 @@
             letter-spacing: .1px;
             box-shadow: 0 8px 0 #064e3b, 0 16px 30px rgba(4,120,87,.28);
         }
-        #btnDownloadDelete:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 10px 0 #064e3b, 0 18px 34px rgba(4,120,87,.34); }
-        #btnDownloadDelete:focus-visible { outline: 4px solid #fbbf24; outline-offset: 4px; }
-        #btnDownloadDelete:disabled { opacity:.55; box-shadow:none; }
+        #btnDownloadOnly:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 10px 0 #064e3b, 0 18px 34px rgba(4,120,87,.34); }
+        #btnDownloadOnly:focus-visible { outline: 4px solid #fbbf24; outline-offset: 4px; }
+        #btnDownloadOnly:disabled { opacity:.55; box-shadow:none; }
         .priority-critical { border-left:4px solid #dc2626; }
         .priority-important { border-left:4px solid #f59e0b; }
         .priority-optional { border-left:4px solid #3b82f6; }
@@ -1575,11 +1575,12 @@
         <div class="section-title">
             <div>
                 <h2>Temporary processing and deletion</h2>
-                <p id="privacyMessage">Your manuscript is processed temporarily. Download the complete package, then delete the files.</p>
+                <p id="privacyMessage">Download only to continue revising this analysis until scheduled expiry, or download and delete when you are finished.</p>
             </div>
         </div>
         <div class="privacy-actions">
-            <button class="btn btn-green" id="btnDownloadDelete" title="Download the modified manuscript and user reports, then permanently delete the temporarily stored manuscript data.">⬇ Download the modified document/manuscript and delete</button>
+            <button class="btn btn-green" id="btnDownloadOnly" title="Download the package and keep this analysis available for further corrections until its scheduled expiry.">⬇ Download only — keep editing</button>
+            <button class="btn btn-outline" id="btnDownloadDelete" title="Download the package, then delete the temporarily stored manuscript data.">⬇ Download and delete</button>
             <button class="btn btn-outline" id="btnDeleteNow">Delete my manuscript now</button>
         </div>
     </section>
@@ -1903,7 +1904,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.7-manuscript-readiness";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.8-reviewable-track-changes";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2107,7 +2108,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function setPaidOnlyButtons(isPaid) {
-        ["btnVerify", "btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment", "btnDownloadCertificate", "btnStartCitationNeeded", "btnApproveReferenceFormatting", "btnFixNext", "btnRewritePassage", "btnCompareRevision", "btnDownloadDelete"].forEach(id => {
+        ["btnVerify", "btnExportCsv", "btnExportWord", "btnExportRefsDocx", "btnExportRefsHtml", "btnStartEnrichment", "btnDownloadCertificate", "btnApproveReferenceFormatting", "btnFixNext", "btnRewritePassage", "btnCompareRevision", "btnDownloadOnly", "btnDownloadDelete"].forEach(id => {
             const btn = $(id);
             if (!btn) return;
 
@@ -3451,9 +3452,9 @@ document.addEventListener("DOMContentLoaded", function () {
                     ${renderSourceSearchReport(item)}
                     <p><strong>Confidence:</strong> ${esc(item.confidence ?? "Review required")}</p>
                     <div><strong>Recommended action:</strong> ${esc(item.recommended_action || "Review manually.")}</div>
-                    ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ Action recorded: ${esc(item.decision)}</strong>${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
+                    ${item.decision && item.decision !== "pending" ? `<div class="correction-action-status" role="status" style="margin-top:10px;padding:10px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ ${item.decision === "accepted" ? "Approved for Word Track Changes" : `Action recorded: ${esc(item.decision)}`}</strong>${item.application_status === "ready_for_track_changes" ? "<br>Placement checked in the original DOCX." : ""}${item.approved_source?.title ? `<br>Approved source: ${esc(item.approved_source.title)}` : ""}${item.approved_action ? `<br>Action: ${esc(item.approved_action.replaceAll("_", " "))}` : ""}${item.proposed_replacement ? `<br>Tracked change: ${esc(item.original_text || item.evidence || "")} → ${esc(item.proposed_replacement)}` : ""}${item.decision_note ? `<br>Note: ${esc(item.decision_note)}` : ""}</div>` : ""}
                     <div class="privacy-actions correction-decisions">
-                        ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Replace verified reference" : "Approve selected source")}</button>` : ""}
+                        ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${item.decision === "accepted" || !(Array.isArray(item.source_candidates) && item.source_candidates.length) ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Approved for Track Changes" : (item.category === "claim_support" ? "Add selected citation" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Replace verified reference" : "Approve selected source"))}</button>` : ""}
                         ${item.category === "claim_support" ? `<button class="btn btn-outline revise-claim-support" data-id="${esc(item.id)}">Revise or qualify claim</button>` : ""}
                         ${item.category === "table_figure" ? `<button class="btn btn-green propose-table-figure-edit" data-id="${esc(item.id)}">Propose tracked edit</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
@@ -3545,6 +3546,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         if (privacy.content_deleted) {
             if ($("btnDownloadDelete")) $("btnDownloadDelete").disabled = true;
+            if ($("btnDownloadOnly")) $("btnDownloadOnly").disabled = true;
             if ($("btnDeleteNow")) $("btnDeleteNow").disabled = true;
         }
     }
@@ -3585,10 +3587,18 @@ document.addEventListener("DOMContentLoaded", function () {
             latestResults.evidence_resolution_workspace = js.correction_plan?.evidence_resolution_workspace || latestResults.evidence_resolution_workspace;
             renderStudentGuidance(latestResults);
             renderClaimSupport(latestResults);
-            setStatus(`✅ Correction marked ${decision}. The approved change will appear in the Track Changes document.`, "good");
+            setStatus(`✅ Correction marked ${decision}.${decision === "accepted" ? " Placement checked for Word Track Changes." : ""}`, "good");
+            return true;
         } catch (error) {
             console.error(error);
             setStatus("Correction decision failed: " + error.message, "bad");
+            const card = document.querySelector(`.guidance-item[data-correction-id="${CSS.escape(itemId)}"]`);
+            if (card) {
+                let message = card.querySelector(".approval-error");
+                if (!message) { message = document.createElement("p"); message.className = "approval-error"; message.style.color = "#b91c1c"; message.setAttribute("role", "alert"); card.append(message); }
+                message.textContent = `Approval was not saved: ${error.message}`;
+            }
+            return false;
         }
     }
 
@@ -3657,7 +3667,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
-    function approveCorrectionSource(itemId, category, triggerButton = null) {
+    async function approveCorrectionSource(itemId, category, triggerButton = null) {
         const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
         const actionScope = triggerButton?.closest(".guidance-item, .claim-direct-actions") || document;
         const selected = actionScope.querySelector(`input[name="source-${CSS.escape(itemId)}"]:checked`);
@@ -3672,8 +3682,10 @@ document.addEventListener("DOMContentLoaded", function () {
         else source.identity_confirmed = true;
         if (!confirm("Record this source as opened and manually verified, then prepare the approved change for Track Changes?")) return;
         const action = category === "missing_reference" ? "add_reference" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
-        const proposed = ["missing_reference","source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? source.formatted_reference : source.citation_text;
-        saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, secondary_replacement:source.formatted_reference || "", original_text:item.evidence});
+        const proposed = ["source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? source.formatted_reference : source.citation_text;
+        if (triggerButton) { triggerButton.disabled = true; triggerButton.textContent = "Checking Word placement…"; }
+        const saved = await saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, secondary_replacement:source.formatted_reference || "", original_text:item.evidence});
+        if (!saved && triggerButton?.isConnected) { triggerButton.disabled = false; triggerButton.textContent = "Retry source approval"; }
     }
 
     async function approveAllReferenceFormatting() {
@@ -3688,7 +3700,8 @@ document.addEventListener("DOMContentLoaded", function () {
             if (!response.ok) throw new Error(js.detail || "Could not approve reference formatting.");
             latestResults.correction_plan = js.correction_plan;
             renderStudentGuidance(latestResults);
-            setStatus(`✅ ${js.approved_count || 0} reference entries approved. They will appear as Track Changes in the downloadable manuscript.`, "good");
+            const unavailable = (js.unavailable || []).length;
+            setStatus(`✅ ${js.approved_count || 0} reference entries approved for Track Changes.${unavailable ? ` ${unavailable} could not be placed and remain pending; review their original Word text.` : ""}`, unavailable ? "warn" : "good");
         } catch (error) {
             setStatus("Reference-format approval failed: " + error.message, "bad");
         } finally { if (btn) btn.disabled = false; }
@@ -3708,7 +3721,19 @@ document.addEventListener("DOMContentLoaded", function () {
     function proposeTableFigureEdit(itemId) {
         const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
         if (!item) return;
-        const isMissingMention = item.supporting_metadata?.finding_type === "unreferenced";
+        const introduction = ["unreferenced", "first_mention_after"].includes(item.supporting_metadata?.finding_type);
+        if (introduction) {
+            const metadata = item.supporting_metadata || {};
+            const proposed = prompt(`Write an accurate introduction for ${item.evidence}. CiteIntegrity will insert a separate tracked paragraph near the beginning of ${item.location?.section || "this section"}.`, metadata.suggested_sentence || "");
+            if (!proposed?.trim()) return;
+            if (/\[(describe|insert|add|specify|verify)[^\]]*\]/i.test(proposed)) { setStatus("Complete the proposed introduction before approval.", "warn"); return; }
+            if (!confirm(`Insert the reviewed introduction near the section opening as Word Track Changes?\n\n${proposed.trim()}`)) return;
+            saveCorrectionDecision(itemId, "accepted", "User approved an editable table or figure introduction.", {
+                action:"propose_introduction", original_text:metadata.suggested_anchor, proposed_replacement:proposed.trim()
+            });
+            return;
+        }
+        const isMissingMention = false;
         const original = prompt(isMissingMention
             ? "Paste an exact phrase from the body paragraph after which this table or figure should be mentioned. Do not use the caption as the anchor."
             : "Paste the exact caption or body wording to correct with Track Changes.",
@@ -3822,10 +3847,19 @@ document.addEventListener("DOMContentLoaded", function () {
         </tbody></table><p><strong>Final readiness:</strong> ${esc(js.readiness)}</p>`;
     }
 
-    function downloadAndDelete() {
-        if (!confirm("Download the modified document/manuscript and reports, then permanently delete the manuscript content and detailed results after delivery?")) return;
-        window.location.href = `/api/report-package/${encodeURIComponent(JOB_ID)}?delete_after=1`;
-        setTimeout(() => { if ($("privacyMessage")) $("privacyMessage").textContent = "Download started. The server will delete manuscript content after completing delivery."; }, 500);
+    async function downloadPackage(deleteAfter) {
+        if (deleteAfter && !confirm("Download the modified manuscript and reports, then permanently delete this analysis after delivery? You cannot make further edits to this analysis.")) return;
+        try {
+            const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/application-status`);
+            const manifest = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(manifest.detail || "Could not check Word Track Changes.");
+            if (manifest.unapplied?.length) {
+                const details = manifest.unapplied.map(row => `${row.id}: ${row.reason}`).join("\n");
+                if (!confirm(`${manifest.unapplied.length} approved change(s) could not be placed in Word:\n${details}\n\nDownload the package with these limitations?`)) return;
+            }
+            window.location.href = `/api/report-package/${encodeURIComponent(JOB_ID)}?delete_after=${deleteAfter ? 1 : 0}`;
+            if ($("privacyMessage")) $("privacyMessage").textContent = deleteAfter ? "Download started. Manuscript content will be deleted after delivery." : "Download started. Your analysis remains available for further corrections until scheduled expiry.";
+        } catch (error) { setStatus("Could not prepare download: " + error.message, "bad"); }
     }
 
     async function deleteNow() {
@@ -3835,6 +3869,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!response.ok) { alert(js.detail || "Deletion failed."); return; }
         if ($("privacyMessage")) $("privacyMessage").textContent = "Your manuscript content and detailed results have been deleted.";
         if ($("btnDownloadDelete")) $("btnDownloadDelete").disabled = true;
+        if ($("btnDownloadOnly")) $("btnDownloadOnly").disabled = true;
         if ($("btnDeleteNow")) $("btnDeleteNow").disabled = true;
     }
 
@@ -5528,7 +5563,8 @@ ${claimTable}
         $("btnFixNext")?.addEventListener("click", fixNextIssue);
         $("btnApproveReferenceFormatting")?.addEventListener("click", approveAllReferenceFormatting);
         $("btnCompareRevision")?.addEventListener("click", compareRevisionJourney);
-        $("btnDownloadDelete")?.addEventListener("click", downloadAndDelete);
+        $("btnDownloadOnly")?.addEventListener("click", () => downloadPackage(false));
+        $("btnDownloadDelete")?.addEventListener("click", () => downloadPackage(true));
         $("btnDeleteNow")?.addEventListener("click", deleteNow);
         $("btnDownloadCertificate")?.addEventListener("click", function () {
             if (!hasPaidAccess(latestResults || {})) {
