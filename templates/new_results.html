@@ -1602,6 +1602,9 @@
             </div>
 
             <div class="kpi-grid" id="kpiGrid"></div>
+            <h3 style="margin:20px 0 10px;">Tables and figures</h3>
+            <div class="kpi-grid" id="tableFigureKpiGrid" aria-live="polite"></div>
+            <p class="small-muted" id="tableFigureCoverageNote"></p>
             <h3 style="margin:20px 0 10px;">Publication-status safety checks</h3>
             <div class="kpi-grid" id="publicationKpiGrid" aria-live="polite"></div>
             <p class="small-muted" id="publicationCoverageNote"></p>
@@ -1900,7 +1903,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.6-integrity-summary";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.7-manuscript-readiness";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3452,8 +3455,9 @@ document.addEventListener("DOMContentLoaded", function () {
                     <div class="privacy-actions correction-decisions">
                         ${["citation_needed","missing_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-outline find-correction-sources" data-id="${esc(item.id)}">${["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Find and verify reference" : (item.category === "claim_support" ? "Find supporting source" : "Find scholarly sources")}</button><button class="btn btn-green approve-correction-source" data-id="${esc(item.id)}" data-category="${esc(item.category)}" ${Array.isArray(item.source_candidates) && item.source_candidates.length ? "" : "disabled title=\"Find a source first\""}>${item.category === "claim_support" ? "Add selected citation" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(item.category) ? "Replace verified reference" : "Approve selected source")}</button>` : ""}
                         ${item.category === "claim_support" ? `<button class="btn btn-outline revise-claim-support" data-id="${esc(item.id)}">Revise or qualify claim</button>` : ""}
+                        ${item.category === "table_figure" ? `<button class="btn btn-green propose-table-figure-edit" data-id="${esc(item.id)}">Propose tracked edit</button>` : ""}
                         ${item.category === "uncited_reference" ? `<button class="btn btn-green cite-uncited-reference" data-id="${esc(item.id)}">Cite where applicable</button><button class="btn btn-outline delete-uncited-reference" data-id="${esc(item.id)}">Delete unused reference</button>` : ""}
-                        ${!["citation_needed","missing_reference","uncited_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
+                        ${!["citation_needed","missing_reference","uncited_reference","source_verification","claim_support","reference_incomplete","reference_identity_conflict","table_figure"].includes(item.category) ? `<button class="btn btn-green correction-decision" data-id="${esc(item.id)}" data-decision="accepted" ${item.decision && item.decision !== "pending" ? "disabled" : ""}>${item.decision === "accepted" ? "✅ Accepted" : "Accept"}</button>` : ""}
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="rejected">Reject</button>
                         <button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="ignored">Ignore</button>
                         ${item.category === "source_verification" ? `<button class="btn btn-outline correction-decision" data-id="${esc(item.id)}" data-decision="resolved">Valid but not digitally indexed</button>` : ""}
@@ -3473,6 +3477,7 @@ document.addEventListener("DOMContentLoaded", function () {
             correctionBox.querySelectorAll(".delete-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "delete_reference")));
             correctionBox.querySelectorAll(".cite-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "cite_reference")));
             correctionBox.querySelectorAll(".revise-claim-support").forEach(btn => btn.addEventListener("click", () => approveClaimRevision(btn.dataset.id)));
+            correctionBox.querySelectorAll(".propose-table-figure-edit").forEach(btn => btn.addEventListener("click", () => proposeTableFigureEdit(btn.dataset.id)));
             if (!hasPaidAccess(data)) {
                 correctionBox.insertAdjacentHTML("afterbegin", previewNoticeHtml(data, "correction_plan", "correction-plan items") || `<div class="locked-card"><strong>Free Preview:</strong> Sample findings are read-only. Unlock Full Review to act on them.</div>`);
                 correctionBox.querySelectorAll("button, input, select, textarea").forEach(control => {
@@ -3700,6 +3705,27 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     }
 
+    function proposeTableFigureEdit(itemId) {
+        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+        if (!item) return;
+        const isMissingMention = item.supporting_metadata?.finding_type === "unreferenced";
+        const original = prompt(isMissingMention
+            ? "Paste an exact phrase from the body paragraph after which this table or figure should be mentioned. Do not use the caption as the anchor."
+            : "Paste the exact caption or body wording to correct with Track Changes.",
+            isMissingMention || item.supporting_metadata?.finding_type === "missing_caption" ? "" : (item.evidence || ""));
+        if (!original?.trim()) return;
+        const proposed = prompt(isMissingMention
+            ? "Write the new callout sentence, for example: Table 2 summarises the findings."
+            : "Write the corrected wording. Confirm the number, caption and cited item yourself.",
+            isMissingMention ? "" : original);
+        if (!proposed?.trim() || (!isMissingMention && proposed.trim() === original.trim())) return;
+        if (!confirm(`Approve a tracked ${isMissingMention ? "insertion after" : "replacement of"} the exact selected passage?`)) return;
+        saveCorrectionDecision(itemId, "accepted", "User reviewed table or figure and approved exact wording.", {
+            action: isMissingMention ? "propose_callout" : "propose_replacement",
+            original_text: original.trim(), proposed_replacement: proposed.trim()
+        });
+    }
+
     function citationFromReference(reference) {
         const year = String(reference || "").match(/\b(19|20)\d{2}[a-z]?\b/i)?.[0] || "n.d.";
         const author = String(reference || "").trim().split(/[,(]/)[0].trim().split(/\s+/).pop() || "Source";
@@ -3848,6 +3874,7 @@ document.addEventListener("DOMContentLoaded", function () {
         renderGlobalPublicationSafety(data);
         renderACII(data);
         renderKpis(data);
+        renderTableFigureAudit(data);
         renderSummary(data);
         renderMissing(data);
         renderUncited(data);
@@ -3988,6 +4015,26 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="kpi-label">${esc(label)}</div>
             </div>
         `).join("");
+    }
+
+    function renderTableFigureAudit(data) {
+        const audit = data.table_figure_audit || {};
+        const summary = audit.summary || {};
+        const grid = $("tableFigureKpiGrid");
+        const note = $("tableFigureCoverageNote");
+        if (!grid || !note) return;
+        if (!audit.coverage || audit.coverage === "unavailable") {
+            grid.innerHTML = `<div class="empty">Table and figure audit unavailable for this analysis.</div>`;
+            note.textContent = audit.note || "No table or figure coverage is available.";
+            return;
+        }
+        const rows = [
+            ["Tables found", summary.tables || 0], ["Figures found", summary.figures || 0],
+            ["Not cited in text", summary.unreferenced || 0], ["Callouts without a matching caption", summary.missing_targets || 0],
+            ["Caption or numbering issues", summary.numbering_or_caption || 0], ["Total review findings", summary.needs_review || 0]
+        ];
+        grid.innerHTML = rows.map(([label, value]) => `<div class="kpi"><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div>`).join("");
+        note.textContent = `${audit.coverage === "docx_structural" ? "Word captions and tables checked" : "Text-only caption and callout check"}. ${audit.note || "Review findings in Evidence Resolution before approving any edit."}${audit.preview_read_only ? " Sample findings only in Free Preview." : ""}`;
     }
 
     function renderSummary(data) {
