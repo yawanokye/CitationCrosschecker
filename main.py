@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.9-reference-extraction"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.10-harvard-result-fix"
 
 import io
 import asyncio
@@ -763,7 +763,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.9-reference-extraction").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.10-harvard-result-fix").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -5964,7 +5964,7 @@ async def get_result(request: Request, job_id: str, fresh: int = 0):
                 return {"status": "failed", "error": row["error"]}
             
         except Exception as e:
-            print(f"Database error: {e}")
+            print(f"[RESULT] Loading or preparing result {job_id} failed: {type(e).__name__}: {e}")
             return {"status": "error", "error": str(e)}
     
     return {"status": "pending", "message": "Job not found"}

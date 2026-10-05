@@ -469,6 +469,10 @@ def format_reference_harvard(reference: Dict[str, Any]) -> str:
     
     # Sentence case - Harvard uses single quotes around article titles
     title_str = sentence_case(title) if title else "[No title]"
+
+    # Books and reports return before the journal formatting path. Prepare the
+    # optional DOI before either branch, including when the entry has no DOI.
+    doi_str = format_doi(doi, "harvard")
     
     if publisher and not source:
         edition = str(reference.get("edition") or "").strip()
@@ -488,9 +492,6 @@ def format_reference_harvard(reference: Dict[str, Any]) -> str:
             vol_issue_pages += f"({issue})"
         if pages:
             vol_issue_pages += f", pp. {pages}"
-    
-    # DOI
-    doi_str = format_doi(doi, "harvard")
     
     # Build reference - note: no quotes around title in Harvard for journals
     parts = [f"{authors_str} {year_str}.", f"'{title_str}'."]

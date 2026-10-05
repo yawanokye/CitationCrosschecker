@@ -503,7 +503,7 @@ def test_v200_release_identity_and_homepage_feature_notice():
     env = Path(".env.example").read_text(encoding="utf-8")
     home = Path("templates/new_index.html").read_text(encoding="utf-8")
     output = Path("templates/new_results.html").read_text(encoding="utf-8")
-    assert "RELEASE_VERSION=2.0.8-reviewable-track-changes" in env
+    assert "RELEASE_VERSION=2.0.10-harvard-result-fix" in env
     assert "Evidence Resolution Workspace" in home
     assert "Optional writing signals, off by default" in home
     assert "Evidence Resolution Workspace" in output
