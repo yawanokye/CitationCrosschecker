@@ -1,5 +1,5 @@
 # engine.py (COMPLETE - with non-invasive Suggestion Engine)
-__version__ = "1.5.17"
+__version__ = "2.0.9"
 
 import re
 import io
@@ -1103,7 +1103,8 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
     def _is_ref_like(ln: str) -> bool:
         if style_hint == "numeric":
             return _looks_like_new_numeric_reference_start(ln)
-        return _looks_like_new_apa_reference_start(ln)
+        return (_looks_like_new_apa_reference_start(ln)
+                or _looks_like_wrapped_apa_reference_start_without_year(ln))
 
     for i, ln in enumerate(lines):
         s = (ln or "").strip()
@@ -1113,7 +1114,7 @@ def _truncate_reference_block(lines: List[str], style_hint: str) -> List[str]:
         if _is_ref_like(s):
             ref_like_seen += 1
 
-        if ref_like_seen >= 3 and (
+        if ref_like_seen >= 1 and (
             REF_END_HEADING_RE.search(s)
             or (
                 _looks_like_heading_line(s)
@@ -1174,17 +1175,25 @@ def _docx_xml_text(file_bytes: bytes) -> List[str]:
                         vert is not None
                         and (vert.attrib.get(w_val, "") or "").lower() == "superscript"
                     )
-                    for tnode in rnode.findall(".//w:t", NS):
-                        if tnode.text:
+                    for tnode in rnode.iter():
+                        tag = tnode.tag.rsplit("}", 1)[-1]
+                        if tag == "t" and tnode.text:
                             parts.append(_to_unicode_superscript(tnode.text) if is_super else tnode.text)
+                        elif tag in {"br", "cr"}:
+                            # Explicit Word line breaks can separate entries
+                            # within one paragraph; page breaks are just layout.
+                            parts.append(" " if tnode.attrib.get("{" + NS["w"] + "}type") == "page" else "\n")
+                        elif tag == "tab":
+                            parts.append(" ")
             else:
                 for tnode in p.findall(".//w:t", NS):
                     if tnode.text:
                         parts.append(tnode.text)
 
-            s = norm_space("".join(parts))
-            if s:
-                out.append(s)
+            for line in "".join(parts).splitlines():
+                s = norm_space(line)
+                if s:
+                    out.append(s)
         return out
 
     targets = ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml"]
@@ -1235,6 +1244,7 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
         return False
 
     def _lookahead_is_real_refs(idx: int) -> bool:
+        from reference_boundaries import author_list_without_year, split_embedded_bare_year_references
         seen = 0
         checked = 0
         j = idx + 1
@@ -1245,6 +1255,11 @@ def read_docx_split_main_and_refs(file_bytes: bytes) -> Tuple[str, List[str], st
                 continue
             checked += 1
             if _ref_like(s):
+                seen += len(split_embedded_bare_year_references(s))
+            elif (
+                author_list_without_year(s)
+                and any(YEAR_RE.search(x) for x in lines[j:j + 4])
+            ):
                 seen += 1
         return seen >= 2
 
@@ -1877,6 +1892,10 @@ def _looks_like_new_apa_reference_start(s: str) -> bool:
     if not s0:
         return False
 
+    from reference_boundaries import bare_author_year_start
+    if bare_author_year_start(s0):
+        return True
+
     if re.search(r"\.\s*\(\s*" + YEAR + r"\s*\)\.", s0):
         return True
 
@@ -2019,8 +2038,11 @@ def extract_references_generalized(text: str) -> List[str]:
     current_ref = ""
     ref_format = detect_reference_format(lines, ref_start)
     
-    for i in range(ref_start + 1, min(ref_start + 500, len(lines))):
+    for i in range(ref_start + 1, len(lines)):
         line = lines[i].strip()
+
+        if current_ref and REF_END_HEADING_RE.search(line):
+            break
         
         if not line and not current_ref:
             continue
@@ -2032,8 +2054,13 @@ def extract_references_generalized(text: str) -> List[str]:
             continue
         
         is_new_ref = False
-        
-        if ref_format == "ieee":
+
+        # Recognise author/year starts independently of the selected output
+        # style. A mixed APA/Harvard list must retain all physical entries.
+        if _looks_like_new_apa_reference_start(line):
+            is_new_ref = True
+
+        elif ref_format == "ieee":
             is_new_ref = bool(re.match(r'^\[\d+\]', line))
         elif ref_format == "numbered":
             is_new_ref = bool(re.match(r'^\d+\.', line)) and not re.match(r'^\d{4}\.', line)
@@ -2309,6 +2336,9 @@ def _looks_like_wrapped_apa_reference_start_without_year(line: str) -> bool:
         return False
     if re.match(r"^(?:&|and|＆)\s+", s, flags=re.I):
         return False
+    from reference_boundaries import author_list_without_year
+    if author_list_without_year(s):
+        return True
     markers = re.findall(
         r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.?\s*){1,5}",
         s,
@@ -6314,7 +6344,9 @@ def _ci_split_date_style_embedded_apa_refs(refs: List[str]) -> List[str]:
 
 def _split_embedded_apa_refs(merged: List[str]) -> List[str]:
     first = _PREV_SPLIT_EMBEDDED_APA_REFS_V1522(merged)
-    return _ci_split_date_style_embedded_apa_refs(first)
+    from reference_boundaries import split_embedded_bare_year_references
+    return [part for ref in _ci_split_date_style_embedded_apa_refs(first)
+            for part in split_embedded_bare_year_references(ref)]
 
 
 _PREV_CLEAN_REFERENCE_LIST_V1522 = _clean_reference_list
@@ -6558,6 +6590,8 @@ def reconcile_author_year(citations: List[str], refs: List[RefAY]):
         total_intext_count = max(0, int(total_intext_count or 0) - removed)
 
     return c2r, r2c, filtered_missing, uncited_refs, total_intext_count
+
+
 
 
 # ============================================================
@@ -7513,7 +7547,7 @@ def _ci_v1529_author_list_start(line: str) -> bool:
 # - IRB No.; UCC-531/2024
 # - Kock, 2015
 # ============================================================
-ENGINE_BUILD = "commercial-2026-06-06-docx-institutional-alias-ethics-code-guard-v1.5.31"
+ENGINE_BUILD = "commercial-2026-10-05-reference-boundaries-v2.0.9"
 
 _CI_V1531_ETHICS_CODE_RE = re.compile(
     r"\b(?:IRB|ERC|CHRPE|GHS-ERC|UCC)\b\s*(?:No\.?|Number|Ref\.?)?\s*[:;]?\s*[A-Z]{2,10}[-/]\d{2,6}/\d{4}\b|\bUCC-\d{2,6}/\d{4}\b",

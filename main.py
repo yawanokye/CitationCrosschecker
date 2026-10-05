@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.8-reviewable-track-changes"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.9-reference-extraction"
 
 import io
 import asyncio
@@ -461,7 +461,10 @@ class StatsTracker:
                         cursor.execute("SELECT total_uploads FROM stats WHERE id = 1")
                         row = cursor.fetchone()
                         total = row['total_uploads'] if row else 0
-                        print(f"📊 Recorded: {filename} - {references_count} refs (Total: {total})")
+                        if not processing_time and references_count == 0:
+                            print(f"📊 Upload recorded: {filename} - reference count pending parsing (Total uploads: {total})")
+                        else:
+                            print(f"📊 Recorded: {filename} - {references_count} refs (Total uploads: {total})")
             else:
                 self._add_upload_sqlite(filename, file_size, references_count, 
                                          processing_time, success, ip_address, error)
@@ -760,7 +763,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.8-reviewable-track-changes").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.9-reference-extraction").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}

@@ -192,6 +192,8 @@ def test_academic_voice_revision_requires_approval_and_becomes_track_change():
 def test_approved_citation_reference_addition_and_deletion_become_track_changes():
     doc = Document()
     doc.add_paragraph("Digital systems improve transparency.")
+    # The 2.0.8 export guard requires an actual bibliography insertion anchor.
+    doc.add_heading("References", level=1)
     doc.add_paragraph("Boateng (2020). Unused source.")
     buf = io.BytesIO(); doc.save(buf)
     plan = {"items":[
@@ -204,6 +206,18 @@ def test_approved_citation_reference_addition_and_deletion_become_track_changes(
     with zipfile.ZipFile(io.BytesIO(tracked)) as archive:
         xml = archive.read("word/document.xml").decode("utf-8")
     assert "<w:ins" in xml and "<w:del" in xml
+
+
+def test_reference_addition_without_bibliography_anchor_remains_unapplied():
+    doc = Document()
+    doc.add_paragraph("Digital systems improve transparency.")
+    buf = io.BytesIO(); doc.save(buf)
+    plan = {"items": [{"id": "missing-reference-1", "decision": "accepted",
+                       "track_operation": "append_reference",
+                       "proposed_replacement": "Adam, A. (2024). Digital transparency."}]}
+    _, manifest = build_tracked_changes_document(buf.getvalue(), plan)
+    assert manifest["applied_count"] == 0
+    assert "No References heading" in manifest["unapplied"][0]["reason"]
 
 
 def test_source_approval_and_ai_status_endpoints_are_present():

@@ -3923,6 +3923,14 @@ def process_document(
             enable_autofix=enable_autofix
         )
 
+        print(
+            f"[REFERENCE EXTRACTION] job={job_id} "
+            f"build={result.get('engine_build', 'unknown')} "
+            f"entries={len(result.get('references_raw') or [])} "
+            f"mapped={int((result.get('summary') or {}).get('reference_entries_found') or 0)} "
+            f"missing={int((result.get('summary') or {}).get('missing_in_references') or 0)}"
+        )
+
         result.setdefault("selected_style", style)
         try:
             result["table_figure_audit"] = audit_tables_figures(
