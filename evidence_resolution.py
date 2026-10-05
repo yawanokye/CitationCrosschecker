@@ -148,6 +148,9 @@ def normalise_verification_status(row_or_status: Any) -> str:
     else:
         raw = row_or_status
     status = _slug(raw) or "unknown"
+    if status in {"verified_with_metadata_differences", "valid_but_not_digitally_indexed",
+                  "possible_match_human_review", "lookup_failed", "serious_identity_conflict"}:
+        return status
     if status in VERIFIED_STATUSES:
         return "verified"
     if status in METADATA_DIFFERENCE_STATUSES:
@@ -171,6 +174,16 @@ def verification_requires_resolution(row_or_status: Any) -> bool:
     return normalise_verification_status(row_or_status) not in {
         "verified", "valid_but_not_digitally_indexed",
     }
+
+
+def reference_resolution_group(row_or_status: Any) -> str:
+    """Keep absent records separate from uncertain evidence and failed requests."""
+    status = normalise_verification_status(row_or_status)
+    if status == "not_found":
+        return "references_not_found"
+    if status == "lookup_failed":
+        return "verification_lookup_failed"
+    return "unresolved_verification"
 
 
 def verification_status_explanation(row_or_status: Any) -> str:
@@ -674,7 +687,9 @@ EVIDENCE_GROUP_LABELS = {
     "incomplete_mappings": "Incomplete mappings",
     "weak_support": "Weak or unclear support",
     "missing_references": "Missing references",
-    "unresolved_verification": "Unresolved online verification",
+    "unresolved_verification": "References needing human review",
+    "references_not_found": "References not found in searched indexes",
+    "verification_lookup_failed": "Reference lookups failed or unavailable",
     "incomplete_metadata": "Incomplete reference metadata",
     "metadata_conflicts": "Metadata conflicts",
     "uncited_references": "Uncited references",
@@ -686,6 +701,8 @@ EVIDENCE_GROUP_LABELS = {
 
 def evidence_group_for_item(item: Dict[str, Any]) -> str:
     category = str(item.get("category") or "")
+    if category == "source_verification":
+        return reference_resolution_group(item.get("supporting_metadata") or {})
     if category == "citation_needed":
         return "unsupported_claims"
     if category == "claim_support":

@@ -29,6 +29,7 @@ from reference_formatter import (
     format_verified_reference_list,
 )
 from source_risk import assess_source_risks
+from reference_review import reference_resolution_counts
 
 
 ROOT = Path(__file__).resolve().parent
@@ -80,6 +81,7 @@ def _load_result_route(cache=None, result=None):
         "attach_privacy_status": attach_privacy_status,
         "analyse_academic_voice": analyse_academic_voice,
         "assess_source_risks": assess_source_risks,
+        "reference_resolution_counts": reference_resolution_counts,
         "build_citation_coach": build_citation_coach,
         "build_correction_plan": build_correction_plan,
         "get_access_mode": lambda *args: {"mode": "payment_required"},

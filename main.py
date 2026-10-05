@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.10-harvard-result-fix"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.11-reference-resolution"
 
 import io
 import asyncio
@@ -90,7 +90,8 @@ from reference_formatter import (
     DOCX_AVAILABLE
 )
 from academic_voice import analyse_academic_voice, rewrite_selected_passage
-from correction_plan import build_correction_plan, compare_revision_results
+from correction_plan import build_correction_plan, compare_revision_results, _parse_original_reference
+from reference_review import approved_reference_citation_edits, reference_resolution_counts
 from evidence_resolution import (
     assess_candidate_context_fit,
     build_claim_fingerprint,
@@ -763,7 +764,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.10-harvard-result-fix").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.11-reference-resolution").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -5840,6 +5841,8 @@ def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] =
         if manuscript_text:
             result["academic_voice_review"] = analyse_academic_voice(manuscript_text)
     result["source_risk_review"] = assess_source_risks(result)
+    verification = result.get("online_verification") or {}
+    result["reference_resolution_summary"] = reference_resolution_counts(verification.get("rows") or [] if isinstance(verification, dict) else verification if isinstance(verification, list) else [])
     result["citation_improvement_coach"] = build_citation_coach(result)
     result["correction_plan"] = build_correction_plan(result)
     result["evidence_resolution_workspace"] = result["correction_plan"].get("evidence_resolution_workspace") or {}
@@ -6131,6 +6134,7 @@ async def save_correction_decision(job_id: str, request: Request):
     secondary_replacement = str(payload.get("secondary_replacement") or "").strip()
     original_text = str(payload.get("original_text") or selected_item.get("original_text") or selected_item.get("evidence") or "").strip()
     operation = "replace"
+    related_edits = []
     category = selected_item.get("category")
     if decision == "accepted":
         if category in {"citation_needed", "missing_reference"} and action in {"insert_citation", "add_reference"}:
@@ -6172,7 +6176,15 @@ async def save_correction_decision(job_id: str, request: Request):
                 raise HTTPException(status_code=400, detail="Open the candidate and confirm that it is the same publication before replacing the reference.")
             if not original_text or not proposed_replacement:
                 raise HTTPException(status_code=400, detail="The original or completed reference text is missing.")
+            manuscript = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or "")
+            original_ref = _parse_original_reference(original_text)
+            # Two different works can share an author/year key. Do not update
+            # all their citations on the strength of one approved reference.
+            peers = [_parse_original_reference(str(value)) for value in result.get("references_raw") or []]
+            related_edits = approved_reference_citation_edits(manuscript, original_ref, approved_source, _reference_style_for_result(result), peers)
             operation = "replace"
+            if related_edits:
+                operation = "replace_reference_and_citations"
         elif category == "uncited_reference" and action == "delete_reference":
             operation = "delete"
         elif category == "uncited_reference" and action == "cite_reference":
@@ -6215,6 +6227,7 @@ async def save_correction_decision(job_id: str, request: Request):
         "secondary_replacement": secondary_replacement,
         "original_text": original_text,
         "track_operation": operation,
+        "related_edits": related_edits,
         "updated_at": datetime.utcnow().isoformat() + "Z",
     }
     if decision == "accepted":

@@ -299,6 +299,53 @@ def _tracked_append_reference(document: Document, reference_text: str, change_id
     return bool(anchor and _tracked_paragraph_near(anchor, reference_text, change_id))
 
 
+def _original_revision_text(paragraph):
+    """Recover the original anchor after another approved edit in this paragraph."""
+    parts = []
+    for child in paragraph._p:
+        if child.tag == qn("w:ins"):
+            continue
+        tag = qn("w:delText") if child.tag == qn("w:del") else qn("w:t")
+        parts.extend(node.text or "" for node in child.iter(tag))
+    return "".join(parts)
+
+
+def _tracked_reference_group(document, item, change_id):
+    """Apply a reference and its approved citation edits together or not at all."""
+    # Reload the current package so Document and its saved XML part share the
+    # same tree. Deep-copying their proxies can discard earlier tracked edits.
+    trial = Document(io.BytesIO(_docx_bytes(document)))
+    original, replacement = str(item.get("original_text") or item.get("evidence") or ""), str(item.get("proposed_replacement") or "")
+    targets = [p for p in _editable_paragraphs(trial) if original in p.text or _normalised_raw_span(p.text, original)]
+    if len(targets) != 1 or not original or not replacement:
+        return None, change_id, "The original reference could not be located uniquely."
+    reference_target = targets[0]
+    citation_targets = []
+    for edit in item.get("related_edits") or []:
+        anchor, old, new = str(edit.get("anchor") or ""), str(edit.get("original_text") or ""), str(edit.get("proposed_replacement") or "")
+        matches = [p for p in _editable_paragraphs(trial) if p.text == anchor or " ".join(_original_revision_text(p).split()) == " ".join(anchor.split())]
+        from reference_safety import is_review_instruction
+        if len(matches) != 1 or matches[0]._p is reference_target._p or not old or not new or is_review_instruction(new):
+            return None, change_id, "An associated in-text citation could not be located uniquely. No part of this approval was applied."
+        expected = int(edit.get("expected_occurrences") or 1)
+        if expected < 1 or " ".join(matches[0].text.split()).count(" ".join(old.split())) != expected:
+            return None, change_id, "An associated citation changed since approval. No part of this approval was applied."
+        citation_targets.append((matches[0], old, new, expected))
+    changed = False
+    if original != replacement:
+        if not _tracked_replace(reference_target, original, replacement, change_id):
+            return None, change_id, "The reference uses Word fields or complex structure that could not be edited safely."
+        changed = True
+        change_id += 2
+    for paragraph, old, new, expected in citation_targets:
+        for _ in range(expected):
+            if not _tracked_replace(paragraph, old, new, change_id):
+                return None, change_id, "An associated citation could not be tracked safely. No part of this approval was applied."
+            changed = True
+            change_id += 2
+    return (trial if changed else None), change_id, "The approved reference and citations are already unchanged." if not changed else ""
+
+
 def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str, Any], original_name: str = "manuscript.docx") -> Tuple[bytes, Dict[str, Any]]:
     document, copied_original = _load_docx(original_bytes)
     applied: List[str] = []
@@ -331,7 +378,11 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
                 continue
             changed = False
             reason = "The exact passage was not found uniquely in editable Word text. Select a longer anchor or review complex fields and tables."
-            if operation in {"insert_after_and_append_reference", "replace_citation_and_append_reference"} and original and replacement:
+            if operation == "replace_reference_and_citations":
+                trial, next_id, reason = _tracked_reference_group(document, item, change_id)
+                if trial is not None:
+                    document, change_id, changed = trial, next_id, True
+            elif operation in {"insert_after_and_append_reference", "replace_citation_and_append_reference"} and original and replacement:
                 secondary = str(item.get("secondary_replacement") or "")
                 targets = candidates(original)
                 if len(targets) == 1 and (not secondary or reference_present(secondary) or _reference_section_anchor(document)):

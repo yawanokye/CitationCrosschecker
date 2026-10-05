@@ -371,6 +371,7 @@ def test_evidence_resolution_workspace_unifies_all_unresolved_evidence_groups():
         {"status": "verified", "reference": "Verified source"},
         {"status": "not_found", "reference": "Unresolved source"},
         {"status": "lookup_failed", "reference": "Lookup failed source"},
+        {"status": "needs_review", "reference": "Possible source needing human review"},
     ]}
     plan = build_correction_plan(result)
     workspace = plan["evidence_resolution_workspace"]
@@ -378,6 +379,7 @@ def test_evidence_resolution_workspace_unifies_all_unresolved_evidence_groups():
     assert {
         "unsupported_claims", "incomplete_mappings", "weak_support",
         "missing_references", "uncited_references", "unresolved_verification",
+        "references_not_found", "verification_lookup_failed",
     }.issubset(groups)
     assert workspace["counts"]["total"] >= 7
 
@@ -503,11 +505,11 @@ def test_v200_release_identity_and_homepage_feature_notice():
     env = Path(".env.example").read_text(encoding="utf-8")
     home = Path("templates/new_index.html").read_text(encoding="utf-8")
     output = Path("templates/new_results.html").read_text(encoding="utf-8")
-    assert "RELEASE_VERSION=2.0.10-harvard-result-fix" in env
+    assert "RELEASE_VERSION=2.0.11-reference-resolution" in env
     assert "Evidence Resolution Workspace" in home
     assert "Optional writing signals, off by default" in home
     assert "Evidence Resolution Workspace" in output
-    assert "PRODUCTION_RESULTS-commercial-v2.0.8-reviewable-track-changes" in output
+    assert "PRODUCTION_RESULTS-commercial-v2.0.11-reference-resolution" in output
     assert "Simple pay-as-you-go pricing" in home
 
 

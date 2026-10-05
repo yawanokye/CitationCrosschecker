@@ -9,6 +9,7 @@ import re
 
 from reference_formatter import format_reference, parse_authors, validate_reference
 from reference_safety import is_review_instruction, identity_text, notice_kind
+from reference_review import reference_review_details, approved_reference_citation_edits
 import hashlib
 from evidence_resolution import (
     build_evidence_resolution_workspace,
@@ -315,6 +316,9 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
     saved_decisions = result.get("correction_decisions") or {}
     saved_candidates = result.get("correction_source_candidates") or {}
     saved_search_reports = result.get("correction_source_search_reports") or {}
+    covered_citation_edits = {(str(edit.get("anchor") or ""), str(edit.get("original_text") or ""), str(edit.get("proposed_replacement") or ""))
+        for decision in saved_decisions.values() if isinstance(decision, dict) and decision.get("decision") == "accepted"
+        for edit in decision.get("related_edits") or [] if isinstance(edit, dict)}
 
     # A verified source's original author spelling is authoritative for display.
     # Review only author-year citations whose surname begins in lower case;
@@ -358,6 +362,11 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 case_id = "citation-case-" + hashlib.sha1((source_id + "|" + raw).encode()).hexdigest()[:12]
                 decision = saved_decisions.get(case_id) or {}
                 replacement = surname + raw[len(surname):]
+                paragraph_start = manuscript_text.rfind("\n", 0, match.start()) + 1
+                paragraph_end = manuscript_text.find("\n", match.end())
+                paragraph = manuscript_text[paragraph_start:paragraph_end if paragraph_end >= 0 else len(manuscript_text)].strip()
+                if (paragraph, raw, replacement) in covered_citation_edits:
+                    continue
                 items.append({"id": case_id, "priority": "important", "category": "citation_case",
                               "title": "Approved source surname starts in lower case",
                               "what_is_wrong": f"The approved source gives the surname as {surname}, but this citation begins with lower case.",
@@ -386,9 +395,10 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             if category == "claim_support" and isinstance(row, dict):
                 evidence = str(row.get("claim") or row.get("claim_text") or row.get("context") or row.get("sentence") or "")[:900]
             else:
-                evidence = _text(row)[:900]
+                evidence = _text(row) if category == "source_verification" else _text(row)[:900]
             decision = saved_decisions.get(item_id) or {}
-            candidates = saved_candidates.get(item_id) or (row.get("suggestions") if isinstance(row, dict) else []) or (row.get("suggested_sources") if isinstance(row, dict) else []) or []
+            candidates = (saved_candidates[item_id] if item_id in saved_candidates else
+                          ((row.get("suggestions") or row.get("suggested_sources") or row.get("extracted_source_candidates") or []) if isinstance(row, dict) else []))
             proposed = decision.get("proposed_replacement") or ((row.get("proposed_replacement") or row.get("suggested_reference") or row.get("formatted_reference") or "") if isinstance(row, dict) else "")
             available_actions = {
                 "missing_reference": ["find_source", "add_reference"],
@@ -403,8 +413,8 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "id": item_id,
                 "priority": (row.get("_priority_override") or priority) if isinstance(row, dict) else priority,
                 "category": category,
-                "title": title,
-                "what_is_wrong": title,
+                "title": (row.get("resolution_title") or title) if isinstance(row, dict) else title,
+                "what_is_wrong": (row.get("resolution_explanation") or title) if isinstance(row, dict) else title,
                 "why_it_matters": why,
                 "evidence": evidence,
                 "location": _locate(manuscript_text, evidence, row.get("location") if isinstance(row, dict) else None),
@@ -420,6 +430,8 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
                 "approved_source": decision.get("approved_source") or {},
                 "approved_action": decision.get("action") or "",
                 "track_operation": decision.get("track_operation") or "replace",
+                "related_edits": decision.get("related_edits") or [],
+                "extracted_reference": row.get("extracted_reference") or {} if isinstance(row, dict) else {},
                 "available_actions": available_actions,
                 "auto_apply_allowed": bool(isinstance(row, dict) and category in {"reference_metadata", "formatting"} and float(row.get("confidence", 0) or 0) >= .95),
                 "decision": decision.get("decision", "pending"),
@@ -438,6 +450,10 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         enriched = dict(row)
         enriched["canonical_status"] = normalise_verification_status(row)
         enriched["confidence_reason"] = enriched.get("confidence_reason") or verification_status_explanation(row)
+        enriched.update(reference_review_details(row, _parse_original_reference(_text(row)), _detected_reference_style(result)))
+        enriched["resolution_title"] = {"references_not_found": "Reference not found in searched indexes",
+            "verification_lookup_failed": "Reference lookup failed or unavailable",
+            "unresolved_verification": "Reference needs human review"}[enriched["resolution_group"]]
         enriched["_priority_override"] = (
             "critical"
             if enriched["canonical_status"] in {"serious_identity_conflict"}
@@ -449,6 +465,7 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         "Search the exact bibliographic identity first, open the candidate, and verify title, authors, year, journal, volume, pages and DOI before approval.",
         "Readers must be able to identify the intended source. A failed lookup or not-found result does not mean the source is fabricated.",
         "medium",
+        limit=len(risky),
     )
 
     claim_rows = _rows(result.get("claim_support"))
@@ -760,11 +777,18 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
             item["approved_source"] = recorded.get("approved_source") or item.get("approved_source") or {}
             item["proposed_replacement"] = recorded.get("proposed_replacement") or item.get("proposed_replacement")
             item["original_text"] = recorded.get("original_text") or item.get("original_text")
+            item["related_edits"] = recorded.get("related_edits") or []
         if item.get("category") in {"source_verification", "reference_style", "reference_incomplete", "reference_identity_conflict", "reference_metadata", "uncited_reference"}:
             location = item.get("location") or {}
             if isinstance(location, dict) and location.get("section") == "Document body" and location.get("location_note"):
                 item["location"] = {**location, "section": "References"}
         item["source_search_report"] = saved_search_reports.get(item.get("id")) or {}
+        if item.get("category") in {"source_verification", "reference_incomplete", "reference_identity_conflict"}:
+            parsed = _parse_original_reference(item.get("original_text") or item.get("evidence") or "")
+            peers = [_parse_original_reference(str(value)) for value in result.get("references_raw") or []]
+            for candidate in item.get("source_candidates") or []:
+                if isinstance(candidate, dict):
+                    candidate["citation_edits_preview"] = approved_reference_citation_edits(manuscript_text, parsed, candidate, _detected_reference_style(result), peers)
 
     rank = {"critical": 0, "important": 1, "optional": 2}
     items.sort(key=lambda item: (rank.get(item["priority"], 9), item["category"]))
