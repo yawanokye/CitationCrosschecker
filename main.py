@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.13-reference-metadata-safety"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.14-approval-recovery"
 
 import io
 import asyncio
@@ -765,7 +765,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.13-reference-metadata-safety").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.14-approval-recovery").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -6129,6 +6129,7 @@ async def save_correction_decision(job_id: str, request: Request):
             original_metadata = _parse_original_reference(original_text) if action == "replace_reference" else {}
             metadata_error = reference_approval_error(approved_source, original_metadata)
             if metadata_error:
+                print(f"[CORRECTION APPROVAL] {job_id} {item_id} rejected: {metadata_error}")
                 raise HTTPException(status_code=422, detail=metadata_error)
             style = _reference_style_for_result(result)
             marker_match = re.match(r"^\s*(\[\d+\]|\(\d+\)|\d+[.)])", original_text)
@@ -6244,6 +6245,7 @@ async def save_correction_decision(job_id: str, request: Request):
         _, application = build_tracked_changes_document(original_bytes, {"items": [trial]}, str(job.get("file_name") or "manuscript.docx"))
         if item_id not in application["applied"]:
             reason = (application.get("unapplied") or [{}])[0].get("reason") or "The proposed change could not be placed in the original Word document."
+            print(f"[CORRECTION APPROVAL] {job_id} {item_id} rejected: {reason}")
             raise HTTPException(status_code=422, detail=f"Approval not recorded: {reason}")
         entry["application_status"] = "ready_for_track_changes"
     decisions = result.setdefault("correction_decisions", {})
@@ -8853,7 +8855,7 @@ async def verification_health(job_id: str):
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": exc.detail, "status_code": exc.status_code, "timestamp": now()},
+        content={"error": exc.detail, "detail": exc.detail, "status_code": exc.status_code, "timestamp": now()},
         # Preserve authentication challenges and any other endpoint-specific
         # headers. Without WWW-Authenticate, browsers show raw 401 JSON instead
         # of opening the developer sign-in prompt.

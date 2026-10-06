@@ -1905,7 +1905,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.13-reference-metadata-safety";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.14-approval-recovery";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -3691,6 +3691,17 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    function correctionApiError(payload, fallback) {
+        const detail = payload?.detail ?? payload?.error ?? payload?.message;
+        if (typeof detail === "string" && detail.trim()) return detail;
+        if (Array.isArray(detail)) {
+            const messages = detail.map(item => typeof item === "string" ? item : item?.msg || item?.message).filter(Boolean);
+            if (messages.length) return messages.join(". ");
+        }
+        if (detail && typeof detail === "object") return detail.message || detail.detail || fallback;
+        return fallback;
+    }
+
     async function saveCorrectionDecision(itemId, decision, note, extra = {}) {
         try {
             setStatus("Saving your correction decision...", "info");
@@ -3698,7 +3709,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, decision, note, ...extra})
             });
             const js = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(js.detail || "Could not save correction decision.");
+            if (!response.ok) throw new Error(correctionApiError(js, `The server rejected this correction with HTTP ${response.status}. Refresh the results and try again.`));
             latestResults.correction_plan = js.correction_plan;
             latestResults.evidence_resolution_workspace = js.correction_plan?.evidence_resolution_workspace || latestResults.evidence_resolution_workspace;
             renderStudentGuidance(latestResults);

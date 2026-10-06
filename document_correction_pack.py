@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import re
+import zipfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
@@ -21,13 +22,62 @@ def _docx_bytes(document: Document) -> bytes:
     return output.getvalue()
 
 
-def _load_docx(original_bytes: bytes | None) -> Tuple[Document, bool]:
+def _repack_docx_media_checksums(original_bytes: bytes) -> bytes:
+    """Recover a media checksum error without changing any stored part bytes.
+
+    Document XML, relationships and other parts must pass their normal CRC
+    checks. A media member must still decompress in full. This does not repair
+    missing/truncated ZIP members or alter images or manuscript text.
+    """
+    output = io.BytesIO()
+    recovered = False
+    with zipfile.ZipFile(io.BytesIO(original_bytes)) as source, zipfile.ZipFile(output, "w") as target:
+        for info in source.infolist():
+            try:
+                data = source.read(info)
+            except zipfile.BadZipFile as error:
+                if not info.filename.startswith("word/media/") or not str(error).startswith("Bad CRC-32"):
+                    raise
+                with source.open(info) as member:
+                    # CPython's ZIP stream supports suppressing only its CRC
+                    # comparison. Decompression/truncation errors still raise.
+                    member._expected_crc = None
+                    data = member.read()
+                if len(data) != info.file_size:
+                    raise zipfile.BadZipFile("Incomplete media member")
+                recovered = True
+            target.writestr(deepcopy(info), data)
+    if not recovered:
+        raise zipfile.BadZipFile("No recoverable media checksum error")
+    return output.getvalue()
+
+
+def _load_docx_status(original_bytes: bytes | None):
+    status = {"loaded": False, "media_checksum_repacked": False,
+              "reason": "The original DOCX is no longer available. Upload the manuscript again to prepare tracked changes."}
     if original_bytes and original_bytes[:2] == b"PK":
         try:
-            return Document(io.BytesIO(original_bytes)), True
+            document = Document(io.BytesIO(original_bytes))
+            return document, True, {**status, "loaded": True, "reason": ""}
+        except zipfile.BadZipFile as error:
+            if str(error).startswith("Bad CRC-32"):
+                try:
+                    recovered = _repack_docx_media_checksums(original_bytes)
+                    document = Document(io.BytesIO(recovered))
+                    return document, True, {"loaded": True, "media_checksum_repacked": True, "reason": ""}
+                except Exception:
+                    pass
+            status["reason"] = "The original DOCX contains damaged or incomplete parts. Open it in Word, save a fresh DOCX copy and upload that copy before approving tracked changes."
         except Exception:
-            pass
-    return Document(), False
+            status["reason"] = "The original DOCX could not be opened for tracked changes. Open it in Word, save a fresh DOCX copy and upload that copy."
+    elif original_bytes:
+        status["reason"] = "This upload is not an editable DOCX. Upload a Word DOCX version to apply document-level tracked changes."
+    return Document(), False, status
+
+
+def _load_docx(original_bytes: bytes | None) -> Tuple[Document, bool]:
+    document, loaded, _ = _load_docx_status(original_bytes)
+    return document, loaded
 
 
 def _insert_annotation_after(paragraph, text: str) -> None:
@@ -347,7 +397,7 @@ def _tracked_reference_group(document, item, change_id):
 
 
 def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str, Any], original_name: str = "manuscript.docx") -> Tuple[bytes, Dict[str, Any]]:
-    document, copied_original = _load_docx(original_bytes)
+    document, copied_original, document_status = _load_docx_status(original_bytes)
     applied: List[str] = []
     skipped: List[str] = []
     unapplied: List[Dict[str, str]] = []
@@ -356,7 +406,7 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
         document.add_heading("CiteIntegrity Track Changes Report", level=1)
         document.add_paragraph(f"Track Changes could not be applied because {original_name} was not available as a valid DOCX file. Upload the DOCX version for document-level changes.")
         skipped = [str(item.get("id") or "") for item in accepted]
-        unapplied = [{"id": item_id, "reason": "Original DOCX is unavailable."} for item_id in skipped]
+        unapplied = [{"id": item_id, "reason": document_status["reason"]} for item_id in skipped]
     else:
         def candidates(original):
             return [paragraph for paragraph in _editable_paragraphs(document)
@@ -448,4 +498,5 @@ def build_tracked_changes_document(original_bytes: bytes | None, plan: Dict[str,
                 skipped.append(item.get("id"))
                 unapplied.append({"id": item.get("id"), "reason": reason})
     return _docx_bytes(document), {"applied": applied, "skipped": skipped, "unapplied": unapplied,
-                                    "applied_count": len(applied), "accepted_count": len(accepted)}
+                                    "applied_count": len(applied), "accepted_count": len(accepted),
+                                    "source_document": document_status}

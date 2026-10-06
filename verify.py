@@ -8446,4 +8446,4 @@ def _classify_from_meta(fields, meta):
     return status, reason
 
 # Invalidate in-process metadata caches when rolling out author/date safeguards.
-VERIFY_BUILD = "commercial-2026-10-06-reference-metadata-safety-v2.0.13"
+VERIFY_BUILD = "commercial-2026-10-06-approval-recovery-v2.0.14"
