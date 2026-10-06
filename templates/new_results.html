@@ -1905,7 +1905,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.14-approval-recovery";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.15-report-download";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -4008,19 +4008,54 @@ document.addEventListener("DOMContentLoaded", function () {
         </tbody></table><p><strong>Final readiness:</strong> ${esc(js.readiness)}</p>`;
     }
 
+    let packageDownloadInProgress = false;
+
     async function downloadPackage(deleteAfter) {
+        if (packageDownloadInProgress) return;
         if (deleteAfter && !confirm("Download the modified manuscript and reports, then permanently delete this analysis after delivery? You cannot make further edits to this analysis.")) return;
+        packageDownloadInProgress = true;
+        const buttons = [$("btnDownloadOnly"), $("btnDownloadDelete")].filter(Boolean);
+        const previous = buttons.map(button => ({button, disabled:button.disabled, label:button.textContent}));
+        buttons.forEach(button => { button.disabled = true; button.textContent = "Preparing download"; });
+        setStatus("Preparing the manuscript and report package.", "info");
         try {
             const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/application-status`);
             const manifest = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(manifest.detail || "Could not check Word Track Changes.");
+            if (!response.ok) throw new Error(correctionApiError(manifest, "Could not check Word Track Changes."));
             if (manifest.unapplied?.length) {
                 const details = manifest.unapplied.map(row => `${row.id}: ${row.reason}`).join("\n");
                 if (!confirm(`${manifest.unapplied.length} approved change(s) could not be placed in Word:\n${details}\n\nDownload the package with these limitations?`)) return;
             }
-            window.location.href = `/api/report-package/${encodeURIComponent(JOB_ID)}?delete_after=${deleteAfter ? 1 : 0}`;
-            if ($("privacyMessage")) $("privacyMessage").textContent = deleteAfter ? "Download started. Manuscript content will be deleted after delivery." : "Download started. Your analysis remains available for further corrections until scheduled expiry.";
-        } catch (error) { setStatus("Could not prepare download: " + error.message, "bad"); }
+            const packageResponse = await fetch(`/api/report-package/${encodeURIComponent(JOB_ID)}?delete_after=${deleteAfter ? 1 : 0}`);
+            if (!packageResponse.ok) {
+                const failure = await packageResponse.json().catch(() => ({}));
+                throw new Error(correctionApiError(failure, `The report download failed with HTTP ${packageResponse.status}. Try again.`));
+            }
+            if (!(packageResponse.headers.get("Content-Type") || "").toLowerCase().includes("application/zip")) {
+                throw new Error("The server did not return a report ZIP. Refresh the results and try again.");
+            }
+            const blob = await packageResponse.blob();
+            if (!blob.size) throw new Error("The report package was empty. Try again.");
+            const downloadUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = downloadUrl;
+            link.download = `CiteIntegrity_Report_${JOB_ID.slice(0, 8)}.zip`;
+            document.body.append(link);
+            try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000); }
+            const deleted = packageResponse.headers.get("X-Content-Deletion") === "after-download";
+            if (deleted) {
+                latestResults.privacy = {...latestResults.privacy, content_deleted:true};
+                if ($("btnDeleteNow")) $("btnDeleteNow").disabled = true;
+            }
+            const message = deleted ? "Package delivered to your browser. Manuscript content has been scheduled for deletion." : "Package delivered to your browser. Your analysis remains available for further corrections until scheduled expiry.";
+            if ($("privacyMessage")) $("privacyMessage").textContent = message;
+            setStatus(message, "good");
+        } catch (error) {
+            setStatus("Could not prepare download: " + error.message, "bad");
+        } finally {
+            packageDownloadInProgress = false;
+            previous.forEach(({button, disabled, label}) => { button.disabled = disabled || latestResults.privacy?.content_deleted === true; button.textContent = label; });
+        }
     }
 
     async function deleteNow() {
