@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.14-approval-recovery"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.15-report-download"
 
 import io
 import asyncio
@@ -765,7 +765,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.14-approval-recovery").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.15-report-download").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -5988,13 +5988,25 @@ async def download_complete_report_package(request: Request, job_id: str, delete
         raise HTTPException(status_code=410, detail="Manuscript content and detailed results have already been deleted.")
     original_bytes = redis_conn.get(f"original:{job_id}") if redis_conn else None
     file_name = str(job.get("file_name") or result.get("file_name") or "manuscript.docx")
-    annotated = build_annotated_document(original_bytes, result.get("correction_plan") or {}, file_name)
-    tracked, change_manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, file_name)
-    result["track_changes_application"] = change_manifest
-    package = build_report_package(job_id, result, extra_files={
-        "CiteIntegrity_Annotated_Manuscript.docx": annotated,
-        "CiteIntegrity_Track_Changes.docx": tracked,
-    })
+    stage = "annotated manuscript"
+    try:
+        annotated = build_annotated_document(original_bytes, result.get("correction_plan") or {}, file_name)
+        stage = "tracked manuscript"
+        tracked, change_manifest = build_tracked_changes_document(original_bytes, result.get("correction_plan") or {}, file_name)
+        result["track_changes_application"] = change_manifest
+        stage = "report package"
+        package = build_report_package(job_id, result, extra_files={
+            "CiteIntegrity_Annotated_Manuscript.docx": annotated,
+            "CiteIntegrity_Track_Changes.docx": tracked,
+        })
+    except Exception as error:
+        import traceback
+        print(f"[REPORT PACKAGE] {job_id} failed during {stage}: {type(error).__name__}: {error}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=(
+            f"The {stage} could not be created. Your analysis has not been deleted. "
+            f"Try again. If this continues, contact support with analysis ID {job_id}."
+        )) from error
     should_delete = bool(delete_after) and DELETE_AFTER_PACKAGE_DOWNLOAD
     background = BackgroundTask(_purge_job_content, job_id, "download_completed") if should_delete else None
     return Response(

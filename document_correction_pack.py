@@ -125,7 +125,18 @@ def build_annotated_document(original_bytes: bytes | None, plan: Dict[str, Any],
     document.add_heading("CiteIntegrity Correction Register", level=1)
     document.add_paragraph(plan.get("headline") or "Human review is required before submission.")
     table = document.add_table(rows=1, cols=7)
-    table.style = "Table Grid"
+    try:
+        table.style = "Table Grid"
+    except (KeyError, ValueError):
+        # Imported manuscripts can omit or redefine this built-in style.
+        # Format this new report table directly without changing user styles.
+        borders = OxmlElement("w:tblBorders")
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            border = OxmlElement(f"w:{edge}")
+            for key, value in (("val", "single"), ("sz", "4"), ("color", "D1D5DB")):
+                border.set(qn(f"w:{key}"), value)
+            borders.append(border)
+        table._tbl.tblPr.append(borders)
     headers = ["ID", "Priority", "Location", "What is wrong", "Why it matters", "Recommended correction", "Decision"]
     for cell, header in zip(table.rows[0].cells, headers):
         cell.text = header

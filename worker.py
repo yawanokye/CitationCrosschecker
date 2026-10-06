@@ -36,8 +36,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "2.0.14"
-WORKER_BUILD = "commercial-2026-10-06-approval-recovery-v2.0.14"
+__version__ = "2.0.15"
+WORKER_BUILD = "commercial-2026-10-06-report-download-v2.0.15"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -436,7 +436,7 @@ def _reference_cache_key(ref, style="apa", enrich_metadata=False):
         "text:" + re.sub(r"[^a-z0-9]+", " ", reference.casefold()).strip()
     )
     raw = json.dumps({
-        "verification_release": "2.0.14-approval-recovery",
+        "verification_release": "2.0.15-report-download",
         "namespace": VERIFY_CACHE_NAMESPACE,
         "reference_text": reference,
         "identity": identity,
