@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.12-verification-coverage"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.13-reference-metadata-safety"
 
 import io
 import asyncio
@@ -765,7 +765,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.12-verification-coverage").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.13-reference-metadata-safety").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -4406,10 +4406,13 @@ def _manual_candidate_from_source(source: str, item: Dict[str, Any], query: str)
     title = _manual_norm(title)
     if not title:
         return None
+    from reference_metadata import provider_metadata
+    bibliographic = provider_metadata(source, item)
     return {
+        **bibliographic,
         "title": title,
-        "year": year,
-        "authors": authors[:8],
+        "year": bibliographic["year"],
+        "authors": bibliographic["authors_full"],
         "doi": doi,
         "url": _manual_candidate_url(source, item, doi),
         "source": source,
@@ -6121,6 +6124,27 @@ async def save_correction_decision(job_id: str, request: Request):
     related_edits = []
     category = selected_item.get("category")
     if decision == "accepted":
+        if approved_source and action in {"insert_citation", "add_reference", "add_supporting_citation", "replace_reference"}:
+            from reference_metadata import reference_approval_error, format_candidate_reference, format_candidate_citation
+            original_metadata = _parse_original_reference(original_text) if action == "replace_reference" else {}
+            metadata_error = reference_approval_error(approved_source, original_metadata)
+            if metadata_error:
+                raise HTTPException(status_code=422, detail=metadata_error)
+            style = _reference_style_for_result(result)
+            marker_match = re.match(r"^\s*(\[\d+\]|\(\d+\)|\d+[.)])", original_text)
+            marker = marker_match.group(1) if style.startswith("numeric_") and marker_match and action == "replace_reference" else ""
+            if style.startswith("numeric_") and not marker:
+                preview_marker = re.match(r"^\s*(\[\d+\]|\(\d+\)|\d+[.)]|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)", str(approved_source.get("formatted_reference") or ""))
+                if preview_marker:
+                    marker = preview_marker.group(1)
+            completed = format_candidate_reference(approved_source, style, marker)
+            approved_source["formatted_reference"] = completed
+            if action == "replace_reference":
+                proposed_replacement = completed
+            else:
+                secondary_replacement = completed
+                if not style.startswith("numeric_"):
+                    proposed_replacement = format_candidate_citation(approved_source)
         if category in {"citation_needed", "missing_reference"} and action in {"insert_citation", "add_reference"}:
             if not approved_source.get("url") or not approved_source.get("title"):
                 raise HTTPException(status_code=400, detail="Select and open a scholarly source before approving this correction.")
@@ -6352,26 +6376,10 @@ def _style_aware_candidate_citation(candidate: Dict[str, Any], result: Dict[str,
 
 
 def _style_aware_candidate_text(candidate: Dict[str, Any], result: Dict[str, Any], evidence: str = "") -> str:
+    from reference_metadata import format_candidate_reference
     style = _reference_style_for_result(result)
-    if style.startswith("numeric_"):
-        marker = _numeric_marker(_numeric_reference_number(result, evidence), style)
-        return f"{marker} {_candidate_reference_text(candidate)}".strip()
-    ref = {
-        "authors": candidate.get("authors") or [],
-        "year": candidate.get("year") or "",
-        "title": candidate.get("title") or "",
-        "source": candidate.get("journal") or "",
-        "volume": candidate.get("volume") or "",
-        "issue": candidate.get("issue") or "",
-        "pages": candidate.get("pages") or "",
-        "doi": candidate.get("doi") or "",
-        "publisher": candidate.get("publisher") or "",
-        "type": candidate.get("publication_type") or "article",
-    }
-    formatted = format_reference(ref, style=style)
-    # Word Track Changes receives plain text. Markdown italics markers must not
-    # appear in the manuscript.
-    return re.sub(r"\s+", " ", re.sub(r"\*", "", formatted)).strip()
+    marker = _numeric_marker(_numeric_reference_number(result, evidence), style) if style.startswith("numeric_") else ""
+    return format_candidate_reference(candidate, style, marker)
 
 
 def _reference_citation_context(manuscript_text: str, reference: str, window: int = 600) -> str:
@@ -6516,6 +6524,45 @@ def _build_source_search_report(
     }
 
 
+@app.post("/api/corrections/{job_id}/source-preview")
+async def preview_correction_source(request: Request, job_id: str):
+    _require_commercial_access(request, job_id)
+    job = load_job_record_fresh(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    result = job.get("result") or {}
+    payload = await request.json()
+    item = next((row for row in build_correction_plan(result).get("items") or [] if row.get("id") == payload.get("item_id")), None)
+    try:
+        source_index = int(payload.get("source_index"))
+        if source_index < 0:
+            raise IndexError()
+        candidate = dict(item["source_candidates"][source_index])
+    except (TypeError, KeyError, IndexError, ValueError):
+        raise HTTPException(status_code=404, detail="Candidate source not found")
+    authors = payload.get("authors")
+    year = str(payload.get("year") or "").strip()
+    if not isinstance(authors, list) or not authors or not all(isinstance(name, str) and name.strip() for name in authors) or not re.fullmatch(r"(?:18|19|20|21)\d{2}[a-z]?", year, re.I):
+        raise HTTPException(status_code=422, detail="Supply every author in publisher order and a checked publication year.")
+    if re.search(r"\bet\s+al\b|\bothers\b|…|\.\.\.", " ".join(authors), re.I):
+        raise HTTPException(status_code=422, detail="Supply the full author list rather than et al. or Others.")
+    candidate.update(authors=authors, authors_full=authors, authors_complete=True, authors_truncated=False,
+                     author_count=len(authors), year=year, year_selected_by_user=True,
+                     year_basis="user_selected_publication_version", metadata_transcription="user_entered_from_publisher")
+    from reference_metadata import prepare_reference_candidate
+    original = _parse_original_reference(item.get("evidence")) if item.get("category") in {"source_verification", "reference_incomplete", "reference_identity_conflict"} else {}
+    candidate.update(prepare_reference_candidate(candidate, original))
+    candidate["formatted_reference"] = _style_aware_candidate_text(candidate, result, item.get("evidence") or "")
+    candidate["citation_text"] = _style_aware_candidate_citation(candidate, result, item.get("evidence") or "")
+    candidate["year_choice_confirmed"] = False
+    candidate["author_list_confirmed"] = False
+    if original:
+        manuscript = str(result.get("main_text") or result.get("full_text") or result.get("document_text") or "")
+        peers = [_parse_original_reference(str(ref)) for ref in result.get("references_raw") or []]
+        candidate["citation_edits_preview"] = approved_reference_citation_edits(manuscript, original, candidate, _reference_style_for_result(result), peers)
+    return {"ok": True, "candidate": candidate}
+
+
 @app.post("/api/corrections/{job_id}/sources/{item_id}")
 async def find_correction_sources(request: Request, job_id: str, item_id: str):
     _require_commercial_access(request, job_id)
@@ -6645,6 +6692,13 @@ async def find_correction_sources(request: Request, job_id: str, item_id: str):
                     rejection_reason_counts[reason] = rejection_reason_counts.get(reason, 0) + 1
                 continue
         elif category in {"source_verification", "reference_incomplete", "reference_identity_conflict", "missing_reference"}:
+            if category != "missing_reference":
+                from reference_metadata import reference_identity_error
+                identity_error = reference_identity_error(candidate, _parse_original_reference(evidence))
+                if identity_error:
+                    withheld_count += 1
+                    rejection_reason_counts[identity_error] = rejection_reason_counts.get(identity_error, 0) + 1
+                    continue
             match_basis = candidate.get("match_basis") if isinstance(candidate.get("match_basis"), dict) else {}
             candidate["identity_fit"] = {
                 "status": "exact_or_strong_identity_candidate" if (
@@ -6657,6 +6711,10 @@ async def find_correction_sources(request: Request, job_id: str, item_id: str):
                 "warning": "Confirm that this is the same publication, not merely a source on a similar topic.",
             }
             candidate["approval_confirmation_type"] = "same_publication_identity"
+        from reference_metadata import prepare_reference_candidate
+        original_metadata = _parse_original_reference(evidence) if category in {"source_verification", "reference_incomplete", "reference_identity_conflict"} else {}
+        candidate.update(prepare_reference_candidate(candidate, original_metadata))
+        candidate["metadata_version"] = "2.0.13"
         candidate["citation_text"] = _style_aware_candidate_citation(candidate, result, evidence)
         candidate["formatted_reference"] = _style_aware_candidate_text(candidate, result, evidence)
         candidate["reference_style"] = _reference_style_for_result(result)

@@ -38,6 +38,7 @@ const context = vm.createContext({
 vm.runInContext(section('function manualQueryFromRow', 'function googleScholarUrl'), context);
 vm.runInContext(section('function normaliseManualReferenceKey', 'function rerenderManualVerificationList'), context);
 vm.runInContext(section('function renderEvidenceCandidate', 'function correctionLocationText'), context);
+vm.runInContext(section('function bindCandidateMetadataControls', 'async function editCandidateMetadata'), context);
 vm.runInContext(section('function renderManualVerification', 'async function runManualSourceSearch'), context);
 vm.runInContext(section('async function approveCorrectionSource', 'async function approveAllReferenceFormatting'), context);
 vm.runInContext(section('function verificationCoverageCounts', 'function previewNoticeHtml'), context);

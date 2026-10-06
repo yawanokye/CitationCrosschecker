@@ -1905,7 +1905,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.12-verification-coverage";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.13-reference-metadata-safety";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2564,6 +2564,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const approved = item.decision === "accepted";
         const locked = !hasPaidAccess(latestResults || {});
         return `<div class="manual-reference-resolution" data-correction-id="${esc(item.id)}">${renderReferenceExtraction(item)}
+            ${item.withheld_source_reason ? `<p class="small-muted">Unrelated indexed suggestion withheld: ${esc(item.withheld_source_reason)} Search the intended source below.</p>` : ""}
             ${candidates.length ? `<div><strong>Possible sources, confirm the publication before approval</strong>${candidates.map((source, index) => renderEvidenceCandidate(item, source, index)).join("")}</div>` : `<p class="small-muted">No usable source candidate is available yet. Find sources using the extracted title, author, year or identifier.</p>`}
             ${renderSourceSearchReport(item)}
             ${approved ? `<div class="correction-action-status" role="status"><strong>✅ Approved for Track Changes</strong><br>${esc(item.proposed_replacement || "")}${item.related_edits?.length ? `<br>${item.related_edits.length} associated citation edit(s) also approved.` : ""}</div>` : ""}
@@ -2991,6 +2992,7 @@ document.addEventListener("DOMContentLoaded", function () {
         });
         box.querySelectorAll(".manual-find-sources").forEach(button => button.addEventListener("click", () => findCorrectionSources(button.dataset.id, button)));
         box.querySelectorAll(".manual-approve-source").forEach(button => button.addEventListener("click", () => approveCorrectionSource(button.dataset.id, "source_verification", button)));
+        bindCandidateMetadataControls(box);
         box.querySelectorAll(".candidate-source-link").forEach(link => link.addEventListener("click", () => {
             const item = latestResults?.correction_plan?.items?.find(value => value.id === link.dataset.itemId);
             const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
@@ -3485,7 +3487,15 @@ document.addEventListener("DOMContentLoaded", function () {
         const identity = source.identity_fit || {};
         const fingerprint = fit.claim_fingerprint || {};
         const fieldMatches = fit.field_matches || {};
-        const authorNames = Array.isArray(source.authors) ? source.authors.map(value => typeof value === "object" ? [value.family || value.last, value.given || value.first].filter(Boolean).join(", ") : value).join("; ") : source.authors;
+        const authorNames = Array.isArray(source.authors) ? source.authors.map(value => typeof value === "object" ? [value.family || value.last || value.name, value.given || value.first].filter(Boolean).join(", ") : value).join("; ") : source.authors;
+        const metadataHtml = `<div class="candidate-metadata-review" style="padding:8px;background:#fff8e5">
+            <strong>Publication dates:</strong> ${esc(Object.entries(source.publication_dates || {}).map(([kind, date]) => `${kind}: ${date.date || date.year}`).join("; ") || source.year || "Not supplied")}
+            <br><strong>Proposed year:</strong> ${esc(source.year || "Not supplied")} · ${esc(String(source.year_basis || "provider publication year").replaceAll("_", " "))}
+            ${(source.metadata_warnings || []).map(warning => `<div>⚠️ ${esc(warning)}</div>`).join("")}
+            <button type="button" class="btn btn-outline edit-candidate-metadata" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}">Check / edit full author list and publication year</button>
+            ${source.date_review_required ? `<label style="display:block"><input type="checkbox" class="candidate-year-confirm" data-source-index="${sourceIndex}"> I checked the publication version and confirmed the proposed year.</label>` : ""}
+            ${source.author_review_required ? `<label style="display:block"><input type="checkbox" class="candidate-author-confirm" data-source-index="${sourceIndex}"> I checked every author and their order against the publisher.</label>` : ""}
+        </div>`;
         const detailsHtml = `<div class="small-muted"><strong>Authors:</strong> ${esc(authorNames || "Not supplied")}<br><strong>Publication:</strong> ${esc(source.journal || source.publisher || "Not supplied")}${source.doi ? `<br><strong>DOI:</strong> ${esc(source.doi)}` : ""}</div>${source.formatted_reference ? `<div><strong>Proposed reference:</strong> ${esc(source.formatted_reference)}</div>` : ""}${source.citation_edits_preview?.length ? `<details open><summary>Associated in-text citation edits for approval</summary>${source.citation_edits_preview.map(edit => `<div>${esc(edit.original_text)} → ${esc(edit.proposed_replacement)}</div>`).join("")}</details>` : ""}`;
         const fitHtml = Object.keys(fit).length ? `<div class="candidate-fit"><strong>Structured context screen: ${esc(String(fit.label || "review").replaceAll("_", " "))} · ${esc(fit.score ?? "--")}/100</strong><br>${esc(fit.explanation || "")}${fit.specific_claim_overlap_terms?.length ? `<br>Specific claim matches: ${esc(fit.specific_claim_overlap_terms.join(", "))}` : ""}<br>Abstract compared: <strong>${fit.candidate_abstract_compared ? "Yes" : "No"}</strong><details style="margin-top:7px"><summary>Manuscript profile, claim fingerprint and field matches</summary><div class="small-muted" style="margin-top:6px"><strong>Manuscript disciplines:</strong> ${esc((fingerprint.manuscript_disciplines || []).join(", ") || "Not inferred")}<br><strong>Manuscript keywords:</strong> ${esc((fingerprint.manuscript_keywords || []).join(", ") || "Not recovered")}<br><strong>Manuscript geography/setting:</strong> ${esc([...(fingerprint.manuscript_geography || []), ...(fingerprint.manuscript_settings || [])].join(", ") || "Not recovered")}<br><strong>Population:</strong> ${esc((fingerprint.subject_or_population || []).join(", ") || "Not specified")}<br><strong>Concepts/variables:</strong> ${esc((fingerprint.concepts_or_variables || []).join(", ") || "Not recovered")}<br><strong>Claimed relationship:</strong> ${esc(String(fingerprint.claimed_relationship || "unspecified").replaceAll("_", " "))}<br><strong>Location:</strong> ${esc((fingerprint.location || []).join(", ") || "Not specified")}<br><strong>Time:</strong> ${esc((fingerprint.time_period || []).join(", ") || "Not specified")}<br><strong>Evidence needed:</strong> ${esc(fingerprint.required_evidence_type || "Review required")}<br><strong>Nearby citations:</strong> ${esc((fingerprint.nearby_citations || []).join("; ") || "None recovered")}<br><strong>Current section:</strong> ${esc(fingerprint.current_section || "Not recovered")}<br><strong>Field matches:</strong> concepts ${esc((fieldMatches.concepts_or_variables || []).join(", ") || "none")}; population ${esc((fieldMatches.subject_or_population || []).join(", ") || "none")}; location ${esc((fieldMatches.location || []).join(", ") || "none")}; relationship ${fieldMatches.claimed_relationship ? "yes" : "no"}; evidence type ${fieldMatches.required_evidence_type ? "yes" : "review"}.</div></details><br><strong>${esc(fit.warning || "Context fit is not proof of claim support.")}</strong></div>` : "";
         const identityHtml = Object.keys(identity).length ? `<div class="candidate-fit"><strong>Identity screen: ${esc(String(identity.status || "review").replaceAll("_", " "))}</strong>${identity.title_similarity !== undefined && identity.title_similarity !== null ? ` · title similarity ${esc(identity.title_similarity)}%` : ""}<br>${esc(identity.warning || "Confirm that this is the same publication.")}</div>` : "";
@@ -3497,7 +3507,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const linkHtml = source.url
             ? `<a class="candidate-source-link btn btn-outline" style="margin-left:10px;color:#075e45;text-decoration:underline;font-weight:800" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">🔗 Open candidate source</a><div class="small-muted" style="margin:6px 0 0 28px;word-break:break-all">${esc(source.url)}</div>`
             : `<span class="small-muted" style="margin-left:8px">No direct source URL supplied. Do not approve.</span>`;
-        return `<label class="${source.manual_review_only ? "manual-review-candidate" : ""}" style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px">${source.manual_review_only ? `<span class="manual-review-badge">Manual full-text review required</span><br>` : ""}<input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${detailsHtml}${linkHtml}${fitHtml}${identityHtml}<span class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}"> <span>${esc(confirmationText)}</span></span></label>`;
+        return `<label class="${source.manual_review_only ? "manual-review-candidate" : ""}" style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px">${source.manual_review_only ? `<span class="manual-review-badge">Manual full-text review required</span><br>` : ""}<input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${detailsHtml}${metadataHtml}${linkHtml}${fitHtml}${identityHtml}<span class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}"> <span>${esc(confirmationText)}</span></span></label>`;
     }
 
     function correctionLocationText(location) {
@@ -3574,6 +3584,7 @@ document.addEventListener("DOMContentLoaded", function () {
             correctionBox.querySelectorAll(".correction-feedback").forEach(btn => btn.addEventListener("click", () => saveCorrectionDecision(btn.dataset.id, "rejected", "User marked this as an incorrect finding.")));
             correctionBox.querySelectorAll(".find-correction-sources").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id, btn)));
             correctionBox.querySelectorAll(".approve-correction-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, btn.dataset.category, btn)));
+            bindCandidateMetadataControls(correctionBox);
             correctionBox.querySelectorAll(".candidate-source-link").forEach(link => link.addEventListener("click", () => {
                 const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
                 const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
@@ -3775,6 +3786,30 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
 
+    function bindCandidateMetadataControls(container) {
+        container.querySelectorAll(".edit-candidate-metadata").forEach(button => button.addEventListener("click", () => editCandidateMetadata(button.dataset.itemId, Number(button.dataset.sourceIndex))));
+    }
+
+    async function editCandidateMetadata(itemId, sourceIndex) {
+        const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
+        const source = item?.source_candidates?.[sourceIndex];
+        if (!source?.opened_by_user) { setStatus("Open the publisher record before editing its metadata.", "warn"); return; }
+        const names = (Array.isArray(source.authors) ? source.authors : [source.authors]).map(value => typeof value === "object" ? [value.family || value.last || value.name, value.given || value.first].filter(Boolean).join(", ") : value).filter(Boolean);
+        const authors = prompt("Transcribe every author in publisher order. Separate authors with semicolons. Use Surname, Given name or initials; keep an organisation as one name.", names.join("; "));
+        if (!authors?.trim()) return;
+        const dates = Object.entries(source.publication_dates || {}).map(([kind, date]) => `${kind}: ${date.date || date.year}`).join("; ");
+        const year = prompt(`Choose the year of the version you cited. Recorded dates: ${dates || "Not supplied"}. Confirm it on the publisher page.`, source.year || "");
+        if (!/^(18|19|20|21)\d{2}[a-z]?$/i.test(year || "")) { setStatus("Enter a valid publication year.", "warn"); return; }
+        try {
+            const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/source-preview`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, source_index:sourceIndex, authors:authors.split(";").map(name => name.trim()).filter(Boolean), year})});
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.detail || "Could not prepare the metadata preview.");
+            Object.assign(source, data.candidate);
+            renderStudentGuidance(latestResults); renderManualVerification(latestResults); renderClaimSupport(latestResults);
+            setStatus("Metadata preview updated. Review the reference and confirm the author list and publication version before approving Track Changes.", "good");
+        } catch (error) { setStatus("Metadata preview failed: " + error.message, "bad"); }
+    }
+
     async function approveCorrectionSource(itemId, category, triggerButton = null) {
         const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
         const actionScope = triggerButton?.closest(".guidance-item, .claim-direct-actions, .manual-card") || document;
@@ -3788,6 +3823,13 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!confirmation?.checked) { setStatus("Tick the verification confirmation under the selected source before approval.", "warn"); return; }
         if (["claim_support", "citation_needed"].includes(category)) source.context_fit_confirmed = true;
         else source.identity_confirmed = true;
+        if (source.authors_complete === false || source.authors_truncated) { setStatus("The indexed author list is incomplete. Use Check / edit to recover all authors from the publisher before approval.", "warn"); return; }
+        const yearConfirmation = actionScope.querySelector(`.candidate-year-confirm[data-source-index="${CSS.escape(selected.value)}"]`);
+        const authorConfirmation = actionScope.querySelector(`.candidate-author-confirm[data-source-index="${CSS.escape(selected.value)}"]`);
+        if (source.date_review_required && !yearConfirmation?.checked) { setStatus("Check the publication version and confirm the proposed year before approval.", "warn"); return; }
+        if (source.author_review_required && !authorConfirmation?.checked) { setStatus("Confirm all authors and their order before approval.", "warn"); return; }
+        source.year_choice_confirmed = !source.date_review_required || yearConfirmation?.checked === true;
+        source.author_list_confirmed = !source.author_review_required || authorConfirmation?.checked === true;
         if (!confirm("Record this source as opened and manually verified, then prepare the approved change for Track Changes?")) return;
         const action = category === "missing_reference" ? "add_reference" : (["source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? "replace_reference" : (category === "claim_support" ? "add_supporting_citation" : "insert_citation"));
         const proposed = ["source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? source.formatted_reference : source.citation_text;
@@ -4882,6 +4924,7 @@ document.addEventListener("DOMContentLoaded", function () {
         body.querySelectorAll(".claim-find-source").forEach(btn => btn.addEventListener("click", () => findCorrectionSources(btn.dataset.id, btn)));
         body.querySelectorAll(".claim-approve-source").forEach(btn => btn.addEventListener("click", () => approveCorrectionSource(btn.dataset.id, "claim_support", btn)));
         body.querySelectorAll(".claim-revise").forEach(btn => btn.addEventListener("click", () => approveClaimRevision(btn.dataset.id)));
+        bindCandidateMetadataControls(body);
         body.querySelectorAll(".candidate-source-link, .claim-candidate-source-link").forEach(link => link.addEventListener("click", () => {
             const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
             const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];

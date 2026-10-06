@@ -36,8 +36,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "2.0.12"
-WORKER_BUILD = "commercial-2026-10-05-verification-coverage-v2.0.12"
+__version__ = "2.0.13"
+WORKER_BUILD = "commercial-2026-10-06-reference-metadata-safety-v2.0.13"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -310,7 +310,7 @@ VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
 VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_REDIS_CACHE_TTL", "21600"))
 VERIFY_USE_CACHE = _env_flag("VERIFY_REDIS_CACHE_ENABLED", "1")
 VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
-VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v7-verification-coverage").strip() or "v7-verification-coverage"
+VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v8-reference-metadata-safety").strip() or "v8-reference-metadata-safety"
 
 # Privacy-first cache controls. Defaults are OFF.
 CACHE_RESULTS_IN_REDIS = _env_flag("CACHE_RESULTS_IN_REDIS", "0")
@@ -436,7 +436,7 @@ def _reference_cache_key(ref, style="apa", enrich_metadata=False):
         "text:" + re.sub(r"[^a-z0-9]+", " ", reference.casefold()).strip()
     )
     raw = json.dumps({
-        "verification_release": "2.0.12-verification-coverage",
+        "verification_release": "2.0.13-reference-metadata-safety",
         "namespace": VERIFY_CACHE_NAMESPACE,
         "reference_text": reference,
         "identity": identity,
@@ -775,6 +775,10 @@ def _normalise_recovery_suggestion(item, row, result):
         "query_used": item.get("query_used") or "",
         "query_strategy": item.get("query_strategy") or "",
     }
+    for key in ("authors_full", "authors_complete", "authors_truncated", "author_count", "publication_dates", "publication_years", "year_basis", "journal", "volume", "issue", "pages", "publisher", "publication_type"):
+        if key in item:
+            norm[key] = item[key]
+    norm["authors"] = item.get("authors_full") or norm["authors"]
     return _decorate_recovery_suggestion(norm, row, result, candidate_type=candidate_type)
 
 def _dedupe_and_pad_suggestions(suggestions, row, result, target=3):
@@ -1003,10 +1007,13 @@ def _candidate_from_crossref_item(item, query=""):
     doi = str(item.get("DOI") or item.get("doi") or "").strip()
     url = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
 
+    from reference_metadata import provider_metadata
+    bibliographic = provider_metadata("crossref", item)
     return {
+        **bibliographic,
         "title": title,
-        "year": year,
-        "authors": authors[:6],
+        "year": bibliographic["year"],
+        "authors": bibliographic["authors_full"],
         "doi": doi,
         "url": url,
         "source": "crossref_direct",
@@ -1036,10 +1043,13 @@ def _candidate_from_openalex_item(item, query=""):
     primary = item.get("primary_location") or {}
     url = primary.get("landing_page_url") or item.get("id") or (f"https://doi.org/{doi}" if doi else "")
 
+    from reference_metadata import provider_metadata
+    bibliographic = provider_metadata("openalex", item)
     return {
+        **bibliographic,
         "title": title,
-        "year": item.get("publication_year") or "",
-        "authors": authors[:6],
+        "year": bibliographic["year"],
+        "authors": bibliographic["authors_full"],
         "doi": doi,
         "url": url,
         "source": "openalex_direct",
@@ -1057,7 +1067,7 @@ def _query_crossref_direct(query, rows=6):
     params = {
         "query.bibliographic": query,
         "rows": str(rows),
-        "select": "DOI,title,author,issued,published-print,published-online,created,URL,score",
+        "select": "DOI,title,author,issued,published-print,published-online,published,URL,score,container-title,volume,issue,page,article-number,publisher,type",
     }
     if CROSSREF_MAILTO:
         params["mailto"] = CROSSREF_MAILTO
@@ -1350,7 +1360,7 @@ def _reference_candidate_fit(item, reference_text="", candidate_title="", candid
 
     ref_year = _reference_year_from_text(ref)
     cand_year = str(candidate_year or "")[:4]
-    year_match = bool(ref_year and cand_year and ref_year[:4] == cand_year)
+    year_match = bool(ref_year and ref_year[:4] in (item.get("publication_years") or [cand_year]))
 
     ref_doi_match = re.search(r"10\.\d{4,9}/\S+", ref, flags=re.I)
     ref_doi = ref_doi_match.group(0).rstrip(".,;)") if ref_doi_match else ""
@@ -1375,12 +1385,10 @@ def _reference_candidate_fit(item, reference_text="", candidate_title="", candid
     if author_overlap:
         evidence_score += min(12, len(author_overlap) * 6)
 
-    strict_pass = bool(
-        doi_match
-        or title_similarity >= 82
-        or (title_similarity >= 72 and (year_match or bool(author_overlap)))
-        or (overlap_count >= 6 and title_similarity >= 62 and (year_match or bool(author_overlap)))
-    )
+    doi_conflict = bool(ref_doi and candidate_doi and not doi_match)
+    strict_pass = not doi_conflict and bool(doi_match or
+        (title_similarity >= 90 and year_match and (author_overlap or not ref_surnames)) or
+        (title_similarity >= 95 and author_overlap))
 
     return {
         "strict_pass": strict_pass,
@@ -1482,10 +1490,11 @@ def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title="", ref
         ).strip()
         doi = str(item.get("doi") or item.get("DOI") or "").strip()
         year = item.get("year") or item.get("published_year") or item.get("matched_year") or ""
-        authors = item.get("authors") or item.get("matched_authors") or []
+        authors = item.get("authors_full") or item.get("authors") or item.get("matched_authors") or []
 
         if isinstance(authors, str):
-            authors = [a.strip() for a in authors.split(",") if a.strip()]
+            from reference_formatter import parse_authors
+            authors = parse_authors(authors)
 
         if not title:
             continue
@@ -1575,6 +1584,9 @@ def _dedupe_real_source_suggestions(suggestions, target=3, exclude_title="", ref
             "action_target": "verification_tab_manual_verify" if strict_reference else "advanced_enrichment_review",
             "manual_verify_available": True,
         }
+        for field in ("authors_full", "authors_complete", "authors_truncated", "author_count", "publication_dates", "publication_years", "year_basis", "journal", "volume", "issue", "pages", "publisher", "publication_type"):
+            if field in item:
+                candidate[field] = item[field]
         clean.append(candidate)
 
         if len(clean) >= target:

@@ -38,31 +38,25 @@ def reference_review_details(row, original, style):
     extracted = {key: original.get(key) or "" for key in (
         "authors", "year", "title", "source", "publisher", "volume", "issue", "pages", "doi", "url")}
     candidates = []
-    title = str(row.get("matched_title") or "").strip()
-    authors = row.get("matched_authors_full") or row.get("matched_authors") or []
-    year = str(row.get("matched_year") or "").strip()
-    doi = row.get("matched_doi") or row.get("doi") or ""
+    from reference_metadata import row_candidate, prepare_reference_candidate, format_candidate_reference, reference_identity_error
+    candidate = prepare_reference_candidate(row_candidate(row), original)
+    title, authors, year = candidate['title'], candidate['authors'], candidate['year']
+    doi = candidate['doi']
     url = _source_url(doi, row.get("matched_url") or row.get("evidence_url") or row.get("url"))
-    if title and authors and year and url:
-        ref = {"authors": authors, "year": year, "title": title,
-               "source": row.get("matched_container_title") or row.get("matched_journal") or "",
-               "publisher": row.get("publisher") or "", "volume": row.get("matched_volume") or "",
-               "issue": row.get("matched_issue") or "", "pages": row.get("matched_pages") or "",
-               "doi": doi, "edition": row.get("edition") or ""}
-        if ref["source"] or ref["publisher"]:
-            formatted = re.sub(r"\*", "", format_reference(ref, style)).strip()
-            marker = re.match(r"^\s*(\[\d+\]|\(\d+\)|\d+[.)])\s*", str(row.get("reference") or ""))
-            if style.startswith("numeric_") and marker:
-                formatted = marker.group(1) + " " + formatted
-            candidates.append({**ref, "journal": ref["source"], "url": url,
-                "formatted_reference": formatted, "extraction_origin": "online_verification",
-                "approval_confirmation_type": "same_publication_identity",
-                "identity_fit": {"status": "identity_requires_manual_confirmation",
-                    "warning": "A possible external record, not a verified replacement. Compare title, authors, year and identifier."},
-                "approval_warning": "Open the record and confirm the intended publication before approval."})
+    identity_error = reference_identity_error(candidate, original)
+    if not identity_error and title and authors and year and url and (candidate['journal'] or candidate['publisher']):
+        marker = re.match(r"^\s*(\[\d+\]|\(\d+\)|\d+[.)])\s*", str(row.get("reference") or ""))
+        formatted = format_candidate_reference(candidate, style, marker.group(1) if style.startswith("numeric_") and marker else "")
+        candidates.append({**candidate, "formatted_reference": formatted, "url": url,
+            "metadata_version": "2.0.13", "extraction_origin": "online_verification",
+            "approval_confirmation_type": "same_publication_identity",
+            "identity_fit": {"status": "identity_requires_manual_confirmation",
+                "warning": "A possible external record, not a verified replacement. Compare title, authors, year and identifier."},
+            "approval_warning": "Open the record and confirm the intended publication before approval."})
     return {"resolution_group": reference_resolution_group(row),
             "resolution_explanation": verification_status_explanation(row),
-            "extracted_reference": extracted, "extracted_source_candidates": candidates}
+            "extracted_reference": extracted, "extracted_source_candidates": candidates,
+            "withheld_source_reason": identity_error}
 
 
 def approved_reference_citation_edits(manuscript, original, source, style, peer_references=()):

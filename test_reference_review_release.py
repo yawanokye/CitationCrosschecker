@@ -22,7 +22,7 @@ REFERENCE = "smith, J. (2021). Research methods. Example Press."
 SOURCE = {"authors": ["Smith, Jane"], "year": "2022", "title": "Research methods",
           "publisher": "Example Press", "url": "https://example.org/research-methods",
           "formatted_reference": "Smith, J. (2022). Research methods. Example Press.",
-          "opened_by_user": True, "identity_confirmed": True}
+          "opened_by_user": True, "identity_confirmed": True, "year_choice_confirmed": True}
 BODY = "Results follow smith (2021).\nA second claim uses (smith, 2021)."
 
 

@@ -193,11 +193,14 @@ def _reference_identity_gate(original_ref: Dict[str, Any], row: Dict[str, Any]) 
     title_score = SequenceMatcher(None, original_title, matched_title).ratio() if original_title and matched_title else 0.0
     doi_exact = bool(original_doi and matched_doi and original_doi == matched_doi)
     isbn_exact = bool(original_isbn and matched_isbn and original_isbn == matched_isbn)
-    year_match = bool(original_year and matched_year and original_year == matched_year)
+    publication_years = row.get("matched_publication_years") or [matched_year]
+    year_match = bool(original_year and original_year[:4] in publication_years)
     role_conflict = bool(notice_kind(original_ref.get("title"))) != bool(notice_kind(row.get("matched_title") or row.get("title")))
     accepted = (doi_exact or isbn_exact or (title_score >= .95 and author_match and year_match)) and not role_conflict
+    if original_title and matched_title and title_score < .8:
+        accepted = False
     reason = "Exact DOI" if doi_exact else ("Exact ISBN" if isbn_exact else ("Title, author and year agree" if accepted else "External record may represent a different publication"))
-    return {"accepted": accepted, "doi_exact": doi_exact, "isbn_exact": isbn_exact, "title_similarity": round(title_score, 3), "author_match": author_match, "year_match": year_match, "reason": reason}
+    return {"accepted": accepted, "doi_exact": doi_exact, "isbn_exact": isbn_exact, "title_similarity": round(title_score, 3), "author_match": author_match, "year_match": year_match, "publication_years": publication_years, "reason": reason}
 
 
 def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -239,6 +242,8 @@ def _reference_audit(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             ref["doi"] = ref.get("doi") or row.get("matched_doi") or row.get("doi") or ""
             ref["publisher"] = ref.get("publisher") or row.get("publisher") or ""
         missing = validate_reference(ref)
+        if not style.startswith("numeric_") and re.search(r"\bet\s+al\b|\bothers\b", str(original_ref.get("authors") or ""), re.I):
+            missing.append("complete author list")
         if not ref.get("authors"):
             missing.append("author information")
         if not ref.get("title"):
@@ -786,9 +791,21 @@ def build_correction_plan(result: Dict[str, Any]) -> Dict[str, Any]:
         if item.get("category") in {"source_verification", "reference_incomplete", "reference_identity_conflict"}:
             parsed = _parse_original_reference(item.get("original_text") or item.get("evidence") or "")
             peers = [_parse_original_reference(str(value)) for value in result.get("references_raw") or []]
+            from reference_metadata import reference_identity_error, prepare_reference_candidate, format_candidate_reference
+            screened_candidates = []
             for candidate in item.get("source_candidates") or []:
                 if isinstance(candidate, dict):
+                    identity_error = reference_identity_error(candidate, parsed)
+                    if identity_error:
+                        item["withheld_source_reason"] = identity_error
+                        continue
+                    candidate = prepare_reference_candidate(candidate, parsed)
+                    candidate["metadata_version"] = "2.0.13"
+                    marker = re.match(r"^\s*(\[\d+\]|\(\d+\)|\d+[.)])", str(item.get("evidence") or ""))
+                    candidate["formatted_reference"] = format_candidate_reference(candidate, _detected_reference_style(result), marker.group(1) if marker and _detected_reference_style(result).startswith("numeric_") else "")
                     candidate["citation_edits_preview"] = approved_reference_citation_edits(manuscript_text, parsed, candidate, _detected_reference_style(result), peers)
+                    screened_candidates.append(candidate)
+            item["source_candidates"] = screened_candidates
 
     rank = {"critical": 0, "important": 1, "optional": 2}
     items.sort(key=lambda item: (rank.get(item["priority"], 9), item["category"]))

@@ -3,7 +3,7 @@ import re
 import unittest
 from pathlib import Path
 
-from correction_plan import _detected_reference_style, _reference_audit, build_correction_plan
+from correction_plan import _parse_original_reference, _detected_reference_style, _reference_audit, build_correction_plan
 from evidence_resolution import build_evidence_resolution_workspace
 import publication_integrity
 
@@ -64,7 +64,7 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
         self.assertIn('VERIFY_CHUNK_SIZE", "40"', worker)
         self.assertIn('VERIFY_REDIS_CACHE_ENABLED", "1"', worker)
         self.assertIn('VERIFY_REDIS_CACHE_TTL", "21600"', worker)
-        self.assertIn('VERIFY_CACHE_NAMESPACE", "v7-verification-coverage"', worker)
+        self.assertIn('VERIFY_CACHE_NAMESPACE", "v8-reference-metadata-safety"', worker)
         self.assertIn('VERIFY_SHORT_OPENALEX_MAX_QUERIES", "1"', verifier)
         for setting in (
             "VERIFY_PARALLEL_MODE=1",
@@ -73,7 +73,7 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
             "VERIFY_USE_CACHE=0",
             "VERIFY_REDIS_CACHE_ENABLED=1",
             "VERIFY_REDIS_CACHE_TTL=21600",
-            "VERIFY_CACHE_NAMESPACE=v7-verification-coverage",
+            "VERIFY_CACHE_NAMESPACE=v8-reference-metadata-safety",
         ):
             self.assertIn(setting, env)
 
@@ -115,7 +115,7 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
                 "reference": ref,
                 "status": "verified",
                 "matched_doi": doi,
-                "matched_title": "Different punctuation or provider title",
+                "matched_title": _parse_original_reference(ref)["title"].upper(),
                 "matched_year": "2026",
                 "matched_authors": "Provider metadata",
             })

@@ -94,9 +94,14 @@ def parse_author(author: Union[str, Dict]) -> str:
         if last:
             if first:
                 # Extract initials
-                initials = ''.join([name[0].upper() + '.' for name in first.split() if name[0].isalpha()])
+                initials = _given_initials(first)
                 return f"{_name_case(last)}, {initials}"
             return _name_case(last)
+        name = author.get("name") or ""
+        if name:
+            if str(author.get("nameType") or "").lower() == "personal":
+                return parse_author(name)
+            return str(name).strip()
         return ""
     
     # Handle string input
@@ -120,22 +125,27 @@ def parse_author(author: Union[str, Dict]) -> str:
         # Extract initials from first part
         if first_part:
             # Handle "J. A." or "John A." format
-            initials = []
-            for token in first_part.split():
-                if token and token[0].isalpha():
-                    initials.append('-'.join(part[0].upper() + '.' for part in token.split('-') if part and part[0].isalpha()))
-            return f"{last}, {' '.join(initials)}"
+            return f"{last}, {_given_initials(first_part)}"
         return last
     
     # "First Last" or "First Middle Last" format
     parts = author.split()
     if len(parts) >= 2:
         last = _name_case(parts[-1])
-        initials = [p[0].upper() + '.' for p in parts[:-1] if p and p[0].isalpha()]
-        return f"{last}, {' '.join(initials)}"
+        return f"{last}, {_given_initials(' '.join(parts[:-1]))}"
     
     # Single name
     return _name_case(author)
+
+
+def _given_initials(value: str) -> str:
+    groups = []
+    for token in str(value or "").split():
+        if re.fullmatch(r"(?:[^\W\d_]\.){2,}", token, re.UNICODE):
+            groups.extend(letter.upper() + "." for letter in re.findall(r"([^\W\d_])\.", token, re.UNICODE))
+        elif token and token[0].isalpha():
+            groups.append("-".join(part[0].upper() + "." for part in token.split("-") if part and part[0].isalpha()))
+    return " ".join(groups)
 
 
 def _name_case(value: str) -> str:
@@ -238,8 +248,7 @@ def _format_authors_apa6(authors: List[str], max_authors: int = 7) -> str:
     formatted = [a for a in authors if a]
     
     if len(formatted) > max_authors:
-        formatted = formatted[:max_authors]
-        formatted.append("…")
+        return ", ".join(formatted[:max_authors - 1]) + ", … " + formatted[-1]
     
     if len(formatted) == 1:
         return formatted[0]
@@ -308,8 +317,7 @@ def _format_authors_apa7(authors: List[str], max_authors: int = 20) -> str:
     formatted = [a for a in authors if a]
     
     if len(formatted) > max_authors:
-        formatted = formatted[:max_authors]
-        formatted.append("…")
+        return ", ".join(formatted[:max_authors - 1]) + ", … " + formatted[-1]
     
     if len(formatted) == 1:
         return formatted[0]
@@ -572,28 +580,16 @@ def format_verified_reference_list(
         if status not in ["verified", "likely", "needs_review"]:
             continue
         
-        # Build reference dict with all possible fields
-        ref_dict = {
-            "authors": row.get("matched_authors_full", row.get("matched_authors", row.get("authors", []))),
-            "year": row.get("matched_year", row.get("year", "")),
-            "title": row.get("matched_title", row.get("title", "")),
-            "doi": row.get("doi", ""),
-            "source": row.get("matched_container_title", row.get("journal", "")),
-            "volume": row.get("matched_volume", row.get("volume", "")),
-            "issue": row.get("matched_issue", row.get("issue", "")),
-            "pages": row.get("matched_pages", row.get("pages", "")),
-            "publisher": row.get("publisher", ""),
-            "book_title": row.get("book_title", ""),
-            "editors": row.get("editors", []),
-            "edition": row.get("edition", ""),
-            "type": row.get("type", "article")
-        }
-        
+        from reference_metadata import export_reference_metadata
+        ref_dict, metadata_warnings = export_reference_metadata(row)
         # Format the reference
         formatted = format_reference(ref_dict, style)
+        if ref_dict.get("parse_confidence") == "low":
+            formatted = row.get("reference") or row.get("original_reference") or formatted
+            metadata_warnings.append("The manuscript reference could not be parsed reliably; its original text was preserved.")
         
         # Get validation issues
-        issues = validate_reference(ref_dict)
+        issues = validate_reference(ref_dict) + metadata_warnings
         
         formatted_refs.append({
             "index": i + 1,
@@ -603,6 +599,7 @@ def format_verified_reference_list(
             "doi": row.get("doi", ""),
             "title": ref_dict["title"],
             "year": ref_dict["year"],
+            "metadata_warnings": metadata_warnings,
             "authors": parse_authors(ref_dict["authors"]),
             "verification_score": row.get("score", 0),
             "validation_issues": issues

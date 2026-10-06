@@ -11,6 +11,7 @@ from verify import (
     _query_openalex,
     _candidate_fields,
     _score,
+    _score_candidate,
     _extract_fields_by_style,
 )
 
@@ -621,6 +622,8 @@ def _openalex_abstract(item: Dict[str, Any], max_words: int = 180) -> str:
 
 
 def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, Any]:
+    from reference_metadata import provider_metadata
+    bibliographic = provider_metadata(cand.get("source"), cand.get("item"))
     item_value = cand.get("item") if isinstance(cand, dict) else {}
     item = item_value if isinstance(item_value, dict) else {}
     if cand.get("source") == "crossref":
@@ -632,6 +635,7 @@ def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, Any]:
         abstract = re.sub(r"<[^>]+>", " ", str(item.get("abstract") or ""))
         abstract = _norm_ws(abstract)[:1800]
         return {
+            **bibliographic,
             "journal": str(container[0] if container else ""),
             "volume": str(item.get("volume") or ""),
             "issue": str(item.get("issue") or ""),
@@ -654,6 +658,7 @@ def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(concept, dict) and (concept or {}).get("display_name")
         ]
         return {
+            **bibliographic,
             "journal": str(source.get("display_name") or ""),
             "volume": str(biblio.get("volume") or ""),
             "issue": str(biblio.get("issue") or ""),
@@ -663,7 +668,7 @@ def _candidate_publication_metadata(cand: Dict[str, Any]) -> Dict[str, Any]:
             "abstract_excerpt": _openalex_abstract(item)[:1800],
             "concepts": concepts,
         }
-    return {}
+    return bibliographic
 
 def _author_match_score(query_authors: List[str], candidate_authors: List[str]) -> int:
     if not query_authors or not candidate_authors:
@@ -819,7 +824,8 @@ def suggest_from_context(
 
         title_score = _title_claim_score(title, context)
         author_boost = _author_match_score(citation_authors, authors_list)
-        year_boost = 8 if (citation_year and cand_year and citation_year[:4] == str(cand_year)[:4]) else 0
+        publication_years = _candidate_fields(cand).get("publication_years") or [str(cand_year)[:4]]
+        year_boost = 8 if (citation_year and citation_year[:4] in publication_years) else 0
         doi_boost = 5 if doi else 0
 
         relevance = min(100, 35 + title_score["overlap_score"] + author_boost + year_boost + doi_boost)
@@ -915,15 +921,16 @@ def _strict_reference_candidate_pass(fields: Dict[str, Any], cand_title: str, ca
 
     title_similarity = _reference_title_similarity(ref_title, cand_title)
     overlap_terms = _reference_title_terms(ref_title, cand_title)
-    year_match = bool(ref_year and cand_year and ref_year == str(cand_year)[:4])
+    year_match = bool(ref_year and ref_year in (meta.get("publication_years") or [str(cand_year)[:4]]))
     doi_match = bool(ref_doi and cand_doi and ref_doi == str(cand_doi).lower().strip())
     author_similarity = int(meta.get("author_similarity", 0) or 0)
 
-    strict_pass = bool(
+    doi_conflict = bool(ref_doi and cand_doi and ref_doi != str(cand_doi).lower().strip())
+    strict_pass = not doi_conflict and bool(
         doi_match
-        or title_similarity >= 82
-        or (title_similarity >= 72 and (year_match or author_similarity >= 50))
-        or (len(overlap_terms) >= 6 and title_similarity >= 62 and (year_match or author_similarity >= 50))
+        or (title_similarity >= 90 and year_match and (author_similarity >= 50 or not ref_authors))
+        or (title_similarity >= 95 and author_similarity >= 80)
+        or (title_similarity >= 82 and year_match and author_similarity >= 75 and len(overlap_terms) >= 6)
     )
 
     fit_score = 0
@@ -1014,7 +1021,7 @@ def suggest_for_unverified(
         if not cand_title:
             continue
 
-        meta = _score(title, authors, year, cand_title, cand_authors, cand_year)
+        meta = _score_candidate(fields, cand)
         doi_match = bool(doi and cand_doi and doi.lower().strip() == cand_doi.lower().strip())
         title_score = float(meta.get("title_score", 0) or 0)
         overall = float(meta.get("score", 0) or 0)

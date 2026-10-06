@@ -435,10 +435,11 @@ def parse_full_crossref_message(message: Dict[str, Any]) -> Dict[str, Any]:
     # For online-only articles
     article_number = message.get("article-number", "")
     
-    # Extract publication date
-    issued = message.get("issued", {})
-    date_parts = issued.get("date-parts", [[]])
-    year = date_parts[0][0] if date_parts and date_parts[0] else None
+    # Retain version dates; never mistake registration for publication.
+    from reference_metadata import provider_metadata
+    bibliographic = provider_metadata("crossref", message)
+    date_parts = (message.get(bibliographic["year_basis"]) or {}).get("date-parts", [[]])
+    year = bibliographic["year"]
     month = date_parts[0][1] if date_parts and len(date_parts[0]) > 1 else None
     day = date_parts[0][2] if date_parts and len(date_parts[0]) > 2 else None
     
@@ -489,7 +490,7 @@ def build_apa7_from_metadata(metadata: Dict[str, Any]) -> str:
     elif len(authors) <= 20:
         authors_str = ", ".join(authors[:-1]) + ", & " + authors[-1]
     else:
-        authors_str = ", ".join(authors[:19]) + ", … & " + authors[19]
+        authors_str = ", ".join(authors[:19]) + ", … " + authors[-1]
     
     # Year
     year = metadata.get("year", "n.d.")
@@ -628,7 +629,7 @@ def enrich_with_full_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
         result["matched_issue"] = full_metadata.get("issue", "")
         result["matched_pages"] = full_metadata.get("page", "")
         result["matched_container_title"] = full_metadata.get("container_title", "")
-        result["matched_authors_full"] = ", ".join(full_metadata.get("author_strings", []))
+        result["matched_authors_full"] = result.get("matched_authors_full") or full_metadata.get("author_strings", [])
         result["apa7_reference"] = build_apa7_from_metadata(full_metadata)
         result["harvard_reference"] = build_harvard_from_metadata(full_metadata)
     
@@ -2384,12 +2385,8 @@ def _query_openalex_title_only(title_query: str, rows: int = None) -> List[Dict[
 
 
 def _crossref_year(item: Dict[str, Any]) -> str:
-    for key in ("issued", "published-print", "published-online", "created", "deposited"):
-        obj = item.get(key) or {}
-        parts = obj.get("date-parts", []) if isinstance(obj, dict) else []
-        if parts and parts[0]:
-            return _safe_str(parts[0][0])
-    return ""
+    from reference_metadata import provider_metadata
+    return provider_metadata("crossref", item)["year"]
 
 
 def _extract_crossref_authors(item: Dict[str, Any]) -> List[str]:
@@ -2639,7 +2636,8 @@ def _score_candidate(ref_fields: Dict[str, Any], cand: Dict[str, Any]) -> Dict[s
     journal_score = int(fuzz.token_set_ratio(ref_journal, cand_journal)) if ref_journal and cand_journal else 0
 
     author_overlap, author_similarity = _author_metrics(ref_fields.get("authors", []), cf.get("authors", []))
-    year_match, year_delta = _year_match_info(ref_fields.get("year", ""), cf.get("year", ""))
+    publication_years = cf.get("publication_years") or [cf.get("year", "")]
+    year_match, year_delta = min((_year_match_info(ref_fields.get("year", ""), year) for year in publication_years), key=lambda pair: pair[1])
 
     ref_doi = _normalise_doi(ref_fields.get("doi", ""))
     cand_doi = _normalise_doi(cf.get("doi", ""))
@@ -6775,7 +6773,14 @@ def _v1523_numeric_verify_single(ref: str, style: str, use_crossref: bool, use_o
         "doi": _v1523_normalise_numeric_doi(meta.get("doi", "")),
         "matched_title": _safe_strip(meta.get("title", "")),
         "matched_year": _safe_strip(meta.get("year", "")),
-        "matched_authors": ", ".join(meta.get("authors", []) or []),
+        "matched_authors": "; ".join(meta.get("authors_display", []) or meta.get("authors", []) or []),
+        "matched_authors_full": meta.get("authors_full", []),
+        "matched_author_count": meta.get("author_count", 0),
+        "matched_authors_complete": meta.get("authors_complete", False),
+        "matched_authors_truncated": meta.get("authors_truncated", False),
+        "matched_publication_dates": meta.get("publication_dates", {}),
+        "matched_publication_years": meta.get("publication_years", []),
+        "matched_year_basis": meta.get("year_basis", ""),
         "matched_journal": _safe_strip(meta.get("journal", "")),
         "matched_container_title": _safe_strip(meta.get("journal", "")),
         "matched_volume": _safe_strip(meta.get("volume", "")),
@@ -8388,6 +8393,11 @@ _V206_CLASSIFY = _classify_from_meta
 
 def _candidate_fields(cand):
     meta = _V206_CANDIDATE_FIELDS(cand)
+    from reference_metadata import provider_metadata
+    bibliographic = provider_metadata(cand.get("source"), cand.get("item"))
+    for field in ("journal", "volume", "issue", "pages", "publisher"):
+        bibliographic[field] = bibliographic.get(field) or meta.get(field) or ""
+    meta.update(bibliographic)
     for key in ("title", "journal", "publisher"):
         meta[key] = plain_metadata(meta.get(key))
     meta["candidate_is_publication_notice"] = bool(notice_kind(meta.get("title"))) or bool(meta.get("candidate_is_publication_notice"))
@@ -8411,7 +8421,15 @@ def _classify_from_meta(fields, meta):
     if meta.get("identity_rejected"):
         return "not_found", meta["identity_rejected"]
     if meta.get("doi_match"):
-        return "verified", "Exact DOI match. Publication status is checked separately."
+        supplied_title = identity_text(fields.get("title") or fields.get("article_title"))
+        candidate_title = identity_text(meta.get("title"))
+        full_author_text = identity_text(str(meta.get("authors_full") or meta.get("authors") or "")).replace(" ", "")
+        author_conflict = _has_author_conflict(fields, meta) and not any(
+            identity_text(author).replace(" ", "") in full_author_text
+            for author in fields.get("authors") or [] if identity_text(author))
+        if (supplied_title and candidate_title and fuzz.ratio(supplied_title, candidate_title) < 80) or author_conflict:
+            return "needs_review", "The DOI resolves, but the title or authors differ. Confirm the full citation against the publisher."
+        return "verified", "Exact DOI match with supporting citation metadata. Publication status is checked separately."
     status, reason = _V206_CLASSIFY(fields, meta)
     title = identity_text(fields.get("title") or fields.get("article_title"))
     matched = identity_text(meta.get("title"))
@@ -8420,9 +8438,12 @@ def _classify_from_meta(fields, meta):
         corroboration = (bool(meta.get("author_overlap")) or int(meta.get("author_similarity") or 0) >= 70
                          or (int(meta.get("journal_score") or 0) >= 70 and bool(meta.get("page_match"))))
         try:
-            year_delta = abs(int(str(fields.get("year"))[:4]) - int(str(meta.get("year"))[:4]))
+            year_delta = min(abs(int(str(fields.get("year"))[:4]) - int(str(year)[:4])) for year in (meta.get("publication_years") or [meta.get("year")]))
         except (ValueError, TypeError):
             year_delta = 999
         if similarity < 88 or year_delta > 1 or not corroboration:
             return "needs_review", "A candidate was found, but title and supporting metadata need human confirmation."
     return status, reason
+
+# Invalidate in-process metadata caches when rolling out author/date safeguards.
+VERIFY_BUILD = "commercial-2026-10-06-reference-metadata-safety-v2.0.13"
