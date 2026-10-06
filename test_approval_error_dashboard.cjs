@@ -7,15 +7,16 @@ const to = html.indexOf('async function findCorrectionSources', from);
 assert.ok(from >= 0 && to > from);
 let responseBody = {error:'Approval not recorded: The original DOCX is no longer available. Upload the manuscript again.'};
 const alerts = [], statusMessages = [];
-const card = {querySelector:()=>({set textContent(value){alerts.push(value);}})};
+const card = {querySelector:()=>({style:{}, setAttribute:()=>{}, set textContent(value){alerts.push(value);}}), querySelectorAll:()=>[]};
 const result = {correction_plan:{items:[]}};
 const context = vm.createContext({
   JOB_ID:'job', latestResults:result, CSS:{escape:String},
-  document:{querySelector:()=>card}, console:{error:()=>{}},
+  document:{querySelector:()=>card, querySelectorAll:()=>[card]}, console:{error:()=>{}},
   setStatus:message=>statusMessages.push(message),
   renderStudentGuidance:()=>{}, renderClaimSupport:()=>{}, renderManualVerification:()=>{},
   fetch:async()=>({ok:false,status:422,json:async()=>responseBody}),
 });
+vm.runInContext(html.slice(html.indexOf('const candidateReviewStates'),html.indexOf('function renderEvidenceCandidate')),context);
 vm.runInContext(html.slice(from,to),context);
 (async()=>{
   assert.equal(await context.saveCorrectionDecision('item','accepted',''),false);

@@ -26,8 +26,8 @@ const rows = [{reference, status:'needs_review'}, {reference:'Missing work', sta
   {reference:'Unavailable work', status:'offline'}, {reference:'Confirmed work', status:'verified'}];
 const messages = [];
 const context = vm.createContext({
-  $: id => nodes[id], document: {getElementById: id => nodes[id]},
-  latestResults:{online_verification:{rows}, correction_plan:{items:[item]}}, manualVerifyRows:[], manualSearchCandidates:{},
+  $: id => nodes[id], document: {getElementById: id => nodes[id], querySelectorAll: () => []},
+  latestResults:{online_verification:{rows}, correction_plan:{items:[item]}}, manualVerifyRows:[], manualSearchCandidates:{}, manualDecisionsInFlight:new Set(), setManualDecisionBusy:()=>{},
   esc: value => String(value ?? '').replaceAll('<','&lt;'), hasPaidAccess: () => true,
   formatBadge: value => String(value), renderSourceSearchReport: () => '',
   manualDecisionLabel: value => value, applyManualDecisionUI: () => {},
@@ -37,7 +37,7 @@ const context = vm.createContext({
 });
 vm.runInContext(section('function manualQueryFromRow', 'function googleScholarUrl'), context);
 vm.runInContext(section('function normaliseManualReferenceKey', 'function rerenderManualVerificationList'), context);
-vm.runInContext(section('function renderEvidenceCandidate', 'function correctionLocationText'), context);
+vm.runInContext(section('const candidateReviewStates', 'function correctionLocationText'), context);
 vm.runInContext(section('function bindCandidateMetadataControls', 'async function editCandidateMetadata'), context);
 vm.runInContext(section('function renderManualVerification', 'async function runManualSourceSearch'), context);
 vm.runInContext(section('async function approveCorrectionSource', 'async function approveAllReferenceFormatting'), context);

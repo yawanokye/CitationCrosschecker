@@ -16,9 +16,9 @@ const scope = {querySelector: selector => selector.startsWith('input') ? {value:
  selector.startsWith('.candidate-author-confirm') ? {checked:authorChecked} : {checked:true}};
 const button = {closest: () => scope};
 const context = vm.createContext({latestResults:{correction_plan:{items:[item]}}, CSS:{escape:String},
- document:{}, esc:value => String(value??''), setStatus:message => messages.push(message), confirm:()=>true,
+ document:{querySelectorAll:()=>[]}, esc:value => String(value??''), setStatus:message => messages.push(message), confirm:()=>true,
  saveCorrectionDecision:async (...args) => {submitted=args; return true;}});
-vm.runInContext(section('function renderEvidenceCandidate', 'function correctionLocationText'), context);
+vm.runInContext(section('const candidateReviewStates', 'function correctionLocationText'), context);
 vm.runInContext(section('async function approveCorrectionSource', 'async function approveAllReferenceFormatting'), context);
 const rendered=context.renderEvidenceCandidate(item,source,0);
 assert.match(rendered,/García, Ana; Smith, Jane/);

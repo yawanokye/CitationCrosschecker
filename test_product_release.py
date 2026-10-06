@@ -505,11 +505,11 @@ def test_v200_release_identity_and_homepage_feature_notice():
     env = Path(".env.example").read_text(encoding="utf-8")
     home = Path("templates/new_index.html").read_text(encoding="utf-8")
     output = Path("templates/new_results.html").read_text(encoding="utf-8")
-    assert "RELEASE_VERSION=2.0.15-report-download" in env
+    assert "RELEASE_VERSION=2.0.16-dashboard-controls" in env
     assert "Evidence Resolution Workspace" in home
     assert "Optional writing signals, off by default" in home
     assert "Evidence Resolution Workspace" in output
-    assert "PRODUCTION_RESULTS-commercial-v2.0.15-report-download" in output
+    assert "PRODUCTION_RESULTS-commercial-v2.0.16-dashboard-controls" in output
     assert "Simple pay-as-you-go pricing" in home
 
 
@@ -592,7 +592,7 @@ def test_find_supporting_source_has_inline_feedback_and_uses_clicked_button():
     assert "Why records were withheld" in html
     assert "Continue manually" in html
     assert "findCorrectionSources(btn.dataset.id, btn)" in html
-    assert "renderEvidenceCandidate(correction, source, sourceIndex)" in html
+    assert 'renderEvidenceCandidate(correction, source, sourceIndex, "claim")' in html
     assert "Manual full-text review required" in html
     assert "actionScope.querySelector" in html
 
