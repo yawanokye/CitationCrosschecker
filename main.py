@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.11-reference-resolution"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.12-verification-coverage"
 
 import io
 import asyncio
@@ -92,6 +92,7 @@ from reference_formatter import (
 from academic_voice import analyse_academic_voice, rewrite_selected_passage
 from correction_plan import build_correction_plan, compare_revision_results, _parse_original_reference
 from reference_review import approved_reference_citation_edits, reference_resolution_counts
+from verification_coverage import reconcile_verification_meta, verification_coverage
 from evidence_resolution import (
     assess_candidate_context_fit,
     build_claim_fingerprint,
@@ -764,7 +765,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.11-reference-resolution").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.12-verification-coverage").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -1636,7 +1637,9 @@ def _ensure_recovery_possible_sources(result: Dict[str, Any]) -> Dict[str, Any]:
 def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
     with _lock:
         if job_id in _store:
-            return _store[job_id]
+            record = _store[job_id]
+            record["verification"] = reconcile_verification_meta(record.get("result") or {})
+            return record
 
     if DATABASE_URL:
         try:
@@ -1661,15 +1664,7 @@ def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
             online_verification = result.get("online_verification", {}) or {}
             rows = online_verification.get("rows", []) or []
 
-            if rows and verification.get("state") != "completed":
-                verification.update({
-                    "state": "completed",
-                    "progress": len(rows),
-                    "total": len(rows),
-                    "percentage": 100,
-                    "results_count": len(rows),
-                    "summary": online_verification.get("summary", {})
-                })
+            verification = reconcile_verification_meta(result)
 
             job_record = {
                 "job_id": job_id,
@@ -1771,19 +1766,7 @@ def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
     online_verification = result.get("online_verification", {}) or {}
     rows = online_verification.get("rows", []) or []
 
-    if rows and verification.get("progress", 0) < len(rows):
-        verification["progress"] = len(rows)
-        verification["results_count"] = len(rows)
-
-    if rows and not verification.get("total"):
-        verification["total"] = len(rows)
-
-    if verification.get("total"):
-        verification["percentage"] = int(
-            (verification.get("progress", 0) / max(verification.get("total", 1), 1)) * 100
-        )
-
-    result["verification"] = verification
+    verification = reconcile_verification_meta(result)
 
     return {
         "job_id": job_id,
@@ -5822,6 +5805,7 @@ def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] =
     result = result or {}
     if result.get("result_deleted"):
         return attach_privacy_status(result)
+    reconcile_verification_meta(result)
     analysis_options = result.get("analysis_options") if isinstance(result.get("analysis_options"), dict) else {}
     voice_settings = result.get("academic_voice_settings") if isinstance(result.get("academic_voice_settings"), dict) else {}
     if "enabled" not in voice_settings:
@@ -6979,26 +6963,27 @@ async def get_fix_log(request: Request, job_id: str):
 # ============================================================
 
 @app.post("/verify-online")
-async def verify_online(job_id: str = Form(...)):
-    job = load_job_record(job_id)
+async def verify_online(job_id: str = Form(...), force: bool = Form(False)):
+    job = load_job_record_fresh(job_id)
 
     if not job:
         raise HTTPException(404, "Job not found")
 
-    verification = job.get("verification", {}) or {}
     result = job.get("result", {}) or {}
+    verification = reconcile_verification_meta(result)
+    coverage = result["verification_coverage"]
     selected_style = _style_for_job_result(result)
     print(f"[VERIFY ONLINE] Queuing verification for job {job_id} with selected_style={selected_style}")
 
     existing_rows = ((result.get("online_verification") or {}).get("rows") or [])
 
-    if verification.get("state") == "completed" and existing_rows:
+    if verification.get("state") == "completed" and coverage["complete"] and not force:
         return {
             "started": False,
             "message": "Verification already completed",
             "job_id": job_id,
             "completed": True,
-            "total_references": len(existing_rows)
+            "total_references": coverage["expected"]
         }
 
     if verification.get("state") in {"queued", "running"}:
@@ -7161,9 +7146,14 @@ def online_status(request: Request, job_id: str):
                         or bool(fresh_result.get("verification_completed_at"))
                     )
 
-                    if final_tables_ready:
-                        result = fresh_result
-                        verification = fresh_verification
+                    result = fresh_result or result
+                    verification = fresh_verification
+                    finished_coverage = verification_coverage(result)
+                    if not finished_coverage["complete"]:
+                        verification["state"] = "completed"
+                        result["verification"] = verification
+                        verification = reconcile_verification_meta(result)
+                    elif final_tables_ready:
                         verification["state"] = "completed"
                         verification["message"] = "Verification complete"
                     else:
@@ -7184,21 +7174,11 @@ def online_status(request: Request, job_id: str):
         online_verification = result.get("online_verification") or {}
         rows = online_verification.get("rows") or []
 
-        progress = verification.get("progress", 0)
-        total = verification.get("total", 0)
-
-        if rows and progress < len(rows):
-            progress = len(rows)
-
-        if rows and not total:
-            total = len(rows)
-
-        percentage = verification.get("percentage", 0)
-
-        if total:
-            percentage = int((progress / max(total, 1)) * 100)
-
         result["verification"] = verification
+        verification = reconcile_verification_meta(result)
+        progress = verification["progress"]
+        total = verification["total"]
+        percentage = verification["percentage"]
 
         state = verification.get("state", "idle")
 

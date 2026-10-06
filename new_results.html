@@ -1839,6 +1839,7 @@
                     <div id="publicationSafetyBox"></div>
 
                     <div class="kpi-grid" id="verifyKpis" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom:16px;"></div>
+                    <div class="helper-box" id="verificationCoverageNote" role="status" style="margin-bottom:16px;"></div>
 
                     <div class="filters">
                         <input class="search-input" id="verifySearch" placeholder="Search verification rows...">
@@ -1904,7 +1905,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.11-reference-resolution";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.12-verification-coverage";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2067,6 +2068,37 @@ document.addEventListener("DOMContentLoaded", function () {
     function previewTotal(data, key, fallback = 0) {
         const total = Number(previewCoverage(data, key).total);
         return Number.isFinite(total) ? total : fallback;
+    }
+
+    function verificationCoverageCounts(data) {
+        const saved = data?.verification_coverage || {};
+        const rows = getSafeRows(data?.online_verification?.rows);
+        const totalRows = Number(data?.online_verification?.summary?.total ?? previewTotal(data, "online_verification", rows.length));
+        const expected = Number(saved.expected ?? Math.max(Number(data?.summary?.reference_entries_found || 0), Number(data?.verification?.total || 0), totalRows));
+        const missingResults = rows.filter(row => row.verification_attempted === false).length;
+        const processed = Number(saved.processed ?? Math.max(0, totalRows - missingResults));
+        const summary = data?.reference_resolution_summary || {};
+        const matched = Number(saved.matched ?? (Number(summary.verified ?? data?.online_verification?.summary?.verified ?? 0) + Number(summary.metadata_differences ?? data?.online_verification?.summary?.likely ?? 0)));
+        return {expected, processed, matched, pending:Number(saved.pending ?? Math.max(0, expected - processed)),
+            displayed:rows.length, complete:expected > 0 && processed >= expected,
+            extractionMismatch:saved.extraction_count_mismatch === true};
+    }
+
+    function verificationCoverageText(data) {
+        const count = verificationCoverageCounts(data);
+        const sampled = count.displayed < Number(data?.verification_coverage?.result_rows ?? data?.online_verification?.summary?.total ?? previewTotal(data, "online_verification", count.displayed));
+        return `${count.processed} of ${count.expected} references processed. ${count.matched} source records matched. ` +
+            (count.pending ? `${count.pending} references still lack a usable result. ` : "") +
+            (count.extractionMismatch ? "The saved reference count and extracted list disagree. Re-upload the document to repeat extraction. " : "") +
+            (sampled ? `Showing ${count.displayed} result rows in this preview. ` : `Showing all ${count.displayed} result rows. `) +
+            "Processed includes matches, human-review outcomes, not-found results and lookup failures. A metadata match does not establish publication safety.";
+    }
+
+    function showVerificationResultStatus(data, secondaryReady = true) {
+        const count = verificationCoverageCounts(data);
+        const message = verificationCoverageText(data) + (count.complete ? (secondaryReady ? "" : " Recovery and Claim Support will continue in the background.") : " Retry verification for missing results.");
+        showProgress(count.complete ? 100 : (count.expected ? Math.floor(100 * count.processed / count.expected) : 0), message);
+        setStatus(message, count.complete ? "good" : "warn");
     }
 
     function previewNoticeHtml(data, key, label) {
@@ -2328,6 +2360,8 @@ document.addEventListener("DOMContentLoaded", function () {
             ""
         ).toLowerCase();
 
+        if (["queued", "running"].includes(state)) return false;
+
         const finalTablesReady =
             verification.final_tables_ready === true ||
             result.final_tables_ready === true ||
@@ -2335,11 +2369,11 @@ document.addEventListener("DOMContentLoaded", function () {
 
         const progress = Number(verification.progress || 0);
         const total = Number(verification.total || 0);
-        const rowsComplete = total > 0 && progress >= total &&
-            result.online_verification.rows.length >= total;
+        const rowsComplete = total > 0 && progress >= total && verificationCoverageCounts(result).complete;
         const verificationReady =
             finalTablesReady ||
             state === "completed" ||
+            state === "incomplete" ||
             state === "finalising" ||
             rowsComplete;
 
@@ -4106,13 +4140,16 @@ document.addEventListener("DOMContentLoaded", function () {
         const claimRows = getSafeRows(data.claim_support);
         const rec = isLockedPayload(data.recovery) ? {} : (data.recovery || {});
         const paid = hasPaidAccess(data);
+        const verificationCount = verificationCoverageCounts(data);
         const kpis = [
             ["In-text citations", s.in_text_citations_found, false],
             ["References", s.reference_entries_found, false],
             ["Missing citations", s.missing_in_references, !paid],
             ["Uncited references", s.uncited_references, !paid],
             ["Match rate", s.match_rate === null || s.match_rate === undefined ? "" : `${s.match_rate}%`, !paid],
-            ["Verification rows", paid ? ovRows.length : previewTotal(data, "online_verification", ovRows.length), false],
+            ["References processed", verificationCount.processed, false],
+            ["Sources matched", verificationCount.matched, false],
+            ["Awaiting result", verificationCount.pending, false],
             ["Recovery rows", paid ? (rec.missing_recovery || []).length + (rec.verification_recovery || []).length : previewTotal(data, "recovery", 0), false],
             ["Claim rows", paid ? claimRows.length : previewTotal(data, "claim_support", claimRows.length), false]
         ];
@@ -4227,6 +4264,8 @@ document.addEventListener("DOMContentLoaded", function () {
         const summary = ov.summary || {};
         const body = $("verifyBody");
         const kpis = $("verifyKpis");
+        const coverageNote = $("verificationCoverageNote");
+        if (coverageNote) coverageNote.textContent = verificationCoverageText(data);
         const safetyBox = $("publicationSafetyBox");
         const safetyReview = data.source_risk_review || {};
         const safetyRows = Array.isArray(safetyReview.risks) ? safetyReview.risks : [];
@@ -4272,7 +4311,7 @@ document.addEventListener("DOMContentLoaded", function () {
             if (key && !manualIndexByReference.has(key)) manualIndexByReference.set(key, idx);
         });
 
-        body.innerHTML = rows.slice(0, CONFIG.MAX_VERIFY_DISPLAY).map((row, i) => {
+        body.innerHTML = rows.map((row, i) => {
             const doi = row.doi || "";
             const doiHtml = doi ? `<a class="doi-link" href="${normalizeDoiUrl(doi)}" target="_blank" rel="noopener">View DOI</a><div class="small-muted">${esc(doi)}</div>` : "—";
             const queryKey = manualQueryFromRow(row).toLowerCase();
@@ -4886,7 +4925,7 @@ document.addEventListener("DOMContentLoaded", function () {
         
         setCount("countC2R", paid ? c2rUniqueRows.length : previewTotal(data, "reconciliation_intext_to_reference", c2rUniqueRows.length));
         setCount("countR2C", paid ? (data.reconciliation_reference_to_intext?.length || 0) : previewTotal(data, "reconciliation_reference_to_intext", 0));
-        setCount("countVerify", paid ? (data.online_verification?.rows?.length || 0) : previewTotal(data, "online_verification", 0));
+        setCount("countVerify", verificationCoverageCounts(data).processed);
         setCount("countRecovery", paid ? (rec.missing_recovery || []).length + (rec.verification_recovery || []).length : previewTotal(data, "recovery", 0));
         setCount("countClaim", paid ? getSafeRows(data.claim_support).length : previewTotal(data, "claim_support", 0));
         const citationNeededRows = getCitationNeededRows(data);
@@ -4905,7 +4944,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     // --------------------- VERIFICATION API ---------------------
-    async function startVerification() {
+    async function startVerification(force = false) {
         if (!JOB_ID) { setStatus("No job ID found.", "bad"); return; }
         if (verificationInProgress) { setStatus("Verification already in progress.", "warn"); return; }
 
@@ -4923,6 +4962,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
         const formData = new FormData();
         formData.append("job_id", JOB_ID);
+        formData.append("force", force === true ? "true" : "false");
 
         try {
             const res = await fetch("/verify-online", { method: "POST", body: formData });
@@ -4993,10 +5033,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (isFinalReady(hydrated)) {
                     renderAll(hydrated);
                     const secondaryReady = hasRecoveryPayload(hydrated) && hasClaimPayload(hydrated);
-                    showProgress(100, `Source verification ready. ${rows.length} reference records checked.`);
-                    setStatus(secondaryReady
-                        ? `Results ready. ${rows.length} reference records checked and ${(hydrated.claim_support || []).length} claim-support rows populated.`
-                        : `Source verification ready. Recovery and Claim Support will continue in the background.`, "good");
+                    showVerificationResultStatus(hydrated, secondaryReady);
                     finishVerification(true);
                     return;
                 }
@@ -5072,7 +5109,7 @@ document.addEventListener("DOMContentLoaded", function () {
             total = lastKnownTotal || total;
             progress = Math.max(lastKnownProgress, progress);
 
-            if (state === "completed") {
+            if (state === "completed" || state === "incomplete") {
                 showProgress(96, total ? `Verification complete: ${total}/${total}. Loading dashboard tables...` : "Verification complete. Loading dashboard tables...");
                 setStatus("Verification complete. Loading final dashboard tables...", "good");
                 if (!finalFetchRunning) await fetchFinalResultWithRetry();
@@ -5147,10 +5184,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     if (isFinalReady(hydrated)) {
                         renderAll(hydrated);
                         const secondaryReady = hasRecoveryPayload(hydrated) && hasClaimPayload(hydrated);
-                        showProgress(100, `Source verification ready. ${rows.length} reference records checked.`);
-                        setStatus(secondaryReady
-                            ? `Results ready. ${rows.length} reference records checked and ${claimRows.length} claim-support rows populated.`
-                            : "Source verification ready. Recovery and Claim Support will continue in the background.", "good");
+                        showVerificationResultStatus(hydrated, secondaryReady);
                         finishVerification(true);
                         finalFetchRunning = false;
                         return hydrated;
@@ -5177,8 +5211,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const hydrated = hydrateFinalDefaults(latestResults);
             renderAll(hydrated);
             const rows = hydrated.online_verification?.rows?.length || 0;
-            setStatus(`Source verification ready. ${rows} reference records checked.`, "good");
-            showProgress(100, "Source-verification results loaded.");
+            showVerificationResultStatus(hydrated, hasRecoveryPayload(hydrated) && hasClaimPayload(hydrated));
             finishVerification(true);
         } else {
             setStatus("No source-verification rows were returned. Check that worker 1 is running and listening to the verification queue, then retry.", "bad");
@@ -5358,6 +5391,22 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!keepProgressVisible) hideProgress();
     }
 
+    function resumeVerificationPolling(data) {
+        const state = String(data?.verification?.state || "").toLowerCase();
+        if (!["queued", "running", "finalising"].includes(state)) return false;
+        if (!verificationInProgress) {
+            const counts = verificationCoverageCounts(data);
+            verificationInProgress = true;
+            lastKnownTotal = counts.expected;
+            lastKnownProgress = counts.processed;
+            partialFinalRendered = false;
+            const btn = $("btnVerify");
+            if (btn) btn.disabled = true;
+            startPollingStatus();
+        }
+        return true;
+    }
+
     async function loadExistingResult(showMessage = true) {
         if (!JOB_ID) { setStatus("No job ID found in URL.", "bad"); return null; }
         try {
@@ -5368,7 +5417,9 @@ document.addEventListener("DOMContentLoaded", function () {
                 resultPollCount = 0;
                 const result = js.data || js.result;
                 renderAll(result);
-                setStatus(hasPaidAccess(latestResults) ? "Full Review results loaded." : "Free Preview loaded. Unlock Full Review to see all results.", hasPaidAccess(latestResults) ? "good" : "warn");
+                if (resumeVerificationPolling(result)) setStatus(`Verification in progress: ${verificationCoverageCounts(result).processed}/${verificationCoverageCounts(result).expected}.`, "info");
+                else if (hasVerificationRows(result)) showVerificationResultStatus(result, hasRecoveryPayload(result) && hasClaimPayload(result));
+                else setStatus("Analysis loaded. Reference verification has not returned results yet.", "warn");
                 return result;
             }
             if (js.status === "queued" || js.status === "processing" || js.status === "pending") {
@@ -5423,7 +5474,12 @@ document.addEventListener("DOMContentLoaded", function () {
         lines.push(`${csvCell("ACII")},${csvCell(acii.score_available === false ? "Withheld" : (acii.ACII ?? acii.score ?? ""))}`);
         lines.push(`${csvCell("ACII category")},${csvCell(acii.category || "")}`);
         lines.push(`${csvCell("ACII disclaimer")},${csvCell(acii.disclaimer || "")}`);
-        lines.push(`${csvCell("Verification rows")},${csvCell(verifyRows.length)}`);
+        const coverage = verificationCoverageCounts(latestResults);
+        lines.push(`${csvCell("References expected")},${csvCell(coverage.expected)}`);
+        lines.push(`${csvCell("References processed")},${csvCell(coverage.processed)}`);
+        lines.push(`${csvCell("Sources matched")},${csvCell(coverage.matched)}`);
+        lines.push(`${csvCell("Awaiting result")},${csvCell(coverage.pending)}`);
+        lines.push(`${csvCell("Verification result rows")},${csvCell(verifyRows.length)}`);
         lines.push(`${csvCell("Recovery rows")},${csvCell(recoveryMissing.length + recoveryVerify.length)}`);
         lines.push(`${csvCell("Claim support rows")},${csvCell(claimRows.length)}`);
 
@@ -5525,7 +5581,10 @@ document.addEventListener("DOMContentLoaded", function () {
 <tr><td style="${cellStyle}">ACII</td><td style="${cellStyle}">${reportText(acii.score_available === false ? "Withheld" : (acii.ACII ?? acii.score ?? "--"))}</td></tr>
 <tr><td style="${cellStyle}">ACII category</td><td style="${cellStyle}">${reportText(acii.category || "--")}</td></tr>
 <tr><td style="${cellStyle}">ACII disclaimer</td><td style="${cellStyle}">${reportText(acii.disclaimer || "")}</td></tr>
-<tr><td style="${cellStyle}">Verification rows</td><td style="${cellStyle}">${verifyRows.length}</td></tr>
+<tr><td style="${cellStyle}">References expected</td><td style="${cellStyle}">${verificationCoverageCounts(latestResults).expected}</td></tr>
+<tr><td style="${cellStyle}">References processed</td><td style="${cellStyle}">${verificationCoverageCounts(latestResults).processed}</td></tr>
+<tr><td style="${cellStyle}">Sources matched</td><td style="${cellStyle}">${verificationCoverageCounts(latestResults).matched}</td></tr>
+<tr><td style="${cellStyle}">Awaiting result</td><td style="${cellStyle}">${verificationCoverageCounts(latestResults).pending}</td></tr>
 <tr><td style="${cellStyle}">Recovery rows</td><td style="${cellStyle}">${recoveryMissing.length + recoveryVerify.length}</td></tr>
 <tr><td style="${cellStyle}">Claim-support rows</td><td style="${cellStyle}">${claimRows.length}</td></tr>
 </table>
@@ -5627,7 +5686,7 @@ ${claimTable}
     }
 
     function setupActions() {
-        $("btnVerify")?.addEventListener("click", startVerification);
+        $("btnVerify")?.addEventListener("click", () => startVerification(true));
         $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
         $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
         $("btnStartCitationNeeded")?.addEventListener("click", startCitationNeededClaims);
@@ -5664,7 +5723,7 @@ ${claimTable}
         setupFilters();
         setupActions();
         await loadExistingResult(true);
-        if (AUTO_VERIFY && (!latestResults?.online_verification?.rows?.length)) startVerification();
+        if (AUTO_VERIFY && !verificationInProgress && (!latestResults?.online_verification?.rows?.length)) startVerification();
         console.log("[CiteIntegrity] Results dashboard ready for job:", JOB_ID);
     }
 

@@ -27,6 +27,7 @@ from verify import verify_references_batch
 from acii import compute_acii
 from academic_voice import analyse_academic_voice
 from correction_plan import build_correction_plan
+from verification_coverage import ensure_reference_outcomes, reconcile_verification_meta, verification_coverage
 from table_figure_audit import audit_tables_figures
 from claim_checker import (
     build_claim_support_rows,
@@ -35,8 +36,8 @@ from claim_checker import (
     clean_extracted_claim_text,
 )
 
-__version__ = "2.0.6"
-WORKER_BUILD = "commercial-2026-09-17-fast-verification-results-v1.6.4"
+__version__ = "2.0.12"
+WORKER_BUILD = "commercial-2026-10-05-verification-coverage-v2.0.12"
 
 try:
     from claim_support_scorer import score_claim_support
@@ -309,7 +310,7 @@ VERIFY_PARALLEL_WORKERS = int(os.environ.get("VERIFY_PARALLEL_WORKERS", "8"))
 VERIFY_CACHE_TTL = int(os.environ.get("VERIFY_REDIS_CACHE_TTL", "21600"))
 VERIFY_USE_CACHE = _env_flag("VERIFY_REDIS_CACHE_ENABLED", "1")
 VERIFY_PARALLEL_MODE = _env_flag("VERIFY_PARALLEL_MODE", "1")
-VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v6-identity-safety").strip() or "v6-identity-safety"
+VERIFY_CACHE_NAMESPACE = os.environ.get("VERIFY_CACHE_NAMESPACE", "v7-verification-coverage").strip() or "v7-verification-coverage"
 
 # Privacy-first cache controls. Defaults are OFF.
 CACHE_RESULTS_IN_REDIS = _env_flag("CACHE_RESULTS_IN_REDIS", "0")
@@ -351,6 +352,7 @@ def _load_job_result(job_id):
 
 
 def _save_job_result(job_id, result, status=None):
+    reconcile_verification_meta(result)
     conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
 
@@ -401,9 +403,7 @@ def _set_verification_meta(result, **kwargs):
 
     verification = result.get("verification") or {}
 
-    for key, value in kwargs.items():
-        if value is not None:
-            verification[key] = value
+    verification.update(kwargs)
 
     result["verification"] = verification
     return result
@@ -436,7 +436,7 @@ def _reference_cache_key(ref, style="apa", enrich_metadata=False):
         "text:" + re.sub(r"[^a-z0-9]+", " ", reference.casefold()).strip()
     )
     raw = json.dumps({
-        "verification_release": "2.0.6-identity-safety",
+        "verification_release": "2.0.12-verification-coverage",
         "namespace": VERIFY_CACHE_NAMESPACE,
         "reference_text": reference,
         "identity": identity,
@@ -540,7 +540,7 @@ def _verify_chunk_parallel(chunk, style="apa", enrich_metadata=False):
             job_id=None,
             enrich_metadata=enrich_metadata
         ) or []
-        return rows
+        return ensure_reference_outcomes(chunk, rows)
 
     max_workers = max(1, min(VERIFY_PARALLEL_WORKERS, len(chunk)))
     ordered_rows = [None] * len(chunk)
@@ -559,7 +559,7 @@ def _verify_chunk_parallel(chunk, style="apa", enrich_metadata=False):
             except Exception as e:
                 ordered_rows[i] = _make_offline_verification_row(ref, str(e), style)
 
-    return [r for r in ordered_rows if r is not None]
+    return ensure_reference_outcomes(chunk, ordered_rows)
 
 def _reference_year_from_text(text):
     m = re.search(r"(?:19|20)\d{2}[a-z]?", str(text or ""), flags=re.I)
@@ -4832,9 +4832,12 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
             _save_job_result(job_id, result)
             return result
 
+        result.pop("verification_completed_at", None)
+        result["final_tables_ready"] = False
         result = _set_verification_meta(
             result,
             state="running",
+            final_tables_ready=False,
             progress=0,
             total=total,
             percentage=0,
@@ -4870,16 +4873,23 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
         for chunk_index, chunk in enumerate(chunks, start=1):
             print(f"🌐 Verifying chunk {chunk_index}/{len(chunks)} with {len(chunk)} refs")
 
-            chunk_rows = _verify_chunk_parallel(
-                chunk,
-                style=style,
-                enrich_metadata=enrich_metadata
+            try:
+                chunk_rows = _verify_chunk_parallel(
+                    chunk,
+                    style=style,
+                    enrich_metadata=enrich_metadata
+                )
+            except Exception as chunk_error:
+                print(f"[VERIFY WORKER] Chunk {chunk_index} failed: {chunk_error}")
+                chunk_rows = []
+            chunk_rows = ensure_reference_outcomes(
+                chunk, chunk_rows, start_index=(chunk_index - 1) * VERIFY_CHUNK_SIZE
             )
             chunk_rows = _add_worker_style_metadata_to_rows(chunk_rows, style)
 
             all_rows.extend(chunk_rows or [])
 
-            progress = min(len(all_rows), total)
+            progress = sum(row.get("verification_attempted") is not False for row in all_rows)
             percentage = int((progress / total) * 100) if total else 0
             summary = _compute_verification_summary(all_rows)
 
@@ -5045,7 +5055,10 @@ def process_verification(job_id, style="apa", enrich_metadata=False):
 
         _save_job_result(job_id, result, status="completed")
 
-        print(f"✅ Durable verification completed for job {job_id}: {len(all_rows)} rows")
+        coverage = result["verification_coverage"]
+        print(f"[VERIFY COVERAGE] job={job_id} expected={coverage['expected']} "
+              f"processed={coverage['processed']} matched={coverage['matched']} "
+              f"pending={coverage['pending']} rows={len(all_rows)} state={result['verification']['state']}")
         return result
 
     except Exception as e:

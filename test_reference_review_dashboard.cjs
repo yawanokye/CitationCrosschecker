@@ -40,6 +40,9 @@ vm.runInContext(section('function normaliseManualReferenceKey', 'function rerend
 vm.runInContext(section('function renderEvidenceCandidate', 'function correctionLocationText'), context);
 vm.runInContext(section('function renderManualVerification', 'async function runManualSourceSearch'), context);
 vm.runInContext(section('async function approveCorrectionSource', 'async function approveAllReferenceFormatting'), context);
+vm.runInContext(section('function verificationCoverageCounts', 'function previewNoticeHtml'), context);
+context.getSafeRows = value => Array.isArray(value) ? value : [];
+context.previewTotal = (data, key, fallback=0) => data.preview_coverage?.[key]?.total ?? fallback;
 vm.runInContext(section('function renderVerification(data)', 'function csvCell'), context);
 nodes.verifyKpis = {innerHTML:''};
 context.renderVerification({online_verification:{rows:[rows[0]]}, reference_resolution_summary:{verified:3, metadata_differences:2, needs_review:4, not_found:12, lookup_failed:7}});

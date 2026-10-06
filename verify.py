@@ -8302,7 +8302,21 @@ def _extract_fields_by_style(ref: str, style: str) -> Dict[str, Any]:
             "reference_entry_syntax": "author_year",
         })
         return fields
-    return _V161_PREVIOUS_EXTRACT_FIELDS_BY_STYLE(ref, style)
+    fields = _V161_PREVIOUS_EXTRACT_FIELDS_BY_STYLE(ref, style)
+    if not _v1523_is_numeric(_canonical_verify_style(style)):
+        # Harvard/APA entries with a bare year need the same bibliographic
+        # boundary parser as extraction. Journal names and pages are not titles.
+        from correction_plan import _parse_original_reference
+        parsed = _parse_original_reference(ref)
+        title = str(parsed.get("title") or "").strip()
+        if title and parsed.get("year") == fields.get("year"):
+            fields.update({"title": title, "article_title": title,
+                           "journal": parsed.get("source") or fields.get("journal", ""),
+                           "volume": parsed.get("volume") or fields.get("volume", ""),
+                           "issue": parsed.get("issue") or fields.get("issue", ""),
+                           "pages": parsed.get("pages") or fields.get("pages", ""),
+                           "doi": parsed.get("doi") or fields.get("doi", "")})
+    return fields
 
 
 _V161_PREVIOUS_BUILD_QUERY_PLAN = globals().get("_build_verification_query_plan")

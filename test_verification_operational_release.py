@@ -64,7 +64,7 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
         self.assertIn('VERIFY_CHUNK_SIZE", "40"', worker)
         self.assertIn('VERIFY_REDIS_CACHE_ENABLED", "1"', worker)
         self.assertIn('VERIFY_REDIS_CACHE_TTL", "21600"', worker)
-        self.assertIn('VERIFY_CACHE_NAMESPACE", "v6-identity-safety"', worker)
+        self.assertIn('VERIFY_CACHE_NAMESPACE", "v7-verification-coverage"', worker)
         self.assertIn('VERIFY_SHORT_OPENALEX_MAX_QUERIES", "1"', verifier)
         for setting in (
             "VERIFY_PARALLEL_MODE=1",
@@ -73,7 +73,7 @@ class VerificationOperationalReleaseTests(unittest.TestCase):
             "VERIFY_USE_CACHE=0",
             "VERIFY_REDIS_CACHE_ENABLED=1",
             "VERIFY_REDIS_CACHE_TTL=21600",
-            "VERIFY_CACHE_NAMESPACE=v6-identity-safety",
+            "VERIFY_CACHE_NAMESPACE=v7-verification-coverage",
         ):
             self.assertIn(setting, env)
 

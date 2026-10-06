@@ -30,6 +30,7 @@ from reference_formatter import (
 )
 from source_risk import assess_source_risks
 from reference_review import reference_resolution_counts
+from verification_coverage import reconcile_verification_meta
 
 
 ROOT = Path(__file__).resolve().parent
@@ -82,6 +83,7 @@ def _load_result_route(cache=None, result=None):
         "analyse_academic_voice": analyse_academic_voice,
         "assess_source_risks": assess_source_risks,
         "reference_resolution_counts": reference_resolution_counts,
+        "reconcile_verification_meta": reconcile_verification_meta,
         "build_citation_coach": build_citation_coach,
         "build_correction_plan": build_correction_plan,
         "get_access_mode": lambda *args: {"mode": "payment_required"},
