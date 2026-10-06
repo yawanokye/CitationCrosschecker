@@ -1447,7 +1447,7 @@
 
         .output-feature-notice { border:1px solid #a7f3d0; border-left:6px solid var(--green); background:linear-gradient(135deg,#ecfdf5,#fff); }
         .output-feature-list { display:flex; flex-wrap:wrap; gap:9px; margin-top:12px; }
-        .output-feature-tip { position:relative; display:inline-flex; align-items:center; gap:5px; padding:7px 11px; border:1px solid #bbf7d0; border-radius:999px; background:#fff; color:var(--navy); font-size:12px; font-weight:800; cursor:help; }
+        .output-feature-tip { position:relative; display:inline-flex; align-items:center; gap:5px; padding:7px 11px; border:1px solid #bbf7d0; border-radius:999px; background:#fff; color:var(--navy); font-size:12px; font-weight:800; font-family:inherit; cursor:pointer; }
         .output-feature-tip::after { content:attr(data-tooltip); position:absolute; left:50%; bottom:calc(100% + 9px); transform:translateX(-50%); width:260px; padding:10px 12px; border-radius:10px; background:var(--navy); color:#fff; font-size:12px; font-weight:600; line-height:1.4; opacity:0; visibility:hidden; pointer-events:none; z-index:80; box-shadow:var(--shadow); transition:opacity .15s ease; }
         .output-feature-tip:hover::after, .output-feature-tip:focus::after { opacity:1; visibility:visible; }
         .resolution-overview { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin:14px 0; }
@@ -1556,14 +1556,14 @@
             <div><h2 id="outputFeaturesTitle">New tools in your Full Review</h2><p>Point to or focus on any feature to see what it does.</p></div>
         </div>
         <div class="output-feature-list">
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Brings unsupported claims, incomplete or weak mappings, missing references, metadata conflicts and every unresolved verification result into one correction workflow.">Evidence Resolution Workspace ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="An optional, off-by-default review of explainable writing patterns. It does not determine authorship or prove AI use.">Academic Voice and Writing Signals ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Takes you through critical, important and optional corrections one issue at a time.">Fix next issue ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Adds an approved change to the downloadable Word manuscript with Track Changes.">Approve revision ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Formats an approved reference in the style detected from the uploaded manuscript.">Style-aware reference ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Builds a manuscript profile and claim fingerprint, compares candidate abstracts by population, concepts, relationship, geography, time and evidence type, and withholds general-keyword-only matches.">Context-aware source resolution ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Audits every reference against the detected style, flags incomplete entries, and places approved corrections in the Track Changes document.">Reference-list style audit ⓘ</span>
-            <span class="output-feature-tip" tabindex="0" data-tooltip="Downloads four student-ready files and excludes internal JSON and system files.">Clean report package ⓘ</span>
+            <button type="button" class="output-feature-tip" data-feature-pane="correctionPane" data-feature-target="correctionContent" data-feature-action="" data-tooltip="Brings unsupported claims, incomplete or weak mappings, missing references, metadata conflicts and every unresolved verification result into one correction workflow.">Evidence Resolution Workspace ⓘ</button>
+            <button type="button" class="output-feature-tip" data-feature-pane="voicePane" data-feature-target="voiceModuleGate" data-feature-action="" data-tooltip="An optional, off-by-default review of explainable writing patterns. It does not determine authorship or prove AI use.">Academic Voice and Writing Signals ⓘ</button>
+            <button type="button" class="output-feature-tip" data-feature-pane="correctionPane" data-feature-target="correctionContent" data-feature-action="fix-next" data-tooltip="Takes you through critical, important and optional corrections one issue at a time.">Fix next issue ⓘ</button>
+            <button type="button" class="output-feature-tip" data-feature-pane="voicePane" data-feature-target="rewritePassage" data-feature-action="" data-tooltip="Adds an approved change to the downloadable Word manuscript with Track Changes.">Approve revision ⓘ</button>
+            <button type="button" class="output-feature-tip" data-feature-pane="verifyPane" data-feature-target="manualVerificationBox" data-feature-action="" data-tooltip="Formats an approved reference in the style detected from the uploaded manuscript.">Style-aware reference ⓘ</button>
+            <button type="button" class="output-feature-tip" data-feature-pane="correctionPane" data-feature-target="correctionContent" data-feature-action="" data-tooltip="Builds a manuscript profile and claim fingerprint, compares candidate abstracts by population, concepts, relationship, geography, time and evidence type, and withholds general-keyword-only matches.">Context-aware source resolution ⓘ</button>
+            <button type="button" class="output-feature-tip" data-feature-pane="correctionPane" data-feature-target="btnApproveReferenceFormatting" data-feature-action="" data-tooltip="Audits every reference against the detected style, flags incomplete entries, and places approved corrections in the Track Changes document.">Reference-list style audit ⓘ</button>
+            <button type="button" class="output-feature-tip" data-feature-pane="correctionPane" data-feature-target="btnDownloadOnly" data-feature-action="" data-tooltip="Downloads four student-ready files and excludes internal JSON and system files.">Clean report package ⓘ</button>
         </div>
     </section>
 
@@ -1905,7 +1905,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.15-report-download";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.16-dashboard-controls";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2565,7 +2565,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const locked = !hasPaidAccess(latestResults || {});
         return `<div class="manual-reference-resolution" data-correction-id="${esc(item.id)}">${renderReferenceExtraction(item)}
             ${item.withheld_source_reason ? `<p class="small-muted">Unrelated indexed suggestion withheld: ${esc(item.withheld_source_reason)} Search the intended source below.</p>` : ""}
-            ${candidates.length ? `<div><strong>Possible sources, confirm the publication before approval</strong>${candidates.map((source, index) => renderEvidenceCandidate(item, source, index)).join("")}</div>` : `<p class="small-muted">No usable source candidate is available yet. Find sources using the extracted title, author, year or identifier.</p>`}
+            ${candidates.length ? `<div><strong>Possible sources, confirm the publication before approval</strong>${candidates.map((source, index) => renderEvidenceCandidate(item, source, index, "manual")).join("")}</div>` : `<p class="small-muted">No usable source candidate is available yet. Find sources using the extracted title, author, year or identifier.</p>`}
             ${renderSourceSearchReport(item)}
             ${approved ? `<div class="correction-action-status" role="status"><strong>✅ Approved for Track Changes</strong><br>${esc(item.proposed_replacement || "")}${item.related_edits?.length ? `<br>${item.related_edits.length} associated citation edit(s) also approved.` : ""}</div>` : ""}
             <button class="btn btn-outline manual-find-sources" data-id="${esc(item.id)}" ${locked ? "disabled" : ""}>Find sources</button>
@@ -2989,6 +2989,7 @@ document.addEventListener("DOMContentLoaded", function () {
         manualVerifyRows.forEach((row, idx) => {
             const decision = row.manual_decision || "";
             if (decision) applyManualDecisionUI(idx, decision);
+            if (manualDecisionsInFlight.has(manualQueryFromRow(row))) setManualDecisionBusy(idx, true);
         });
         box.querySelectorAll(".manual-find-sources").forEach(button => button.addEventListener("click", () => findCorrectionSources(button.dataset.id, button)));
         box.querySelectorAll(".manual-approve-source").forEach(button => button.addEventListener("click", () => approveCorrectionSource(button.dataset.id, "source_verification", button)));
@@ -2996,7 +2997,7 @@ document.addEventListener("DOMContentLoaded", function () {
         box.querySelectorAll(".candidate-source-link").forEach(link => link.addEventListener("click", () => {
             const item = latestResults?.correction_plan?.items?.find(value => value.id === link.dataset.itemId);
             const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
-            if (source) source.opened_by_user = true;
+            rememberCandidateOpening(item, source);
             const card = link.closest(".manual-card");
             if (card) recordManualEvidence(Number(card.dataset.manualIndex), "Candidate source", "source_lookup", link.href);
         }));
@@ -3075,16 +3076,49 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     }
     
+    const manualDecisionsInFlight = new Set();
+
+    function showManualDecisionFeedback(index, message, tone) {
+        setStatus(message, tone);
+        const card = document.querySelector(`.manual-card[data-manual-index="${index}"]`);
+        if (!card) return;
+        let feedback = card.querySelector(".manual-decision-feedback");
+        if (!feedback) { feedback = document.createElement("p"); feedback.className = "manual-decision-feedback"; card.append(feedback); }
+        feedback.textContent = message;
+        feedback.style.color = tone === "bad" ? "#b91c1c" : "#065f46";
+        feedback.setAttribute("role", tone === "bad" ? "alert" : "status");
+    }
+
+    function setManualDecisionBusy(index, busy) {
+        const card = document.querySelector(`.manual-card[data-manual-index="${index}"]`);
+        card?.querySelectorAll(".manual-decision-action").forEach(button => {
+            if (busy) {
+                if (button.dataset.manualDisabled === undefined) button.dataset.manualDisabled = button.disabled ? "1" : "0";
+                button.disabled = true;
+                button.setAttribute("aria-busy", "true");
+            } else if (button.dataset.manualDisabled !== undefined) {
+                button.disabled = button.classList.contains("locked-choice") || button.dataset.manualDisabled === "1";
+                delete button.dataset.manualDisabled;
+                button.removeAttribute("aria-busy");
+            }
+        });
+    }
+
     async function saveManualDecision(index, decision, candidate = {}) {
         const row = manualVerifyRows[index];
-        if (!row) return;
+        if (!row) return false;
     
         const reference = manualQueryFromRow(row) || candidate.title || candidate.doi || "";
     
         if (!reference) {
             setStatus("No reference text available for manual decision.", "bad");
-            return;
+            return false;
         }
+
+        if (manualDecisionsInFlight.has(reference)) return false;
+        manualDecisionsInFlight.add(reference);
+        setManualDecisionBusy(index, true);
+        showManualDecisionFeedback(index, "Saving your manual decision…", "info");
     
         try {
             const response = await fetch("/api/manual-verify/decision", {
@@ -3104,7 +3138,7 @@ document.addEventListener("DOMContentLoaded", function () {
             const js = await response.json().catch(() => ({}));
     
             if (!response.ok || js.ok === false) {
-                throw new Error(js.detail || js.error || "Could not record manual decision.");
+                throw new Error(correctionApiError(js, `Could not record manual decision (HTTP ${response.status}).`));
             }
     
             setStatus(js.message || "Manual verification decision recorded. Generate an updated certificate to include it.", "good");
@@ -3114,10 +3148,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 latestResults.job_id = latestResults.job_id || JOB_ID;
                 window.latestResults = latestResults;
 
-                // Do not call renderAll() here. It rebuilds the Manual Verification
-                // panel, clears candidate search results, and can make the card
-                // appear to drop/disappear after the decision is recorded.
-                // The current card has already been updated by applyManualDecisionUI().
+                // Update decision labels only after the server records the action.
                 renderVerification(latestResults);
                 renderManualVerification(latestResults);
                 markCertificateNeedsGeneration("Manual verification has been saved. Generate an updated certificate so the PDF includes the latest user-attested manual verification evidence.");
@@ -3127,10 +3158,24 @@ document.addEventListener("DOMContentLoaded", function () {
                 // A normal refresh will pull the saved decision later.
                 setTimeout(() => loadExistingResult(false), 1200);
             }
+            const savedIndex = manualVerifyRows.findIndex(value => manualQueryFromRow(value) === reference);
+            const savedMessage = "✅ Manual decision recorded. This records your assessment. Source replacement in Word requires its separate Track Changes approval.";
+            if (savedIndex >= 0) {
+                manualVerifyRows[savedIndex].manual_decision = decision;
+                applyManualDecisionUI(savedIndex, decision);
+                showManualDecisionFeedback(savedIndex, savedMessage, "good");
+            } else setStatus(savedMessage, "good");
+            return true;
     
         } catch (error) {
             console.error(error);
-            setStatus("Manual decision failed: " + error.message, "bad");
+            showManualDecisionFeedback(index, "Manual decision failed: " + error.message, "bad");
+            return false;
+        } finally {
+            manualDecisionsInFlight.delete(reference);
+            manualVerifyRows.forEach((value, currentIndex) => {
+                if (manualQueryFromRow(value) === reference) setManualDecisionBusy(currentIndex, false);
+            });
         }
     }
     
@@ -3230,7 +3275,6 @@ document.addEventListener("DOMContentLoaded", function () {
                 return;
             }
 
-            applyManualDecisionUI(index, decision);
             saveManualDecision(index, decision, {});
             return;
         }
@@ -3245,11 +3289,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
             const cIndex = Number(btn.dataset.candidateIndex);
             const candidate = (manualSearchCandidates[index] || [])[cIndex] || {};
-            applyManualDecisionUI(index, "manual_verified");
-            btn.disabled = false;
-            btn.classList.remove("locked-choice");
-            btn.classList.add("selected-decision");
-            btn.textContent = "Verified";
             saveManualDecision(index, "manual_verified", candidate);
         }
     });
@@ -3482,7 +3521,67 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     }
 
-    function renderEvidenceCandidate(item, source, sourceIndex) {
+    const candidateReviewStates = new Map();
+    const correctionFeedbackMessages = new Map();
+    const correctionActionsInFlight = new Set();
+
+    function candidateReviewKey(source) {
+        return JSON.stringify([source.doi || "", source.url || "", source.title || "", source.year || "", source.authors || [], source.formatted_reference || "", Boolean(source.manual_review_only)]);
+    }
+
+    function candidateReviewState(itemId, source) {
+        if (!candidateReviewStates.has(itemId)) candidateReviewStates.set(itemId, {selected:null, candidates:new Map()});
+        const review = candidateReviewStates.get(itemId);
+        const key = candidateReviewKey(source);
+        if (!review.candidates.has(key)) review.candidates.set(key, {opened:false, fit:false, year:false, authors:false});
+        const state = review.candidates.get(key);
+        if (source.opened_by_user === true) state.opened = true;
+        source.opened_by_user = state.opened;
+        return {review, key, state};
+    }
+
+    function rememberCandidateOpening(item, source) {
+        if (!item || !source) return;
+        candidateReviewState(item.id, source).state.opened = true;
+        source.opened_by_user = true;
+    }
+
+    function correctionCards(itemId) {
+        const id = CSS.escape(itemId);
+        return [...document.querySelectorAll(`[data-correction-id="${id}"], .claim-direct-actions[data-id="${id}"]`)];
+    }
+
+    function showCorrectionFeedback(itemId, text, tone = "info") {
+        const decision = latestResults?.correction_plan?.items?.find(item => item.id === itemId)?.decision;
+        correctionFeedbackMessages.set(itemId, {text,tone,decision});
+        setStatus(text, tone);
+        correctionCards(itemId).forEach(card => renderCorrectionFeedback(card, text, tone));
+    }
+
+    function renderCorrectionFeedback(card, text, tone) {
+        let message = card.querySelector(".approval-error");
+        if (!message) { message = document.createElement("p"); message.className = "approval-error"; card.append(message); }
+        message.style.color = tone === "bad" ? "#b91c1c" : tone === "warn" ? "#92400e" : "#065f46";
+        message.setAttribute("role", tone === "bad" ? "alert" : "status");
+        message.textContent = text;
+    }
+
+    function setCorrectionBusy(itemId, busy) {
+        correctionCards(itemId).forEach(card => card.querySelectorAll("button").forEach(button => {
+            if (busy) {
+                if (button.dataset.correctionDisabled === undefined) button.dataset.correctionDisabled = button.disabled ? "1" : "0";
+                button.disabled = true;
+                button.setAttribute("aria-busy", "true");
+            } else if (button.dataset.correctionDisabled !== undefined) {
+                button.disabled = button.dataset.correctionDisabled === "1";
+                delete button.dataset.correctionDisabled;
+                button.removeAttribute("aria-busy");
+            }
+        }));
+    }
+
+    function renderEvidenceCandidate(item, source, sourceIndex, sourceScope = "workspace") {
+        const {review, key, state} = candidateReviewState(item.id, source);
         const fit = source.context_fit || {};
         const identity = source.identity_fit || {};
         const fingerprint = fit.claim_fingerprint || {};
@@ -3493,8 +3592,8 @@ document.addEventListener("DOMContentLoaded", function () {
             <br><strong>Proposed year:</strong> ${esc(source.year || "Not supplied")} · ${esc(String(source.year_basis || "provider publication year").replaceAll("_", " "))}
             ${(source.metadata_warnings || []).map(warning => `<div>⚠️ ${esc(warning)}</div>`).join("")}
             <button type="button" class="btn btn-outline edit-candidate-metadata" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}">Check / edit full author list and publication year</button>
-            ${source.date_review_required ? `<label style="display:block"><input type="checkbox" class="candidate-year-confirm" data-source-index="${sourceIndex}"> I checked the publication version and confirmed the proposed year.</label>` : ""}
-            ${source.author_review_required ? `<label style="display:block"><input type="checkbox" class="candidate-author-confirm" data-source-index="${sourceIndex}"> I checked every author and their order against the publisher.</label>` : ""}
+            ${source.date_review_required ? `<label style="display:block"><input type="checkbox" class="candidate-year-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" ${state.year ? "checked" : ""}> I checked the publication version and confirmed the proposed year.</label>` : ""}
+            ${source.author_review_required ? `<label style="display:block"><input type="checkbox" class="candidate-author-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" ${state.authors ? "checked" : ""}> I checked every author and their order against the publisher.</label>` : ""}
         </div>`;
         const detailsHtml = `<div class="small-muted"><strong>Authors:</strong> ${esc(authorNames || "Not supplied")}<br><strong>Publication:</strong> ${esc(source.journal || source.publisher || "Not supplied")}${source.doi ? `<br><strong>DOI:</strong> ${esc(source.doi)}` : ""}</div>${source.formatted_reference ? `<div><strong>Proposed reference:</strong> ${esc(source.formatted_reference)}</div>` : ""}${source.citation_edits_preview?.length ? `<details open><summary>Associated in-text citation edits for approval</summary>${source.citation_edits_preview.map(edit => `<div>${esc(edit.original_text)} → ${esc(edit.proposed_replacement)}</div>`).join("")}</details>` : ""}`;
         const fitHtml = Object.keys(fit).length ? `<div class="candidate-fit"><strong>Structured context screen: ${esc(String(fit.label || "review").replaceAll("_", " "))} · ${esc(fit.score ?? "--")}/100</strong><br>${esc(fit.explanation || "")}${fit.specific_claim_overlap_terms?.length ? `<br>Specific claim matches: ${esc(fit.specific_claim_overlap_terms.join(", "))}` : ""}<br>Abstract compared: <strong>${fit.candidate_abstract_compared ? "Yes" : "No"}</strong><details style="margin-top:7px"><summary>Manuscript profile, claim fingerprint and field matches</summary><div class="small-muted" style="margin-top:6px"><strong>Manuscript disciplines:</strong> ${esc((fingerprint.manuscript_disciplines || []).join(", ") || "Not inferred")}<br><strong>Manuscript keywords:</strong> ${esc((fingerprint.manuscript_keywords || []).join(", ") || "Not recovered")}<br><strong>Manuscript geography/setting:</strong> ${esc([...(fingerprint.manuscript_geography || []), ...(fingerprint.manuscript_settings || [])].join(", ") || "Not recovered")}<br><strong>Population:</strong> ${esc((fingerprint.subject_or_population || []).join(", ") || "Not specified")}<br><strong>Concepts/variables:</strong> ${esc((fingerprint.concepts_or_variables || []).join(", ") || "Not recovered")}<br><strong>Claimed relationship:</strong> ${esc(String(fingerprint.claimed_relationship || "unspecified").replaceAll("_", " "))}<br><strong>Location:</strong> ${esc((fingerprint.location || []).join(", ") || "Not specified")}<br><strong>Time:</strong> ${esc((fingerprint.time_period || []).join(", ") || "Not specified")}<br><strong>Evidence needed:</strong> ${esc(fingerprint.required_evidence_type || "Review required")}<br><strong>Nearby citations:</strong> ${esc((fingerprint.nearby_citations || []).join("; ") || "None recovered")}<br><strong>Current section:</strong> ${esc(fingerprint.current_section || "Not recovered")}<br><strong>Field matches:</strong> concepts ${esc((fieldMatches.concepts_or_variables || []).join(", ") || "none")}; population ${esc((fieldMatches.subject_or_population || []).join(", ") || "none")}; location ${esc((fieldMatches.location || []).join(", ") || "none")}; relationship ${fieldMatches.claimed_relationship ? "yes" : "no"}; evidence type ${fieldMatches.required_evidence_type ? "yes" : "review"}.</div></details><br><strong>${esc(fit.warning || "Context fit is not proof of claim support.")}</strong></div>` : "";
@@ -3507,7 +3606,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const linkHtml = source.url
             ? `<a class="candidate-source-link btn btn-outline" style="margin-left:10px;color:#075e45;text-decoration:underline;font-weight:800" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" href="${esc(source.url)}" target="_blank" rel="noopener">🔗 Open candidate source</a><div class="small-muted" style="margin:6px 0 0 28px;word-break:break-all">${esc(source.url)}</div>`
             : `<span class="small-muted" style="margin-left:8px">No direct source URL supplied. Do not approve.</span>`;
-        return `<label class="${source.manual_review_only ? "manual-review-candidate" : ""}" style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px">${source.manual_review_only ? `<span class="manual-review-badge">Manual full-text review required</span><br>` : ""}<input type="radio" name="source-${esc(item.id)}" value="${sourceIndex}"> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")} ${detailsHtml}${metadataHtml}${linkHtml}${fitHtml}${identityHtml}<span class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}"> <span>${esc(confirmationText)}</span></span></label>`;
+        return `<div class="candidate-review-card ${source.manual_review_only ? "manual-review-candidate" : ""}" style="display:block;margin:8px 0;padding:10px;border:1px solid #dbe4e0;border-radius:8px">${source.manual_review_only ? `<span class="manual-review-badge">Manual full-text review required</span><br>` : ""}<label><input type="radio" class="candidate-source-choice" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" name="source-${sourceScope}-${esc(item.id)}" value="${sourceIndex}" ${review.selected === key ? "checked" : ""}> ${esc(source.title || source.label || "Candidate source")} ${source.year ? `(${esc(source.year)})` : ""} · discovery relevance ${esc(source.relevance ?? source.match_score ?? "review")}</label> ${detailsHtml}${metadataHtml}${linkHtml}${fitHtml}${identityHtml}<label class="candidate-confirm"><input type="checkbox" class="candidate-fit-confirm" data-item-id="${esc(item.id)}" data-source-index="${sourceIndex}" ${state.fit ? "checked" : ""}> <span>${esc(confirmationText)}</span></label></div>`;
     }
 
     function correctionLocationText(location) {
@@ -3588,7 +3687,7 @@ document.addEventListener("DOMContentLoaded", function () {
             correctionBox.querySelectorAll(".candidate-source-link").forEach(link => link.addEventListener("click", () => {
                 const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
                 const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
-                if (source) source.opened_by_user = true;
+                rememberCandidateOpening(item, source);
                 setStatus("✅ Source opened. Verify that it supports the manuscript text, select it, then click Approve selected source.", "good");
             }));
             correctionBox.querySelectorAll(".delete-uncited-reference").forEach(btn => btn.addEventListener("click", () => approveUncitedReferenceAction(btn.dataset.id, "delete_reference")));
@@ -3703,30 +3802,31 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     async function saveCorrectionDecision(itemId, decision, note, extra = {}) {
+        if (correctionActionsInFlight.has(itemId)) { showCorrectionFeedback(itemId, "This correction is already being saved. Please wait.", "info"); return false; }
+        correctionActionsInFlight.add(itemId);
+        setCorrectionBusy(itemId, true);
         try {
-            setStatus("Saving your correction decision...", "info");
+            showCorrectionFeedback(itemId, "Saving your correction decision.", "info");
             const response = await fetch(`/api/corrections/${encodeURIComponent(JOB_ID)}/decision`, {
                 method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({item_id:itemId, decision, note, ...extra})
             });
             const js = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(correctionApiError(js, `The server rejected this correction with HTTP ${response.status}. Refresh the results and try again.`));
+            if (!response.ok || js.ok === false) throw new Error(correctionApiError(js, `The server rejected this correction with HTTP ${response.status}. Refresh the results and try again.`));
+            if (!Array.isArray(js.correction_plan?.items)) throw new Error("The server did not return the updated correction decision. Refresh the results to confirm whether it was saved before trying again.");
             latestResults.correction_plan = js.correction_plan;
             latestResults.evidence_resolution_workspace = js.correction_plan?.evidence_resolution_workspace || latestResults.evidence_resolution_workspace;
             renderStudentGuidance(latestResults);
             renderClaimSupport(latestResults);
             renderManualVerification(latestResults);
-            setStatus(`✅ Correction marked ${decision}.${decision === "accepted" ? " Placement checked for Word Track Changes." : ""}`, "good");
+            showCorrectionFeedback(itemId, `✅ Correction marked ${decision}.${decision === "accepted" ? " Placement checked for Word Track Changes." : ""}`, "good");
             return true;
         } catch (error) {
             console.error(error);
-            setStatus("Correction decision failed: " + error.message, "bad");
-            const card = document.querySelector(`.guidance-item[data-correction-id="${CSS.escape(itemId)}"]`);
-            if (card) {
-                let message = card.querySelector(".approval-error");
-                if (!message) { message = document.createElement("p"); message.className = "approval-error"; message.style.color = "#b91c1c"; message.setAttribute("role", "alert"); card.append(message); }
-                message.textContent = `Approval was not saved: ${error.message}`;
-            }
+            showCorrectionFeedback(itemId, `Approval was not saved: ${error.message}`, "bad");
             return false;
+        } finally {
+            correctionActionsInFlight.delete(itemId);
+            setCorrectionBusy(itemId, false);
         }
     }
 
@@ -3799,6 +3899,24 @@ document.addEventListener("DOMContentLoaded", function () {
 
     function bindCandidateMetadataControls(container) {
         container.querySelectorAll(".edit-candidate-metadata").forEach(button => button.addEventListener("click", () => editCandidateMetadata(button.dataset.itemId, Number(button.dataset.sourceIndex))));
+        container.querySelectorAll(".candidate-source-choice, .candidate-fit-confirm, .candidate-year-confirm, .candidate-author-confirm").forEach(control => control.addEventListener("change", () => {
+            const item = latestResults?.correction_plan?.items?.find(row => row.id === control.dataset.itemId);
+            const source = item?.source_candidates?.[Number(control.dataset.sourceIndex)];
+            if (!source) return;
+            const {review, key, state} = candidateReviewState(item.id, source);
+            if (control.classList.contains("candidate-source-choice")) review.selected = control.checked ? key : review.selected;
+            else if (control.classList.contains("candidate-fit-confirm")) state.fit = control.checked;
+            else if (control.classList.contains("candidate-year-confirm")) state.year = control.checked;
+            else if (control.classList.contains("candidate-author-confirm")) state.authors = control.checked;
+        }));
+        container.querySelectorAll("[data-correction-id], .claim-direct-actions[data-id]").forEach(card => {
+            const id = card.dataset.correctionId || card.dataset.id;
+            if (correctionActionsInFlight.has(id)) setCorrectionBusy(id, true);
+            const feedback = correctionFeedbackMessages.get(id);
+            const decision = latestResults?.correction_plan?.items?.find(item => item.id === id)?.decision;
+            if (feedback && feedback.decision !== decision) correctionFeedbackMessages.delete(id);
+            else if (feedback) renderCorrectionFeedback(card, feedback.text, feedback.tone);
+        });
     }
 
     async function editCandidateMetadata(itemId, sourceIndex) {
@@ -3824,21 +3942,21 @@ document.addEventListener("DOMContentLoaded", function () {
     async function approveCorrectionSource(itemId, category, triggerButton = null) {
         const item = latestResults?.correction_plan?.items?.find(row => row.id === itemId);
         const actionScope = triggerButton?.closest(".guidance-item, .claim-direct-actions, .manual-card") || document;
-        const selected = actionScope.querySelector(`input[name="source-${CSS.escape(itemId)}"]:checked`);
-        if (!item?.source_candidates?.length) { setStatus("Click Find scholarly sources first.", "warn"); return; }
-        if (!selected) { setStatus("Select one candidate source before approval.", "warn"); return; }
+        const selected = actionScope.querySelector(`input.candidate-source-choice[data-item-id="${CSS.escape(itemId)}"]:checked`);
+        if (!item?.source_candidates?.length) { showCorrectionFeedback(itemId, "Click Find scholarly sources first.", "warn"); return; }
+        if (!selected) { showCorrectionFeedback(itemId, "Select one candidate source before approval.", "warn"); return; }
         const source = item.source_candidates?.[Number(selected.value)];
-        if (!source?.url) { setStatus("The selected candidate has no direct evidence link.", "bad"); return; }
-        if (!source.opened_by_user) { setStatus("Open the candidate source link before approving it.", "warn"); return; }
+        if (!source?.url) { showCorrectionFeedback(itemId, "The selected candidate has no direct evidence link.", "bad"); return; }
+        if (!source.opened_by_user) { showCorrectionFeedback(itemId, "Open the candidate source link before approving it.", "warn"); return; }
         const confirmation = actionScope.querySelector(`.candidate-fit-confirm[data-item-id="${CSS.escape(itemId)}"][data-source-index="${CSS.escape(selected.value)}"]`);
-        if (!confirmation?.checked) { setStatus("Tick the verification confirmation under the selected source before approval.", "warn"); return; }
+        if (!confirmation?.checked) { showCorrectionFeedback(itemId, "Tick the verification confirmation under the selected source before approval.", "warn"); return; }
         if (["claim_support", "citation_needed"].includes(category)) source.context_fit_confirmed = true;
         else source.identity_confirmed = true;
-        if (source.authors_complete === false || source.authors_truncated) { setStatus("The indexed author list is incomplete. Use Check / edit to recover all authors from the publisher before approval.", "warn"); return; }
+        if (source.authors_complete === false || source.authors_truncated) { showCorrectionFeedback(itemId, "The indexed author list is incomplete. Use Check / edit to recover all authors from the publisher before approval.", "warn"); return; }
         const yearConfirmation = actionScope.querySelector(`.candidate-year-confirm[data-source-index="${CSS.escape(selected.value)}"]`);
         const authorConfirmation = actionScope.querySelector(`.candidate-author-confirm[data-source-index="${CSS.escape(selected.value)}"]`);
-        if (source.date_review_required && !yearConfirmation?.checked) { setStatus("Check the publication version and confirm the proposed year before approval.", "warn"); return; }
-        if (source.author_review_required && !authorConfirmation?.checked) { setStatus("Confirm all authors and their order before approval.", "warn"); return; }
+        if (source.date_review_required && !yearConfirmation?.checked) { showCorrectionFeedback(itemId, "Check the publication version and confirm the proposed year before approval.", "warn"); return; }
+        if (source.author_review_required && !authorConfirmation?.checked) { showCorrectionFeedback(itemId, "Confirm all authors and their order before approval.", "warn"); return; }
         source.year_choice_confirmed = !source.date_review_required || yearConfirmation?.checked === true;
         source.author_list_confirmed = !source.author_review_required || authorConfirmation?.checked === true;
         if (!confirm("Record this source as opened and manually verified, then prepare the approved change for Track Changes?")) return;
@@ -3846,7 +3964,7 @@ document.addEventListener("DOMContentLoaded", function () {
         const proposed = ["source_verification","reference_incomplete","reference_identity_conflict"].includes(category) ? source.formatted_reference : source.citation_text;
         if (triggerButton) { triggerButton.disabled = true; triggerButton.textContent = "Checking Word placement…"; }
         const saved = await saveCorrectionDecision(itemId, "accepted", "Source opened, reviewed and approved by user.", {action, approved_source:source, proposed_replacement:proposed, secondary_replacement:source.formatted_reference || "", original_text:item.evidence});
-        if (!saved && triggerButton?.isConnected) { triggerButton.disabled = false; triggerButton.textContent = "Retry source approval"; }
+        if (!saved && triggerButton?.isConnected && !correctionActionsInFlight.has(itemId)) { triggerButton.disabled = false; triggerButton.textContent = "Retry source approval"; }
     }
 
     async function approveAllReferenceFormatting() {
@@ -3934,6 +4052,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function fixNextIssue() {
+        document.querySelector('.tab-btn[data-tab="correctionPane"]')?.click();
         const next = [...document.querySelectorAll('#correctionContent .guidance-item[data-decision="pending"]')].find(card => card.style.display !== "none");
         if (!next) { setStatus("All correction items have a recorded decision.", "good"); return; }
         next.scrollIntoView({behavior:"smooth", block:"center"});
@@ -4949,7 +5068,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 directAction = `<div class="locked-card"><strong>🔒 Actions locked</strong><br>Unlock Full Review to search, approve, or revise evidence.</div>`;
             } else if (correction) {
                 const candidates = Array.isArray(correction.source_candidates) ? correction.source_candidates : [];
-                const candidateList = candidates.length ? `<div style="margin-top:8px"><strong>Select, open and verify a source:</strong>${candidates.map((source, sourceIndex) => renderEvidenceCandidate(correction, source, sourceIndex)).join("")}</div>` : "";
+                const candidateList = candidates.length ? `<div style="margin-top:8px"><strong>Select, open and verify a source:</strong>${candidates.map((source, sourceIndex) => renderEvidenceCandidate(correction, source, sourceIndex, "claim")).join("")}</div>` : "";
                 directAction = correction.decision && correction.decision !== "pending"
                     ? `<div style="padding:8px;border-radius:8px;background:#ecfdf5;color:#065f46"><strong>✅ ${esc(correction.decision)}</strong><br>${esc((correction.approved_action || "Action recorded").replaceAll("_", " "))}</div>`
                     : `<div class="claim-direct-actions" data-id="${esc(correction.id)}">
@@ -4974,7 +5093,7 @@ document.addEventListener("DOMContentLoaded", function () {
         body.querySelectorAll(".candidate-source-link, .claim-candidate-source-link").forEach(link => link.addEventListener("click", () => {
             const item = latestResults?.correction_plan?.items?.find(row => row.id === link.dataset.itemId);
             const source = item?.source_candidates?.[Number(link.dataset.sourceIndex)];
-            if (source) source.opened_by_user = true;
+            rememberCandidateOpening(item, source);
             setStatus("✅ Source opened. Confirm that it supports the claim, select it, then click Add selected citation.", "good");
         }));
     }
@@ -5775,6 +5894,13 @@ ${claimTable}
     }
 
     function setupActions() {
+        document.querySelectorAll(".output-feature-tip[data-feature-pane]").forEach(button => button.addEventListener("click", () => {
+            document.querySelector(`.tab-btn[data-tab="${CSS.escape(button.dataset.featurePane)}"]`)?.click();
+            if (button.dataset.featureAction === "fix-next") { fixNextIssue(); return; }
+            const target = $(button.dataset.featureTarget || button.dataset.featurePane);
+            target?.scrollIntoView({behavior:"smooth", block:"center"});
+            target?.focus({preventScroll:true});
+        }));
         $("btnVerify")?.addEventListener("click", () => startVerification(true));
         $("btnRefresh")?.addEventListener("click", () => loadExistingResult(true));
         $("btnStartEnrichment")?.addEventListener("click", startAdvancedEnrichment);
