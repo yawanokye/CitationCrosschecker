@@ -147,7 +147,7 @@ def loader_namespace(result):
 
 @pytest.mark.parametrize("loader", ["load_job_record", "load_job_record_fresh"])
 def test_real_job_loaders_do_not_turn_partial_rows_into_completed_runs(loader):
-    ns = load_functions("main.py", {loader}, loader_namespace(result_with_rows()))
+    ns = load_functions("main.py", {loader, "load_job_record_fresh"}, loader_namespace(result_with_rows()))
     record = ns[loader]("job-118")
     assert record["verification"]["state"] == "running"
     assert record["verification"]["total"] == 118 and record["verification"]["progress"] == 40

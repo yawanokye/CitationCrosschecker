@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.16-dashboard-controls"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.19-request-polling"
 
 import io
 import asyncio
@@ -100,6 +100,8 @@ from evidence_resolution import (
 )
 from source_risk import assess_source_risks
 from payment_control import get_access_mode, set_access_mode, set_public_notice, open_access_payload
+from web_memory import BoundedJobStore, WebMemoryGuard, MAX_UPLOAD_BYTES, estimate_upload_load
+from payment_notifications import deliver_pending_confirmations
 from entitlements import (
     DOCUMENT_TIERS,
     apply_entitlements_to_result,
@@ -109,6 +111,7 @@ from entitlements import (
 from access_control import (
     get_purchase_by_provider_reference,
     get_purchase_by_token,
+    get_checkout_purchase_by_token,
     init_commercial_tables,
     purchase_is_paid_for_job,
     record_purchase_run,
@@ -765,7 +768,7 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.16-dashboard-controls").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.19-request-polling").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
@@ -810,7 +813,7 @@ def developer_session_is_authorized(request: Request) -> bool:
 # ===============================
 
 def cleanup_expired_manuscript_content(limit: int = 200) -> Dict[str, int]:
-    """Best-effort expiry pass. Safe to run at startup and before new uploads."""
+    """Purge one expired result at a time, keeping only a bounded ID list."""
     if not DATABASE_URL:
         return {"checked": 0, "deleted": 0}
     cutoff = datetime.utcnow() - timedelta(seconds=CONTENT_TTL_SECONDS)
@@ -819,16 +822,24 @@ def cleanup_expired_manuscript_content(limit: int = 200) -> Dict[str, int]:
     checked = deleted = 0
     try:
         cursor.execute(
-            """
-            SELECT job_id, result FROM jobs
-            WHERE created_at < %s
-              AND status IN ('completed', 'failed')
-              AND COALESCE((result->'privacy'->>'content_deleted')::boolean, false) = false
-            ORDER BY created_at ASC LIMIT %s
-            """,
-            (cutoff, int(limit)),
+            """SELECT job_id FROM jobs WHERE created_at < %s
+               AND status IN ('completed', 'failed')
+               AND COALESCE((result->'privacy'->>'content_deleted')::boolean, false)=false
+               ORDER BY created_at ASC LIMIT %s""", (cutoff, max(1, min(int(limit), 200))),
         )
-        for row in cursor.fetchall():
+        job_ids = [row["job_id"] for row in cursor.fetchall()]
+        conn.commit()
+        for job_id in job_ids:
+            cursor.execute(
+                """SELECT result FROM jobs WHERE job_id=%s AND created_at < %s
+                   AND status IN ('completed', 'failed')
+                   AND COALESCE((result->'privacy'->>'content_deleted')::boolean, false)=false
+                   FOR UPDATE SKIP LOCKED""", (job_id, cutoff),
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.commit()
+                continue
             checked += 1
             result = row.get("result") or {}
             if isinstance(result, str):
@@ -836,16 +847,20 @@ def cleanup_expired_manuscript_content(limit: int = 200) -> Dict[str, int]:
             try:
                 _snapshot_feature_usage(result)
             except Exception as snapshot_error:
-                print(f"[PRIVACY] Count-only expiry snapshot failed safely for {row['job_id']}: {snapshot_error}")
+                print(f"[PRIVACY] Count-only expiry snapshot failed safely: {type(snapshot_error).__name__}")
             minimal = purge_result_content(result, reason="automatic_expiry")
-            cursor.execute("UPDATE jobs SET result = %s::jsonb WHERE job_id = %s", (json.dumps(minimal), row["job_id"]))
+            cursor.execute("UPDATE jobs SET result=%s::jsonb WHERE job_id=%s", (json.dumps(minimal), job_id))
             if redis_conn:
-                redis_conn.delete(*list(redis_content_keys(row["job_id"])))
+                redis_conn.delete(*list(redis_content_keys(job_id)))
+            conn.commit()
+            with _lock:
+                _store.pop(job_id, None)
             deleted += 1
-        conn.commit()
+            # Release the full result before the next database fetch.
+            del result, row, minimal
     except Exception as exc:
         conn.rollback()
-        print(f"[PRIVACY] Expiry cleanup failed: {exc}")
+        print(f"[PRIVACY] Expiry cleanup deferred: {type(exc).__name__}")
     finally:
         cursor.close()
         conn.close()
@@ -857,6 +872,15 @@ async def _privacy_cleanup_loop():
     while True:
         await asyncio.sleep(interval)
         await run_in_threadpool(cleanup_expired_manuscript_content)
+
+async def _payment_email_loop():
+    while True:
+        try:
+            await run_in_threadpool(deliver_pending_confirmations, DATABASE_URL)
+        except Exception as exc:
+            print(f"[PAYMENT EMAIL] Retry deferred: {type(exc).__name__}")
+        await asyncio.sleep(60)
+
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
@@ -872,12 +896,18 @@ async def lifespan(app_instance: FastAPI):
         except Exception as commercial_error:
             print(f"⚠️ Commercial table setup failed safely: {commercial_error}")
     cleanup_task = asyncio.create_task(_privacy_cleanup_loop())
+    payment_email_task = asyncio.create_task(_payment_email_loop())
     try:
         yield
     finally:
         cleanup_task.cancel()
+        payment_email_task.cancel()
         try:
             await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await payment_email_task
         except asyncio.CancelledError:
             pass
     print("👋 Shutting down...")
@@ -888,6 +918,7 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan
 )
+app.add_middleware(WebMemoryGuard)
 
 
 # --- GLOBAL PROTECTION CONTROLS ---
@@ -1176,7 +1207,7 @@ if not os.path.exists(static_dir):
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-_store: Dict[str, Dict[str, Any]] = {}
+_store = BoundedJobStore()
 _lock = threading.Lock()
 
 # --------------------------------------------------
@@ -1213,127 +1244,10 @@ LARGE_DOCUMENT_JOB_TIMEOUT = int(os.environ.get("LARGE_DOCUMENT_JOB_TIMEOUT", "1
 
 
 def estimate_document_load(file_bytes: bytes, filename: str) -> Dict[str, Any]:
-    """
-    Lightweight preflight check before queueing.
-
-    File size alone is not reliable. A 366-page PDF can be small in MB but still
-    heavy to parse. This function routes based on page count for PDFs and word
-    count for DOCX files.
-    """
-    filename_lower = (filename or "").lower().strip()
-    file_size_mb = round(len(file_bytes or b"") / (1024 * 1024), 2)
-
-    info: Dict[str, Any] = {
-        "filename": filename,
-        "file_size_mb": file_size_mb,
-        "file_type": "unknown",
-        "page_count": None,
-        "word_count": None,
-        "large_file": False,
-        "queue_name": NORMAL_DOCUMENT_QUEUE,
-        "route_reason": "Normal document route.",
-    }
-
-    # PDF: route mainly by page count.
-    if filename_lower.endswith(".pdf"):
-        info["file_type"] = "pdf"
-
-        if PdfReader is None:
-            info.update({
-                "large_file": True,
-                "queue_name": LARGE_DOCUMENT_QUEUE,
-                "route_reason": "PDF page-count reader is unavailable, routed safely to the large-file queue.",
-            })
-            return info
-
-        try:
-            reader = PdfReader(io.BytesIO(file_bytes))
-            page_count = len(reader.pages)
-            info["page_count"] = page_count
-
-            if page_count > NORMAL_PDF_PAGE_LIMIT:
-                info.update({
-                    "large_file": True,
-                    "queue_name": LARGE_DOCUMENT_QUEUE,
-                    "route_reason": (
-                        f"PDF has {page_count} pages, above the normal limit of "
-                        f"{NORMAL_PDF_PAGE_LIMIT} pages."
-                    ),
-                })
-            else:
-                info["route_reason"] = (
-                    f"PDF has {page_count} pages, within the normal limit of "
-                    f"{NORMAL_PDF_PAGE_LIMIT} pages."
-                )
-
-            return info
-
-        except Exception as e:
-            info.update({
-                "large_file": True,
-                "queue_name": LARGE_DOCUMENT_QUEUE,
-                "route_reason": f"PDF page-count check failed, routed safely to the large-file queue: {str(e)[:160]}",
-            })
-            return info
-
-    # DOCX: route mainly by estimated word count.
-    if filename_lower.endswith(".docx"):
-        info["file_type"] = "docx"
-
-        if DocxDocument is None:
-            info.update({
-                "large_file": True,
-                "queue_name": LARGE_DOCUMENT_QUEUE,
-                "route_reason": "DOCX reader is unavailable, routed safely to the large-file queue.",
-            })
-            return info
-
-        try:
-            doc = DocxDocument(io.BytesIO(file_bytes))
-            text_parts: List[str] = []
-
-            for paragraph in doc.paragraphs:
-                if paragraph.text:
-                    text_parts.append(paragraph.text)
-
-            # Include tables because theses and dissertations often contain
-            # important text, citations, or references inside tables.
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        if cell.text:
-                            text_parts.append(cell.text)
-
-            joined_text = "\n".join(text_parts)
-            word_count = len(re.findall(r"\b\w+\b", joined_text))
-            info["word_count"] = word_count
-
-            if word_count > NORMAL_DOCX_WORD_LIMIT:
-                info.update({
-                    "large_file": True,
-                    "queue_name": LARGE_DOCUMENT_QUEUE,
-                    "route_reason": (
-                        f"DOCX has about {word_count:,} words, above the normal "
-                        f"limit of {NORMAL_DOCX_WORD_LIMIT:,} words."
-                    ),
-                })
-            else:
-                info["route_reason"] = (
-                    f"DOCX has about {word_count:,} words, within the normal "
-                    f"limit of {NORMAL_DOCX_WORD_LIMIT:,} words."
-                )
-
-            return info
-
-        except Exception as e:
-            info.update({
-                "large_file": True,
-                "queue_name": LARGE_DOCUMENT_QUEUE,
-                "route_reason": f"DOCX preflight check failed, routed safely to the large-file queue: {str(e)[:160]}",
-            })
-            return info
-
-    return info
+    return estimate_upload_load(
+        file_bytes, filename, pdf_reader=PdfReader,
+        normal_pdf_pages=NORMAL_PDF_PAGE_LIMIT, normal_docx_words=NORMAL_DOCX_WORD_LIMIT,
+    )
 
 def _norm_text_citation(s: str) -> str:
     if not s:
@@ -1635,71 +1549,12 @@ def _ensure_recovery_possible_sources(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_job_record(job_id: str) -> Optional[Dict[str, Any]]:
+    # Never retain complete PostgreSQL manuscripts for every visited result.
+    if DATABASE_URL or redis_conn:
+        return load_job_record_fresh(job_id)
     with _lock:
-        if job_id in _store:
-            record = _store[job_id]
-            record["verification"] = reconcile_verification_meta(record.get("result") or {})
-            return record
+        return _store.get(job_id)
 
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT status, result, error FROM jobs WHERE job_id = %s",
-                (job_id,)
-            )
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
-
-            if not row:
-                return None
-
-            result = row["result"] or {}
-            if isinstance(result, str):
-                result = json.loads(result)
-
-            verification = result.get("verification", {}) or {}
-            online_verification = result.get("online_verification", {}) or {}
-            rows = online_verification.get("rows", []) or []
-
-            verification = reconcile_verification_meta(result)
-
-            job_record = {
-                "job_id": job_id,
-                "status": row["status"],
-                "result": result,
-                "error": row["error"],
-                "verification": {
-                    "state": verification.get("state", "idle"),
-                    "progress": verification.get("progress", 0),
-                    "total": verification.get("total", 0),
-                    "percentage": verification.get("percentage", 0),
-                    "message": verification.get("message", ""),
-                    "verification_job_id": verification.get("verification_job_id"),
-                    "rq_job_id": verification.get("rq_job_id"),
-                    "rq_status": verification.get("rq_status"),
-                    "started_at": verification.get("started_at"),
-                    "completed_at": verification.get("completed_at"),
-                    "last_heartbeat": verification.get("last_heartbeat"),
-                    "error": verification.get("error"),
-                    "summary": online_verification.get("summary", {}),
-                    "results_count": len(rows)
-                }
-            }
-
-            with _lock:
-                _store[job_id] = job_record
-
-            return job_record
-
-        except Exception as e:
-            print(f"load_job_record DB error: {e}")
-            import traceback
-            traceback.print_exc()
-
-    return None
 def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
     """
     Fresh loader for polling and enrichment endpoints.
@@ -1739,12 +1594,8 @@ def load_job_record_fresh(job_id: str) -> Optional[Dict[str, Any]]:
             if isinstance(result, str):
                 result = json.loads(result)
 
-            # Refresh Redis with the source-of-truth result.
-            if redis_conn:
-                try:
-                    redis_conn.setex(f"result:{job_id}", 3600, json.dumps(result))
-                except Exception as e:
-                    print(f"[FRESH LOAD] Redis refresh failed for {job_id}: {e}")
+            # The background worker owns the shared result cache. A read must
+            # not allocate another full JSON copy or write the result back.
 
         except Exception as e:
             print(f"[FRESH LOAD] PostgreSQL read failed for {job_id}: {e}")
@@ -1800,6 +1651,9 @@ def store_result(result):
     return job_id
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    # Exports and actions keep working after an eviction or web-process restart.
+    if DATABASE_URL or redis_conn:
+        return load_job_record_fresh(job_id)
     with _lock:
         return _store.get(job_id)
 
@@ -3603,7 +3457,11 @@ async def verify(
     # =========================
     # 2. READ FILE
     # =========================
-    data = await file.read()
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    await file.close()
+    if len(data) > MAX_UPLOAD_BYTES:
+        return JSONResponse(status_code=413, content={"error": "Upload too large",
+            "message": f"The maximum upload size is {MAX_UPLOAD_BYTES // (1024*1024)} MB."})
     file_size = len(data)
     file_size_mb = round(file_size / (1024 * 1024), 2)
 
@@ -3961,6 +3819,8 @@ def _commercial_job_counts(job_id: str) -> Dict[str, Any]:
     result = job.get("result") or {}
     if isinstance(result, str):
         result = json.loads(result)
+    if result.get("result_deleted") or (result.get("privacy") or {}).get("content_deleted"):
+        raise HTTPException(status_code=410, detail="This report has expired or was deleted. Please contact support if you already paid. Do not pay again for this analysis.")
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
     references = int(summary.get("reference_entries_found") or len(result.get("references_raw") or result.get("references") or []))
     citations = int(summary.get("in_text_citations_found") or len(result.get("in_text_citations") or result.get("citations") or []))
@@ -3980,6 +3840,58 @@ def _commercial_job_counts(job_id: str) -> Dict[str, Any]:
         "reference_count": references,
         "citation_count": citations,
         "word_count": word_count,
+    }
+
+
+def _commercial_plan_counts(job_id: str) -> Dict[str, Any]:
+    """Read only count metadata for pricing, keeping manuscript JSON out of memory."""
+    if not DATABASE_URL:
+        return _commercial_job_counts(job_id)
+    conn = None
+    cursor = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT status, file_name, result->'summary' AS summary,
+               result->'preflight'->>'word_count' AS preflight_words,
+               result->>'word_count' AS result_words,
+               COALESCE((result->>'result_deleted')::boolean, false)
+                 OR COALESCE((result->'privacy'->>'content_deleted')::boolean, false) AS content_deleted,
+               CASE WHEN jsonb_typeof(result->'references_raw')='array'
+                 THEN jsonb_array_length(result->'references_raw') ELSE 0 END AS raw_references,
+               CASE WHEN jsonb_typeof(result->'references')='array'
+                 THEN jsonb_array_length(result->'references') ELSE 0 END AS references,
+               CASE WHEN jsonb_typeof(result->'in_text_citations')='array'
+                 THEN jsonb_array_length(result->'in_text_citations') ELSE 0 END AS raw_citations,
+               CASE WHEN jsonb_typeof(result->'citations')='array'
+                 THEN jsonb_array_length(result->'citations') ELSE 0 END AS citations
+               FROM jobs WHERE job_id=%s""", (job_id,),
+        )
+        row = cursor.fetchone()
+    except Exception as exc:
+        print(f"[PRICING] Count projection unavailable: {type(exc).__name__}")
+        return _commercial_job_counts(job_id)
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Analysis job not found.")
+    if str(row.get("status") or "").lower() != "completed":
+        raise HTTPException(status_code=409, detail="Complete the Free Preview before choosing a Full Review package.")
+    if row.get("content_deleted"):
+        raise HTTPException(status_code=410, detail="This report has expired or was deleted. Contact support if you already paid.")
+    summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    words = int(summary.get("word_count") or row.get("preflight_words") or row.get("result_words") or 0)
+    if not words:
+        # Legacy records may need a text-derived count. Keep the original rules.
+        return _commercial_job_counts(job_id)
+    return {
+        "reference_count": int(summary.get("reference_entries_found") or row.get("raw_references") or row.get("references") or 0),
+        "citation_count": int(summary.get("in_text_citations_found") or row.get("raw_citations") or row.get("citations") or 0),
+        "word_count": words, "file_name": str(row.get("file_name") or "manuscript"),
     }
 
 
@@ -4061,7 +3973,7 @@ async def public_commercial_config():
 
 @app.get("/api/plans/recommend/{job_id}")
 async def recommend_commercial_plan(job_id: str, billing_country: str = "GH", currency: str = ""):
-    counts = _commercial_job_counts(job_id)
+    counts = await run_in_threadpool(_commercial_plan_counts, job_id)
     # Backward compatibility: old clients sent currency rather than billing country.
     if not billing_country and currency:
         billing_country = "NG" if currency.upper() == "NGN" else ("GH" if currency.upper() == "GHS" else "INTL")
@@ -4102,6 +4014,8 @@ async def initialize_commercial_checkout(request: Request):
     tier_key = recommend_document_tier_with_words(
         counts["reference_count"], counts["citation_count"], counts["word_count"]
     )
+    if purchase_is_paid_for_job(DATABASE_URL, job_id=job_id).get("paid"):
+        raise HTTPException(status_code=409, detail="This report is already paid. Refresh the results or use Restore access.")
     if tier_key == "custom_large":
         raise HTTPException(status_code=422, detail="This document exceeds the self-service limits. Please contact CiteIntegrity for a quotation.")
 
@@ -4143,6 +4057,7 @@ async def initialize_commercial_checkout(request: Request):
         "checkout_url": checkout_url,
         "display_amount": outcome.get("display_amount"),
         "tier_key": tier_key,
+        "session_id": outcome.get("session_id") if market["provider"] == "stripe" else None,
     })
     access_token = outcome.get("access_token")
     if access_token:
@@ -4189,10 +4104,10 @@ async def paystack_callback(market: str, reference: str = "", trxref: str = ""):
 async def stripe_success(session_id: str = "", job_id: str = ""):
     if not DATABASE_URL:
         raise HTTPException(status_code=503, detail="Payment verification is unavailable.")
-    outcome = verify_and_activate_stripe_session(database_url=DATABASE_URL, session_id=session_id, fallback_job_id=job_id)
+    outcome = await run_in_threadpool(verify_and_activate_stripe_session, database_url=DATABASE_URL, session_id=session_id, fallback_job_id=job_id)
     destination_job = str(outcome.get("job_id") or job_id or "")
     if not outcome.get("activated"):
-        return RedirectResponse(url="/pricing?payment=failed", status_code=303)
+        return RedirectResponse(url=f"/results/{quote_plus(destination_job)}?payment=pending" if destination_job else "/contact?payment=review", status_code=303)
     return RedirectResponse(url=f"/results/{quote_plus(destination_job)}?payment=success", status_code=303)
 
 
@@ -4229,12 +4144,53 @@ async def central_paystack_payment_confirmation(request: Request):
 async def stripe_webhook(request: Request):
     if not DATABASE_URL:
         return JSONResponse(status_code=503, content={"ok": False})
-    outcome = handle_stripe_webhook(
+    outcome = await run_in_threadpool(handle_stripe_webhook,
         database_url=DATABASE_URL,
         raw_body=await request.body(),
         signature=request.headers.get("stripe-signature", ""),
     )
-    return JSONResponse(status_code=int(outcome.get("status_code") or 200), content=outcome)
+    return JSONResponse(status_code=int(outcome.get("status_code") or 200), content=jsonable_encoder(outcome))
+
+
+@app.post("/api/payments/recover/{job_id}")
+async def recover_stripe_payment(request: Request, job_id: str):
+    """Verify the saved checkout with Stripe, never infer payment from the browser."""
+    if not DATABASE_URL:
+        raise HTTPException(status_code=503, detail="Payment verification is temporarily unavailable. Please do not pay again.")
+    if _checkout_rate_limited(request, "payment-recovery"):
+        raise HTTPException(status_code=429, detail="Please wait one minute before checking again.")
+    payload = await request.json()
+    session_id = str(payload.get("session_id") or "").strip()[:255]
+    if not session_id:
+        purchase = await run_in_threadpool(
+            get_checkout_purchase_by_token, DATABASE_URL,
+            token=request.cookies.get("ci_access_token", ""), job_id=job_id,
+        )
+        session_id = str(purchase.get("stripe_session_id") or "")
+    if session_id:
+        outcome = await run_in_threadpool(
+            verify_and_activate_stripe_session, database_url=DATABASE_URL,
+            session_id=session_id, fallback_job_id=job_id,
+        )
+        if not outcome.get("activated"):
+            return JSONResponse(status_code=int(outcome.get("status_code") or 503), content={
+                "ok": bool(outcome.get("ok")), "paid": False,
+                "message": outcome.get("message") or "Access is being restored. Please do not pay again.",
+            })
+    paid = bool(purchase_is_paid_for_job(DATABASE_URL, job_id=job_id).get("paid"))
+    if paid:
+        job = load_job_record_fresh(job_id) or {}
+        result = job.get("result") or {}
+        if isinstance(result, str):
+            result = json.loads(result)
+        if not job or result.get("result_deleted") or (result.get("privacy") or {}).get("content_deleted"):
+            return JSONResponse(status_code=410, content={"ok": False, "paid": True,
+                "message": "Payment recognised, but the stored report has expired or was deleted. Contact support to arrange recovery or reprocessing. Please do not pay again."})
+        return {"ok": True, "paid": True, "job_id": job_id,
+                "message": "Payment confirmed. Full Review is available.",
+                "results_url": f"/results/{quote_plus(job_id)}",
+                "download_url": f"/api/report-package/{quote_plus(job_id)}?delete_after=0"}
+    return {"ok": True, "paid": False, "message": "No confirmed payment was found for this analysis. If you were charged, contact support with your receipt or payment reference. Please do not pay again."}
 
 
 @app.get("/api/payments/status/{job_id}")
@@ -5943,7 +5899,7 @@ async def get_result(request: Request, job_id: str, fresh: int = 0):
                 result = row["result"]
                 if isinstance(result, str):
                     result = json.loads(result)
-                result = _demo_prepare_full_review_result(job_id, result, persist=True)
+                result = _demo_prepare_full_review_result(job_id, result, persist=False)
                 result = _prepare_student_result(result, request, job_id)
                 return {"status": "completed", "data": result}
             elif row["status"] == "processing":
@@ -7166,7 +7122,7 @@ async def verify_online(job_id: str = Form(...), force: bool = Form(False)):
 # ============================================================
 
 @app.get("/online/status")
-def online_status(request: Request, job_id: str):
+def online_status(request: Request, job_id: str, include_result: bool = True):
     try:
         job = load_job_record_fresh(job_id)
 
@@ -7182,7 +7138,8 @@ def online_status(request: Request, job_id: str):
             )
 
         result = job.get("result", {}) or {}
-        result = _demo_prepare_full_review_result(job_id, result, persist=False)
+        if include_result:
+            result = _demo_prepare_full_review_result(job_id, result, persist=False)
         verification = result.get("verification") or job.get("verification") or {}
 
         rq_job_id = verification.get("rq_job_id") or verification.get("verification_job_id")
@@ -7238,7 +7195,8 @@ def online_status(request: Request, job_id: str):
                     verification["error"] = str(rq_job.exc_info or "Unknown worker error")
                     verification["completed_at"] = now()
 
-                update_verification_status(job_id, **verification)
+                if include_result:
+                    update_verification_status(job_id, **verification)
 
             except Exception as e:
                 verification["rq_status_error"] = str(e)
@@ -7259,7 +7217,7 @@ def online_status(request: Request, job_id: str):
             or result.get("final_tables_ready") is True
             or bool(result.get("verification_completed_at"))
         )
-        if final_tables_ready:
+        if final_tables_ready and include_result:
             # Rebuild after Claim Support is finalised so mapping-incomplete and
             # weak rows receive their direct correction actions immediately.
             result["correction_plan"] = build_correction_plan(result)
@@ -7291,7 +7249,7 @@ def online_status(request: Request, job_id: str):
             }
         }
 
-        if (
+        if include_result and (
             rows
             or state in {"completed", "finalising"}
             or final_tables_ready

@@ -1,2 +1,3 @@
 # Install after requirements.txt. Not required by the production web service.
 pytest>=8,<10
+httpx>=0.27,<1

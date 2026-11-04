@@ -1567,6 +1567,7 @@
         </div>
     </section>
 
+    <div id="paymentRecoveryNotice" class="locked-card" role="status" aria-live="polite" style="display:none"></div>
     <section class="paywall-panel" id="paywallPanel"></section>
 
     <section class="card" id="globalPublicationSafety" style="display:none;border:2px solid #dc2626;background:#fff7ed;"></section>
@@ -1905,7 +1906,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.16-dashboard-controls";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.19-request-polling";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -1924,6 +1925,17 @@ document.addEventListener("DOMContentLoaded", function () {
     let manualVerifyRows = [];
     let manualSearchCandidates = {};
     let pollingTimer = null;
+    let statusPollingEnabled = false;
+    let statusRequestInFlight = false;
+    let statusPollGeneration = 0;
+    let statusRetryDelay = 0;
+    let selectedBillingCountry = "GH";
+    let paymentEmailDraft = "";
+    let pricingDocumentKey = "";
+    let planResponseVersion = 0;
+    const planRequestCache = new Map();
+    const pendingJsonRequests = new Map();
+    const PLAN_CACHE_MS = 120000;
     let verificationInProgress = false;
     let finalisingCount = 0;
 
@@ -2056,6 +2068,44 @@ document.addEventListener("DOMContentLoaded", function () {
         return data?.access?.package || {};
     }
 
+    let paymentRecoveryRunning = false;
+    function savedCheckoutSession() {
+        try { return localStorage.getItem(`ci_checkout:${JOB_ID}`) || ""; }
+        catch (_) { return ""; }
+    }
+
+    function showPaymentMessage(message) {
+        const notice = $("paymentRecoveryNotice");
+        if (notice) { notice.textContent = message; notice.style.display = "block"; }
+    }
+
+    async function restorePaymentAccess() {
+        if (paymentRecoveryRunning) return;
+        paymentRecoveryRunning = true;
+        const button = $("btnRestorePayment");
+        if (button) button.disabled = true;
+        showPaymentMessage("Checking your payment and restoring report access...");
+        try {
+            const response = await fetch(`/api/payments/recover/${encodeURIComponent(JOB_ID)}`, {
+                method: "POST", headers: {"Content-Type":"application/json"},
+                body: JSON.stringify({session_id:savedCheckoutSession()})
+            });
+            const result = await response.json();
+            const message = result.message || result.detail || "Payment verification is unavailable. If you were charged, please do not pay again. Contact support with your receipt.";
+            if (response.ok && result.paid === true) {
+                try { localStorage.removeItem(`ci_checkout:${JOB_ID}`); } catch (_) {}
+                await loadExistingResult(false);
+            }
+            showPaymentMessage(message);
+        } catch (_) {
+            showPaymentMessage("Payment verification is temporarily unavailable. If you were charged, please do not pay again. Try Restore access shortly or contact support with your receipt.");
+        } finally {
+            paymentRecoveryRunning = false;
+            const currentButton = $("btnRestorePayment");
+            if (currentButton) currentButton.disabled = false;
+        }
+    }
+
     function getSafeRows(value) {
         return Array.isArray(value) ? value : [];
     }
@@ -2167,7 +2217,20 @@ document.addEventListener("DOMContentLoaded", function () {
         const panel = $("paywallPanel");
         if (!panel) return;
 
-        if (DEMO_HIDE_PAYMENT_DETAILS || shouldHideAccessPanel(data)) {
+        // Keep checkout fields and listeners stable while result tables refresh.
+        if ($("payEmail")) paymentEmailDraft = $("payEmail").value;
+        if ($("payCountry")) selectedBillingCountry = $("payCountry").value;
+        const counts = getDocumentCounts(data);
+        pricingDocumentKey = JSON.stringify([JOB_ID, counts.reference_count, counts.citation_count,
+            data?.summary?.word_count || data?.preflight?.word_count || data?.word_count || 0]);
+        const hidden = DEMO_HIDE_PAYMENT_DETAILS || shouldHideAccessPanel(data);
+        const renderKey = JSON.stringify([hidden, hasPaidAccess(data), data?.payments_suspended === true,
+            getAccessPackage(data).document_tier_name || getAccessPackage(data).name || "", pricingDocumentKey]);
+        setPaidOnlyButtons(hidden || hasPaidAccess(data));
+        if (panel.dataset.renderKey === renderKey && (hidden || panel.childElementCount > 0)) return;
+        panel.dataset.renderKey = renderKey;
+
+        if (hidden) {
             panel.style.display = "none";
             panel.innerHTML = "";
             setPaidOnlyButtons(true);
@@ -2215,42 +2278,73 @@ document.addEventListener("DOMContentLoaded", function () {
                     <select id="payCountry"><option value="GH">Ghana · GHS · Paystack</option><option value="NG">Nigeria · NGN · Paystack</option><option value="INTL">Other country · USD · Stripe</option></select>
                     <button class="btn btn-green" id="btnPayUnlock">Unlock Full Review</button>
                 </div>
+                <div style="margin-top:12px;">
+                    <button class="btn" id="btnRestorePayment">Already paid? Restore access</button>
+                    <a href="/contact">Contact support</a>
+                    <p class="small-muted">If you were charged but cannot see your report, restore access before making another payment.</p>
+                </div>
                 <div class="small-muted" style="margin-top:10px;">Your document is used for citation integrity analysis. Payment records store email, package, analysis count, payment reference, and job link.</div>
             </div>
         `;
 
+        $("btnRestorePayment")?.addEventListener("click", restorePaymentAccess);
         if (data?.payments_suspended === true) {
             const controls = panel.querySelector(".paywall-controls");
             if (controls) controls.innerHTML = `<div class="locked-card" style="grid-column:1/-1"><strong>New payments are temporarily suspended.</strong><br>Free Preview remains available. Please return when checkout reopens.</div>`;
             return;
         }
-        loadPlanRecommendation("GH");
-        $("payCountry")?.addEventListener("change", (e) => loadPlanRecommendation(e.target.value));
+        $("payEmail").value = paymentEmailDraft;
+        $("payCountry").value = selectedBillingCountry;
+        $("payEmail").addEventListener("input", event => { paymentEmailDraft = event.target.value; });
+        $("payCountry").addEventListener("change", event => {
+            selectedBillingCountry = event.target.value;
+            loadPlanRecommendation(selectedBillingCountry);
+        });
+        loadPlanRecommendation(selectedBillingCountry);
         $("btnPayUnlock")?.addEventListener("click", startCheckout);
     }
 
-    async function loadPlanRecommendation(billingCountry = "GH") {
+    async function loadPlanRecommendation(billingCountry = selectedBillingCountry, force = false) {
         if (DEMO_HIDE_PAYMENT_DETAILS) return;
-
         const box = $("planBox");
         if (!box) return;
+        const country = String(billingCountry || "GH").toUpperCase();
+        const key = `${pricingDocumentKey}|${country}`;
+        const version = ++planResponseVersion;
+        const current = () => version === planResponseVersion && box === $("planBox") && $("payCountry")?.value === country;
+        window.recommendedPlan = null;
+        if ($("btnPayUnlock")) $("btnPayUnlock").disabled = true;
         try {
-            const js = await fetchJsonNoCache(`/api/plans/recommend/${encodeURIComponent(JOB_ID)}?billing_country=${encodeURIComponent(billingCountry)}`);
-            const recommended = (js.tiers || []).find(t => t.recommended) || (js.tiers || []).find(t => t.allowed_for_document) || (js.tiers || [])[0];
-            window.recommendedPlan = recommended || null;
-            if (!recommended) {
-                box.innerHTML = `<strong>Package recommendation unavailable.</strong><br>Please refresh and try again.`;
-                return;
+            let entry = planRequestCache.get(key);
+            if (force || (entry && entry.expiresAt && entry.expiresAt <= Date.now())) {
+                planRequestCache.delete(key);
+                entry = null;
             }
+            if (!entry) {
+                entry = {expiresAt:0, promise:null};
+                entry.promise = fetchJsonNoCache(`/api/plans/recommend/${encodeURIComponent(JOB_ID)}?billing_country=${encodeURIComponent(country)}`)
+                    .then(data => { entry.expiresAt = Date.now() + PLAN_CACHE_MS; return data; })
+                    .catch(error => { if (planRequestCache.get(key) === entry) planRequestCache.delete(key); throw error; });
+                planRequestCache.set(key, entry);
+                while (planRequestCache.size > 12) planRequestCache.delete(planRequestCache.keys().next().value);
+            }
+            const js = await entry.promise;
+            if (!current()) return;
+            const recommended = (js.tiers || []).find(t => t.recommended) || (js.tiers || []).find(t => t.allowed_for_document) || (js.tiers || [])[0];
+            if (!recommended) throw new Error("Package recommendation unavailable.");
+            window.recommendedPlan = recommended;
             box.innerHTML = `
                 <strong>Recommended package: ${esc(recommended.name)}</strong><br>
                 Price: <strong>${esc(recommended.selected_price_display || (recommended.selected_currency + " " + recommended.selected_amount))}</strong><br>
                 Limit: ${Number(recommended.max_words || 0).toLocaleString()} words, ${esc(recommended.max_references)} references<br>
                 Includes: Full Review and one recheck within 14 days
             `;
-        } catch (e) {
-            console.warn("Plan recommendation failed:", e);
-            box.innerHTML = `<strong>Could not load package recommendation.</strong><br>Check that /api/plans/recommend/${esc(JOB_ID)} is available.`;
+            if ($("btnPayUnlock")) $("btnPayUnlock").disabled = false;
+        } catch (error) {
+            if (!current()) return;
+            console.warn("Plan recommendation failed:", error);
+            box.innerHTML = `<strong>Could not load package recommendation.</strong><br><button type="button" class="btn" id="btnRetryPlan">Try again</button>`;
+            $("btnRetryPlan")?.addEventListener("click", () => loadPlanRecommendation(country, true));
         }
     }
 
@@ -2295,6 +2389,9 @@ document.addEventListener("DOMContentLoaded", function () {
             const js = await res.json();
             if (!res.ok || js.ok === false || !js.checkout_url) {
                 throw new Error(js.detail || js.error || "Payment could not be initialized.");
+            }
+            if (js.session_id) {
+                try { localStorage.setItem(`ci_checkout:${JOB_ID}`, js.session_id); } catch (_) {}
             }
             window.location.href = js.checkout_url;
         } catch (e) {
@@ -2412,15 +2509,21 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     async function fetchJsonNoCache(url) {
-        const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`, {
-            cache: "no-store"
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        return await response.json();
+        // Share concurrent reads of the same resource before adding the cache buster.
+        if (pendingJsonRequests.has(url)) return pendingJsonRequests.get(url);
+        const request = (async () => {
+            const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`, {cache:"no-store"});
+            if (!response.ok) {
+                const error = new Error(`HTTP ${response.status}`);
+                error.status = response.status;
+                error.retryAfter = Number(response.headers?.get?.("Retry-After") || 0);
+                throw error;
+            }
+            return await response.json();
+        })();
+        pendingJsonRequests.set(url, request);
+        try { return await request; }
+        finally { if (pendingJsonRequests.get(url) === request) pendingJsonRequests.delete(url); }
     }
 
     function handleStatusPollingError(error) {
@@ -5206,19 +5309,35 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function startPollingStatus() {
-        stopPollingStatus();
+        if (statusPollingEnabled) return;
+        statusPollingEnabled = true;
+        statusPollGeneration += 1;
         statusErrorCount = 0;
         fetchVerificationStatus();
-        pollingTimer = setInterval(() => fetchVerificationStatus(), CONFIG.POLL_INTERVAL);
     }
 
     function stopPollingStatus() {
-        if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; }
+        statusPollingEnabled = false;
+        statusPollGeneration += 1;
+        if (pollingTimer) { clearTimeout(pollingTimer); pollingTimer = null; }
+    }
+
+    function scheduleStatusPoll() {
+        if (!statusPollingEnabled) return;
+        if (pollingTimer) clearTimeout(pollingTimer);
+        const delay = Math.max(CONFIG.POLL_INTERVAL, statusRetryDelay, document.hidden ? 60000 : 0);
+        pollingTimer = setTimeout(() => { pollingTimer = null; fetchVerificationStatus(); }, delay);
     }
 
     async function fetchVerificationStatus() {
+        if (statusRequestInFlight) return;
+        if (document.hidden) { scheduleStatusPoll(); return; }
+        statusRequestInFlight = true;
+        const generation = statusPollGeneration;
         try {
-            const js = await fetchJsonNoCache(`/online/status?job_id=${encodeURIComponent(JOB_ID)}`);
+            const js = await fetchJsonNoCache(`/online/status?job_id=${encodeURIComponent(JOB_ID)}&include_result=false`);
+            if (generation !== statusPollGeneration) return;
+            statusRetryDelay = 0;
             statusErrorCount = 0;
             console.log("Online status:", js);
 
@@ -5341,7 +5460,14 @@ document.addEventListener("DOMContentLoaded", function () {
             showProgress(percent, message);
             setStatus(total ? `Verification in progress: ${progress}/${total}` : "Verification in progress...", "info");
         } catch (error) {
-            handleStatusPollingError(error);
+            if (generation !== statusPollGeneration) return;
+            if ([429, 503].includes(error.status)) {
+                statusRetryDelay = Math.min(60000, Math.max(10000, error.retryAfter * 1000));
+                setStatus("The service is busy. Your analysis is saved. Checking again shortly...", "warn");
+            } else handleStatusPollingError(error);
+        } finally {
+            statusRequestInFlight = false;
+            scheduleStatusPoll();
         }
     }
 
@@ -5938,10 +6064,27 @@ ${claimTable}
         setupFilters();
         setupActions();
         await loadExistingResult(true);
+        const paymentReturn = new URLSearchParams(window.location.search).get("payment");
+        if (!DEMO_HIDE_PAYMENT_DETAILS && (savedCheckoutSession() || ["success", "pending"].includes(paymentReturn))) {
+            await restorePaymentAccess();
+        }
         if (AUTO_VERIFY && !verificationInProgress && (!latestResults?.online_verification?.rows?.length)) startVerification();
         console.log("[CiteIntegrity] Results dashboard ready for job:", JOB_ID);
     }
 
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden && statusPollingEnabled && !statusRequestInFlight) {
+            if (pollingTimer) { clearTimeout(pollingTimer); pollingTimer = null; }
+            fetchVerificationStatus();
+        }
+    });
+    window.addEventListener("pagehide", () => {
+        stopPollingStatus();
+        if (resultPollTimer) { clearTimeout(resultPollTimer); resultPollTimer = null; }
+    });
+    window.addEventListener("pageshow", event => {
+        if (event.persisted && verificationInProgress) startPollingStatus();
+    });
     init();
 });
 </script>

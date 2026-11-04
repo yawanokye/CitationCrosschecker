@@ -34,6 +34,9 @@ def init_commercial_tables(database_url: str) -> None:
                 "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS market TEXT",
                 "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS billing_country TEXT",
                 "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ",
+                "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS stripe_session_id TEXT",
+                "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS confirmation_sent_at TIMESTAMPTZ",
+                "ALTER TABLE purchases ADD COLUMN IF NOT EXISTS confirmation_attempted_at TIMESTAMPTZ",
             ):
                 cursor.execute(statement)
         conn.commit()
@@ -135,6 +138,22 @@ def get_purchase_by_token(database_url: str, *, token: str) -> Optional[Dict[str
             )
             row = cursor.fetchone()
     return dict(row) if row else None
+
+def get_checkout_purchase_by_token(database_url: str, *, token: str, job_id: str) -> Dict[str, Any]:
+    """Resolve this browser's checkout for reconciliation, without granting access."""
+    if not token or not job_id:
+        return {}
+    with get_conn(database_url) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT * FROM purchases WHERE access_token_hash=%s
+                   AND preview_job_id=%s AND payment_provider='stripe'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (hash_access_token(token), job_id),
+            )
+            row = cursor.fetchone()
+    return dict(row) if row else {}
+
 
 def get_purchase_for_job(database_url: str, *, job_id: str) -> Optional[Dict[str, Any]]:
     with get_conn(database_url) as conn:

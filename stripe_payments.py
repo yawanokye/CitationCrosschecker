@@ -22,11 +22,13 @@ import stripe
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from access_control import create_pending_purchase, get_purchase_by_provider_reference, mark_purchase_paid, record_purchase_run
+from access_control import (create_pending_purchase, get_purchase_by_provider_reference,
+                            mark_purchase_paid, attach_paid_purchase_to_preview_job,
+                            purchase_is_paid_for_job)
 from entitlements import get_price, validate_paid_package_for_document
 
-STRIPE_PAYMENTS_VERSION = "2.0.0"
-STRIPE_PAYMENTS_BUILD = "commercial-international-usd-checkout"
+STRIPE_PAYMENTS_VERSION = "2.0.17"
+STRIPE_PAYMENTS_BUILD = "payment-report-recovery"
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -58,10 +60,23 @@ def _stripe_payment_matches_purchase(session: Any, purchase: Dict[str, Any]) -> 
     expected_minor = amount_to_minor_units(float(purchase.get("amount") or 0))
     actual_currency = str(session.get("currency") or "").upper()
     expected_currency = str(purchase.get("currency") or "").upper()
-    details = session.get("customer_details") or {}
-    actual_email = str(details.get("email") or session.get("customer_email") or "").strip().lower()
+    # customer_details.email can be edited during Checkout. Bind to the original
+    # server-supplied customer_email, reference and purchase ID instead.
+    actual_email = str(session.get("customer_email") or "").strip().lower()
     expected_email = str(purchase.get("user_email") or "").strip().lower()
-    return actual_minor == expected_minor and actual_currency == expected_currency and (not actual_email or actual_email == expected_email)
+    metadata = session.get("metadata") or {}
+    references = [session.get("client_reference_id"), metadata.get("provider_reference")]
+    expected_reference = str(purchase.get("provider_reference") or "")
+    return (
+        str(purchase.get("payment_provider") or "").lower() == "stripe"
+        and actual_minor == expected_minor and expected_minor > 0
+        and actual_currency == expected_currency
+        and (not actual_email or actual_email == expected_email)
+        and bool(expected_reference) and any(references)
+        and all(not ref or str(ref) == expected_reference for ref in references)
+        and (not metadata.get("purchase_id") or str(metadata["purchase_id"]) == str(purchase["id"]))
+        and (not purchase.get("stripe_session_id") or session.get("id") == purchase["stripe_session_id"])
+    )
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -255,256 +270,65 @@ def _prelink_pending_purchase_to_job(
         }
 
 
-def _mark_stripe_purchase_paid(
-    database_url: str,
-    *,
-    provider_reference: str,
-    purchase_id: Any = None,
-) -> Dict[str, Any]:
-    """
-    Mark a Stripe purchase paid using both the normal access_control helper and
-    a direct SQL fallback.
-
-    The fallback matters because Stripe metadata contains purchase_id. If the
-    provider reference lookup fails for any reason, the verified paid Stripe
-    session can still activate the exact pending purchase created before Checkout.
-    """
-    provider_reference = str(provider_reference or "").strip()
-
-    try:
-        purchase = mark_purchase_paid(database_url, provider_reference=provider_reference)
-        if purchase:
-            return _row_to_dict(purchase)
-    except Exception as e:
-        print(f"[STRIPE_MARK_PAID_HELPER_ERROR] {type(e).__name__}: {e}")
-
-    if not database_url:
-        return {}
-
-    try:
-        with psycopg2.connect(database_url, cursor_factory=RealDictCursor) as conn:
-            with conn.cursor() as cursor:
-                row = None
-
-                if purchase_id:
-                    cursor.execute(
-                        """
-                        UPDATE purchases
-                        SET status = 'paid',
-                            payment_provider = COALESCE(NULLIF(payment_provider, ''), 'stripe'),
-                            provider_reference = COALESCE(NULLIF(provider_reference, ''), %s)
-                        WHERE id = %s
-                        RETURNING *
-                        """,
-                        (provider_reference, purchase_id),
-                    )
-                    row = cursor.fetchone()
-
-                if not row and provider_reference:
-                    cursor.execute(
-                        """
-                        UPDATE purchases
-                        SET status = 'paid',
-                            payment_provider = COALESCE(NULLIF(payment_provider, ''), 'stripe')
-                        WHERE provider_reference = %s
-                        RETURNING *
-                        """,
-                        (provider_reference,),
-                    )
-                    row = cursor.fetchone()
-
-                if not row and provider_reference:
-                    cursor.execute(
-                        "SELECT * FROM purchases WHERE provider_reference = %s LIMIT 1",
-                        (provider_reference,),
-                    )
-                    row = cursor.fetchone()
-
-            conn.commit()
-
-        if row:
-            purchase = _row_to_dict(row)
-            print(
-                f"[STRIPE_MARK_PAID_SQL] purchase_id={purchase.get('id')}, "
-                f"reference={provider_reference}, status={purchase.get('status')}"
-            )
-            return purchase
-
-        print(f"[STRIPE_MARK_PAID_SQL] No purchase found for reference={provider_reference}, purchase_id={purchase_id}")
-        return {}
-
-    except Exception as e:
-        print(f"[STRIPE_MARK_PAID_SQL_ERROR] reference={provider_reference}, purchase_id={purchase_id}: {type(e).__name__}: {e}")
-        return {}
+def _mark_stripe_purchase_paid(database_url: str, *, provider_reference: str, purchase_id: Any = None) -> Dict[str, Any]:
+    # Call only after the verified session is matched against the ledger.
+    return mark_purchase_paid(database_url, provider_reference=provider_reference) or {}
 
 
-def _attach_preview_job_to_purchase(
-    database_url: str,
-    purchase: Dict[str, Any],
-    source: str = "stripe",
-    fallback_job_id: str = "",
-    fallback_file_name: str = "",
-    fallback_reference_count: int = 0,
-    fallback_citation_count: int = 0,
-) -> Dict[str, Any]:
-    """
-    Force-link the paid purchase to the preview job.
-
-    Why this is stronger than record_purchase_run() alone:
-    - purchase_runs.job_id is UNIQUE.
-    - If an earlier pending/failed payment already inserted the same job_id,
-      ON CONFLICT DO NOTHING can leave the current paid Stripe purchase detached.
-    - The results page unlocks only when purchase_is_paid_for_job(job_id) can
-      join purchase_runs -> purchases and find a paid purchase.
-
-    This helper therefore inserts the run when missing, or re-points an existing
-    run for the same job_id to the newly paid Stripe purchase.
-    """
-    if not purchase:
-        return {"attached": False, "reason": "no_purchase", "source": source}
-
-    purchase_id = purchase.get("id")
-    job_id = (
-        str(purchase.get("preview_job_id") or "").strip()
-        or str(fallback_job_id or "").strip()
-    )
-
-    if not purchase_id:
-        return {"attached": False, "reason": "no_purchase_id", "source": source}
-
+def _attach_preview_job_to_purchase(database_url: str, purchase: Dict[str, Any], source: str = "stripe", **fallbacks) -> Dict[str, Any]:
+    job_id = str(purchase.get("preview_job_id") or fallbacks.get("fallback_job_id") or "")
     if not job_id:
-        return {"attached": False, "reason": "no_preview_job_id", "source": source}
-
-    file_name = (
-        str(purchase.get("preview_file_name") or "").strip()
-        or str(fallback_file_name or "").strip()
+        return {"attached": False, "reason": "no_preview_job_id"}
+    linked = attach_paid_purchase_to_preview_job(
+        database_url, purchase_id=purchase["id"], job_id=job_id,
+        file_name=str(purchase.get("preview_file_name") or fallbacks.get("fallback_file_name") or ""),
+        reference_count=_safe_int(purchase.get("preview_reference_count"), 0),
+        citation_count=_safe_int(purchase.get("preview_citation_count"), 0),
     )
+    # A database write is not proof of usable access. Check the actual entitlement.
+    linked["attached"] = bool(purchase_is_paid_for_job(database_url, job_id=job_id).get("paid"))
+    linked["job_id"] = job_id
+    return linked
 
-    reference_count = _safe_int(
-        purchase.get("preview_reference_count"),
-        _safe_int(fallback_reference_count, 0),
-    )
-    citation_count = _safe_int(
-        purchase.get("preview_citation_count"),
-        _safe_int(fallback_citation_count, 0),
-    )
 
-    try:
-        with psycopg2.connect(database_url, cursor_factory=RealDictCursor) as conn:
+def _fulfill_verified_session(database_url: str, session: Any, expected_job_id: str = "") -> Dict[str, Any]:
+    metadata = session.get("metadata") or {}
+    reference = str(session.get("client_reference_id") or metadata.get("provider_reference") or "")
+    payment_status = str(session.get("payment_status") or "").lower()
+    pending = get_purchase_by_provider_reference(database_url, provider_reference=reference) if reference else {}
+    pending = pending or {}
+    ledger_job = str(pending.get("preview_job_id") or "")
+    metadata_job = str(metadata.get("job_id") or "")
+    # A browser query may constrain a verified job, but can never supply its identity.
+    job_id = ledger_job or metadata_job
+    if not pending or not _stripe_payment_matches_purchase(session, pending):
+        return {"ok": False, "activated": False, "status_code": 409, "job_id": "",
+                "message": "Payment could not be matched to this purchase. Contact support with your receipt."}
+    if not job_id or (ledger_job and metadata_job and ledger_job != metadata_job) or (expected_job_id and job_id != expected_job_id):
+        return {"ok": False, "activated": False, "status_code": 409, "job_id": "",
+                "message": "This checkout does not match the requested analysis."}
+    if payment_status != "paid":
+        return {"ok": True, "activated": False, "pending": True, "status_code": 200,
+                "job_id": job_id, "payment_status": payment_status,
+                "message": "Payment has not been confirmed. If you were charged, do not pay again. Use Restore access."}
+    purchase = _mark_stripe_purchase_paid(database_url, provider_reference=reference, purchase_id=pending["id"])
+    if not purchase:
+        return {"ok": False, "activated": False, "status_code": 503, "job_id": job_id,
+                "message": "Your payment is confirmed. Report access is being restored. Please do not pay again."}
+    # Persist metadata-only legacy job IDs so the notification worker can find them.
+    if not purchase.get("preview_job_id"):
+        with psycopg2.connect(database_url) as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT * FROM purchase_runs WHERE job_id = %s FOR UPDATE",
-                    (job_id,),
-                )
-                existing_run = cursor.fetchone()
-
-                linked_or_relinked = False
-
-                if existing_run:
-                    existing_purchase_id = existing_run.get("purchase_id")
-
-                    if str(existing_purchase_id) != str(purchase_id):
-                        cursor.execute(
-                            """
-                            UPDATE purchase_runs
-                            SET purchase_id = %s,
-                                file_name = COALESCE(NULLIF(%s, ''), file_name),
-                                reference_count = CASE WHEN %s > 0 THEN %s ELSE reference_count END,
-                                citation_count = CASE WHEN %s > 0 THEN %s ELSE citation_count END
-                            WHERE job_id = %s
-                            RETURNING *
-                            """,
-                            (
-                                purchase_id,
-                                file_name,
-                                reference_count,
-                                reference_count,
-                                citation_count,
-                                citation_count,
-                                job_id,
-                            ),
-                        )
-                        run_row = cursor.fetchone()
-                        linked_or_relinked = True
-                    else:
-                        run_row = existing_run
-                else:
-                    cursor.execute(
-                        """
-                        INSERT INTO purchase_runs
-                            (purchase_id, job_id, file_name, reference_count, citation_count)
-                        VALUES (%s, %s, %s, %s, %s)
-                        RETURNING *
-                        """,
-                        (purchase_id, job_id, file_name, reference_count, citation_count),
-                    )
-                    run_row = cursor.fetchone()
-                    linked_or_relinked = True
-
-                # The current job consumes one included full-analysis run. Use
-                # GREATEST rather than +1 so repeated webhook/success callbacks do
-                # not double-count the same preview job.
-                cursor.execute(
-                    """
-                    UPDATE purchases
-                    SET analyses_used = LEAST(
-                        GREATEST(COALESCE(analyses_used, 0), 1),
-                        COALESCE(analyses_total, 2)
-                    )
-                    WHERE id = %s
-                    RETURNING *
-                    """,
-                    (purchase_id,),
-                )
-                purchase_row = cursor.fetchone()
-
+                cursor.execute("UPDATE purchases SET preview_job_id=%s WHERE id=%s AND COALESCE(preview_job_id, '')=''", (job_id, purchase["id"]))
             conn.commit()
-
-        print(
-            f"[STRIPE_FORCE_ATTACH] source={source}, job_id={job_id}, "
-            f"purchase_id={purchase_id}, attached=True, relinked={linked_or_relinked}"
-        )
-
-        return {
-            "attached": True,
-            "source": source,
-            "job_id": job_id,
-            "run": dict(run_row) if run_row else None,
-            "purchase": dict(purchase_row) if purchase_row else purchase,
-            "relinked_or_inserted": linked_or_relinked,
-        }
-
-    except Exception as e:
-        print(f"[STRIPE_FORCE_ATTACH_ERROR] source={source}, job_id={job_id}: {type(e).__name__}: {e}")
-
-        # Last resort: use existing access_control helper. This preserves the
-        # original behaviour if direct SQL fails for any environment-specific reason.
-        try:
-            attached = record_purchase_run(
-                database_url,
-                purchase_id=purchase_id,
-                job_id=job_id,
-                file_name=file_name,
-                reference_count=reference_count,
-                citation_count=citation_count,
-            )
-            return {
-                "attached": bool(attached.get("run") or attached.get("purchase")),
-                "source": f"{source}_fallback_record_purchase_run",
-                "job_id": job_id,
-                "run": attached.get("run"),
-                "purchase": attached.get("purchase") or purchase,
-                "fallback": True,
-            }
-        except Exception as inner:
-            print(f"[STRIPE_FORCE_ATTACH_FALLBACK_ERROR] {type(inner).__name__}: {inner}")
-            return {
-                "attached": False,
-                "reason": f"{type(e).__name__}: {str(e)}",
-                "fallback_reason": f"{type(inner).__name__}: {str(inner)}",
-                "source": source,
-                "job_id": job_id,
-            }
+        purchase = dict(purchase, preview_job_id=job_id)
+    attached = _attach_preview_job_to_purchase(database_url, purchase)
+    activated = bool(attached.get("attached"))
+    return {"ok": activated, "activated": activated, "status_code": 200 if activated else 503,
+            "job_id": job_id, "provider_reference": reference, "payment_status": payment_status,
+            "purchase": attached.get("purchase") or purchase, "preview_job_attached": attached,
+            "message": "Payment confirmed. Full Review access restored." if activated else
+                       "Your payment is confirmed. Report access is being restored. Please do not pay again."}
 
 
 def initialize_citeintegrity_stripe_payment(
@@ -601,6 +425,7 @@ def initialize_citeintegrity_stripe_payment(
         session = stripe.checkout.Session.create(
             mode="payment",
             customer_email=user_email,
+            payment_intent_data={"receipt_email": user_email},
             client_reference_id=provider_reference,
             line_items=[
                 {
@@ -616,7 +441,7 @@ def initialize_citeintegrity_stripe_payment(
                 }
             ],
             success_url=f"{APP_BASE_URL}{success_path}?session_id={{CHECKOUT_SESSION_ID}}&job_id={job_id}",
-            cancel_url=f"{APP_BASE_URL}{cancel_path}?cancelled=1",
+            cancel_url=f"{APP_BASE_URL}/results/{job_id}?payment=cancelled" if job_id else f"{APP_BASE_URL}{cancel_path}?cancelled=1",
             metadata={
                 "product": "CiteIntegrity",
                 "purchase_id": str(purchase.get("id")),
@@ -630,6 +455,10 @@ def initialize_citeintegrity_stripe_payment(
                 "billing_country": str(billing_country or "").upper(),
             },
         )
+        with psycopg2.connect(database_url) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE purchases SET stripe_session_id=%s WHERE id=%s", (session.id, purchase["id"]))
+            conn.commit()
     except Exception as e:
         error_payload = _stripe_error_payload(e)
         gateway_error = _stringify_gateway_error(error_payload)
@@ -665,247 +494,40 @@ def initialize_citeintegrity_stripe_payment(
 
 
 
-def verify_and_activate_stripe_session(
-    *,
-    database_url: str,
-    session_id: str,
-    fallback_job_id: str = "",
-) -> Dict[str, Any]:
-    """
-    Paystack-style fallback activation for Stripe Checkout.
-
-    Stripe webhooks remain the primary production confirmation path. However,
-    this helper safely verifies the Checkout Session directly with Stripe on the
-    success page and then activates the same purchase record. This prevents the
-    user from paying successfully but remaining locked when webhook delivery is
-    delayed or misconfigured during testing.
-    """
+def verify_and_activate_stripe_session(*, database_url: str, session_id: str, fallback_job_id: str = "") -> Dict[str, Any]:
+    """Reconcile a server-retrieved session from return, recovery or support."""
     if not session_id:
-        return {
-            "ok": False,
-            "activated": False,
-            "message": "Stripe session_id is missing.",
-            "job_id": "",
-        }
-
+        return {"ok": False, "activated": False, "status_code": 400, "job_id": "", "message": "Checkout session is missing."}
     try:
         _require_stripe_key()
-
         session = stripe.checkout.Session.retrieve(session_id)
-        metadata = session.get("metadata") or {}
-
-        provider_reference = (
-            session.get("client_reference_id")
-            or metadata.get("provider_reference")
-            or ""
-        )
-
-        job_id = (metadata.get("job_id", "") or str(fallback_job_id or "")).strip()
-        payment_status = str(session.get("payment_status") or "").lower()
-
-        if payment_status not in {"paid", "no_payment_required"}:
-            print(
-                f"[STRIPE_SUCCESS_VERIFY] Session not paid: "
-                f"session_id={session_id}, status={payment_status}, reference={provider_reference}"
-            )
-            return {
-                "ok": False,
-                "activated": False,
-                "message": f"Stripe session payment status is {payment_status}.",
-                "job_id": job_id,
-                "provider_reference": provider_reference,
-                "payment_status": payment_status,
-            }
-
-        if not provider_reference:
-            print(f"[STRIPE_SUCCESS_VERIFY] Missing provider_reference for session_id={session_id}")
-            return {
-                "ok": False,
-                "activated": False,
-                "message": "Stripe provider reference was not found in the session.",
-                "job_id": job_id,
-                "payment_status": payment_status,
-            }
-
-        purchase = _mark_stripe_purchase_paid(
-            database_url,
-            provider_reference=provider_reference,
-            purchase_id=metadata.get("purchase_id"),
-        ) if _stripe_payment_matches_purchase(
-            session,
-            get_purchase_by_provider_reference(database_url, provider_reference=provider_reference) or {},
-        ) else {}
-
-        if not purchase:
-            print(
-                f"[STRIPE_SUCCESS_VERIFY] Payment verified but no pending purchase found: "
-                f"session_id={session_id}, reference={provider_reference}, job_id={job_id}"
-            )
-            return {
-                "ok": False,
-                "activated": False,
-                "message": "Payment verified, but no matching purchase was found.",
-                "job_id": job_id,
-                "provider_reference": provider_reference,
-                "payment_status": payment_status,
-            }
-
-        # If the deployed access_control table does not carry preview_job_id,
-        # use the verified Stripe session metadata or query-string job_id.
-        try:
-            if job_id and not purchase.get("preview_job_id"):
-                purchase = dict(purchase)
-                purchase["preview_job_id"] = job_id
-        except Exception:
-            pass
-
-        attached = _attach_preview_job_to_purchase(
-            database_url,
-            purchase,
-            source="stripe_success_page",
-            fallback_job_id=job_id,
-            fallback_file_name=metadata.get("file_name", "") or "",
-            fallback_reference_count=_safe_int(metadata.get("reference_count"), 0),
-            fallback_citation_count=_safe_int(metadata.get("citation_count"), 0),
-        )
-
-        activated_purchase = attached.get("purchase") or purchase
-        final_job_id = job_id or activated_purchase.get("preview_job_id", "") or ""
-
-        print(
-            f"[STRIPE_SUCCESS_VERIFY] activated=True, reference={provider_reference}, "
-            f"job_id={final_job_id}, attached={attached.get('attached')}"
-        )
-
-        return {
-            "ok": True,
-            "activated": True,
-            "message": "Stripe payment verified and purchase activated.",
-            "job_id": final_job_id,
-            "provider_reference": provider_reference,
-            "payment_status": payment_status,
-            "purchase": activated_purchase,
-            "preview_job_attached": attached,
-        }
-
-    except Exception as e:
-        error_payload = _stripe_error_payload(e)
-        gateway_error = _stringify_gateway_error(error_payload)
-        print(f"[STRIPE_SUCCESS_VERIFY_ERROR] {gateway_error}")
-        return {
-            "ok": False,
-            "activated": False,
-            "message": gateway_error,
-            "gateway_error": gateway_error,
-            "gateway_error_details": error_payload,
-            "job_id": "",
-        }
+        return _fulfill_verified_session(database_url, session, expected_job_id=fallback_job_id)
+    except Exception as exc:
+        print(f"[STRIPE_RECOVERY_DEFERRED] {type(exc).__name__}")
+        return {"ok": False, "activated": False, "status_code": 503, "job_id": "",
+                "message": "Payment verification is temporarily unavailable. If you were charged, do not pay again. Try Restore access shortly."}
 
 
 def handle_stripe_webhook(*, database_url: str, raw_body: bytes, signature: str) -> Dict[str, Any]:
     if not STRIPE_WEBHOOK_SECRET:
-        print("[STRIPE_WEBHOOK_ERROR] STRIPE_WEBHOOK_SECRET is not configured.")
-        return {
-            "ok": False,
-            "status_code": 500,
-            "message": "STRIPE_WEBHOOK_SECRET is not configured.",
-        }
-
+        return {"ok": False, "status_code": 503, "message": "Payment verification is unavailable."}
     try:
-        event = stripe.Webhook.construct_event(
-            raw_body,
-            signature,
-            STRIPE_WEBHOOK_SECRET,
-        )
-    except ValueError as e:
-        print(f"[STRIPE_WEBHOOK_ERROR] Invalid payload: {e}")
-        return {
-            "ok": False,
-            "status_code": 400,
-            "message": "Invalid Stripe webhook payload.",
-        }
-    except stripe.error.SignatureVerificationError as e:
-        print(f"[STRIPE_WEBHOOK_ERROR] Invalid signature: {e}")
-        return {
-            "ok": False,
-            "status_code": 400,
-            "message": "Invalid Stripe webhook signature.",
-        }
-
+        event = stripe.Webhook.construct_event(raw_body, signature, STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.SignatureVerificationError):
+        return {"ok": False, "status_code": 400, "message": "Invalid Stripe webhook signature or payload."}
     event_type = event.get("type")
-    data = event.get("data", {}).get("object", {})
-
-    if event_type == "checkout.session.completed":
-        provider_reference = (
-            data.get("client_reference_id")
-            or data.get("metadata", {}).get("provider_reference")
-            or ""
-        )
-
-        payment_status = str(data.get("payment_status") or "").lower()
-        amount_minor = _safe_int(data.get("amount_total"), 0)
-        amount = (amount_minor / 100) if amount_minor else 0
-        currency = str(data.get("currency") or "USD").upper()
-
-        if payment_status not in {"paid", "no_payment_required"}:
-            print(f"[STRIPE_WEBHOOK_INFO] Checkout completed but payment_status={payment_status}, reference={provider_reference}")
-            return {
-                "ok": True,
-                "status_code": 200,
-                "event": event_type,
-                "message": f"Checkout completed but payment_status is {payment_status}.",
-                "reference": provider_reference,
-                "amount": amount,
-                "amount_minor": amount_minor,
-                "currency": currency,
-            }
-
-        metadata = data.get("metadata", {}) or {}
-        pending = get_purchase_by_provider_reference(database_url, provider_reference=provider_reference) or {}
-        purchase = _mark_stripe_purchase_paid(
-            database_url,
-            provider_reference=provider_reference,
-            purchase_id=metadata.get("purchase_id"),
-        ) if _stripe_payment_matches_purchase(data, pending) else {}
-
-        attached = {}
-        if purchase:
-            try:
-                if metadata.get("job_id") and not purchase.get("preview_job_id"):
-                    purchase = dict(purchase)
-                    purchase["preview_job_id"] = metadata.get("job_id")
-            except Exception:
-                pass
-
-            attached = _attach_preview_job_to_purchase(
-                database_url,
-                purchase,
-                source="stripe_webhook",
-                fallback_job_id=metadata.get("job_id", "") or "",
-                fallback_file_name=metadata.get("file_name", "") or "",
-                fallback_reference_count=_safe_int(metadata.get("reference_count"), 0),
-                fallback_citation_count=_safe_int(metadata.get("citation_count"), 0),
-            )
-
-        activated_purchase = attached.get("purchase") or purchase
-
-        print(f"[STRIPE_WEBHOOK_SUCCESS] reference={provider_reference}, purchase_activated={bool(purchase)}")
-        return {
-            "ok": True,
-            "status_code": 200,
-            "event": event_type,
-            "reference": provider_reference,
-            "amount": amount,
-            "amount_minor": amount_minor,
-            "currency": currency,
-            "purchase_activated": bool(purchase),
-            "preview_job_attached": attached,
-            "purchase": activated_purchase,
-        }
-
-    return {
-        "ok": True,
-        "status_code": 200,
-        "event": event_type,
-        "message": "Stripe webhook received. No purchase activation required.",
-    }
+    if event_type not in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
+        return {"ok": True, "status_code": 200, "event": event_type}
+    try:
+        outcome = _fulfill_verified_session(database_url, event.get("data", {}).get("object", {}))
+        # A signed event that failed fulfillment must be retried by Stripe.
+        # An unpaid completed session is acknowledged, then async success fulfills it.
+        if not outcome.get("ok"):
+            outcome["status_code"] = 503
+        outcome["event"] = event_type
+        outcome["purchase_activated"] = bool(outcome.get("activated"))
+        return outcome
+    except Exception as exc:
+        print(f"[STRIPE_WEBHOOK_RETRY] {type(exc).__name__}")
+        return {"ok": False, "activated": False, "status_code": 503,
+                "message": "Payment fulfillment will be retried."}

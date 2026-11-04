@@ -33,6 +33,73 @@ exact Paystack webhook body forwarded to CiteIntegrity in the
 | `STRIPE_SECRET_KEY` | Stripe live secret key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe signing secret for CiteIntegrity's webhook |
 
+Register `https://citeintegrity.org/api/webhooks/stripe` for
+`checkout.session.completed` and `checkout.session.async_payment_succeeded`.
+Keep test and live credentials separate. After deploying 2.0.17, replay the
+affected successful Checkout event or use `recover_stripe_payment.py` with the
+original session ID. Recovery never creates another charge.
+
+### Payment acknowledgement and report email
+
+| Render key | Value |
+|---|---|
+| `SMTP_HOST` | Your mail provider's SMTP hostname |
+| `SMTP_PORT` | `587` for STARTTLS, or `465` for implicit TLS |
+| `SMTP_USERNAME` | SMTP login, stored as a secret |
+| `SMTP_PASSWORD` | SMTP password or provider app password, stored as a secret |
+| `SMTP_FROM_EMAIL` | Verified sender, for example `support@citeintegrity.org` |
+| `PAYMENT_EMAIL_FROM_NAME` | `CiteIntegrity` |
+
+The web service checks for unsent Stripe confirmations every minute. Failed
+delivery is retried after five minutes. Only verified paid purchases with a
+retained, accessible report receive a report-link email. No manuscript is
+attached to the email. SMTP is independent of Stripe's payment receipt, which
+new Checkout sessions request using `payment_intent_data.receipt_email`.
+In live mode Stripe sends that receipt after payment succeeds. Test-mode
+receipt emails need to be sent manually from Stripe's dashboard.
+
+Set `RELEASE_VERSION=2.0.19-request-polling` for this release.
+
+## Web memory controls
+
+| Render key | Default | Effect |
+|---|---|---|
+| `MAX_UPLOAD_MB` | `64` | Maximum bytes read for one manuscript file. Larger uploads receive HTTP 413. |
+| `WEB_PREFLIGHT_MAX_MB` | `8` | Files or DOCX document XML above this threshold go directly to background preflight. |
+| `WEB_MAX_HEAVY_REQUESTS` | `2` | Maximum simultaneous expensive web requests per process, including response delivery. Excess requests receive HTTP 429 with a retry delay. |
+
+Keep the existing single Gunicorn worker in `start.sh`. Document analysis remains
+on the existing RQ workers. The web-process fallback cache is capped at eight
+entries, approximately 32 MiB of retained Python objects and five minutes.
+Production result reads use PostgreSQL and do not populate that cache.
+
+Deploy the complete 2.0.19 source, including `web_memory.py`. Replacing `main.py`
+alone will fail because it imports the new module. See `RELEASE_2_0_18.md` for
+the incident evidence, validation and deployment steps. The archive also includes
+the 2.0.17 payment-recovery and email changes.
+
+## Dashboard request lifecycle
+
+Version 2.0.19 preserves the checkout form across dashboard redraws, shares
+concurrent GET requests and caches small pricing recommendations for two minutes
+per country and document-count signature. A country change or changed document
+counts selects the matching quote. Checkout still validates against live
+server-side counts and pricing.
+
+Verification polls run one at a time, wait at least eight seconds after a
+response and use `include_result=false` to omit full dashboard preparation and
+result delivery. The server still loads the saved record to reconcile coverage.
+Initial and final dashboard reads continue to use `/result` for the full report.
+Busy responses honor a bounded retry delay. Hidden tabs defer status requests,
+and leaving the page stops the polling lifecycle.
+
+Pricing recommendations now select count metadata from PostgreSQL instead of
+transferring manuscript JSON to the web process. Legacy records without a saved
+word count retain the original full-count fallback. No new environment variable
+or database migration is required for the 2.0.19 request changes.
+
+See `RELEASE_2_0_19.md` for the supplied-log interpretation and validation.
+
 ## Required commercial service values
 
 | Render key | Recommended value |
