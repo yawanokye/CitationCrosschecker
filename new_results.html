@@ -1513,7 +1513,8 @@
             <a href="/new">Home</a>
             <a href="/new/analyse">New Analysis</a>
             <a href="/privacy">Privacy</a>
-        </nav>
+        <a href="/account">My Account</a>
+            </nav>
     </div>
 </header>
 
@@ -1568,6 +1569,7 @@
     </section>
 
     <div id="paymentRecoveryNotice" class="locked-card" role="status" aria-live="polite" style="display:none"></div>
+    <p class="small-muted"><a href="/account#recovery">Payment received but your analysis failed? Recover the paid analysis</a></p>
     <section class="paywall-panel" id="paywallPanel"></section>
 
     <section class="card" id="globalPublicationSafety" style="display:none;border:2px solid #dc2626;background:#fff7ed;"></section>
@@ -1593,6 +1595,8 @@
             <div class="acii-label">ACII Score</div>
             <div class="acii-rating" id="aciiRating">Not available</div>
             <div class="acii-rec" id="aciiRecommendation">Run analysis and verification to improve citation integrity evidence.</div>
+            <p id="aciiCoverage" aria-live="polite" style="font-size:13px;margin-top:14px;"></p>
+            <details style="font-size:13px;margin-top:10px;"><summary>How ACII is calculated</summary><p>Reference verification contributes 35%, citation concentration 20%, author diversity 20%, and temporal quality 25%. Temporal quality combines recency at 60% and year-span balance at 40%. Recency uses a five-year window. These are screening indicators and should be interpreted in the context of your discipline.</p><p>The final score is withheld until every detected reference has a completed publication-status check. Offline lookups and pending checks leave the score pending. Retractions, expressions of concern and corrections can lower the final rating. Human review is required.</p></details>
         </div>
 
         <div class="card insights-panel">
@@ -1906,7 +1910,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const $ = (id) => document.getElementById(id);
 
     // ======================== UPDATED CONFIG ========================
-    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.0.19-request-polling";
+    const RESULTS_UI_BUILD = "PRODUCTION_RESULTS-commercial-v2.1.0-customer-subscriptions";
 
     const CONFIG = {
         MAX_VERIFY_DISPLAY: 600,
@@ -2092,11 +2096,15 @@ document.addEventListener("DOMContentLoaded", function () {
             });
             const result = await response.json();
             const message = result.message || result.detail || "Payment verification is unavailable. If you were charged, please do not pay again. Contact support with your receipt.";
-            if (response.ok && result.paid === true) {
+            if (response.ok && result.paid === true && !result.recovery_required) {
                 try { localStorage.removeItem(`ci_checkout:${JOB_ID}`); } catch (_) {}
                 await loadExistingResult(false);
             }
             showPaymentMessage(message);
+            if(result.recovery_url==='/account#recovery'){
+                const link=document.createElement('a');link.href=result.recovery_url;link.textContent=' Open paid-analysis recovery';
+                $('paymentRecoveryNotice')?.append(link);
+            }
         } catch (_) {
             showPaymentMessage("Payment verification is temporarily unavailable. If you were charged, please do not pay again. Try Restore access shortly or contact support with your receipt.");
         } finally {
@@ -2216,6 +2224,7 @@ document.addEventListener("DOMContentLoaded", function () {
     function renderPaywall(data) {
         const panel = $("paywallPanel");
         if (!panel) return;
+        if(data?.payment_recovery?.message)showPaymentMessage(data.payment_recovery.message);
 
         // Keep checkout fields and listeners stable while result tables refresh.
         if ($("payEmail")) paymentEmailDraft = $("payEmail").value;
@@ -2224,7 +2233,7 @@ document.addEventListener("DOMContentLoaded", function () {
         pricingDocumentKey = JSON.stringify([JOB_ID, counts.reference_count, counts.citation_count,
             data?.summary?.word_count || data?.preflight?.word_count || data?.word_count || 0]);
         const hidden = DEMO_HIDE_PAYMENT_DETAILS || shouldHideAccessPanel(data);
-        const renderKey = JSON.stringify([hidden, hasPaidAccess(data), data?.payments_suspended === true,
+        const renderKey = JSON.stringify([hidden, hasPaidAccess(data), data?.payments_suspended === true, data?.payment_recovery?.status,
             getAccessPackage(data).document_tier_name || getAccessPackage(data).name || "", pricingDocumentKey]);
         setPaidOnlyButtons(hidden || hasPaidAccess(data));
         if (panel.dataset.renderKey === renderKey && (hidden || panel.childElementCount > 0)) return;
@@ -2281,6 +2290,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div style="margin-top:12px;">
                     <button class="btn" id="btnRestorePayment">Already paid? Restore access</button>
                     <a href="/contact">Contact support</a>
+                    <a href="/account#recovery">Paid but analysis failed? Recover analysis</a>
                     <p class="small-muted">If you were charged but cannot see your report, restore access before making another payment.</p>
                 </div>
                 <div class="small-muted" style="margin-top:10px;">Your document is used for citation integrity analysis. Payment records store email, package, analysis count, payment reference, and job link.</div>
@@ -2288,6 +2298,11 @@ document.addEventListener("DOMContentLoaded", function () {
         `;
 
         $("btnRestorePayment")?.addEventListener("click", restorePaymentAccess);
+        if(data?.payment_recovery?.status === "review_required"){
+            const controls=panel.querySelector(".paywall-controls");
+            if(controls)controls.innerHTML='<div class="locked-card" style="grid-column:1/-1">Your payment is recognised. Contact support to complete recovery. Please do not pay again. <a href="/account#recovery">Open recovery</a></div>';
+            return;
+        }
         if (data?.payments_suspended === true) {
             const controls = panel.querySelector(".paywall-controls");
             if (controls) controls.innerHTML = `<div class="locked-card" style="grid-column:1/-1"><strong>New payments are temporarily suspended.</strong><br>Free Preview remains available. Please return when checkout reopens.</div>`;
@@ -4394,6 +4409,11 @@ document.addEventListener("DOMContentLoaded", function () {
         const scoreEl = $("aciiScore");
         const ratingEl = $("aciiRating");
         const recEl = $("aciiRecommendation");
+        const coverageEl = $("aciiCoverage");
+        if (coverageEl) {
+            const coverage = acii.coverage || {};
+            coverageEl.textContent = `Publication-status coverage: ${coverage.publication_status_checked ?? 0} of ${coverage.expected_references ?? data.summary?.reference_entries_found ?? 0} references checked. ${coverage.complete === true ? "Coverage complete." : "Complete verification to receive a final ACII score."}`;
+        }
         if (scoreEl) scoreEl.textContent = score;
         const rating = scoreAvailable
             ? { ...getACIIRating(score), text: acii.category || getACIIRating(score).text }
@@ -6088,5 +6108,6 @@ ${claimTable}
     init();
 });
 </script>
+<script src="/static/customer_credits.js" defer></script>
 </body>
 </html>

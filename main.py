@@ -1,5 +1,5 @@
 # main.py — Citation Crosschecker with Async Queue System
-# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.0.19-request-polling"
+# MAIN_BUILD = "CITEINTEGRITY-commercial-v2.1.0-customer-subscriptions"
 
 import io
 import asyncio
@@ -80,6 +80,9 @@ from verify import (
     clear_verification_results
 )
 from acii import compute_acii
+import subscriptions as customer_credits
+from subscription_portal import create_portal_router, portal_webhook
+import paid_analysis_recovery
 from citation_suggester import extract_context, suggest_from_context, suggest_for_unverified
 from claim_checker import build_claim_support_rows
 from reference_formatter import (
@@ -741,9 +744,11 @@ def increment_counter():
 security = HTTPBasic()
 
 USERNAME = os.environ.get("DEVELOPER_USERNAME", "admin")
-PASSWORD = os.environ.get("DEVELOPER_PASSWORD", "Ano77kye7509#")
+PASSWORD = os.getenv("DEVELOPER_PASSWORD", "").strip()
 
 def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+    if not USERNAME or not PASSWORD:
+        raise HTTPException(status_code=503, detail="Developer sign-in is not configured.")
     correct_username = secrets.compare_digest(credentials.username, USERNAME)
     correct_password = secrets.compare_digest(credentials.password, PASSWORD)
 
@@ -757,6 +762,8 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
 
 def developer_request_is_authorized(request: Request) -> bool:
     """Allow developers to test the full product while public maintenance mode is active."""
+    if not USERNAME or not PASSWORD:
+        return False
     authorization = request.headers.get("authorization", "")
     if not authorization.lower().startswith("basic "):
         return False
@@ -768,18 +775,18 @@ def developer_request_is_authorized(request: Request) -> bool:
     return secrets.compare_digest(username, USERNAME) and secrets.compare_digest(password, PASSWORD)
 
 APP_TITLE = "CitationCrosschecker"
-RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.0.19-request-polling").strip()
+RELEASE_VERSION = os.environ.get("RELEASE_VERSION", "2.1.0-customer-subscriptions").strip()
 RELEASE_SLOT = os.environ.get("RELEASE_SLOT", "blue").strip().lower()
 DEVELOPER_SESSION_COOKIE = "citeintegrity_developer_session"
 DEVELOPER_ACCESS_LEVELS = {"full_access", "full_review"}
 DEVELOPER_ACCESS_LEVEL = contextvars.ContextVar("developer_access_level", default="")
 DEVELOPER_SESSION_TTL_SECONDS = max(900, int(os.environ.get("DEVELOPER_SESSION_TTL_SECONDS", "43200")))
-DEVELOPER_SESSION_SECRET = os.environ.get("DEVELOPER_SESSION_SECRET", "").strip() or hashlib.sha256(
-    f"{PASSWORD}:citeintegrity-developer-session".encode("utf-8")
-).hexdigest()
+DEVELOPER_SESSION_SECRET = os.environ.get("DEVELOPER_SESSION_SECRET", "").strip() or (hashlib.sha256(f"{PASSWORD}:citeintegrity-developer-session".encode("utf-8")).hexdigest() if PASSWORD else "")
 
 
 def create_developer_session_token(access_level: str = "full_access") -> str:
+    if not USERNAME or not PASSWORD or not DEVELOPER_SESSION_SECRET:
+        raise HTTPException(status_code=503, detail="Developer sign-in is not configured.")
     access_level = access_level if access_level in DEVELOPER_ACCESS_LEVELS else "full_access"
     issued_at = str(int(time.time()))
     payload = f"{issued_at}:{USERNAME}:{access_level}"
@@ -788,6 +795,8 @@ def create_developer_session_token(access_level: str = "full_access") -> str:
 
 
 def developer_session_access_level(request: Request) -> str:
+    if not USERNAME or not PASSWORD or not DEVELOPER_SESSION_SECRET:
+        return ""
     token = request.cookies.get(DEVELOPER_SESSION_COOKIE, "")
     try:
         issued_at_text, access_level, supplied_signature = token.split(".", 2)
@@ -877,6 +886,8 @@ async def _payment_email_loop():
     while True:
         try:
             await run_in_threadpool(deliver_pending_confirmations, DATABASE_URL)
+            from subscription_portal import reconcile_failed_reviews
+            await run_in_threadpool(reconcile_failed_reviews, DATABASE_URL)
         except Exception as exc:
             print(f"[PAYMENT EMAIL] Retry deferred: {type(exc).__name__}")
         await asyncio.sleep(60)
@@ -892,6 +903,7 @@ async def lifespan(app_instance: FastAPI):
     if DATABASE_URL:
         try:
             init_commercial_tables(DATABASE_URL)
+            customer_credits.init_portal_tables(DATABASE_URL)
             print("✅ Commercial payment tables verified")
         except Exception as commercial_error:
             print(f"⚠️ Commercial table setup failed safely: {commercial_error}")
@@ -980,6 +992,8 @@ async def security_middleware(request: Request, call_next):
         "/payment",
         "/api/payments",
         "/api/plans",
+        "/account",
+        "/api/account",
         "/api/webhooks",
         "/contact",
         "/api/contact",
@@ -1090,6 +1104,7 @@ async def maintenance_gate(request: Request, call_next):
         or path.startswith("/payment/callback")
         or path.startswith("/payment/paystack/callback")
         or path.startswith("/payment/stripe/success")
+        or path.startswith("/payment/subscription/callback")
     ):
         return await call_next(request)
     basic_authorized = developer_request_is_authorized(request)
@@ -3402,6 +3417,8 @@ async def verify(
     enable_autofix: str = Form("false"),  # CHANGE: Use str instead of bool
     enable_online_verification: str = Form("true"),
     enable_academic_voice: str = Form("false"),
+    recheck_of: str = Form(""),
+    recover_job: str = Form(""),
     request: Request = None
 ):
     # Convert string to boolean
@@ -3472,8 +3489,19 @@ async def verify(
     file_ttl = LARGE_FILE_REDIS_TTL if is_large_file else NORMAL_FILE_REDIS_TTL
     job_timeout = LARGE_DOCUMENT_JOB_TIMEOUT if is_large_file else NORMAL_DOCUMENT_JOB_TIMEOUT
     recheck_purchase = None
+    recovery_owner = None
+    if recover_job:
+        try:
+            from subscription_portal import require_same_origin
+            require_same_origin(request)
+            recovery_owner = await run_in_threadpool(customer_credits.session_account,DATABASE_URL,request.cookies.get("ci_customer_session",""))
+            if not recovery_owner:
+                raise HTTPException(401,"Sign in with the payment email before uploading a recovery manuscript.")
+            await run_in_threadpool(paid_analysis_recovery.case_for_owner,DATABASE_URL,recovery_owner["id"],recover_job)
+        except customer_credits.PortalError as exc:
+            raise HTTPException(exc.status,str(exc))
     access_token = request.cookies.get("ci_access_token", "") if request else ""
-    if DATABASE_URL and access_token and get_access_mode(DATABASE_URL, redis_conn).get("mode") in {"payment_required", "payments_suspended"}:
+    if DATABASE_URL and access_token and not recover_job and get_access_mode(DATABASE_URL, redis_conn).get("mode") in {"payment_required", "payments_suspended"}:
         try:
             recheck = validate_purchase_for_new_run(
                 DATABASE_URL,
@@ -3507,6 +3535,11 @@ async def verify(
             content={"error": "Queue system unavailable", "message": "Redis not connected"}
         )
 
+    if recovery_owner:
+        try:
+            await run_in_threadpool(paid_analysis_recovery.reserve_replacement,DATABASE_URL,recovery_owner,recover_job,job_id,file.filename,int(load_info.get("word_count") or 0))
+        except customer_credits.PortalError as exc:
+            raise HTTPException(exc.status,str(exc))
     redis_conn.setex(f"file:{job_id}", file_ttl, data)
     print(f"✅ File stored in Redis for job {job_id} with ttl={file_ttl}s")
 
@@ -3520,6 +3553,7 @@ async def verify(
 
             preflight_payload = {
                 "preflight": load_info,
+                "selected_style": _main_style_token(style),
                 "queue_name": queue_name,
                 "large_file": is_large_file,
                 "analysis_options": {
@@ -3540,6 +3574,9 @@ async def verify(
 
         except Exception as db_error:
             print(f"⚠️ Database error: {db_error}")
+            if recovery_owner:
+                await run_in_threadpool(paid_analysis_recovery.release_failed_upload,DATABASE_URL,recover_job,job_id)
+                raise HTTPException(503,"Recovery could not be saved. Your payment is unchanged. Please try again.")
 
     # =========================
     # 6. ENQUEUE JOB
@@ -3598,11 +3635,15 @@ async def verify(
 
     except Exception as q_error:
         print(f"❌ Queue error: {q_error}")
+        if recovery_owner:
+            await run_in_threadpool(paid_analysis_recovery.release_failed_upload,DATABASE_URL,recover_job,job_id)
         return JSONResponse(
             status_code=500,
             content={"error": "Failed to queue job", "message": str(q_error)}
         )
 
+    if recovery_owner:
+        await run_in_threadpool(paid_analysis_recovery.recovery_queued,DATABASE_URL,recover_job,job_id)
     if recheck_purchase:
         try:
             attached_recheck = record_purchase_run(
@@ -3620,6 +3661,24 @@ async def verify(
             recheck_purchase = None
 
     # =========================
+    # Link only the job identifier. Manuscript content keeps its existing TTL.
+    if DATABASE_URL and request and request.cookies.get("ci_customer_session"):
+        try:
+            # Browser uploads are same-origin multipart requests. Reject an
+            # explicit foreign origin before linking any authenticated account.
+            origin = request.headers.get("origin", "")
+            if origin and origin.rstrip("/") not in {
+                str(request.base_url).rstrip("/"), os.environ.get("APP_BASE_URL", "https://citeintegrity.org").rstrip("/")
+            }:
+                raise ValueError("foreign upload origin")
+            customer = await run_in_threadpool(customer_credits.session_account, DATABASE_URL,
+                                               request.cookies.get("ci_customer_session", ""))
+            if customer:
+                await run_in_threadpool(customer_credits.link_report, DATABASE_URL, customer["id"], job_id,
+                                       str(recheck_of or "")[:100])
+        except Exception as account_link_error:
+            print(f"[ACCOUNT] Report link deferred: {type(account_link_error).__name__}")
+
     # 7. RECORD STATS
     # =========================
     try:
@@ -3951,7 +4010,8 @@ async def commercial_pricing():
             "currency": market["currency"],
             "tiers": payload["tiers"],
         }
-    return {"ok": True, "model": "free_preview_plus_pay_as_you_go", "markets": markets}
+    return {"ok": True, "model": "free_preview_pay_as_you_go_and_subscriptions", "markets": markets,
+            "subscriptions": customer_credits.catalogue()}
 
 
 @app.get("/api/public/config")
@@ -4116,6 +4176,10 @@ async def paystack_webhook(request: Request, market: str):
     if not DATABASE_URL:
         return JSONResponse(status_code=503, content={"ok": False})
     raw = await request.body()
+    subscription = await run_in_threadpool(portal_webhook, DATABASE_URL, raw,
+                                          request.headers.get("x-paystack-signature", ""), market)
+    if subscription is not None:
+        return JSONResponse(status_code=subscription["status_code"], content=subscription)
     outcome = handle_paystack_webhook(
         database_url=DATABASE_URL,
         raw_body=raw,
@@ -4131,6 +4195,12 @@ async def central_paystack_payment_confirmation(request: Request):
     if not DATABASE_URL:
         return JSONResponse(status_code=503, content={"ok": False, "message": "Payment verification is unavailable."})
     raw = await request.body()
+    from paystack_payments import verify_central_confirmation_signature
+    if verify_central_confirmation_signature(raw, request.headers.get("x-citeintegrity-signature", ""),
+                                             request.headers.get("authorization", "")):
+        subscription = await run_in_threadpool(portal_webhook, DATABASE_URL, raw, "", "ghana", central_authorized=True)
+        if subscription is not None:
+            return JSONResponse(status_code=subscription["status_code"], content=subscription)
     outcome = handle_central_payment_confirmation(
         database_url=DATABASE_URL,
         raw_body=raw,
@@ -4185,7 +4255,11 @@ async def recover_stripe_payment(request: Request, job_id: str):
             result = json.loads(result)
         if not job or result.get("result_deleted") or (result.get("privacy") or {}).get("content_deleted"):
             return JSONResponse(status_code=410, content={"ok": False, "paid": True,
+                "recovery_url":"/account#recovery",
                 "message": "Payment recognised, but the stored report has expired or was deleted. Contact support to arrange recovery or reprocessing. Please do not pay again."})
+        if str(job.get("status") or "").lower() in {"failed","error"}:
+            return {"ok":True,"paid":True,"recovery_required":True,"recovery_url":"/account#recovery",
+                    "message":"Your payment is confirmed, but the analysis failed. Open paid-analysis recovery using the email used at checkout. Please do not pay again."}
         return {"ok": True, "paid": True, "job_id": job_id,
                 "message": "Payment confirmed. Full Review is available.",
                 "results_url": f"/results/{quote_plus(job_id)}",
@@ -5764,6 +5838,13 @@ def _prepare_student_result(result: Dict[str, Any], request: Optional[Request] =
     result = result or {}
     if result.get("result_deleted"):
         return attach_privacy_status(result)
+    if DATABASE_URL and job_id:
+        try:
+            recovered = paid_analysis_recovery.finalise_replacement(DATABASE_URL,job_id,result)
+            if recovered:
+                result["payment_recovery"] = recovered
+        except Exception as recovery_error:
+            print(f"[PAID RECOVERY] Activation deferred: {type(recovery_error).__name__}")
     reconcile_verification_meta(result)
     analysis_options = result.get("analysis_options") if isinstance(result.get("analysis_options"), dict) else {}
     voice_settings = result.get("academic_voice_settings") if isinstance(result.get("academic_voice_settings"), dict) else {}
@@ -8842,3 +8923,40 @@ async def general_exception_handler(request: Request, exc: Exception):
             "timestamp": now()
         }
     )
+
+# Customer accounts reuse the existing upload, result and report-download flows.
+app.include_router(create_portal_router(
+    lambda: DATABASE_URL,
+    _commercial_plan_counts,
+    load_job_record_fresh,
+    lambda: get_access_mode(DATABASE_URL, redis_conn),
+    lambda job_id: bool(purchase_is_paid_for_job(DATABASE_URL, job_id=job_id).get('paid')),
+))
+
+
+async def _retry_paid_original(request, plan):
+    source=plan["source_job_id"]
+    data=await run_in_threadpool(redis_conn.get,f"file:{source}") if redis_conn else None
+    if not data or not plan.get("file_name"):
+        destination="/analyse?recover_job="+quote_plus(source)
+        if plan.get("recheck_of"):
+            destination+="&recheck_of="+quote_plus(plan["recheck_of"])
+        return {"upload_required":True,"upload_url":destination}
+    result=plan.get("result") or {}
+    options=result.get("analysis_options") or {}
+    outcome=await verify(file=UploadFile(file=io.BytesIO(data),filename=plan["file_name"]),
+        style=_style_for_job_result(result),enable_autofix="true",
+        enable_online_verification="true",
+        enable_academic_voice="true" if options.get("academic_voice_enabled") else "false",
+        recheck_of=plan.get("recheck_of") or "",recover_job=source,request=request)
+    if not isinstance(outcome,dict) or not outcome.get("job_id"):
+        raise HTTPException(503,"The recovery could not be queued yet. Your payment is unchanged. Please try again shortly.")
+    return {"job_id":outcome["job_id"],"results_url":"/results/"+quote_plus(outcome["job_id"]),"recovery_started":True}
+
+
+async def _retry_paid_verification(job_id):
+    return await verify_online(job_id=job_id,force=True)
+
+
+app.include_router(paid_analysis_recovery.create_recovery_router(
+    lambda:DATABASE_URL,load_job_record_fresh,_retry_paid_original,_retry_paid_verification))

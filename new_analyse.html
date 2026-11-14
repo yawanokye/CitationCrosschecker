@@ -708,7 +708,8 @@
             <a href="/#pricing" data-pricing-link>Pricing</a>
             <a href="/privacy">Privacy</a>
             <a href="/#faq" class="nav-cta">FAQ</a>
-        </nav>
+        <a href="/account">My Account</a>
+            </nav>
     </div>
 </header>
 
@@ -729,6 +730,17 @@
     </section>
 
     <section class="container">
+        <style>#uploadAccountPrompt[hidden],#uploadAccountPrompt [hidden]{display:none!important}</style>
+        <section id="uploadAccountPrompt" aria-labelledby="uploadAccountTitle" style="margin-bottom:22px;padding:22px;border:1px solid #b9ddcd;border-radius:16px;background:#f0faf5;">
+            <h2 id="uploadAccountTitle" style="font-size:21px;margin:0 0 8px;">Create an account before you upload</h2>
+            <p id="uploadAccountDescription" style="margin:0 0 15px;color:#52645d;">Keep your available reports, subscription and credits together in your portal. Creating an account is free.</p>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+                <a id="uploadCreateAccount" class="btn btn-primary" href="/account?mode=create&amp;next=%2Fanalyse">Create account</a>
+                <a id="uploadSignIn" class="btn" href="/account?mode=signin&amp;next=%2Fanalyse">Sign in</a>
+                <button id="uploadAsGuest" type="button" class="btn">Continue as guest</button>
+                <a id="uploadMyAccount" class="btn" href="/account" hidden>My Account</a>
+            </div>
+        </section>
         <div class="layout">
 
             <div class="card upload-card">
@@ -736,6 +748,8 @@
                     <h2>Document upload</h2>
                     <span class="small-pill">DOCX recommended, PDF supported</span>
                 </div>
+
+                <p class="helper-box">Already paid but your analysis failed? <a href="/account#recovery">Recover your paid analysis</a> before making another payment.</p>
 
                 <div class="file-area" id="fileArea">
                     <div class="file-icon">📑</div>
@@ -763,8 +777,8 @@
                     <label class="option-card">
                         <input type="checkbox" id="onlineVerify" checked>
                         <span>
-                            <strong>Automatic reference and publication-status verification</strong>
-                            <span>Recommended. Starts in the background after analysis and checks metadata plus publication-integrity events.</span>
+                            <strong>Automatic online verification</strong>
+                            <span>Recommended. Starts in the background as soon as document analysis finishes.</span>
                         </span>
                     </label>
 
@@ -1135,11 +1149,14 @@ document.addEventListener("DOMContentLoaded", function () {
         formData.append("enable_autofix", $("autofix")?.checked ? "true" : "false");
         formData.append("enable_online_verification", $("onlineVerify")?.checked ? "true" : "false");
         formData.append("enable_academic_voice", $("academicVoice")?.checked ? "true" : "false");
+        formData.append("recheck_of", new URLSearchParams(window.location.search).get("recheck_of") || "");
+        formData.append("recover_job", new URLSearchParams(window.location.search).get("recover_job") || "");
         console.log("[CiteIntegrity] Selected citation style:", selectedStyle);
 
         try {
             const response = await fetch("/verify", {
                 method: "POST",
+                headers: {"X-CI-Portal":"1"},
                 body: formData
             });
 
@@ -1379,5 +1396,6 @@ document.addEventListener("DOMContentLoaded", function () {
     }).catch(() => {});
 })();
 </script>
+<script src="/static/upload_account.js" defer></script>
 </body>
 </html>

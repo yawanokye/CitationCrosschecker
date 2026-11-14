@@ -334,5 +334,16 @@ def attach_paid_purchase_to_preview_job(
 def purchase_is_paid_for_job(database_url: str, *, job_id: str) -> Dict[str, Any]:
     purchase = get_purchase_for_job(database_url, job_id=job_id)
     if not purchase:
+        # Existing access links remain valid. Credit unlocks use the same paid
+        # feature gates, while keeping their ledger separate from cash purchases.
+        try:
+            from subscriptions import grant
+            credit_grant = grant(database_url, job_id)
+            if credit_grant:
+                return {"paid": True, "tier_key": credit_grant["tier_key"], "currency": "GHS",
+                        "purchase": {"payment_provider": "credits", "status": "paid"}}
+        except Exception:
+            # Fail closed if the additive portal schema is not installed yet.
+            pass
         return {"paid": False, "tier_key": "", "currency": "GHS", "purchase": None}
     return {"paid": str(purchase.get("status") or "").lower() in {"paid", "active"}, "tier_key": purchase.get("document_tier") or "", "currency": purchase.get("currency") or "GHS", "purchase": purchase}

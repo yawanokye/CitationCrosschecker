@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow"><title>My Account · CiteIntegrity</title>
+  <link rel="stylesheet" href="/static/customer_portal.css">
+  <script src="/static/customer_portal.js" defer></script>
+</head>
+<body>
+<header><a class="brand" href="/">Cite<span>Integrity</span></a><nav aria-label="Main navigation"><a href="/analyse">Check a document</a><a href="/contact">Support</a><button id="signOut" hidden>Sign out</button></nav></header>
+<main>
+  <div class="page-heading"><div><p class="eyebrow">MY ACCOUNT</p><h1>Your reviews. Your credits.</h1><p id="accountEmail" class="muted">Sign in to manage your subscription and available reports.</p></div><a class="primary" href="/analyse">Check a document <span aria-hidden="true">↗</span></a></div>
+  <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+  <section id="loginPanel" class="login card" aria-labelledby="loginTitle" hidden>
+    <div><p class="eyebrow" id="loginEyebrow">YOUR CUSTOMER PORTAL</p><h2 id="loginTitle">Create an account or sign in</h2><p class="muted" id="loginDescription">Enter your email to receive a one-time code. A new account is created after you verify your email. No password is needed.</p></div>
+    <form id="emailForm"><label for="email">Email address</label><input id="email" type="email" maxlength="254" autocomplete="email" required placeholder="you@university.edu"><button class="primary" id="sendCode">Send sign-in code</button></form>
+    <form id="codeForm" hidden><label for="code">Six-digit code</label><input id="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required placeholder="000000"><button class="primary" id="verifyAccount">Verify email and continue</button><button type="button" id="changeEmail">Use a different email</button><p class="muted">The code expires in 10 minutes.</p></form>
+    <p class="muted" id="accountReturnNote" hidden>After verification, you'll return to the upload page. Your new reports will be linked to this account.</p>
+  </section>
+  <div id="accountPanel" hidden>
+    <section id="recovery" class="card" aria-labelledby="recoveryTitle" style="margin:24px 0;">
+      <p class="eyebrow">ALREADY PAID?</p><h2 id="recoveryTitle">Recover a failed analysis</h2>
+      <p class="muted">Use the payment reference on your receipt or your analysis ID. Sign in with the email used at checkout. We'll verify the payment and recover your review without another checkout.</p>
+      <form id="recoveryForm"><label for="recoveryReference">Payment reference or analysis ID</label><input id="recoveryReference" maxlength="255" required placeholder="Enter your payment reference or analysis ID"><button class="primary" id="recoverAnalysis">Recover analysis</button></form>
+      <div id="recoveryResult" class="notice" role="status" hidden></div>
+    </section>
+    <section class="summary" aria-label="Account summary">
+      <div class="card balance"><p>Available credits</p><strong id="balance">0</strong><p id="balanceDetail">Credits ready for your next review</p></div>
+      <div class="card"><p class="muted">Your plan</p><h2 id="planName">No active plan</h2><p id="planAllowance">Choose a plan below or buy a top-up.</p><p class="tag">Manual renewal</p></div>
+      <div class="card"><p class="muted">Next credit release</p><h2 id="nextRelease">Not scheduled</h2><p id="renewalDate">Your subscription dates appear here.</p><p id="queuedRenewal" class="muted"></p></div>
+    </section>
+    <div class="section-heading"><h2>My reports</h2><a href="/analyse">Upload a manuscript ↗</a></div>
+    <p class="muted">Download available reports promptly. Signing in or purchasing a plan does not extend temporary manuscript or report storage.</p>
+    <div class="card table-wrap"><table><thead><tr><th>Document</th><th>Status</th><th>Available actions</th></tr></thead><tbody id="reports"><tr><td colspan="3">Loading your reports…</td></tr></tbody></table></div>
+  </div>
+  <section id="plans" aria-labelledby="plansTitle">
+    <div class="section-heading"><div><p class="eyebrow">PREPAID SUBSCRIPTIONS</p><h2 id="plansTitle">Choose the pace of your research</h2></div><label>Payment term<select id="term"><option value="1">Monthly</option><option value="3">Quarterly</option><option value="12">Annual</option></select></label></div>
+    <div id="planCards" class="plan-grid"></div>
+    <p class="muted">Pay for your selected term in GHS through Paystack. Renew manually. Credits are released monthly, including quarterly and annual plans. Unused monthly credits roll over for one extra month, capped at one monthly allowance. Reports and downloads cost no additional credits.</p>
+    <div class="details-grid">
+      <div class="card"><h3>Credits per Full Review</h3><table><thead><tr><th>Document</th><th>Limits</th><th>Credits</th></tr></thead><tbody><tr><td>Article or assignment</td><td>15,000 words / 100 references</td><td>2</td></tr><tr><td>Research paper or project</td><td>35,000 words / 200 references</td><td>4</td></tr><tr><td>Master's thesis</td><td>75,000 words / 350 references</td><td>7</td></tr><tr><td>PhD or large document</td><td>120,000 words / 600 references</td><td>10</td></tr></tbody></table><p class="muted">Citation-count limits also apply. Your document's credit cost is shown before you unlock its review. Each unlock includes one recheck of the same manuscript within 14 days. Failed analyses don't consume credits. There's no automatic overage charge.</p></div>
+      <div class="card"><p class="eyebrow">A LITTLE EXTRA ROOM</p><h3>Top up when you need to</h3><p class="muted">GHS 5 per credit, minimum 2 credits. Top-up credits do not expire and can be used after your subscription ends.</p><form id="topupForm"><label for="topup">Number of credits</label><input id="topup" type="number" min="2" max="1000" step="1" value="2" required><p id="topupAmount">GHS 10</p><button class="primary" id="topupButton">Buy top-up</button></form><hr><h3>One-off checks are still available</h3><p class="muted">You can continue using pay-as-you-go checkout on any completed Free Preview.</p><a href="/analyse">Start a Free Preview ↗</a></div>
+    </div>
+  </section>
+  <section id="paymentPanel" hidden><div class="section-heading"><h2>Payment history</h2><span class="muted">Plans, top-ups and paid reviews</span></div><div class="card table-wrap"><table><thead><tr><th>Date / reference</th><th>Purchase</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody id="payments"></tbody></table></div><details class="card ledger"><summary>Credit activity</summary><div class="table-wrap"><table><thead><tr><th>Date</th><th>Activity</th><th>Credits</th></tr></thead><tbody id="creditActivity"></tbody></table></div></details></section>
+  <p class="muted footer-note">Your account keeps payment and credit records, plus links to reports that are still available. Manuscripts and detailed results follow the existing temporary-storage policy. <a href="/privacy">Privacy policy</a> · <a href="/terms">Terms</a></p>
+</main>
+<dialog id="checkoutDialog"><form id="checkoutForm"><p class="eyebrow">REVIEW YOUR PURCHASE</p><h2 id="checkoutTitle"></h2><p id="checkoutDescription"></p><p id="checkoutAmount" class="checkout-amount"></p><label class="consent"><input type="checkbox" id="manualRenewal" required><span>I understand this is a prepaid purchase. Renewal is manual and there is no automatic charge. Subscription credits are released monthly.</span></label><p class="muted">A renewal purchased before your current term ends begins after that term. Manuscript and report retention periods stay the same.</p><div class="dialog-actions"><button type="button" id="cancelCheckout">Cancel</button><button class="primary" id="confirmCheckout">Continue to Paystack</button></div></form></dialog>
+</body></html>

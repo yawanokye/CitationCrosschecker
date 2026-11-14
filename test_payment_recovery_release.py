@@ -170,6 +170,14 @@ def test_no_saved_checkout_or_payment_does_not_unlock():
     ns["verify_and_activate_stripe_session"].assert_not_called()
 
 
+def test_confirmed_payment_with_failed_job_offers_recovery_not_fake_download():
+    client,_=load_routes(load_job_record_fresh=lambda job:{"status":"failed","result":{}})
+    response=client.post('/api/payments/recover/report-job',json={})
+    assert response.status_code==200 and response.json()['paid']
+    assert response.json()['recovery_required'] and response.json()['recovery_url']=='/account#recovery'
+    assert 'download_url' not in response.json()
+
+
 def test_recovery_rate_limit():
     client, ns = load_routes(_checkout_rate_limited=lambda *a: True)
     assert client.post("/api/payments/recover/report-job", json={}).status_code == 429
