@@ -446,8 +446,15 @@ def handle_central_payment_confirmation(
         market=market,
         source="projectready_webhook",
     )
-    outcome["status_code"] = 200 if outcome.get("activated") else 400
-    return outcome
+    # The confirmation endpoint is a machine-to-machine acknowledgement.
+    # Purchase and run records can contain datetimes and private access data,
+    # so they must not be returned in the JSON response.
+    activated = bool(outcome.get("activated"))
+    result = {"ok": bool(outcome.get("ok")), "activated": activated,
+              "status_code": 200 if activated else 400}
+    if outcome.get("message"):
+        result["message"] = str(outcome["message"])
+    return result
 
 def verify_paystack_webhook_signature(raw_body: bytes, signature: str, market: str = "ghana") -> bool:
     secret = _require_secret_key(market).encode("utf-8")
@@ -500,7 +507,10 @@ def handle_paystack_webhook(*, database_url: str, raw_body: bytes, signature: st
             "event": event_type,
             "reference": reference,
             "purchase_activated": bool(purchase),
-            "preview_job_attached": attached,
+            # Do not include database records in the webhook acknowledgement.
+            # PostgreSQL timestamps are not JSON serializable, and those records
+            # can also contain private access tokens and customer details.
+            "preview_job_attached": {"attached": bool(attached.get("attached"))},
         }
 
     return {

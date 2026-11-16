@@ -2,6 +2,7 @@
 import json
 import hashlib
 import hmac
+from datetime import datetime, timezone
 import sqlite3
 import sys
 import tempfile
@@ -123,6 +124,68 @@ class TerminalStateTests(unittest.TestCase):
         with sqlite3.connect(self.path) as conn:
             self.assertEqual(conn.execute("SELECT status FROM purchases WHERE provider_reference=?",("CIT-pending",)).fetchone()[0],"paid")
             self.assertEqual(conn.execute("SELECT status FROM purchases WHERE provider_reference=?",("CIT-refunded",)).fetchone()[0],"refunded")
+
+    def test_live_route_acknowledges_realistic_database_rows_and_retries(self):
+        """Exercise signing, both handlers, HTTP JSON encoding and duplicate delivery."""
+        projectready_root = str(Path(__file__).parent.parent / "projectready-review")
+        if not (Path(projectready_root) / "app" / "payments" / "paystack.py").is_file():
+            self.skipTest("Cross-product integration requires the accompanying ProjectReady checkout.")
+        if projectready_root not in sys.path:
+            sys.path.insert(0, projectready_root)
+        from app.payments import paystack as projectready
+        from starlette.responses import JSONResponse
+
+        secret = "sk_test_shared_only"
+        body = json.dumps({"event": "charge.success", "data": {"id": 123, "status": "success",
+            "reference": "CIT-pending", "amount": 1000, "currency": "GHS",
+            "customer": {"email": "researcher@example.test"},
+            "metadata": {"source_app": "citeintegrity"}}}).encode()
+        signature = hmac.new(secret.encode(), body, hashlib.sha512).hexdigest()
+        private_row = {"created_at": datetime.now(timezone.utc), "access_token": "private-test-token"}
+        attached = {"attached": True, "source": "webhook", "purchase": private_row, "run": private_row}
+        payloads = []
+
+        class Response:
+            def __init__(self, response):
+                self.status, self.body = response.status_code, response.body
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, size): return self.body[:size]
+
+        class Opener:
+            def open(self, request, timeout):
+                self_signature = request.get_header("X-paystack-signature")
+                outcome = paystack_payments.handle_paystack_webhook(
+                    database_url="unused", raw_body=request.data, signature=self_signature)
+                response = JSONResponse(status_code=outcome["status_code"], content=outcome)
+                payloads.append(json.loads(response.body))
+                return Response(response)
+
+        with patch.object(projectready, "PAYSTACK_SECRET_KEY", secret), \
+             patch.object(paystack_payments, "PAYSTACK_GH_SECRET_KEY", secret), \
+             patch.object(paystack_payments, "_attach_preview_job_to_purchase", return_value=attached), \
+             patch.object(projectready.urllib.request, "build_opener", return_value=Opener()), \
+             patch.object(projectready, "record_event_once", side_effect=[True, False]):
+            first = projectready.handle_paystack_webhook(raw_body=body, signature=signature)
+            second = projectready.handle_paystack_webhook(raw_body=body, signature=signature)
+        self.assertEqual(first["status_code"], 200)
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(payloads[0]["preview_job_attached"], {"attached": True})
+        self.assertNotIn("private-test-token", json.dumps(payloads))
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute("SELECT status FROM purchases WHERE provider_reference=?", ("CIT-pending",)).fetchone()[0], "paid")
+
+    def test_central_confirmation_does_not_return_private_database_rows(self):
+        from starlette.responses import JSONResponse
+        raw = json.dumps({"reference": "CIT-pending", "source_app": "citeintegrity"}).encode()
+        outcome = {"ok": True, "activated": True, "purchase": {
+            "created_at": datetime.now(timezone.utc), "access_token": "private-test-token"}}
+        with patch.object(paystack_payments, "verify_central_confirmation_signature", return_value=True), \
+             patch.object(paystack_payments, "verify_and_activate_purchase", return_value=outcome):
+            result = paystack_payments.handle_central_payment_confirmation(database_url="unused", raw_body=raw)
+        response = JSONResponse(status_code=result["status_code"], content=result)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(b"private-test-token", response.body)
 
     def test_subscription_retries_do_not_duplicate_credits_or_reopen_refunds(self):
         db="sqlite:///"+str(Path(self.tmp.name)/"portal.db")
