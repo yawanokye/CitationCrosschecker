@@ -334,6 +334,8 @@ def activate_order(database_url, reference, verified, now=None):
         saved = cur.execute("SELECT * FROM ci_orders WHERE reference=%s FOR UPDATE", (reference,)).one()
         if saved["status"] == "paid":
             return saved
+        if saved["status"] != "pending":
+            raise PortalError("This order is not eligible for automatic payment activation.", 409)
         if saved["kind"] == "subscription":
             latest = cur.execute("""SELECT ends_at FROM ci_orders WHERE account_id=%s
                 AND kind='subscription' AND status='paid' ORDER BY ends_at DESC LIMIT 1""",

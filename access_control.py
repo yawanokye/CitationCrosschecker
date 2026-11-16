@@ -108,7 +108,9 @@ def create_pending_purchase(
 def mark_purchase_paid(database_url: str, *, provider_reference: str) -> Optional[Dict[str, Any]]:
     with get_conn(database_url) as conn:
         with conn.cursor() as cursor:
-            cursor.execute("UPDATE purchases SET status = 'paid', paid_at = COALESCE(paid_at, NOW()) WHERE provider_reference = %s RETURNING *", (provider_reference,))
+            cursor.execute("""UPDATE purchases SET status = CASE WHEN lower(status) = 'pending' THEN 'paid' ELSE status END,
+                paid_at = COALESCE(paid_at, NOW()) WHERE provider_reference = %s
+                AND lower(status) IN ('pending', 'paid', 'active') RETURNING *""", (provider_reference,))
             row = cursor.fetchone()
         conn.commit()
     return dict(row) if row else None

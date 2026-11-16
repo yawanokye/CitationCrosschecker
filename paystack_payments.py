@@ -1,6 +1,6 @@
 """Paystack helpers for CiteIntegrity's Ghana and Nigeria markets."""
 from __future__ import annotations
-import hashlib, hmac, json, os, re, secrets, urllib.error, urllib.parse, urllib.request
+import hashlib, hmac, json, logging, os, re, secrets, urllib.error, urllib.parse, urllib.request
 from typing import Any, Dict, Optional
 from entitlements import DEFAULT_CURRENCY, get_price, validate_paid_package_for_document
 from access_control import (
@@ -391,6 +391,9 @@ def verify_and_activate_purchase(*, database_url: str, reference: str, market: s
 
     purchase = mark_purchase_paid(database_url, provider_reference=reference)
 
+    if not purchase:
+        return {"ok": False, "activated": False, "message": "The purchase is no longer eligible for automatic activation."}
+
     attached = _attach_preview_job_to_purchase(
         database_url,
         purchase,
@@ -476,6 +479,12 @@ def handle_paystack_webhook(*, database_url: str, raw_body: bytes, signature: st
         if not pending or not match.get("ok"):
             return {"ok": False, "status_code": 400, "message": "Webhook payment details do not match a pending purchase.", "reference": reference}
         purchase = mark_purchase_paid(database_url, provider_reference=reference)
+        if not purchase:
+            current = get_purchase_by_provider_reference(database_url, provider_reference=reference)
+            if current and str(current.get("status") or "").lower() in {"refunded", "revoked"}:
+                logging.getLogger(__name__).warning("Paystack success received for a terminal purchase: reference_hash=%s", hashlib.sha256(str(reference).encode()).hexdigest()[:12])
+                return {"ok": True, "status_code": 200, "event": event_type, "purchase_activated": False, "terminal_purchase": True}
+            return {"ok": False, "status_code": 503, "message": "Purchase activation is awaiting reconciliation."}
         attached = {}
 
         if purchase:
