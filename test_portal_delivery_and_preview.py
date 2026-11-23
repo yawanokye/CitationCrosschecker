@@ -48,6 +48,8 @@ def test_blank_smtp_port_uses_verified_starttls(monkeypatch):
 @pytest.mark.parametrize('value,expected',[
     ('abcd efgh ijkl mnop','abcdefghijklmnop'),
     ('  abcdefghijklmnop\n','abcdefghijklmnop'),
+    ('"abcd efgh ijkl mnop"','abcdefghijklmnop'),
+    ("'abcdefghijklmnop'",'abcdefghijklmnop'),
     ('an ordinary password with spaces','an ordinary password with spaces'),
 ])
 def test_google_app_password_display_format_is_accepted(monkeypatch,value,expected):
@@ -68,6 +70,13 @@ def test_authentication_diagnostics_keep_rejection_code_without_private_text(cap
         mail._smtp_login(FakeServer(),'private-user','private-password')
     assert 'smtp_code=535' in caplog.text
     assert all(value not in caplog.text for value in ('private-user','private-password','private account details'))
+
+
+def test_google_auth_diagnostics_only_keep_public_classification():
+    error=smtplib.SMTPAuthenticationError(535,b'5.7.8 Username and Password not accepted. private-email@example.test')
+    diagnostic=mail._smtp_auth_diagnostic(error)
+    assert diagnostic == 'smtp_code=535 enhanced=5.7.8 reason=credentials_rejected'
+    assert 'private-email@example.test' not in diagnostic
 
 
 def test_disconnected_plain_submission_retries_only_with_secure_alternate(monkeypatch):

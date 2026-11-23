@@ -24,13 +24,34 @@ def _smtp_password(host: str) -> str:
     password = os.environ["SMTP_PASSWORD"]
     if host.lower().rstrip(".") == "smtp.gmail.com":
         # Google displays app passwords as four groups. Accept a paste with
-        # those display spaces while leaving other passwords untouched.
+        # display spaces or surrounding quotes while leaving other passwords untouched.
         trimmed = password.strip()
+        if len(trimmed) > 1 and trimmed[0] in {"'", '"'} and trimmed[-1] == trimmed[0]:
+            trimmed = trimmed[1:-1].strip()
         if re.fullmatch(r"[A-Za-z0-9]{16}", trimmed):
             return trimmed
         if re.fullmatch(r"[A-Za-z0-9]{4}(?:[ \t]+[A-Za-z0-9]{4}){3}", trimmed):
             return "".join(trimmed.split())
     return password
+
+
+def _smtp_auth_diagnostic(exc) -> str:
+    code = exc.smtp_code if isinstance(exc.smtp_code, int) else "unknown"
+    raw = exc.smtp_error
+    message = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or "")
+    match = re.search(r"(?<!\d)[245]\.\d{1,3}\.\d{1,3}(?!\d)", message)
+    lower = message.lower()
+    if "application-specific password" in lower or "app password" in lower:
+        reason = "app_password_required"
+    elif "username and password not accepted" in lower:
+        reason = "credentials_rejected"
+    elif "log in via your web browser" in lower or "web login required" in lower:
+        reason = "web_login_required"
+    elif "too many" in lower or "temporarily" in lower:
+        reason = "temporarily_blocked"
+    else:
+        reason = "unspecified"
+    return f"smtp_code={code} enhanced={match.group(0) if match else 'unknown'} reason={reason}"
 
 
 def _smtp_login(server, username: str, password: str) -> None:
@@ -42,8 +63,7 @@ def _smtp_login(server, username: str, password: str) -> None:
         try:
             return original_auth(*args, **kwargs)
         except smtplib.SMTPAuthenticationError as exc:
-            code = exc.smtp_code if isinstance(exc.smtp_code, int) else "unknown"
-            log.warning("Customer email authentication rejected: smtp_code=%s", code)
+            log.warning("Customer email authentication rejected: %s", _smtp_auth_diagnostic(exc))
             raise
 
     server.auth = logged_auth
