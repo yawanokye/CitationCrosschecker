@@ -128,11 +128,13 @@ def load_routes(**overrides):
                  "_checkout_rate_limited": lambda *a: False,
                  "get_checkout_purchase_by_token": Mock(return_value=deepcopy(PURCHASE)),
                  "verify_and_activate_stripe_session": Mock(return_value={"ok": True, "activated": True, "job_id": "report-job"}),
+                 "verify_and_activate_purchase": Mock(return_value={"ok": True, "activated": True}),
+                 "get_purchase_by_provider_reference": Mock(return_value=deepcopy(PURCHASE)),
                  "purchase_is_paid_for_job": Mock(return_value={"paid": True}),
                  "load_job_record_fresh": Mock(return_value={"status": "completed", "result": {}})}
     namespace.update(overrides)
     tree = ast.parse(Path("main.py").read_text())
-    names = {"recover_stripe_payment", "stripe_success", "stripe_webhook", "initialize_commercial_checkout", "_commercial_job_counts"}
+    names = {"recover_stripe_payment", "stripe_success", "stripe_webhook", "initialize_commercial_checkout", "_commercial_job_counts", "_complete_paystack_callback"}
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     for node in nodes:
         node.decorator_list = []
@@ -168,6 +170,42 @@ def test_no_saved_checkout_or_payment_does_not_unlock():
     response = client.post("/api/payments/recover/report-job", json={})
     assert response.status_code == 200 and not response.json()["paid"]
     ns["verify_and_activate_stripe_session"].assert_not_called()
+
+
+def test_paystack_restore_verifies_saved_cookie_without_creating_a_new_checkout():
+    purchase={**PURCHASE,'payment_provider':'paystack','stripe_session_id':None,'market':'ghana'}
+    client,ns=load_routes(get_checkout_purchase_by_token=Mock(return_value=purchase))
+    client.cookies.set('ci_access_token','test-only-token')
+    response=client.post('/api/payments/recover/report-job',json={})
+    assert response.status_code==200 and response.json()['paid']
+    ns['verify_and_activate_purchase'].assert_called_once_with(database_url='fixture',reference='CI-example',market='ghana',source='customer_payment_recovery')
+    ns['verify_and_activate_stripe_session'].assert_not_called()
+
+
+def test_verified_payment_with_pending_attachment_never_asks_the_customer_to_pay_again():
+    purchase={**PURCHASE,'payment_provider':'paystack','stripe_session_id':None,'market':'ghana'}
+    client,_=load_routes(get_checkout_purchase_by_token=Mock(return_value=purchase),
+                         purchase_is_paid_for_job=lambda *a,**k:{'paid':False})
+    client.cookies.set('ci_access_token','test-only-token')
+    response=client.post('/api/payments/recover/report-job',json={})
+    assert response.status_code==503 and response.json()['paid'] and response.json()['recovery_required']
+    assert 'do not pay again' in response.json()['message'].lower()
+
+
+def test_paystack_provider_failure_keeps_recovery_available():
+    purchase={**PURCHASE,'payment_provider':'paystack','stripe_session_id':None}
+    client,_=load_routes(get_checkout_purchase_by_token=Mock(return_value=purchase),
+                         verify_and_activate_purchase=Mock(side_effect=RuntimeError('gateway unavailable')))
+    client.cookies.set('ci_access_token','test-only-token')
+    response=client.post('/api/payments/recover/report-job',json={})
+    assert response.status_code==503 and not response.json()['paid']
+    assert 'do not pay again' in response.json()['message'].lower()
+
+
+def test_unconfirmed_paystack_callback_returns_to_report_instead_of_new_checkout():
+    _,ns=load_routes(verify_and_activate_purchase=lambda **kw:{'activated':False})
+    response=ns['_complete_paystack_callback']('CI-example','ghana')
+    assert response.status_code==303 and response.headers['location']=='/results/report-job?payment=pending'
 
 
 def test_confirmed_payment_with_failed_job_offers_recovery_not_fake_download():

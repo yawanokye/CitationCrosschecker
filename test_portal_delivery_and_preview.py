@@ -45,6 +45,33 @@ def test_blank_smtp_port_uses_verified_starttls(monkeypatch):
     server.send_message.assert_not_called()
 
 
+def test_disconnected_plain_submission_retries_only_with_secure_alternate(monkeypatch):
+    from unittest.mock import MagicMock
+    for key, value in {'SMTP_HOST':'smtp.example.test','SMTP_PORT':'587','SMTP_USERNAME':'user',
+                       'SMTP_PASSWORD':'secret','SMTP_FROM_EMAIL':'sender@example.test'}.items():
+        monkeypatch.setenv(key,value)
+    first=MagicMock(); first.__enter__.side_effect=smtplib.SMTPServerDisconnected('closed')
+    second=MagicMock(); server=second.__enter__.return_value
+    plain=Mock(return_value=first); implicit_tls=Mock(return_value=second)
+    monkeypatch.setattr(mail.smtplib,'SMTP',plain); monkeypatch.setattr(mail.smtplib,'SMTP_SSL',implicit_tls)
+    assert mail.probe_smtp_connection()
+    assert plain.call_args.args[1]==587 and implicit_tls.call_args.args[1]==465
+    assert implicit_tls.call_args.kwargs['context'].check_hostname
+    server.login.assert_called_once_with('user','secret')
+
+
+def test_never_retry_after_a_message_might_have_been_sent(monkeypatch):
+    from unittest.mock import MagicMock
+    for key, value in {'SMTP_HOST':'smtp.example.test','SMTP_PORT':'587','SMTP_USERNAME':'user',
+                       'SMTP_PASSWORD':'secret','SMTP_FROM_EMAIL':'sender@example.test'}.items():
+        monkeypatch.setenv(key,value)
+    first=MagicMock(); first.__enter__.return_value.send_message.side_effect=smtplib.SMTPServerDisconnected('closed')
+    alternate=Mock()
+    monkeypatch.setattr(mail.smtplib,'SMTP',Mock(return_value=first)); monkeypatch.setattr(mail.smtplib,'SMTP_SSL',alternate)
+    with pytest.raises(smtplib.SMTPServerDisconnected): mail._send(Mock())
+    alternate.assert_not_called()
+
+
 def test_failed_signin_logs_only_safe_exception_category(monkeypatch,caplog):
     monkeypatch.setenv('SMTP_FROM_EMAIL','sender@example.test')
     monkeypatch.setattr(portal,'smtp_ready',lambda:True)

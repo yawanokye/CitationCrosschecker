@@ -4146,14 +4146,22 @@ async def initialize_commercial_checkout(request: Request):
 def _complete_paystack_callback(provider_reference: str, market: str):
     if not DATABASE_URL:
         raise HTTPException(status_code=503, detail="Payment verification is unavailable.")
-    outcome = verify_and_activate_purchase(
-        database_url=DATABASE_URL,
-        reference=provider_reference,
-        market=market,
-        source="browser_callback",
-    )
+    try:
+        outcome = verify_and_activate_purchase(
+            database_url=DATABASE_URL,
+            reference=provider_reference,
+            market=market,
+            source="browser_callback",
+        )
+    except Exception as exc:
+        print(f"[PAYSTACK] Callback verification deferred: {type(exc).__name__}")
+        outcome = {}
     if not outcome.get("activated"):
-        return RedirectResponse(url="/pricing?payment=failed", status_code=303)
+        # A failed or delayed verification does not mean the customer was not
+        # charged. Return them to their existing report, not a fresh checkout.
+        saved = get_purchase_by_provider_reference(DATABASE_URL, provider_reference=provider_reference) or {}
+        job_id = str(saved.get("preview_job_id") or "")
+        return RedirectResponse(url=f"/results/{quote_plus(job_id)}?payment=pending" if job_id else "/account#recovery", status_code=303)
     purchase = outcome.get("purchase") or {}
     job_id = str(purchase.get("preview_job_id") or "")
     return RedirectResponse(url=f"/results/{quote_plus(job_id)}?payment=success" if job_id else "/?payment=success", status_code=303)
@@ -4237,19 +4245,21 @@ async def stripe_webhook(request: Request):
 
 @app.post("/api/payments/recover/{job_id}")
 async def recover_stripe_payment(request: Request, job_id: str):
-    """Verify the saved checkout with Stripe, never infer payment from the browser."""
+    """Verify the saved checkout with its provider before restoring access."""
     if not DATABASE_URL:
         raise HTTPException(status_code=503, detail="Payment verification is temporarily unavailable. Please do not pay again.")
     if _checkout_rate_limited(request, "payment-recovery"):
         raise HTTPException(status_code=429, detail="Please wait one minute before checking again.")
     payload = await request.json()
     session_id = str(payload.get("session_id") or "").strip()[:255]
+    purchase = {}
     if not session_id:
         purchase = await run_in_threadpool(
             get_checkout_purchase_by_token, DATABASE_URL,
             token=request.cookies.get("ci_access_token", ""), job_id=job_id,
         )
         session_id = str(purchase.get("stripe_session_id") or "")
+    outcome = {}
     if session_id:
         outcome = await run_in_threadpool(
             verify_and_activate_stripe_session, database_url=DATABASE_URL,
@@ -4259,6 +4269,22 @@ async def recover_stripe_payment(request: Request, job_id: str):
             return JSONResponse(status_code=int(outcome.get("status_code") or 503), content={
                 "ok": bool(outcome.get("ok")), "paid": False,
                 "message": outcome.get("message") or "Access is being restored. Please do not pay again.",
+            })
+    elif purchase.get("payment_provider") == "paystack" and purchase.get("provider_reference"):
+        try:
+            outcome = await run_in_threadpool(
+                verify_and_activate_purchase, database_url=DATABASE_URL,
+                reference=purchase["provider_reference"], market=purchase.get("market") or "ghana",
+                source="customer_payment_recovery",
+            )
+        except Exception as exc:
+            print(f"[PAYSTACK] Customer payment verification deferred: {type(exc).__name__}")
+            return JSONResponse(status_code=503, content={"ok": False, "paid": False,
+                "message": "Payment verification is temporarily unavailable. If you were charged, please do not pay again. Retry or contact support with your receipt."})
+        if not outcome.get("activated"):
+            return JSONResponse(status_code=int(outcome.get("status_code") or 409), content={
+                "ok": False, "paid": False,
+                "message": "Payment verification is pending. If you were charged, please do not pay again. Try again or contact support with your receipt.",
             })
     paid = bool(purchase_is_paid_for_job(DATABASE_URL, job_id=job_id).get("paid"))
     if paid:
@@ -4277,6 +4303,9 @@ async def recover_stripe_payment(request: Request, job_id: str):
                 "message": "Payment confirmed. Full Review is available.",
                 "results_url": f"/results/{quote_plus(job_id)}",
                 "download_url": f"/api/report-package/{quote_plus(job_id)}?delete_after=0"}
+    if outcome.get("activated"):
+        return JSONResponse(status_code=503, content={"ok": False, "paid": True, "recovery_required": True,
+            "recovery_url": "/account#recovery", "message": "Payment is confirmed, but report access is still being restored. Please do not pay again. Retry or open paid-analysis recovery."})
     return {"ok": True, "paid": False, "message": "No confirmed payment was found for this analysis. If you were charged, contact support with your receipt or payment reference. Please do not pay again."}
 
 

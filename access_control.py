@@ -149,7 +149,7 @@ def get_checkout_purchase_by_token(database_url: str, *, token: str, job_id: str
         with conn.cursor() as cursor:
             cursor.execute(
                 """SELECT * FROM purchases WHERE access_token_hash=%s
-                   AND preview_job_id=%s AND payment_provider='stripe'
+                   AND preview_job_id=%s AND payment_provider IN ('stripe','paystack')
                    ORDER BY created_at DESC LIMIT 1""",
                 (hash_access_token(token), job_id),
             )

@@ -57,14 +57,34 @@ def _smtp_connection():
     # A blank port should use the same default as the contact form. Do not
     # weaken certificate validation or fall back to unencrypted delivery.
     port = int(os.environ.get("SMTP_PORT", "").strip() or "587")
+    # The two standard submission ports use different TLS handshakes. Some mail
+    # hosts close the connection when the wrong one is configured. Retry the
+    # other secure port only before authentication or message submission.
+    alternate = {25: 587, 465: 587, 587: 465}.get(port)
+    ports = [port] + ([alternate] if alternate else [])
     context = ssl.create_default_context()
-    factory = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
-    kwargs = {"context": context} if port == 465 else {}
-    with factory(os.environ["SMTP_HOST"].strip(), port, timeout=15, **kwargs) as server:
-        if port != 465:
-            server.starttls(context=context)
-        server.login(os.environ["SMTP_USERNAME"].strip(), os.environ["SMTP_PASSWORD"])
-        yield server
+    for index, candidate in enumerate(ports):
+        factory = smtplib.SMTP_SSL if candidate == 465 else smtplib.SMTP
+        kwargs = {"context": context} if candidate == 465 else {}
+        stage = "connect"
+        try:
+            with factory(os.environ["SMTP_HOST"].strip(), candidate, timeout=15, **kwargs) as server:
+                if candidate != 465:
+                    stage = "tls"
+                    server.starttls(context=context)
+                stage = "authentication"
+                server.login(os.environ["SMTP_USERNAME"].strip(), os.environ["SMTP_PASSWORD"])
+                stage = "message"
+                yield server
+                return
+        except Exception as exc:
+            log.warning("Customer email transport failed stage=%s port=%s error=%s",
+                        stage, candidate, mail_error_kind(exc))
+            retryable = (stage in {"connect", "tls"}
+                         and isinstance(exc, (OSError, smtplib.SMTPServerDisconnected))
+                         and not isinstance(exc, ssl.SSLCertVerificationError))
+            if not retryable or index == len(ports) - 1:
+                raise
 
 
 def mail_error_kind(exc: Exception) -> str:
