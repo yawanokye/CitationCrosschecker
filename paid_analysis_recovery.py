@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 import subscriptions as ledger
+from access_control import attach_paid_purchase_to_preview_job
 from entitlements import DOCUMENT_TIERS, validate_paid_package_for_document
 from paystack_payments import verify_and_activate_purchase
 from stripe_payments import verify_and_activate_stripe_session
@@ -167,6 +168,20 @@ def recovery_plan(database_url, owner, identifier, load_job):
     status = str(job.get("status") or "missing").lower()
     if purchase and not _current(purchase):
         restore_expired_failed_purchase(database_url, owner, purchase, source, job)
+    if purchase:
+        # Payment may have succeeded while the callback failed to attach the
+        # original job. Restore the verified link idempotently before returning
+        # a report or preparing a replacement, without creating a checkout.
+        try:
+            attached = attach_paid_purchase_to_preview_job(
+                database_url, purchase_id=purchase["id"], job_id=source,
+                file_name=purchase.get("preview_file_name") or "",
+                reference_count=purchase.get("preview_reference_count") or 0,
+                citation_count=purchase.get("preview_citation_count") or 0)
+        except Exception:
+            raise ledger.PortalError("Payment is confirmed, but report access is still being restored. Please try again or contact support. Do not pay again.", 503)
+        if not attached.get("attached") and attached.get("reason") != "job_already_covered_by_paid_purchase":
+            raise ledger.PortalError("Payment is confirmed, but report access is still being restored. Please try again or contact support. Do not pay again.", 503)
     if status in {"queued", "processing", "running"} and not deleted:
         return {"action":"open", "job_id":source, "message":"Payment is confirmed. Your analysis is still in progress. You do not need to pay again."}
     if status == "completed" and not deleted:

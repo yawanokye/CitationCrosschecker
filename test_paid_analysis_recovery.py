@@ -20,6 +20,7 @@ HEADERS={'X-CI-Portal':'1','Origin':'http://testserver'}
 @pytest.fixture
 def db(tmp_path,monkeypatch):
     monkeypatch.setattr(s,'now_utc',lambda:NOW)
+    monkeypatch.setattr(r,'attach_paid_purchase_to_preview_job',lambda *a,**kw:{'attached':True})
     db='sqlite:///'+str(tmp_path/'recovery.sqlite')
     s.init_portal_tables(db)
     with s.transaction(db) as cur:
@@ -109,6 +110,22 @@ def test_unverified_and_other_email_receipts_never_prepare_recovery(db,monkeypat
     with pytest.raises(s.PortalError) as result:prepare(db,other)
     assert result.value.status==404
     with s.transaction(db) as cur:assert cur.execute('SELECT COUNT(*) AS n FROM ci_analysis_recovery').one()['n']==0
+
+
+def test_confirmed_payment_restores_original_job_link_before_opening_report(db,monkeypatch):
+    account,_=owner(db);paid(db,account)
+    put_job(db,status='completed',result={'verification':{'state':'completed'}})
+    attach=Mock(return_value={'attached':True})
+    monkeypatch.setattr(r,'attach_paid_purchase_to_preview_job',attach)
+    assert prepare(db,account)['action']=='open'
+    assert attach.call_args.kwargs['purchase_id']==41 and attach.call_args.kwargs['job_id']=='failed-job'
+
+
+def test_failed_attachment_does_not_claim_the_paid_report_is_ready(db,monkeypatch):
+    account,_=owner(db);paid(db,account)
+    monkeypatch.setattr(r,'attach_paid_purchase_to_preview_job',Mock(side_effect=RuntimeError('database unavailable')))
+    with pytest.raises(s.PortalError,match='Do not pay again') as error:prepare(db,account)
+    assert error.value.status==503
 
 
 @pytest.mark.parametrize('state',['failed','error','incomplete'])

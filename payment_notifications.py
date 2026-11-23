@@ -59,7 +59,8 @@ def _smtp_connection():
     port = int(os.environ.get("SMTP_PORT", "").strip() or "587")
     # The two standard submission ports use different TLS handshakes. Some mail
     # hosts close the connection when the wrong one is configured. Retry the
-    # other secure port only before authentication or message submission.
+    # other secure port only before any message has been submitted. A provider
+    # that explicitly rejects authentication is not retried.
     alternate = {25: 587, 465: 587, 587: 465}.get(port)
     ports = [port] + ([alternate] if alternate else [])
     context = ssl.create_default_context()
@@ -80,9 +81,10 @@ def _smtp_connection():
         except Exception as exc:
             log.warning("Customer email transport failed stage=%s port=%s error=%s",
                         stage, candidate, mail_error_kind(exc))
-            retryable = (stage in {"connect", "tls"}
-                         and isinstance(exc, (OSError, smtplib.SMTPServerDisconnected))
-                         and not isinstance(exc, ssl.SSLCertVerificationError))
+            retryable = ((stage in {"connect", "tls"}
+                          and isinstance(exc, (OSError, smtplib.SMTPServerDisconnected))
+                          and not isinstance(exc, ssl.SSLCertVerificationError))
+                         or (stage == "authentication" and isinstance(exc, smtplib.SMTPServerDisconnected)))
             if not retryable or index == len(ports) - 1:
                 raise
 
