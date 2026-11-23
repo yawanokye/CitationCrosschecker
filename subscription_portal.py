@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 import subscriptions as ledger
 from entitlements import recommend_document_tier_with_words
-from payment_notifications import _send, smtp_ready
+from payment_notifications import _send, smtp_ready, mail_error_kind
 from paystack_payments import _paystack_request, _require_secret_key
 
 log = logging.getLogger(__name__)
@@ -36,9 +36,9 @@ def send_login_code(email, code):
                         "If you did not request this code, you can ignore this email.\n\nCiteIntegrity")
     try:
         _send(message)
-    except Exception:
-        log.warning("Customer sign-in email delivery failed")
-        raise ledger.PortalError("The sign-in email could not be delivered. Please try again shortly.", 503)
+    except Exception as exc:
+        log.warning("Customer sign-in email delivery failed: %s", mail_error_kind(exc))
+        raise ledger.PortalError("The sign-in email could not be delivered. Please try again shortly or contact support@citeintegrity.org. If you already paid, please do not pay again.", 503)
 
 
 def require_same_origin(request):

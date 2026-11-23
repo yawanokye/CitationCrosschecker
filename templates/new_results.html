@@ -2272,7 +2272,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 <div class="paywall-head">
                     <div>
                         <h2 class="paywall-title">Free Preview shown <span class="locked-inline">🔒 Full Review locked</span></h2>
-                        <p class="paywall-subtitle">Missing Citations, Uncited References, and Match Rate are locked. Other result categories show a complete 25% sample capped at 10 rows. Unlock Full Review for every finding, Evidence Resolution action, source candidate, tracked correction, the Readiness Certificate, and exports. Each payment includes one recheck of the same document within 14 days.</p>
+                        <p class="paywall-subtitle">Unlock your ACII assessment, Missing Citations, Uncited References and Match Rate, plus every finding, correction, certificate and report download. Other result categories show a complete 25% sample capped at 10 rows. The final ACII score requires completed publication-status checks for all detected references. Each payment includes one recheck of the same document within 14 days.</p>
                     </div>
                     <span class="paywall-badge">🔒 Payment required</span>
                 </div>
@@ -4404,6 +4404,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
     function renderACII(data) {
         const acii = data.acii || {};
+        if (acii.locked && !hasPaidAccess(data)) {
+            const coverage = acii.coverage || {};
+            const scoreEl = $("aciiScore"), ratingEl = $("aciiRating"), recEl = $("aciiRecommendation"), coverageEl = $("aciiCoverage");
+            if (scoreEl) scoreEl.textContent = "Locked";
+            if (ratingEl) { ratingEl.textContent = "Full Review"; ratingEl.className = "acii-rating"; }
+            if (recEl) recEl.textContent = acii.message || "Unlock Full Review for your ACII score and assessment.";
+            if (coverageEl) coverageEl.textContent = `Publication-status coverage: ${coverage.publication_status_checked ?? 0} of ${coverage.expected_references ?? data.summary?.reference_entries_found ?? 0} references checked. ${coverage.complete === true ? "Coverage complete." : "A final score requires completed checks for all detected references."}`;
+            return;
+        }
         const scoreAvailable = acii.score_available !== false && Number.isFinite(Number(acii.ACII ?? acii.score));
         const score = scoreAvailable ? (acii.ACII ?? acii.score) : "Withheld";
         const scoreEl = $("aciiScore");
@@ -4530,7 +4539,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (compBody) {
             const rows = Object.entries(components);
             if (!rows.length) {
-                compBody.innerHTML = `<tr><td colspan="4"><div class="empty">ACII components are not available yet.</div></td></tr>`;
+                compBody.innerHTML = `<tr><td colspan="4"><div class="empty">${data.acii?.locked && !paid ? "Unlock Full Review to see the ACII components and recommendations." : "ACII components are not available yet."}</div></td></tr>`;
             } else {
                 compBody.innerHTML = rows.map(([name, item]) => `
                     <tr>

@@ -893,6 +893,13 @@ async def _payment_email_loop():
         await asyncio.sleep(60)
 
 
+async def _check_customer_mail_at_startup():
+    # Authenticates once without sending mail. Errors contain class and SMTP
+    # code only, so credentials, recipients and verification codes stay out of logs.
+    from payment_notifications import probe_smtp_connection
+    await run_in_threadpool(probe_smtp_connection)
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     print("🚀 Starting Citation Crosschecker...")
@@ -909,13 +916,19 @@ async def lifespan(app_instance: FastAPI):
             print(f"⚠️ Commercial table setup failed safely: {commercial_error}")
     cleanup_task = asyncio.create_task(_privacy_cleanup_loop())
     payment_email_task = asyncio.create_task(_payment_email_loop())
+    mail_probe_task = asyncio.create_task(_check_customer_mail_at_startup())
     try:
         yield
     finally:
         cleanup_task.cancel()
         payment_email_task.cancel()
+        mail_probe_task.cancel()
         try:
             await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await mail_probe_task
         except asyncio.CancelledError:
             pass
         try:

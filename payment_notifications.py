@@ -9,6 +9,7 @@ import logging
 import os
 import smtplib
 import ssl
+from contextlib import contextmanager
 from email.message import EmailMessage
 from email.utils import formataddr
 from urllib.parse import quote
@@ -51,15 +52,46 @@ def build_confirmation(purchase: dict) -> EmailMessage:
     return msg
 
 
-def _send(message: EmailMessage) -> None:
-    port = int(os.environ.get("SMTP_PORT", "587"))
+@contextmanager
+def _smtp_connection():
+    # A blank port should use the same default as the contact form. Do not
+    # weaken certificate validation or fall back to unencrypted delivery.
+    port = int(os.environ.get("SMTP_PORT", "").strip() or "587")
     context = ssl.create_default_context()
     factory = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
     kwargs = {"context": context} if port == 465 else {}
-    with factory(os.environ["SMTP_HOST"], port, timeout=15, **kwargs) as server:
+    with factory(os.environ["SMTP_HOST"].strip(), port, timeout=15, **kwargs) as server:
         if port != 465:
             server.starttls(context=context)
-        server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+        server.login(os.environ["SMTP_USERNAME"].strip(), os.environ["SMTP_PASSWORD"])
+        yield server
+
+
+def mail_error_kind(exc: Exception) -> str:
+    """Return non-sensitive diagnostics, never provider text or credentials."""
+    code = getattr(exc, "smtp_code", None)
+    return f"{type(exc).__name__} smtp_code={code}" if isinstance(code, int) else type(exc).__name__
+
+
+def probe_smtp_connection() -> bool:
+    """Check the configured transport without sending a message or logging secrets."""
+    if not smtp_ready():
+        missing = [key for key in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL")
+                   if not os.environ.get(key, "").strip()]
+        log.warning("Customer email transport unavailable; missing settings: %s", ", ".join(missing))
+        return False
+    try:
+        with _smtp_connection():
+            pass
+    except Exception as exc:
+        log.warning("Customer email transport check failed: %s", mail_error_kind(exc))
+        return False
+    log.info("Customer email transport check succeeded")
+    return True
+
+
+def _send(message: EmailMessage) -> None:
+    with _smtp_connection() as server:
         refused = server.send_message(message)
         if refused:
             raise smtplib.SMTPRecipientsRefused(refused)

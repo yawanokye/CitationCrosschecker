@@ -61,8 +61,8 @@ def _confirmed_payment(database_url, email, identifier):
     return purchase
 
 
-def _job(cur, job_id):
-    job = cur.execute("SELECT * FROM jobs WHERE job_id=%s", (job_id,)).one()
+def _job(cur, job_id, lock=False):
+    job = cur.execute("SELECT * FROM jobs WHERE job_id=%s" + (" FOR UPDATE" if lock else ""), (job_id,)).one()
     if job and isinstance(job.get("result"), str):
         try:
             job["result"] = json.loads(job["result"])
@@ -78,6 +78,57 @@ def case_for_owner(database_url, account_id, source_job):
     if not case:
         raise ledger.PortalError("No recovery was prepared for this account. Open My Account and recover the paid analysis first.", 404)
     return case
+
+
+def _review_failed(job):
+    job = job or {}
+    status = str(job.get("status") or "").lower()
+    result = job.get("result") or {}
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            result = {}
+    if status in {"failed", "error"}:
+        return True
+    deleted = result.get("result_deleted") or (result.get("privacy") or {}).get("content_deleted")
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    return status == "completed" and not deleted and verification.get("state") in {"failed", "error", "incomplete"}
+
+
+def restore_expired_failed_purchase(database_url, owner, purchase, source, job):
+    """Give one fresh recovery window to a verified owner of a failed review.
+
+    A genuinely failed original job is required. Never revive refunded orders,
+    previously successful replacements, or renew the window repeatedly.
+    """
+    if not _review_failed(job):
+        raise ledger.PortalError("Payment is confirmed, but its self-service access period has ended. Contact support to recover the review. Please do not pay again.", 409)
+    current = ledger.now_utc()
+    with ledger.transaction(database_url) as cur:
+        ledger._account_lock(cur, owner["id"])
+        paid = cur.execute("SELECT * FROM purchases WHERE id=%s FOR UPDATE", (purchase["id"],)).one()
+        if (not paid or str(paid.get("user_email") or "").lower() != owner["email"]
+                or paid.get("status") not in {"paid", "active"}):
+            raise ledger.PortalError("This payment is not available for recovery. Please contact support and do not pay again.", 409)
+        if _current(paid):
+            return
+        source_job = _job(cur, source, lock=True)
+        if not _review_failed(source_job):
+            raise ledger.PortalError("The original review is not marked as failed. Contact support and do not pay again.", 409)
+        extension = cur.execute("SELECT * FROM ci_recovery_extensions WHERE source_job_id=%s", (source,)).one()
+        if extension:
+            raise ledger.PortalError("The recovery window has ended. Contact support to recover the paid review. Please do not pay again.", 409)
+        case = cur.execute("SELECT * FROM ci_analysis_recovery WHERE source_job_id=%s FOR UPDATE", (source,)).one()
+        if case and case.get("account_id") != owner["id"]:
+            raise ledger.PortalError("This recovery belongs to a different account.", 403)
+        replacement = _job(cur, case["replacement_job_id"]) if case and case.get("replacement_job_id") else None
+        if replacement and replacement.get("status") not in {"failed", "error"}:
+            raise ledger.PortalError("This recovery was already used. Contact support if you still need help. Please do not pay again.", 409)
+        expires = ledger.stamp(current + timedelta(days=14))
+        cur.execute("""INSERT INTO ci_recovery_extensions(source_job_id,account_id,purchase_id,extended_at,expires_at)
+                       VALUES(%s,%s,%s,%s,%s)""", (source, owner["id"], paid["id"], ledger.stamp(current), expires))
+        cur.execute("UPDATE purchases SET expires_at=%s WHERE id=%s", (expires, paid["id"]))
 
 
 def recovery_plan(database_url, owner, identifier, load_job):
@@ -115,12 +166,15 @@ def recovery_plan(database_url, owner, identifier, load_job):
     deleted = bool(result.get("result_deleted") or (result.get("privacy") or {}).get("content_deleted"))
     status = str(job.get("status") or "missing").lower()
     if purchase and not _current(purchase):
-        raise ledger.PortalError("Payment is confirmed, but its self-service access period has ended. Contact support to recover the failed review. Please do not pay again.", 409)
+        restore_expired_failed_purchase(database_url, owner, purchase, source, job)
     if status in {"queued", "processing", "running"} and not deleted:
         return {"action":"open", "job_id":source, "message":"Payment is confirmed. Your analysis is still in progress. You do not need to pay again."}
     if status == "completed" and not deleted:
         verification = result.get("verification") or {}
-        incomplete = verification.get("state") in {"failed", "error", "incomplete", "idle", "queued", "running"}
+        verification_state = verification.get("state")
+        if verification_state in {"queued", "running", "finalising"}:
+            return {"action":"open", "job_id":source, "message":"Payment is confirmed. Verification is already in progress, so no second attempt or payment is needed."}
+        incomplete = verification_state in {"failed", "error", "incomplete"}
         if incomplete and (result.get("references_raw") or result.get("main_text")):
             return {"action":"verification", "job_id":source, "message":"Payment is confirmed. Retrying incomplete verification without another charge."}
         return {"action":"open", "job_id":source, "message":"Payment is confirmed. Your available review can be reopened without another charge."}

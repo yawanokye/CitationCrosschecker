@@ -111,7 +111,7 @@ def test_unverified_and_other_email_receipts_never_prepare_recovery(db,monkeypat
     with s.transaction(db) as cur:assert cur.execute('SELECT COUNT(*) AS n FROM ci_analysis_recovery').one()['n']==0
 
 
-@pytest.mark.parametrize('state',['failed','error','incomplete','running'])
+@pytest.mark.parametrize('state',['failed','error','incomplete'])
 def test_incomplete_verification_reuses_original_paid_job(db,state):
     account,_=owner(db);paid(db,account)
     put_job(db,status='completed',result={'references_raw':['A reference'],'verification':{'state':state}})
@@ -126,10 +126,52 @@ def test_in_progress_and_complete_jobs_are_reopened_without_new_jobs(db):
     with s.transaction(db) as cur:assert cur.execute('SELECT COUNT(*) AS n FROM ci_analysis_recovery').one()['n']==0
 
 
-def test_expired_paid_receipt_requires_support_without_new_checkout(db):
+def test_expired_failed_paid_review_can_be_recovered_once_without_another_charge(db,monkeypatch):
     account,_=owner(db);paid(db,account)
     with s.transaction(db) as cur:cur.execute('UPDATE purchases SET expires_at=%s',(s.stamp(NOW-timedelta(days=1)),))
+    assert prepare(db,account)['action']=='retry'
+    assert prepare(db,account)['action']=='retry'
+    r.reserve_replacement(db,account,'failed-job','replacement','Paper.docx',4000)
+    put_job(db,'replacement','completed',completed_result())
+    assert r.finalise_replacement(db,'replacement',completed_result())['status']=='recovered'
+    with s.transaction(db) as cur:
+        assert cur.execute('SELECT COUNT(*) AS n FROM ci_recovery_extensions').one()['n']==1
+        assert cur.execute('SELECT COUNT(*) AS n FROM purchases').one()['n']==1
+        assert cur.execute('SELECT analyses_used FROM purchases').one()['analyses_used']==1
+    monkeypatch.setattr(s,'now_utc',lambda:NOW+timedelta(days=15))
     with pytest.raises(s.PortalError,match='do not pay again'):prepare(db,account)
+
+
+def test_expired_completed_report_is_not_renewed_as_failed_recovery(db):
+    account,_=owner(db);paid(db,account)
+    put_job(db,status='completed',result={'verification':{'state':'completed'}})
+    with s.transaction(db) as cur:cur.execute('UPDATE purchases SET expires_at=%s',(s.stamp(NOW-timedelta(days=1)),))
+    with pytest.raises(s.PortalError,match='do not pay again'):prepare(db,account)
+    with s.transaction(db) as cur:assert cur.execute('SELECT COUNT(*) AS n FROM ci_recovery_extensions').one()['n']==0
+
+
+def test_expired_review_with_failed_verification_gets_one_retry_window(db):
+    account,_=owner(db);paid(db,account)
+    put_job(db,status='completed',result={'references_raw':['A reference'],'verification':{'state':'error'}})
+    with s.transaction(db) as cur:cur.execute('UPDATE purchases SET expires_at=%s',(s.stamp(NOW-timedelta(days=1)),))
+    assert prepare(db,account)['action']=='verification'
+    with s.transaction(db) as cur:assert cur.execute('SELECT COUNT(*) AS n FROM ci_recovery_extensions').one()['n']==1
+
+
+def test_simultaneous_recovery_requests_only_extend_once(db):
+    account,_=owner(db);paid(db,account)
+    with s.transaction(db) as cur:cur.execute('UPDATE purchases SET expires_at=%s',(s.stamp(NOW-timedelta(days=1)),))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outcomes = list(pool.map(lambda _: prepare(db,account)['action'], range(4)))
+    assert outcomes == ['retry'] * 4
+    with s.transaction(db) as cur:assert cur.execute('SELECT COUNT(*) AS n FROM ci_recovery_extensions').one()['n']==1
+
+
+@pytest.mark.parametrize('state',['queued','running','finalising'])
+def test_verification_already_in_progress_is_not_started_twice(db,state):
+    account,_=owner(db);paid(db,account)
+    put_job(db,status='completed',result={'references_raw':['A reference'],'verification':{'state':state}})
+    assert prepare(db,account)['action']=='open'
 
 
 def test_parallel_replacement_uploads_only_reserve_once(db):

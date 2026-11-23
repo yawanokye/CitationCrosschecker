@@ -144,6 +144,9 @@ SCHEMA = [
         purchase_id BIGINT, tier_key TEXT NOT NULL, replacement_job_id TEXT,
         status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)""",
     """CREATE INDEX IF NOT EXISTS ci_recovery_replacement ON ci_analysis_recovery(replacement_job_id)""",
+    """CREATE TABLE IF NOT EXISTS ci_recovery_extensions (
+        source_job_id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES ci_accounts(id),
+        purchase_id BIGINT NOT NULL, extended_at TEXT NOT NULL, expires_at TEXT NOT NULL)""",
 ]
 
 

@@ -77,7 +77,7 @@ FREE_PREVIEW_FEATURES: Dict[str, Any] = {
     "preview_fraction": 0.25,
     "preview_max_rows": 10,
     "show_summary": True,
-    "show_acii": "preview",
+    "show_acii": "coverage",
     "show_missing": False,
     "show_uncited": False,
     "show_c2r": "limited",
@@ -449,6 +449,18 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     safe["citation_integrity_certificate"] = locked_payload("Citation Integrity Certificate")
     safe["export"] = locked_payload("Export Report")
     safe["citation_improvement_coach"] = locked_payload("Citation Improvement Coach")
+    # Keep verification coverage visible, but never send the paid ACII score,
+    # component ratings or recommendations to a free client. Redact on the
+    # server as well as in the dashboard so the API enforces the same boundary.
+    acii = safe.get("acii") if isinstance(safe.get("acii"), dict) else {}
+    acii_coverage = acii.get("coverage") if isinstance(acii.get("coverage"), dict) else {}
+    safe["acii"] = {
+        "locked": True,
+        "coverage": {key: acii_coverage[key] for key in
+                     ("publication_status_checked", "expected_references", "complete")
+                     if key in acii_coverage},
+        "message": "Unlock Full Review for your ACII score and assessment. The final score requires completed publication-status checks for all detected references.",
+    }
     # Publication-safety warnings are never payment-gated. Commercial access
     # unlocks depth, workflow, export, and remediation, not knowledge that a
     # cited work is retracted or otherwise carries a publication event.
@@ -482,7 +494,7 @@ def apply_entitlements_to_result(result: Dict[str, Any], tier_key: str = "", pai
     safe_summary["locked_indicators"] = ["missing_in_references", "uncited_references", "match_rate"]
     safe["summary"] = safe_summary
     safe["preview_coverage"] = coverage
-    safe["preview_notice"] = "Free Preview keeps Missing Citations, Uncited References, and Match Rate locked. Other available result categories show a complete 25% sample capped at 10 rows. Unlock Full Review for all findings, actions, exports, certificate, and recheck."
+    safe["preview_notice"] = "Free Preview shows basic counts, safety alerts and a 25% sample capped at 10 rows. Unlock Full Review for the ACII assessment, missing citations, uncited references, match rate, all findings, exports, certificate and recheck."
     return safe
 
 def utc_now_iso() -> str:
