@@ -20,6 +20,12 @@ from access_control import get_conn
 log = logging.getLogger(__name__)
 
 
+class GmailAuthenticationRejected(smtplib.SMTPException):
+    def __init__(self, code):
+        self.smtp_code = code
+        super().__init__("Google rejected the configured mail credentials")
+
+
 def _smtp_password(host: str) -> str:
     password = os.environ["SMTP_PASSWORD"]
     if host.lower().rstrip(".") == "smtp.gmail.com":
@@ -54,7 +60,7 @@ def _smtp_auth_diagnostic(exc) -> str:
     return f"smtp_code={code} enhanced={match.group(0) if match else 'unknown'} reason={reason}"
 
 
-def _smtp_login(server, username: str, password: str) -> None:
+def _smtp_login(server, username: str, password: str, host: str = "") -> None:
     # smtplib may try several auth methods. Preserve a safe numeric rejection
     # code even if the provider then disconnects on a later method.
     original_auth = server.auth
@@ -64,6 +70,11 @@ def _smtp_login(server, username: str, password: str) -> None:
             return original_auth(*args, **kwargs)
         except smtplib.SMTPAuthenticationError as exc:
             log.warning("Customer email authentication rejected: %s", _smtp_auth_diagnostic(exc))
+            # Google explicitly rejected the credential. Do not try another
+            # mechanism or port with the same rejected credential, which can
+            # lead to account lockouts under repeated sign-in requests.
+            if host.lower().rstrip(".") == "smtp.gmail.com" and exc.smtp_code in {534, 535}:
+                raise GmailAuthenticationRejected(exc.smtp_code) from None
             raise
 
     server.auth = logged_auth
@@ -129,7 +140,7 @@ def _smtp_connection():
                     stage = "tls"
                     server.starttls(context=context)
                 stage = "authentication"
-                _smtp_login(server, os.environ["SMTP_USERNAME"].strip(), _smtp_password(host))
+                _smtp_login(server, os.environ["SMTP_USERNAME"].strip(), _smtp_password(host), host)
                 stage = "message"
                 yield server
                 return

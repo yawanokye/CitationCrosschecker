@@ -79,6 +79,26 @@ def test_google_auth_diagnostics_only_keep_public_classification():
     assert 'private-email@example.test' not in diagnostic
 
 
+def test_google_rejected_password_is_not_retried_with_other_auth_methods_or_ports(monkeypatch):
+    from unittest.mock import MagicMock
+    for key, value in {'SMTP_HOST':'smtp.gmail.com','SMTP_PORT':'587','SMTP_USERNAME':'user',
+                       'SMTP_PASSWORD':'abcdefghijklmnop','SMTP_FROM_EMAIL':'sender@example.test'}.items():
+        monkeypatch.setenv(key,value)
+    plain=MagicMock()
+    server=plain.__enter__.return_value
+    server.auth.side_effect=smtplib.SMTPAuthenticationError(535,b'5.7.8 Username and Password not accepted')
+    def login(username,password):
+        try: server.auth('PLAIN',None)
+        except smtplib.SMTPAuthenticationError: server.auth('LOGIN',None)
+    server.login.side_effect=login
+    alternate=Mock()
+    monkeypatch.setattr(mail.smtplib,'SMTP',Mock(return_value=plain))
+    monkeypatch.setattr(mail.smtplib,'SMTP_SSL',alternate)
+    assert not mail.probe_smtp_connection()
+    assert server.auth.call_count == 1
+    alternate.assert_not_called()
+
+
 def test_disconnected_plain_submission_retries_only_with_secure_alternate(monkeypatch):
     from unittest.mock import MagicMock
     for key, value in {'SMTP_HOST':'smtp.example.test','SMTP_PORT':'587','SMTP_USERNAME':'user',
