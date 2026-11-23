@@ -45,6 +45,31 @@ def test_blank_smtp_port_uses_verified_starttls(monkeypatch):
     server.send_message.assert_not_called()
 
 
+@pytest.mark.parametrize('value,expected',[
+    ('abcd efgh ijkl mnop','abcdefghijklmnop'),
+    ('  abcdefghijklmnop\n','abcdefghijklmnop'),
+    ('an ordinary password with spaces','an ordinary password with spaces'),
+])
+def test_google_app_password_display_format_is_accepted(monkeypatch,value,expected):
+    monkeypatch.setenv('SMTP_PASSWORD',value)
+    assert mail._smtp_password('smtp.gmail.com') == expected
+    assert mail._smtp_password('smtp.example.test') == value
+
+
+def test_authentication_diagnostics_keep_rejection_code_without_private_text(caplog):
+    class FakeServer:
+        def auth(self,*args,**kwargs):
+            raise smtplib.SMTPAuthenticationError(535,b'private account details')
+        def login(self,username,password):
+            try: self.auth('PLAIN',None)
+            except smtplib.SMTPAuthenticationError: pass
+            raise smtplib.SMTPServerDisconnected('private server details')
+    with caplog.at_level(logging.WARNING), pytest.raises(smtplib.SMTPServerDisconnected):
+        mail._smtp_login(FakeServer(),'private-user','private-password')
+    assert 'smtp_code=535' in caplog.text
+    assert all(value not in caplog.text for value in ('private-user','private-password','private account details'))
+
+
 def test_disconnected_plain_submission_retries_only_with_secure_alternate(monkeypatch):
     from unittest.mock import MagicMock
     for key, value in {'SMTP_HOST':'smtp.example.test','SMTP_PORT':'587','SMTP_USERNAME':'user',

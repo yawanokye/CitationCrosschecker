@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import smtplib
 import ssl
 from contextlib import contextmanager
@@ -17,6 +18,39 @@ from urllib.parse import quote
 from access_control import get_conn
 
 log = logging.getLogger(__name__)
+
+
+def _smtp_password(host: str) -> str:
+    password = os.environ["SMTP_PASSWORD"]
+    if host.lower().rstrip(".") == "smtp.gmail.com":
+        # Google displays app passwords as four groups. Accept a paste with
+        # those display spaces while leaving other passwords untouched.
+        trimmed = password.strip()
+        if re.fullmatch(r"[A-Za-z0-9]{16}", trimmed):
+            return trimmed
+        if re.fullmatch(r"[A-Za-z0-9]{4}(?:[ \t]+[A-Za-z0-9]{4}){3}", trimmed):
+            return "".join(trimmed.split())
+    return password
+
+
+def _smtp_login(server, username: str, password: str) -> None:
+    # smtplib may try several auth methods. Preserve a safe numeric rejection
+    # code even if the provider then disconnects on a later method.
+    original_auth = server.auth
+
+    def logged_auth(*args, **kwargs):
+        try:
+            return original_auth(*args, **kwargs)
+        except smtplib.SMTPAuthenticationError as exc:
+            code = exc.smtp_code if isinstance(exc.smtp_code, int) else "unknown"
+            log.warning("Customer email authentication rejected: smtp_code=%s", code)
+            raise
+
+    server.auth = logged_auth
+    try:
+        server.login(username, password)
+    finally:
+        server.auth = original_auth
 
 
 def smtp_ready() -> bool:
@@ -64,17 +98,18 @@ def _smtp_connection():
     alternate = {25: 587, 465: 587, 587: 465}.get(port)
     ports = [port] + ([alternate] if alternate else [])
     context = ssl.create_default_context()
+    host = os.environ["SMTP_HOST"].strip()
     for index, candidate in enumerate(ports):
         factory = smtplib.SMTP_SSL if candidate == 465 else smtplib.SMTP
         kwargs = {"context": context} if candidate == 465 else {}
         stage = "connect"
         try:
-            with factory(os.environ["SMTP_HOST"].strip(), candidate, timeout=15, **kwargs) as server:
+            with factory(host, candidate, timeout=15, **kwargs) as server:
                 if candidate != 465:
                     stage = "tls"
                     server.starttls(context=context)
                 stage = "authentication"
-                server.login(os.environ["SMTP_USERNAME"].strip(), os.environ["SMTP_PASSWORD"])
+                _smtp_login(server, os.environ["SMTP_USERNAME"].strip(), _smtp_password(host))
                 stage = "message"
                 yield server
                 return
